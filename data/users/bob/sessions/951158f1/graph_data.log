@@ -1,0 +1,7 @@
+[2026-05-27 14:45:48.434] SESSION_CREATE    graph_version=0
+[2026-05-27 14:45:57.290] → get_graph_info  args={}
+[2026-05-27 14:45:57.292] ← get_graph_info  result={"loaded": false, "session_id": "951158f1", "graph_version": 0, "message": "尚未加载任何图数据。"}  (1ms)
+[2026-05-27 14:46:18.933] → load_graph  args={"edge_text": "A B 4\nA C 2\nB C 1\nB D 5\nC D 8\nD E 2\nE F 3", "append": false}
+[2026-05-27 14:46:18.937] ← load_graph  result={"success": true, "session_id": "951158f1", "graph_version": 1, "message": "图加载成功（已覆盖当前图）。 如需查看图规模与结构摘要，请调用 get_graph_info。"}  (4ms)
+[2026-05-27 14:46:24.012] → get_graph_info  args={}
+[2026-05-27 14:46:24.013] ← get_graph_info  result={"loaded": true, "session_id": "951158f1", "graph_version": 1, "num_nodes": 6, "num_edges": 7, "directed": true, "has_node_names": true, "has_edge_weight": true, "node_label_stats": null, "nodes": ["A", "B", "C", "D", "E", "F"], "edges": [{"src": "A", "dst": "B", "weight": 4.0}, {"src": "A", "dst": "C", "weight": 2.0}, {"src": "B", "dst": "C", "weight": 1.0}, {"src": "B", "dst": "D", "weight": 5.0}, {"src": "C", "dst": "D", "weight": 8.0}, {"src": "D", "dst": "E", "weight": 2.0}, {"src": "E", "d…  (1ms)

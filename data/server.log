@@ -1,0 +1,138 @@
+[2026-05-27 00:44:56] INFO [6231ea95] 会话创建  provider=transparent_openai_sdk  model=gpt-5-2
+[2026-05-27 00:44:56] INFO HTTP POST /api/sessions -> session_id=6231ea95
+[2026-05-27 00:45:08] INFO HTTP POST /api/sessions/6231ea95/activate restored=False msg_count=0
+[2026-05-27 00:45:34] INFO HTTP POST /api/sessions/6231ea95/activate restored=False msg_count=0
+[2026-05-27 00:45:47] INFO HTTP PATCH /api/sessions/6231ea95/model -> doubao/doubao-seed-2-0-pro-260215
+[2026-05-27 00:46:19] INFO HTTP DELETE /api/sessions/6231ea95
+[2026-05-27 00:46:21] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=0
+[2026-05-27 00:46:28] INFO HTTP PATCH /api/sessions/6231ea95/model -> doubao/doubao-seed-2-0-pro-260215
+[2026-05-27 00:46:37] INFO HTTP POST /api/sessions/6231ea95/upload file=test_graph_complex.txt size=14536B token=9260bf5e5a3a4628854ff4f24dbb952e
+[2026-05-27 00:46:55] INFO HTTP POST /api/sessions/6231ea95/chat/stream msg_len=10
+[2026-05-27 00:46:57] ERROR [6231ea95] 错误: Traceback (most recent call last):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/graph_agent.py", line 2939, in _chat_stream_impl
+    async for event in self._run_react_loop(
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/graph_agent.py", line 1941, in _run_react_loop
+    async for event in self.context_manager.stream_turn(
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/context/context_manager.py", line 445, in stream_turn
+    async for event in self._driver.stream_turn(model_msgs, tool_specs, step=step):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/context/text_protocol_driver.py", line 344, in stream_turn
+    async for text in self._gateway.stream_text(messages, step=step):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/provider_gateway.py", line 275, in stream_text
+    response = await self._client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2714, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/_base_client.py", line 1884, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/_base_client.py", line 1669, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.NotFoundError: Error code: 404 - {'error': {'message': 'The requested model is not found or unavailable.', 'type': 'not_found_error', 'error_id': '8f841da7-120b-4e66-8a56-80396cd53a5d'}}
+
+[2026-05-27 00:47:08] INFO HTTP PATCH /api/sessions/6231ea95/model -> deepseek/deepseek-v4-pro
+[2026-05-27 00:47:12] INFO HTTP POST /api/sessions/6231ea95/chat/stream msg_len=10
+[2026-05-27 00:47:18] ERROR [6231ea95] 错误: Traceback (most recent call last):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/graph_agent.py", line 2939, in _chat_stream_impl
+    async for event in self._run_react_loop(
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/graph_agent.py", line 1941, in _run_react_loop
+    async for event in self.context_manager.stream_turn(
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/context/context_manager.py", line 445, in stream_turn
+    async for event in self._driver.stream_turn(model_msgs, tool_specs, step=step):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/context/text_protocol_driver.py", line 344, in stream_turn
+    async for text in self._gateway.stream_text(messages, step=step):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/provider_gateway.py", line 275, in stream_text
+    response = await self._client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2714, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/_base_client.py", line 1884, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/_base_client.py", line 1669, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.InternalServerError: 500 Internal Server Error
+
+Server got itself in trouble
+
+[2026-05-27 00:47:40] INFO HTTP POST /api/sessions/6231ea95/chat/stream msg_len=10
+[2026-05-27 00:47:46] ERROR [6231ea95] 错误: Traceback (most recent call last):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/graph_agent.py", line 2939, in _chat_stream_impl
+    async for event in self._run_react_loop(
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/graph_agent.py", line 1941, in _run_react_loop
+    async for event in self.context_manager.stream_turn(
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/context/context_manager.py", line 445, in stream_turn
+    async for event in self._driver.stream_turn(model_msgs, tool_specs, step=step):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/context/text_protocol_driver.py", line 344, in stream_turn
+    async for text in self._gateway.stream_text(messages, step=step):
+  File "/Users/idealist/vscode_local/GraphAgent/backend/agent/provider_gateway.py", line 275, in stream_text
+    response = await self._client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 2714, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/_base_client.py", line 1884, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/idealist/opt/miniconda3/envs/agent/lib/python3.12/site-packages/openai/_base_client.py", line 1669, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.InternalServerError: 500 Internal Server Error
+
+Server got itself in trouble
+
+[2026-05-27 00:48:26] INFO HTTP PATCH /api/sessions/6231ea95/model -> doubao/doubao-seed-2-0-pro-260215
+[2026-05-27 00:48:42] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=0
+[2026-05-27 00:49:02] INFO HTTP PATCH /api/sessions/6231ea95/model -> deepseek/deepseek-v4-pro
+[2026-05-27 00:49:08] INFO HTTP POST /api/sessions/6231ea95/upload file=test_graph_complex.txt size=14536B token=7e0a7bea904e4403acfde2a43257fc84
+[2026-05-27 00:49:18] INFO HTTP POST /api/sessions/6231ea95/chat/stream msg_len=10
+[2026-05-27 00:49:34] INFO [6231ea95] 工具调用 → get_graph_info  args={}
+[2026-05-27 00:49:39] INFO [6231ea95] 工具调用 → skill_view  args={"name": "data_ingestion_text"}
+[2026-05-27 00:49:43] INFO [6231ea95] 工具调用 → load_graph_from_upload  args={"filename": "test_graph_complex.txt"}
+[2026-05-27 01:03:56] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 01:20:55] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 01:21:14] INFO HTTP POST /api/sessions/test-new-session/activate restored=True msg_count=0
+[2026-05-27 01:21:33] INFO [a846ae06] 会话创建  provider=transparent_openai_sdk  model=claude-sonnet-4-6
+[2026-05-27 01:21:33] INFO HTTP POST /api/sessions -> session_id=a846ae06
+[2026-05-27 01:21:43] INFO HTTP PATCH /api/sessions/a846ae06/model -> doubao/doubao-seed-2-0-pro-260215
+[2026-05-27 01:21:49] INFO HTTP POST /api/sessions/a846ae06/upload file=test_graph_complex.txt size=14536B token=786ee90352cd413db080bae1c090f1f8
+[2026-05-27 01:22:02] INFO HTTP POST /api/sessions/a846ae06/chat/stream msg_len=10
+[2026-05-27 01:22:18] INFO HTTP POST /api/sessions/a846ae06/activate restored=False msg_count=3
+[2026-05-27 01:22:32] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 01:22:49] INFO HTTP POST /api/sessions/a846ae06/activate restored=False msg_count=3
+[2026-05-27 01:22:51] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 01:23:03] INFO [a846ae06] 工具调用 → load_graph_from_upload  args={"filename": "test_graph_complex.txt", "append": false}
+[2026-05-27 01:24:09] INFO HTTP POST /api/sessions/a846ae06/activate restored=False msg_count=3
+[2026-05-27 01:25:03] INFO [a846ae06] 工具调用 → get_graph_info  args={}
+[2026-05-27 01:25:09] INFO [alice-sess-01] 会话创建  provider=  model=
+[2026-05-27 01:26:34] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 01:26:44] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 01:26:49] INFO HTTP POST /api/sessions/alice-sess-01/activate restored=True msg_count=0
+[2026-05-27 01:26:52] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 01:26:57] INFO HTTP DELETE /api/sessions/alice-sess-01
+[2026-05-27 14:22:20] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:22:32] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 14:22:46] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 14:22:53] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:41:16] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:41:27] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:41:32] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:41:35] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:41:46] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:41:52] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:41:55] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:45:21] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:45:25] INFO HTTP POST /api/sessions/a846ae06/activate restored=True msg_count=4
+[2026-05-27 14:45:30] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 14:45:44] INFO [951158f1] 会话创建  provider=transparent_openai_sdk  model=deepseek-v4-pro
+[2026-05-27 14:45:45] INFO HTTP POST /api/sessions -> session_id=951158f1
+[2026-05-27 14:45:48] INFO HTTP POST /api/sessions/951158f1/chat/stream msg_len=49
+[2026-05-27 14:45:57] INFO [951158f1] 工具调用 → get_graph_info  args={}
+[2026-05-27 14:46:03] INFO [951158f1] 工具调用 → tool_select  args={"query": "从边列表文本数据加载图、创建图、导入图数据", "top_k": 8}
+[2026-05-27 14:46:18] INFO [951158f1] 工具调用 → load_graph  args={"edge_text": "A B 4\nA C 2\nB C 1\nB D 5\nC D 8\nD E 2\nE F 3", "append": false}
+[2026-05-27 14:46:23] INFO [951158f1] 工具调用 → get_graph_info  args={}
+[2026-05-27 14:46:23] INFO [951158f1] 工具调用 → visualize_subgraph  args={"max_nodes": 200, "include_community": false}
+[2026-05-27 14:47:58] INFO HTTP POST /api/sessions/6231ea95/activate restored=True msg_count=9
+[2026-05-27 14:47:58] INFO HTTP POST /api/sessions/951158f1/activate restored=False msg_count=2
+[2026-05-27 16:40:12] INFO HTTP POST /api/sessions/951158f1/activate restored=True msg_count=2
+[2026-05-28 15:51:48] INFO HTTP POST /api/sessions/951158f1/activate restored=True msg_count=2
