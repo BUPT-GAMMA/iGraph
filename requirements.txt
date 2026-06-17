@@ -1,0 +1,26 @@
+# Core service dependencies
+fastapi
+uvicorn
+pydantic
+python-dotenv
+httpx
+mcp
+openai
+tiktoken
+numpy
+networkx
+
+# GraphML (optional but required for train/infer, CUDA build)
+# If your NVIDIA driver/CUDA runtime is not compatible, change cu126 to cu124/cu121.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch
+torchvision
+torch-geometric
+
+# Data ingestion (optional)
+openpyxl
+
+# Community detection extras (optional)
+python-louvain
+igraph
+leidenalg

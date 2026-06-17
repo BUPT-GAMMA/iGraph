@@ -1,0 +1,205 @@
+================================================================================
+iGraph "加载数据集" 功能 - 快速参考卡
+================================================================================
+
+[快速流程]
+1. 点击"数据集"按钮 → 2. 选择数据集 → 3. 点击"加载" → 4. Agent自动分析
+
+[关键文件位置]
+前端按钮:      index.html 行 2648, 2795, 4045
+后端API:       backend/api_gateway/app.py 行 1008
+数据集服务:    graph_data_service/app.py 行 600
+数据集注册:    graph_data_service/dataset_registry.py 行 34
+
+[API接口]
+GET  /api/datasets                                  获取数据集列表
+POST /api/sessions/{sid}/load-dataset              加载数据集
+POST /api/sessions/{sid}/save-dataset              保存为数据集
+
+[加载数据集请求]
+POST /api/sessions/{session_id}/load-dataset
+Content-Type: application/json
+{
+  "dataset_id": "ds_xxx",
+  "version": "latest"  # 可选
+}
+
+[响应格式]
+{
+  "success": true,
+  "session_id": "session_123",
+  "dataset_id": "ds_xxx",
+  "dataset_version": "v001",
+  "graph_version": 42,
+  "num_nodes": 1000,
+  "num_edges": 5000
+}
+
+[支持的数据格式]
+✓ 边列表文本 (.txt, .csv)        格式: src dst [weight]
+✓ JSON graph_data.v1 (.json)      需要: schema, num_nodes, edge_index
+✓ NPZ二进制 (.npz)               NumPy格式，加载快
+✓ 自然语言 (.txt)                LLM自动抽取
+
+[最简单的输入 - 边列表]
+A B 1.0
+B C 2.5
+C A 1.5
+
+[JSON格式最小示例]
+{
+  "schema": "graph_data.v1",
+  "num_nodes": 3,
+  "edge_index": [[0,1,0], [1,2,2]],
+  "id2node": {"0":"A", "1":"B", "2":"C"}
+}
+
+[数据集目录结构]
+datasets/ds_xyz/
+├── meta.json          # 元数据
+├── graph.npz          # 当前版本
+└── versions/
+    ├── v001.npz       # 历史版本1
+    └── v002.npz       # 历史版本2
+
+[meta.json内容]
+{
+  "dataset_id": "ds_xyz",
+  "name": "数据集名称",
+  "description": "描述",
+  "node_count": 100,
+  "edge_count": 200,
+  "is_directed": true,
+  "versions": ["v001", "v002"]
+}
+
+[前端核心函数]
+function openDatasetModal()    打开模态框，自动刷新列表
+function loadDataset(id)       加载指定数据集
+function refreshDatasets()     GET /api/datasets
+function handleSaveDataset()   POST /api/sessions/{id}/save-dataset
+
+[状态标志]
+state.datasetModalOpen         模态框打开状态
+state.datasetLoading           正在加载中
+state.datasetSaving            正在保存中
+state.datasets                 数据集列表数组
+
+[加载步骤详解]
+1. loadDataset(datasetId) 被调用
+   ↓
+2. 构造请求体 { dataset_id: datasetId }
+   ↓
+3. POST /api/sessions/{sessionId}/load-dataset
+   ↓
+4. 后端返回 { success: true, num_nodes, num_edges, ... }
+   ↓
+5. 前端更新状态:
+   - state.hasGraph = true
+   - state.datasetModalOpen = false
+   - 添加消息到对话
+   - 调用 doStreamChat() 开始分析
+   ↓
+6. UI显示加载完成，Agent开始处理
+
+[常见错误]
+"加载数据集失败"           → 后端返回 success: false
+"获取数据集列表失败"       → API网络错误或服务宕机
+"保存数据集失败"           → 会话中没有加载任何图
+
+[调试命令]
+# 查看数据集列表
+ls -la datasets/
+
+# 查看元数据
+cat datasets/ds_xxx/meta.json
+
+# 查看NPZ内容(Python)
+import numpy as np
+data = np.load("datasets/ds_xxx/graph.npz", allow_pickle=True)
+print(data.files)
+
+# 前端console
+console.log(state.datasets);           查看数据集列表
+console.log(state.datasetLoading);     查看加载状态
+loadDataset('ds_xxx');                 手动加载
+
+[最佳实践]
+✓ 使用NPZ格式存储大图（>10MB）
+✓ 添加有意义的名称和描述
+✓ 定期保存版本
+✓ 重要数据集做备份
+✓ 确保meta.json中的node_count/edge_count准确
+
+[性能指标]
+文本边列表:     1000边 < 1s, 10000边 < 10s
+NPZ加载:        1M边 < 1s
+JSON加载:       10K边 < 1s
+
+[版本号约定]
+v001 - 第一个版本
+v002 - 第二个版本
+最新版本通过 "latest" 标识
+
+[数据集ID格式]
+自动生成: ds_{10位uuid}
+自定义:   任意字符串 (建议小写+下划线)
+
+[保存为数据集API]
+POST /api/sessions/{session_id}/save-dataset
+{
+  "name": "数据集名称",
+  "description": "可选描述"
+}
+
+返回:
+{
+  "success": true,
+  "dataset": {
+    "dataset_id": "ds_newly_created",
+    "name": "数据集名称",
+    ...
+  }
+}
+
+[删除数据集API]
+DELETE /api/datasets/{dataset_id}
+
+返回:
+{
+  "success": true,
+  "dataset_id": "ds_xxx"
+}
+
+[支持的节点/边类型]
+node_type: ["user", "item", "entity", ...]  任意字符串
+edge_type: ["follows", "buys", "knows", ...]  任意字符串
+
+[GraphData必填字段]
+num_nodes: int              节点数
+edge_index: [[src...], [dst...]]  边连接
+
+[GraphData可选字段]
+directed: bool              是否有向
+id2node: {0:"A", 1:"B"}    节点名称映射
+edge_weight: [1.0, 2.5]    边权重
+node_label: [0, 1]         节点标签
+node_type: ["A", "B"]      节点类型
+node_feat: [[1,0], [0,1]]  节点特征
+
+[导出数据集]
+# 从NPZ导出为JSON
+import json, numpy as np
+data = np.load("graph.npz", allow_pickle=True)
+json.dump({k: v.tolist() for k,v in data.items()}, open("graph.json", "w"))
+
+[导入外部数据集]
+mkdir -p datasets/external_dataset/versions
+# 放置 meta.json 和 graph.npz
+# 启动应用，数据集自动显示
+
+================================================================================
+完整文档: /Users/shejunda/Documents/code/iGraph/LOAD_DATASET_GUIDE.md
+实用示例: /tmp/practical_examples.md
+API文档:  /Users/shejunda/Documents/code/iGraph/docs/GRAPH_DATA_JSON_FORMAT.md
+================================================================================

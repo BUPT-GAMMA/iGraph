@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>知识图谱可视化</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background: #1a1a2e; color: white; overflow: hidden; }
+        #graph { width: 100vw; height: 100vh; }
+        .node circle { stroke: #fff; stroke-width: 2px; cursor: pointer; }
+        .node text { font-size: 12px; fill: white; pointer-events: none; }
+        .link { stroke: #666; stroke-width: 1.5px; }
+        .link.dimmed { opacity: 0.1; }
+        .link.highlighted { stroke: #4fc3f7; opacity: 1; stroke-width: 2.5px; }
+        .node.dimmed { opacity: 0.2; }
+        .node.dimmed circle { opacity: 0.2; }
+        .node.highlighted circle { stroke: #fff; stroke-width: 4px; }
+        #legend { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 8px; font-size: 14px; }
+        #info { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.8); padding: 15px; border-radius: 8px; min-width: 180px; display: none; font-size: 14px; }
+        #info h3 { margin: 0 0 10px 0; font-size: 18px; }
+        #info .type-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+        #info .info-row { margin: 8px 0; display: flex; justify-content: space-between; }
+        #info .info-label { color: #888; }
+    </style>
+</head>
+<body>
+    <div id="graph"></div>
+    <div id="legend">加载中...</div>
+    <div id="info">
+        <h3 id="info-name">节点信息</h3>
+        <div class="info-row"><span class="info-label">类型:</span><span id="info-type"></span></div>
+        <div class="info-row"><span class="info-label">邻居:</span><span id="info-neighbors"></span></div>
+    </div>
+    
+    <script>
+        console.log("开始加载知识图谱...");
+        
+        // 知识图谱数据
+        const nodes = [
+            {id: "China", type: "Country", label: "中国"}, {id: "USA", type: "Country", label: "美国"},
+            {id: "Japan", type: "Country", label: "日本"}, {id: "Germany", type: "Country", label: "德国"},
+            {id: "UK", type: "Country", label: "英国"}, {id: "France", type: "Country", label: "法国"},
+            {id: "Beijing", type: "City", label: "北京"}, {id: "Shanghai", type: "City", label: "上海"},
+            {id: "NewYork", type: "City", label: "纽约"}, {id: "Tokyo", type: "City", label: "东京"},
+            {id: "London", type: "City", label: "伦敦"}, {id: "Paris", type: "City", label: "巴黎"},
+            {id: "Shenzhen", type: "City", label: "深圳"}, {id: "Hangzhou", type: "City", label: "杭州"},
+            {id: "SanFrancisco", type: "City", label: "旧金山"}, {id: "Seattle", type: "City", label: "西雅图"},
+            {id: "Alibaba", type: "Company", label: "阿里巴巴"}, {id: "Tencent", type: "Company", label: "腾讯"},
+            {id: "Huawei", type: "Company", label: "华为"}, {id: "ByteDance", type: "Company", label: "字节跳动"},
+            {id: "Baidu", type: "Company", label: "百度"}, {id: "Apple", type: "Company", label: "苹果"},
+            {id: "Google", type: "Company", label: "谷歌"}, {id: "Microsoft", type: "Company", label: "微软"},
+            {id: "Amazon", type: "Company", label: "亚马逊"}, {id: "Tesla", type: "Company", label: "特斯拉"},
+            {id: "JackMa", type: "Person", label: "马云"}, {id: "PonyMa", type: "Person", label: "马化腾"},
+            {id: "RenZhengfei", type: "Person", label: "任正非"}, {id: "ZhangYiming", type: "Person", label: "张一鸣"},
+            {id: "RobinLi", type: "Person", label: "李彦宏"}, {id: "TimCook", type: "Person", label: "库克"},
+            {id: "SundarPichai", type: "Person", label: "皮查伊"}, {id: "SatyaNadella", type: "Person", label: "纳德拉"},
+            {id: "ElonMusk", type: "Person", label: "马斯克"}, {id: "JeffBezos", type: "Person", label: "贝索斯"},
+            {id: "AI", type: "Tech", label: "人工智能"}, {id: "Cloud", type: "Tech", label: "云计算"},
+            {id: "BigData", type: "Tech", label: "大数据"}, {id: "Blockchain", type: "Tech", label: "区块链"},
+            {id: "5G", type: "Tech", label: "5G"}, {id: "IoT", type: "Tech", label: "物联网"},
+            {id: "Tsinghua", type: "University", label: "清华大学"}, {id: "PekingU", type: "University", label: "北京大学"},
+            {id: "Stanford", type: "University", label: "斯坦福"}, {id: "MIT", type: "University", label: "MIT"},
+            {id: "Oxford", type: "University", label: "牛津"}, {id: "Berkeley", type: "University", label: "伯克利"}
+        ];
+        
+        const links = [
+            {source: "China", target: "Beijing"}, {source: "China", target: "Shanghai"}, {source: "China", target: "Shenzhen"}, {source: "China", target: "Hangzhou"},
+            {source: "USA", target: "NewYork"}, {source: "USA", target: "SanFrancisco"}, {source: "USA", target: "Seattle"},
+            {source: "Japan", target: "Tokyo"}, {source: "UK", target: "London"}, {source: "France", target: "Paris"},
+            {source: "Alibaba", target: "Hangzhou"}, {source: "Tencent", target: "Shenzhen"}, {source: "Huawei", target: "Shenzhen"},
+            {source: "ByteDance", target: "Beijing"}, {source: "Baidu", target: "Beijing"},
+            {source: "China", target: "Alibaba"}, {source: "China", target: "Tencent"}, {source: "China", target: "Huawei"},
+            {source: "China", target: "ByteDance"}, {source: "China", target: "Baidu"},
+            {source: "USA", target: "Apple"}, {source: "USA", target: "Google"}, {source: "USA", target: "Microsoft"},
+            {source: "USA", target: "Amazon"}, {source: "USA", target: "Tesla"},
+            {source: "JackMa", target: "Alibaba"}, {source: "PonyMa", target: "Tencent"}, {source: "RenZhengfei", target: "Huawei"},
+            {source: "ZhangYiming", target: "ByteDance"}, {source: "RobinLi", target: "Baidu"},
+            {source: "TimCook", target: "Apple"}, {source: "SundarPichai", target: "Google"},
+            {source: "SatyaNadella", target: "Microsoft"}, {source: "ElonMusk", target: "Tesla"},
+            {source: "JeffBezos", target: "Amazon"},
+            {source: "Alibaba", target: "AI"}, {source: "Alibaba", target: "Cloud"},
+            {source: "Tencent", target: "AI"}, {source: "Tencent", target: "BigData"},
+            {source: "Huawei", target: "5G"}, {source: "Huawei", target: "AI"}, {source: "Huawei", target: "IoT"},
+            {source: "ByteDance", target: "AI"}, {source: "ByteDance", target: "BigData"},
+            {source: "Baidu", target: "AI"}, {source: "Google", target: "AI"},
+            {source: "Microsoft", target: "AI"}, {source: "Microsoft", target: "Cloud"},
+            {source: "Apple", target: "AI"}, {source: "Amazon", target: "Cloud"},
+            {source: "Tesla", target: "AI"}, {source: "Tesla", target: "BigData"},
+            {source: "AI", target: "BigData"}, {source: "AI", target: "Cloud"},
+            {source: "5G", target: "IoT"},
+            {source: "Tsinghua", target: "AI"}, {source: "Stanford", target: "AI"},
+            {source: "MIT", target: "AI"}, {source: "Berkeley", target: "AI"},
+            {source: "ElonMusk", target: "Stanford"}
+        ];
+
+        // 颜色配置
+        const colors = {Country: '#e74c3c', City: '#3498db', Company: '#2ecc71', Person: '#f39c12', Tech: '#9b59b6', University: '#1abc9c'};
+        
+        // 计算邻居
+        const neighbors = new Map();
+        nodes.forEach(n => neighbors.set(n.id, new Set()));
+        links.forEach(l => {
+            neighbors.get(l.source)?.add(l.target);
+            neighbors.get(l.target)?.add(l.source);
+        });
+
+        // 创建SVG
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const svg = d3.select("#graph").append("svg")
+            .attr("width", width)
+            .attr("height", height)
+            .style("position", "absolute")
+            .style("top", 0)
+            .style("left", 0);
+        
+        // 力模拟
+        const sim = d3.forceSimulation(nodes)
+            .force("link", d3.forceLink(links).id(d => d.id).distance(80))
+            .force("charge", d3.forceManyBody().strength(-300))
+            .force("center", d3.forceCenter(width/2, height/2))
+            .force("collision", d3.forceCollide(25));
+
+        // 绘制边
+        const link = svg.append("g").attr("class", "links")
+            .selectAll("line")
+            .data(links)
+            .join("line")
+            .attr("class", "link");
+
+        // 绘制节点组
+        const node = svg.append("g").attr("class", "nodes")
+            .selectAll("g")
+            .data(nodes)
+            .join("g")
+            .attr("class", "node")
+            .style("cursor", "pointer");
+
+        // 节点圆形
+        node.append("circle")
+            .attr("r", 15)
+            .attr("fill", d => colors[d.type]);
+        
+        // 节点标签
+        node.append("text")
+            .attr("dy", 30)
+            .attr("text-anchor", "middle")
+            .text(d => d.label);
+
+        // 拖拽
+        node.call(d3.drag()
+            .on("start", function(event, d) {
+                if (!event.active) sim.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            })
+            .on("drag", function(event, d) {
+                d.fx = event.x;
+                d.fy = event.y;
+            })
+            .on("end", function(event, d) {
+                if (!event.active) sim.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            }));
+
+        // 点击高亮
+        node.on("click", function(event, d) {
+            event.stopPropagation();
+            console.log("点击节点:", d.label);
+            selectNode(d);
+        });
+
+        // 更新位置
+        sim.on("tick", () => {
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+            node.attr("transform", d => `translate(${d.x},${d.y})`);
+        });
+
+        function selectNode(n) {
+            const nb = neighbors.get(n.id);
+            
+            // 高亮节点
+            d3.selectAll(".node").classed("highlighted", d => d.id === n.id)
+                .classed("dimmed", d => d.id !== n.id && !nb.has(d.id));
+            
+            // 高亮边
+            d3.selectAll(".link").classed("highlighted", d => d.source.id === n.id || d.target.id === n.id)
+                .classed("dimmed", d => d.source.id !== n.id && d.target.id !== n.id);
+            
+            // 显示信息
+            document.getElementById("info").style.display = "block";
+            document.getElementById("info-name").textContent = n.label;
+            document.getElementById("info-type").textContent = n.type;
+            document.getElementById("info-type").style.color = colors[n.type];
+            document.getElementById("info-neighbors").textContent = nb.size + " 个";
+        }
+
+        // 点击空白清除
+        svg.on("click", function() {
+            d3.selectAll(".node").classed("highlighted", false).classed("dimmed", false);
+            d3.selectAll(".link").classed("highlighted", false).classed("dimmed", false);
+            document.getElementById("info").style.display = "none";
+        });
+
+        // 图例
+        const legend = d3.select("#legend");
+        legend.html("");
+        Object.entries(colors).forEach(([k, v]) => {
+            legend.append("span")
+                .html(`<span style="display:inline-block;width:12px;height:12px;background:${v};border-radius:50%;margin-right:5px;"></span>${k} `);
+        });
+
+        console.log("图谱渲染完成!");
+        console.log("节点数:", nodes.length, "边数:", links.length);
+    </script>
+</body>
+</html>
