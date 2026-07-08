@@ -664,6 +664,36 @@ body.layout-resizing canvas {
 [data-theme="dark"] .bubble-agent:has(.md) {
   border-left-color: rgba(6,214,199,0.2);
 }
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.message-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text3);
+  font-family: var(--mono);
+  font-size: 0.63rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.message-action-btn:hover:not(:disabled),
+.message-action-btn.copied {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.message-action-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 
 /* ── Tool badges ── */
 .tools-section {
@@ -3195,7 +3225,7 @@ function renderChat(root, snapshot = null) {
         <div id="msg-area" class="msg-area">
           <div class="msg-inner">
             <div id="session-notice">${sessionNoticeHtml()}</div>
-            ${state.messages.length === 0 ? emptyHtml() : state.messages.map((m, i) => msgRowHtml(m, i === state.messages.length - 1)).join('')}
+            ${state.messages.length === 0 ? emptyHtml() : state.messages.map((m, i) => msgRowHtml(m, i, i === state.messages.length - 1)).join('')}
             <div id="scroll-anchor"></div>
           </div>
         </div>
@@ -3391,10 +3421,10 @@ function renderChat(root, snapshot = null) {
 }
 
 // ── Message row templates ──────────────────────────────────────────
-function msgRowHtml(m, isLast = false) {
+function msgRowHtml(m, index, isLast = false) {
   if (m.streaming) return streamingRowHtml();
   if (m.role === 'user') return userRowHtml(m.content);
-  return agentRowHtml(m.content, m.tools || [], m.progressItems || [], m.thinking || [], m.plan || null, m.solverSteps || [], m.feedbackRequests || m.feedbackRequest || null, m.graphs || [], isLast);
+  return agentRowHtml(m.content, m.tools || [], m.progressItems || [], m.thinking || [], m.plan || null, m.solverSteps || [], m.feedbackRequests || m.feedbackRequest || null, m.graphs || [], index, isLast);
 }
 
 function userRowHtml(content) {
@@ -3403,15 +3433,19 @@ function userRowHtml(content) {
   </div>`;
 }
 
-function agentRowHtml(content, tools, progressItems, thinking, plan, solverSteps, feedbackRequest, graphs, isLast = false) {
+function agentRowHtml(content, tools, progressItems, thinking, plan, solverSteps, feedbackRequest, graphs, messageIndex, isLast = false) {
   const feedbackList = normalizeFeedbackRequests(feedbackRequest);
   const activeFeedback = state.pendingFeedback && feedbackList.some(req => state.pendingFeedback.request_id === req.request_id);
   const isPendingFeedbackCard = feedbackList.some(req => String(req.status || 'pending') === 'pending');
-  const regenBtn = isLast && !state.loading && !state.pendingFeedback && !isPendingFeedbackCard
-    ? `<div style="display:flex;justify-content:flex-end;margin-top:8px">
-        <button onclick="regenerateLastMessage()" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--text3);font-family:var(--mono);font-size:0.63rem;cursor:pointer;transition:all 0.15s" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--text3)'">
+  const actionBtns = isLast && !state.loading && !state.pendingFeedback && !isPendingFeedbackCard
+    ? `<div class="message-actions">
+        <button class="message-action-btn" onclick="copyAssistantMessage(${Number(messageIndex)}, this)" title="复制原始 Markdown" aria-label="复制该回复的原始 Markdown">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>复制</span>
+        </button>
+        <button class="message-action-btn" onclick="regenerateLastMessage()" title="重新生成此回复" aria-label="重新生成此回复">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.35"/></svg>
-          重新生成
+          <span>重新生成</span>
         </button>
       </div>`
     : '';
@@ -3425,7 +3459,7 @@ function agentRowHtml(content, tools, progressItems, thinking, plan, solverSteps
       ${progressItemsHtml(progressItems || [])}
       ${(graphs && graphs.length) ? graphs.map(g => buildInlineGraphCardHtml(g)).join('') : ''}
       ${content ? `<div class="md">${md(content)}</div>` : ''}
-      ${regenBtn}
+      ${actionBtns}
     </div>
   </div>`;
 }
@@ -4944,6 +4978,53 @@ async function sendMessage() {
 function stopGeneration() {
   if (_streamAbortController) {
     _streamAbortController.abort('user_stop');
+  }
+}
+
+async function writeClipboardText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {}
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-9999px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    const ok = document.execCommand('copy');
+    if (!ok) throw new Error('copy command failed');
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
+function setCopyButtonState(button, copied) {
+  if (!button) return;
+  button.classList.toggle('copied', !!copied);
+  button.innerHTML = copied
+    ? `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg><span>已复制</span>`
+    : `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>复制</span>`;
+}
+
+async function copyAssistantMessage(messageIndex, button) {
+  const row = state.messages[Number(messageIndex)];
+  const text = row && row.role === 'assistant' ? String(row.content || '') : '';
+  if (!text) return;
+  try {
+    setCopyButtonState(button, true);
+    await writeClipboardText(text);
+    window.setTimeout(() => setCopyButtonState(button, false), 1400);
+  } catch (e) {
+    setCopyButtonState(button, false);
+    console.error('[copy assistant message failed]', e);
+    state.error = '复制失败，请手动选择内容复制';
+    render();
   }
 }
 
