@@ -31,6 +31,7 @@
   --text:     #1e293b;
   --text2:    #475569;
   --text3:    #94a3b8;
+  --graph-hover-bg: #ffffff;
   --mono:     'IBM Plex Mono', monospace;
   --body:     'Outfit', sans-serif;
   /* theme-specific */
@@ -77,6 +78,7 @@
   --text:     #e2eaf6;
   --text2:    #8fa8c8;
   --text3:    #4d6a8a;
+  --graph-hover-bg: #ffffff;
   /* theme-specific */
   --header-bg:          rgba(13,20,33,0.92);
   --header-shadow:      none;
@@ -1531,6 +1533,12 @@ body.layout-resizing canvas {
   flex: 1;
   overflow: hidden;
   position: relative;
+  transition: background-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.graph-viz-canvas.is-neighbor-hover,
+.inline-graph-body.is-neighbor-hover,
+#expand-canvas.is-neighbor-hover {
+  background-color: var(--graph-hover-bg) !important;
 }
 .graph-viz-canvas svg {
   width: 100%;
@@ -1546,11 +1554,34 @@ body.layout-resizing canvas {
 }
 
 /* D3 Graph Styles */
-.graph-node { cursor: pointer; }
+.graph-node {
+  cursor: pointer;
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 .graph-node:hover circle { stroke: #1e40af; stroke-width: 2px; }
 .graph-node.highlighted circle { stroke: #10b981; stroke-width: 3px; }
-.graph-node text { font-size: 11px; fill: #334155; pointer-events: none; }
-.graph-link { stroke: #cbd5e1; stroke-opacity: 0.6; }
+.graph-node circle {
+  transition:
+    fill 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke-width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.graph-node text {
+  font-size: 11px;
+  fill: #334155;
+  pointer-events: none;
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), fill 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.graph-link {
+  stroke: #cbd5e1;
+  stroke-opacity: 0.6;
+  transition:
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke-opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke-width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 .graph-link.highlighted { stroke: #10b981; stroke-opacity: 1; stroke-width: 2px; }
 /* Highlight type styles */
 /* Highlight type styles — fixed fallback colors */
@@ -1611,7 +1642,13 @@ body.layout-resizing canvas {
 }
 .ig-ctrl-btn:hover { background: #f1f5f9; }
 .ig-ctrl-btn.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
-.inline-graph-body { position: relative; height: 320px; overflow: hidden; background: var(--bg1); }
+.inline-graph-body {
+  position: relative;
+  height: 320px;
+  overflow: hidden;
+  background: var(--bg1);
+  transition: background-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 .inline-graph-body svg { width: 100%; height: 100%; }
 .inline-graph-footer {
   display: flex; align-items: center; gap: 4px; padding: 5px 10px;
@@ -6341,6 +6378,7 @@ function renderGraph() {
   const nodesCopy = sampled.nodes.map(n => ({...n}));
   const edgesCopy = sampled.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target, weight: e.weight}));
   _annotateGraphNodeDegrees(nodesCopy, edgesCopy);
+  const hoverIndex = _buildGraphHoverIndex(nodesCopy, edgesCopy);
   
   graphSimulation = d3.forceSimulation(nodesCopy)
     .force('link', d3.forceLink(edgesCopy).id(d => d.id).distance(80))
@@ -6395,7 +6433,17 @@ function renderGraph() {
     .attr('dy', d => _graphNodeLabelDy(d, 'main'))
     .attr('text-anchor', 'middle')
     .text(d => d.label || d.id);
+
+  _bindGraphHoverElements(hoverIndex, node, link);
   
+  node
+    .on('mouseenter', (event, d) => {
+      _applyNeighborHover(hoverIndex, d.id, container);
+    })
+    .on('mouseleave', () => {
+      _clearNeighborHover(hoverIndex, container);
+    });
+
   // Click handler for node info + node card
   node.on('click', (event, d) => {
     event.stopPropagation();
@@ -6417,14 +6465,6 @@ function renderGraph() {
       in_degree: d.in_degree || 0, out_degree: d.out_degree || 0,
       neighbors, attrs: d.attrs || null,
     }, event.clientX, event.clientY);
-    
-    // Highlight connected edges
-    link.attr('class', e => {
-      if (e.source.id === d.id || e.target.id === d.id) {
-        return 'graph-link highlighted';
-      }
-      return 'graph-link';
-    });
   });
   
   // Zoom behavior
@@ -6797,6 +6837,80 @@ function _graphNodeLabelDy(d, mode = 'inline') {
   return _graphNodeRadius(d, mode) + (mode === 'expanded' ? 12 : mode === 'main' ? 11 : 9);
 }
 
+function _setGraphHoverSurface(surfaceEl, active) {
+  if (surfaceEl && surfaceEl.classList) {
+    surfaceEl.classList.toggle('is-neighbor-hover', !!active);
+  }
+}
+
+function _buildGraphHoverIndex(nodes, edges) {
+  const index = {
+    adjacency: new Map(),
+    nodeEls: new Map(),
+    linkEls: new Map(),
+    activeNodeEls: [],
+    activeLinkEls: [],
+  };
+  const ensure = id => {
+    if (!index.adjacency.has(id)) {
+      index.adjacency.set(id, { nodeIds: new Set([id]), edgeIds: new Set() });
+    }
+    return index.adjacency.get(id);
+  };
+  nodes.forEach(node => ensure(_graphEndpointId(node?.id ?? node?.label)));
+  edges.forEach((edge, i) => {
+    const source = _graphEndpointId(edge?.source ?? edge?.src);
+    const target = _graphEndpointId(edge?.target ?? edge?.dst);
+    const edgeId = `${source}->${target}#${i}`;
+    edge._hoverEdgeId = edgeId;
+    if (source) {
+      const sourceInfo = ensure(source);
+      sourceInfo.nodeIds.add(target);
+      sourceInfo.edgeIds.add(edgeId);
+    }
+    if (target) {
+      const targetInfo = ensure(target);
+      targetInfo.nodeIds.add(source);
+      targetInfo.edgeIds.add(edgeId);
+    }
+  });
+  return index;
+}
+
+function _bindGraphHoverElements(index, nodeSel, linkSel) {
+  nodeSel.each(function(d) {
+    index.nodeEls.set(_graphEndpointId(d?.id ?? d?.label), this);
+  });
+  linkSel.each(function(d) {
+    if (d?._hoverEdgeId) index.linkEls.set(d._hoverEdgeId, this);
+  });
+}
+
+function _setElementClass(elements, cls, active) {
+  elements.forEach(el => {
+    if (el && el.classList) el.classList.toggle(cls, !!active);
+  });
+}
+
+function _applyNeighborHover(index, focusId, surfaceEl = null) {
+  _clearNeighborHover(index, null);
+  const info = index.adjacency.get(_graphEndpointId(focusId));
+  if (!info) return;
+  _setGraphHoverSurface(surfaceEl, true);
+  index.activeNodeEls = [...info.nodeIds].map(id => index.nodeEls.get(id)).filter(Boolean);
+  index.activeLinkEls = [...info.edgeIds].map(id => index.linkEls.get(id)).filter(Boolean);
+  _setElementClass(index.activeNodeEls, 'highlighted', true);
+  _setElementClass(index.activeLinkEls, 'highlighted', true);
+}
+
+function _clearNeighborHover(index, surfaceEl = null) {
+  _setGraphHoverSurface(surfaceEl, false);
+  _setElementClass(index.activeNodeEls || [], 'highlighted', false);
+  _setElementClass(index.activeLinkEls || [], 'highlighted', false);
+  index.activeNodeEls = [];
+  index.activeLinkEls = [];
+}
+
 function buildInlineGraphCardHtml(graphInfo) {
   if (!graphInfo || !graphInfo.nodes || !graphInfo.edges) return '';
   const gid = graphInfo.id;
@@ -6894,6 +7008,7 @@ function renderInlineGraph(graphInfo) {
   const nodesCopy = sampled.nodes.map(n => ({...n}));
   const edgesCopy = sampled.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target, weight: e.weight}));
   _annotateGraphNodeDegrees(nodesCopy, edgesCopy);
+  const hoverIndex = _buildGraphHoverIndex(nodesCopy, edgesCopy);
 
   const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
   const layout = graphInfo._layout || 'force';
@@ -6921,6 +7036,16 @@ function renderInlineGraph(graphInfo) {
 
   node.append('text').attr('dy',d=>_graphNodeLabelDy(d,'inline')).attr('text-anchor','middle').attr('font-size','10px').attr('fill','var(--text2)').text(d=>d.label||d.id);
 
+  _bindGraphHoverElements(hoverIndex, node, link);
+
+  node
+    .on('mouseenter',(ev,d)=>{
+      _applyNeighborHover(hoverIndex, d.id, container);
+    })
+    .on('mouseleave',()=>{
+      _clearNeighborHover(hoverIndex, container);
+    });
+
   node.on('click',(ev,d)=>{
     ev.stopPropagation();
     const nb=edgesCopy.filter(e=>e.source.id===d.id||e.target.id===d.id).map(e=>e.source.id===d.id?e.target.id:e.source.id);
@@ -6935,17 +7060,11 @@ function renderInlineGraph(graphInfo) {
       in_degree: d.in_degree || 0, out_degree: d.out_degree || 0,
       neighbors: nb, attrs: d.attrs || null, nbEdges,
     }, ev.clientX, ev.clientY);
-    // 高亮邻居节点，降低其他节点透明度
-    node.classed('highlighted',n=>n.id===d.id||nb.includes(n.id))
-      .style('opacity',n=>n.id===d.id||nb.includes(n.id)?1:0.2);
-    link.classed('highlighted',e=>e.source.id===d.id||e.target.id===d.id)
-      .style('opacity',e=>e.source.id===d.id||e.target.id===d.id?1:0.15);
   });
   
-  // 点击空白处取消高亮
+  // 点击空白处重置信息区
   svg.on('click',()=>{
-    node.classed('highlighted',false).style('opacity',1);
-    link.classed('highlighted',false).style('opacity',1);
+    _clearNeighborHover(hoverIndex, container);
     const info=document.getElementById(`ig-info-${gid}`);
     if(info)info.innerHTML='点击节点查看详情';
   });
@@ -7174,6 +7293,7 @@ function expandInlineGraph(gid) {
     const nodesCopy = sampledEx.nodes.map(n => ({...n}));
     const edgesCopy = sampledEx.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target}));
     _annotateGraphNodeDegrees(nodesCopy, edgesCopy);
+    const hoverIndex = _buildGraphHoverIndex(nodesCopy, edgesCopy);
     const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
     
     const g = svg.append('g');
@@ -7185,7 +7305,17 @@ function expandInlineGraph(gid) {
       return 'var(--accent)';
     }).attr('stroke','var(--bg1)').attr('stroke-width',2);
     node.append('text').attr('dy',d=>_graphNodeLabelDy(d,'expanded')).attr('text-anchor','middle').attr('font-size','12px').attr('fill','var(--text)').text(d=>d.label||d.id);
+
+    _bindGraphHoverElements(hoverIndex, node, link);
     
+    node
+      .on('mouseenter',(ev,d)=>{
+        _applyNeighborHover(hoverIndex, d.id, canvas);
+      })
+      .on('mouseleave',()=>{
+        _clearNeighborHover(hoverIndex, canvas);
+      });
+
     node.on('click',(ev,d)=>{
       ev.stopPropagation();
       const nb=edgesCopy.filter(e=>e.source.id===d.id||e.target.id===d.id).map(e=>e.source.id===d.id?e.target.id:e.source.id);
@@ -7197,17 +7327,11 @@ function expandInlineGraph(gid) {
         in_degree: d.in_degree || 0, out_degree: d.out_degree || 0,
         neighbors: nb, attrs: d.attrs || null,
       }, ev.clientX, ev.clientY);
-      // 高亮邻居节点和边，降低其他元素透明度
-      node.classed('highlighted',n=>n.id===d.id||nb.includes(n.id))
-        .style('opacity',n=>n.id===d.id||nb.includes(n.id)?1:0.2);
-      link.classed('highlighted',e=>e.source.id===d.id||e.target.id===d.id)
-        .style('opacity',e=>e.source.id===d.id||e.target.id===d.id?1:0.15);
     });
     
-    // 点击空白处取消高亮
+    // 点击空白处重置标题栏
     svg.on('click',()=>{
-      node.classed('highlighted',false).style('opacity',1);
-      link.classed('highlighted',false).style('opacity',1);
+      _clearNeighborHover(hoverIndex, canvas);
       header.innerHTML = `<span style="font-weight:600;color:var(--text)">📊 全图 · ${graphInfo.num_nodes || graphInfo.nodes.length} 节点 · ${graphInfo.num_edges || graphInfo.edges.length} 边${graphInfo.directed ? ' · 有向' : ''}</span><button id="expand-close" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px">×</button>`;
       document.getElementById('expand-close').onclick = closeExpandModal;
     });
