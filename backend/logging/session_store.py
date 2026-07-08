@@ -494,6 +494,9 @@ class SessionStore:
                 progress_items = rec.get("progress_items")
                 if isinstance(progress_items, list) and progress_items:
                     row["progress_items"] = progress_items
+                graphs = rec.get("graphs")
+                if isinstance(graphs, list) and graphs:
+                    row["graphs"] = graphs
             rows.append(row)
         return self._merge_assistant_continuations(rows)
 
@@ -529,6 +532,9 @@ class SessionStore:
                     prev["plan"] = row["plan"]
                 if isinstance(row.get("progress_items"), list) and row.get("progress_items"):
                     prev["progress_items"] = row["progress_items"]
+                if isinstance(row.get("graphs"), list) and row.get("graphs"):
+                    prev_graphs = prev.get("graphs") if isinstance(prev.get("graphs"), list) else []
+                    prev["graphs"] = [*prev_graphs, *row["graphs"]]
                 feedback_request = row.get("feedback_request")
                 if isinstance(feedback_request, dict) and feedback_request:
                     attached = SessionStore._attach_feedback_to_solver_step(

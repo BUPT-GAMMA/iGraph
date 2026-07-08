@@ -229,6 +229,7 @@ class IGraph:
             set_paused_plan_state=self._set_paused_plan_state,
             register_tools=self._register_skill_tools,
             should_run_batch_serially=self._should_run_batch_serially,
+            prepare_tool_result=self._prepare_tool_result_for_observation,
             run_tool_calls_parallel=lambda tcs, step_id: self._run_tool_calls_parallel(
                 tcs, step_id=step_id
             ),
@@ -258,6 +259,7 @@ class IGraph:
         self._tool_map: Dict[str, dict] = {}
         self._tool_selector: Optional[LLMToolSelector] = None
         self._expanded_tool_names: set[str] = set()
+        self._visible_graphs_for_turn: List[dict] = []
         self._turn_selected_tool_names: set[str] = set()
         self._skill_registry = self._build_skill_registry()
         self._query_analyzer = QueryAnalyzer(provider_gateway=self._provider_gateway)
@@ -1158,12 +1160,19 @@ class IGraph:
                     )
                 elif kind == "result":
                     self.logger.log_tool_result(tc["name"], payload)
+                    extra_events, context_result = self._prepare_tool_result_for_observation(
+                        tc["name"],
+                        payload,
+                        str(call_id or ""),
+                    )
+                    for extra_event in extra_events:
+                        yield extra_event
                     results_by_call_id[str(call_id or "")] = {
                         "call_id": call_id,
                         "server": tc.get("server", "graph"),
                         "name": tc["name"],
                         "arguments": tc.get("arguments", {}),
-                        "result": payload,
+                        "result": context_result,
                     }
                     yield {"type": "tool_result", "tool": tc["name"], "call_id": call_id}
                 elif kind is DONE:
@@ -1652,7 +1661,7 @@ class IGraph:
             viz_data["communities"] = payload["community"]
         if "communities" in payload:
             viz_data["communities"] = payload["communities"]
-        for key in ("directed", "num_nodes", "num_edges"):
+        for key in ("directed", "num_nodes", "num_edges", "truncated", "total_nodes", "truncated_to"):
             if key in payload:
                 viz_data[key] = payload[key]
 
@@ -1701,6 +1710,94 @@ class IGraph:
                 viz_data["highlights"] = flat
 
         return {"type": "graph_visualize", "data": viz_data}
+
+    @staticmethod
+    def _safe_graph_id(call_id: str = "") -> str:
+        raw = str(call_id or "").strip()
+        safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in raw)
+        return f"ig-{safe}" if safe else f"ig-{uuid.uuid4().hex[:10]}"
+
+    @classmethod
+    def _visible_graph_payload_from_event(
+        cls,
+        viz_event: Optional[dict],
+        *,
+        call_id: str = "",
+    ) -> Optional[dict]:
+        if not isinstance(viz_event, dict) or viz_event.get("type") != "graph_visualize":
+            return None
+        data = viz_event.get("data")
+        if not isinstance(data, dict):
+            return None
+        nodes = data.get("nodes")
+        links = data.get("links", data.get("edges"))
+        if not isinstance(nodes, list) or not isinstance(links, list):
+            return None
+
+        edges: List[dict] = []
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            src = link.get("source", link.get("src"))
+            dst = link.get("target", link.get("dst"))
+            if src is None or dst is None:
+                continue
+            edge = {"src": src, "dst": dst, "source": src, "target": dst}
+            if "weight" in link:
+                edge["weight"] = link.get("weight")
+            edges.append(edge)
+
+        graph: dict[str, Any] = {
+            "id": cls._safe_graph_id(call_id),
+            "nodes": cls._clone_data(nodes),
+            "edges": edges,
+            "directed": bool(data.get("directed", True)),
+            "num_nodes": int(data.get("num_nodes", len(nodes)) or 0),
+            "num_edges": int(data.get("num_edges", len(edges)) or 0),
+            "activeHighlights": {},
+        }
+        if isinstance(data.get("highlights"), list):
+            graph["highlights"] = cls._clone_data(data["highlights"])
+        communities = data.get("communities")
+        if communities is not None:
+            graph["communities"] = cls._clone_data(communities)
+        for key in ("truncated", "total_nodes", "truncated_to"):
+            if key in data:
+                graph[key] = cls._clone_data(data[key])
+        return graph
+
+    def _remember_visible_graph(self, graph: Optional[dict]) -> None:
+        if not isinstance(graph, dict):
+            return
+        if not isinstance(self._visible_graphs_for_turn, list):
+            self._visible_graphs_for_turn = []
+        graph_id = str(graph.get("id") or "")
+        if graph_id and any(str(g.get("id") or "") == graph_id for g in self._visible_graphs_for_turn):
+            return
+        self._visible_graphs_for_turn.append(self._clone_data(graph))
+
+    def _prepare_tool_result_for_observation(
+        self,
+        tool_name: str,
+        result_str: str,
+        call_id: str = "",
+    ) -> tuple[List[dict], str]:
+        if tool_name != "visualize_subgraph":
+            return [], result_str
+
+        events: List[dict] = []
+        try:
+            viz_event = self._build_visualize_event(result_str)
+            if viz_event is not None:
+                graph_payload = self._visible_graph_payload_from_event(
+                    viz_event,
+                    call_id=call_id,
+                )
+                self._remember_visible_graph(graph_payload)
+                events.append(viz_event)
+        except Exception:
+            events = []
+        return events, self._summarize_visualize_result(result_str)
 
     @staticmethod
     def _summarize_visualize_result(result_str: str) -> str:
@@ -2237,14 +2334,13 @@ class IGraph:
                         )
                         return
                     self.logger.log_tool_result(tc["name"], result_str)
-                    # 可视化工具：先推 SSE 事件，再用摘要写入上下文，避免大图撑爆 token
-                    if tc["name"] == "visualize_subgraph":
-                        viz_event = self._build_visualize_event(result_str)
-                        if viz_event is not None:
-                            yield viz_event
-                        context_result = self._summarize_visualize_result(result_str)
-                    else:
-                        context_result = result_str
+                    extra_events, context_result = self._prepare_tool_result_for_observation(
+                        tc["name"],
+                        result_str,
+                        str(call_id or ""),
+                    )
+                    for extra_event in extra_events:
+                        yield extra_event
                     batch_observations.append(
                         {
                             "call_id": call_id,
@@ -2467,14 +2563,13 @@ class IGraph:
                             }
                             return
                         self.logger.log_tool_result(tc["name"], result_str)
-                        # 可视化工具：先推 SSE 事件，再用摘要写入上下文，避免大图撑爆 token
-                        if tc["name"] == "visualize_subgraph":
-                            viz_event = self._build_visualize_event(result_str)
-                            if viz_event is not None:
-                                yield viz_event
-                            context_result = self._summarize_visualize_result(result_str)
-                        else:
-                            context_result = result_str
+                        extra_events, context_result = self._prepare_tool_result_for_observation(
+                            tc["name"],
+                            result_str,
+                            str(call_id or ""),
+                        )
+                        for extra_event in extra_events:
+                            yield extra_event
                         batch_obs.append({
                             "call_id": call_id,
                             "server": tc.get("server", "graph"),
@@ -2654,6 +2749,7 @@ class IGraph:
         comment: str = "",
     ):
         await self._ensure_connected()
+        self._visible_graphs_for_turn = []
 
         request = self._pending_feedback
         if request is None:
@@ -2811,6 +2907,13 @@ class IGraph:
                     return
 
                 self.logger.log_tool_result(tool_name, result_str)
+                extra_events, context_result = self._prepare_tool_result_for_observation(
+                    tool_name,
+                    result_str,
+                    call_id,
+                )
+                for extra_event in extra_events:
+                    yield extra_event
                 yield {
                     "type": "solve_tool_result",
                     "step_id": plan_step.step_id,
@@ -2822,7 +2925,7 @@ class IGraph:
                     "server": pending_tool_call.get("server", "graph"),
                     "name": tool_name,
                     "arguments": resumed_args,
-                    "result": result_str,
+                    "result": context_result,
                 }
                 for obs_msg in self.context_manager.build_tool_observation([obs]):
                     step_messages.append(obs_msg)
@@ -2879,13 +2982,20 @@ class IGraph:
                     yield {"type": "error", "error": str(e)}
                     return
                 self.logger.log_tool_result(tool_name, result_str)
+                extra_events, context_result = self._prepare_tool_result_for_observation(
+                    tool_name,
+                    result_str,
+                    call_id,
+                )
+                for extra_event in extra_events:
+                    yield extra_event
                 yield {"type": "tool_result", "tool": tool_name, "call_id": call_id}
                 obs = {
                     "call_id": call_id,
                     "server": "graph",
                     "name": tool_name,
                     "arguments": resumed_args,
-                    "result": result_str,
+                    "result": context_result,
                 }
                 for obs_msg in self.context_manager.build_tool_observation([obs]):
                     self.context_manager.messages.append(obs_msg)
@@ -2912,6 +3022,7 @@ class IGraph:
             solver_steps=self._build_visible_solver_steps(completed_plan),
             progress_items=list(run_state.get("progress_items", [])),
             feedback_request=resolved_feedback_request if isinstance(resolved_feedback_request, dict) else None,
+            graphs=list(self._visible_graphs_for_turn),
         )
         self.context_manager.update_messages(self.context_manager.messages)
         yield {
@@ -2946,6 +3057,7 @@ class IGraph:
     async def _chat_stream_impl(self, user_input: str):
         """实际执行聊天循环。"""
         await self._ensure_connected()
+        self._visible_graphs_for_turn = []
 
         # Mark new user turn so selected tools and selector cache reset together.
         self._turn_selected_tool_names.clear()
@@ -3091,6 +3203,7 @@ class IGraph:
                 solver_steps=self._build_visible_solver_steps(completed_plan),
                 feedback_request=self.pending_feedback(),
                 progress_items=list(run_state.get("progress_items", [])),
+                graphs=list(self._visible_graphs_for_turn),
             )
 
             turn_messages_for_memory = [
