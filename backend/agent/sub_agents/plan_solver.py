@@ -49,6 +49,9 @@ class PlanSolver:
         set_paused_plan_state: Callable[[dict[str, Any]], None],
         register_tools: Optional[Callable[[List[str]], List[str]]] = None,
         should_run_batch_serially: Optional[Callable[[List[dict]], bool]] = None,
+        prepare_tool_result: Optional[
+            Callable[[str, str, str], tuple[List[dict], str]]
+        ] = None,
         run_tool_calls_parallel: Optional[
             Callable[[List[dict], Optional[int]], AsyncIterator[dict]]
         ] = None,
@@ -67,6 +70,7 @@ class PlanSolver:
         self._set_paused_plan_state = set_paused_plan_state
         self._register_tools = register_tools
         self._should_run_batch_serially = should_run_batch_serially
+        self._prepare_tool_result = prepare_tool_result
         self._run_tool_calls_parallel = run_tool_calls_parallel
 
     def plan_overview_text(self, plan: AnalysisPlan) -> str:
@@ -390,6 +394,8 @@ class PlanSolver:
                                     "call_id": batch_event.get("call_id"),
                                     "progress": batch_event.get("progress") or {},
                                 }
+                            elif etype == "graph_visualize":
+                                yield batch_event
                             elif etype == "tool_result":
                                 tool_name = str(batch_event.get("tool") or "")
                                 call_id_str = str(batch_event.get("call_id") or "")
@@ -502,8 +508,18 @@ class PlanSolver:
                                     and str(item.get("call_id") or "") == str(call_id or "")
                                 ):
                                     item["done"] = True
+                        extra_events: List[dict] = []
+                        context_result = result_str
+                        if self._prepare_tool_result is not None:
+                            extra_events, context_result = self._prepare_tool_result(
+                                tc["name"],
+                                result_str,
+                                str(call_id or ""),
+                            )
+                        for extra_event in extra_events:
+                            yield extra_event
                         step_tool_calls += 1
-                        if _is_tool_error(result_str):
+                        if _is_tool_error(context_result):
                             step_tool_errors += 1
                         batch_obs.append(
                             {
@@ -511,7 +527,7 @@ class PlanSolver:
                                 "server": tc.get("server", "graph"),
                                 "name": tc["name"],
                                 "arguments": args,
-                                "result": result_str,
+                                "result": context_result,
                             }
                         )
                         yield {

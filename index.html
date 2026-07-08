@@ -3437,18 +3437,21 @@ function agentRowHtml(content, tools, progressItems, thinking, plan, solverSteps
   const feedbackList = normalizeFeedbackRequests(feedbackRequest);
   const activeFeedback = state.pendingFeedback && feedbackList.some(req => state.pendingFeedback.request_id === req.request_id);
   const isPendingFeedbackCard = feedbackList.some(req => String(req.status || 'pending') === 'pending');
-  const actionBtns = isLast && !state.loading && !state.pendingFeedback && !isPendingFeedbackCard
-    ? `<div class="message-actions">
-        <button class="message-action-btn" onclick="copyAssistantMessage(${Number(messageIndex)}, this)" title="复制原始 Markdown" aria-label="复制该回复的原始 Markdown">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          <span>复制</span>
-        </button>
-        <button class="message-action-btn" onclick="regenerateLastMessage()" title="重新生成此回复" aria-label="重新生成此回复">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.35"/></svg>
-          <span>重新生成</span>
-        </button>
-      </div>`
+  const canCopy = String(content || '').trim().length > 0;
+  const canRegenerate = isLast && !state.loading && !state.pendingFeedback && !isPendingFeedbackCard;
+  const copyBtn = canCopy
+    ? `<button class="message-action-btn" onclick="copyAssistantMessage(${Number(messageIndex)}, this)" title="复制原始 Markdown" aria-label="复制该回复的原始 Markdown">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <span>复制</span>
+      </button>`
     : '';
+  const regenerateBtn = canRegenerate
+    ? `<button class="message-action-btn" onclick="regenerateLastMessage()" title="重新生成此回复" aria-label="重新生成此回复">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.35"/></svg>
+        <span>重新生成</span>
+      </button>`
+    : '';
+  const actionBtns = (copyBtn || regenerateBtn) ? `<div class="message-actions">${copyBtn}${regenerateBtn}</div>` : '';
   return `<div class="msg-row agent fade-in">
     <div class="bubble bubble-agent">
       ${planPanelHtml(plan || null, { analyzing: false })}
@@ -4293,9 +4296,54 @@ async function doFeedbackResume(payload) {
 }
 
 // ── API calls ──────────────────────────────────────────────────────
+function normalizeGraphInfo(value, fallbackId = '0') {
+  if (!value || typeof value !== 'object') return null;
+  const nodes = Array.isArray(value.nodes) ? value.nodes : [];
+  const rawEdges = Array.isArray(value.edges)
+    ? value.edges
+    : (Array.isArray(value.links) ? value.links : []);
+  if (!nodes.length || !Array.isArray(rawEdges)) return null;
+  const edges = rawEdges
+    .filter(e => e && typeof e === 'object')
+    .map(e => {
+      const src = e.src ?? e.source;
+      const dst = e.dst ?? e.target;
+      if (src === undefined || src === null || dst === undefined || dst === null) return null;
+      return {
+        src, dst,
+        source: src,
+        target: dst,
+        weight: e.weight,
+      };
+    })
+    .filter(Boolean);
+  const nodeCount = Number(value.num_nodes ?? value.numNodes);
+  const edgeCount = Number(value.num_edges ?? value.numEdges);
+  const graph = {
+    id: String(value.id || `ig-restored-${fallbackId}`),
+    nodes: nodes.map(n => (n && typeof n === 'object') ? { ...n } : { id: String(n), label: String(n) }),
+    edges,
+    directed: value.directed !== false,
+    num_nodes: Number.isFinite(nodeCount) ? nodeCount : nodes.length,
+    num_edges: Number.isFinite(edgeCount) ? edgeCount : edges.length,
+    activeHighlights: (value.activeHighlights && typeof value.activeHighlights === 'object') ? { ...value.activeHighlights } : {},
+  };
+  if (Array.isArray(value.highlights)) {
+    graph.highlights = value.highlights
+      .filter(h => h && typeof h === 'object')
+      .map(h => ({ ...h }));
+  }
+  const communities = value.communities || value.community;
+  if (communities && typeof communities === 'object') graph.communities = { ...communities };
+  for (const key of ['truncated', 'total_nodes', 'truncated_to']) {
+    if (key in value) graph[key] = value[key];
+  }
+  return graph;
+}
+
 function normalizeChatMessages(rows) {
   if (!Array.isArray(rows)) return [];
-  const normalized = rows.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map(m => {
+  const normalized = rows.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map((m, rowIndex) => {
     const row = { role: m.role, content: String(m.content || '') };
     if (m.role === 'assistant') {
       if (Array.isArray(m.tools)) row.tools = m.tools.map(normalizeToolItem).filter(Boolean);
@@ -4320,6 +4368,11 @@ function normalizeChatMessages(rows) {
         m.feedbackRequests || m.feedback_requests,
         m.feedbackRequest || m.feedback_request,
       );
+      if (Array.isArray(m.graphs)) {
+        row.graphs = m.graphs
+          .map((g, graphIndex) => normalizeGraphInfo(g, `${rowIndex}-${graphIndex}`))
+          .filter(Boolean);
+      }
       if (row.feedbackRequests.length && Array.isArray(row.solverSteps)) {
         const topLevel = [];
         for (const req of row.feedbackRequests) {
@@ -4364,6 +4417,7 @@ function mergeAssistantContinuations(rows) {
       if (Array.isArray(row.thinking) && row.thinking.length) prev.thinking = row.thinking;
       if (row.plan) prev.plan = row.plan;
       if (Array.isArray(row.solverSteps) && row.solverSteps.length) prev.solverSteps = mergeSolverSteps(prev.solverSteps || [], row.solverSteps);
+      if (Array.isArray(row.graphs) && row.graphs.length) prev.graphs = [...(prev.graphs || []), ...row.graphs];
       const rowFeedback = normalizeFeedbackRequests(row.feedbackRequests || row.feedbackRequest);
       const topLevel = [];
       for (const req of rowFeedback) {

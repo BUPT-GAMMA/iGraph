@@ -246,6 +246,85 @@ class ContextManagerTests(unittest.TestCase):
             self.assertEqual(chat[1]["tools"][0]["args"], {"source": "A", "target": "B"})
             self.assertEqual(chat[1]["tools"][0]["call_id"], "call-1")
 
+    def test_load_chat_messages_restores_visible_graphs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(tmp)
+            sid = "s1"
+            graph = {
+                "id": "ig-call-1",
+                "nodes": [{"id": "A", "label": "A"}, {"id": "B", "label": "B"}],
+                "edges": [{"src": "A", "dst": "B", "source": "A", "target": "B", "weight": 1.0}],
+                "directed": True,
+                "num_nodes": 2,
+                "num_edges": 1,
+                "activeHighlights": {},
+            }
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "user", "content": "可视化图"},
+                    "visible": True,
+                    "display_content": "可视化图",
+                    "include_in_context": True,
+                },
+            )
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "assistant", "content": "已生成图"},
+                    "visible": True,
+                    "display_content": "已生成图",
+                    "include_in_context": False,
+                    "graphs": [graph],
+                },
+            )
+
+            chat = store.load_chat_messages(sid)
+
+            self.assertEqual(chat[1]["graphs"], [graph])
+
+    def test_load_chat_messages_merges_visible_graphs_on_assistant_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(tmp)
+            sid = "s1"
+            graph_a = {"id": "ig-a", "nodes": [{"id": "A"}], "edges": [], "directed": True}
+            graph_b = {"id": "ig-b", "nodes": [{"id": "B"}], "edges": [], "directed": True}
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "user", "content": "可视化两张图"},
+                    "visible": True,
+                    "display_content": "可视化两张图",
+                    "include_in_context": True,
+                },
+            )
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "assistant", "content": "第一张"},
+                    "visible": True,
+                    "display_content": "第一张",
+                    "include_in_context": False,
+                    "graphs": [graph_a],
+                },
+            )
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "assistant", "content": "第二张"},
+                    "visible": True,
+                    "display_content": "第二张",
+                    "include_in_context": False,
+                    "graphs": [graph_b],
+                },
+            )
+
+            chat = store.load_chat_messages(sid)
+
+            self.assertEqual(len(chat), 2)
+            self.assertEqual(chat[1]["content"], "第一张\n\n第二张")
+            self.assertEqual(chat[1]["graphs"], [graph_a, graph_b])
+
     def test_skill_prompt_loads_matching_skill_files(self) -> None:
         prompt = build_skills_system_prompt(
             [
