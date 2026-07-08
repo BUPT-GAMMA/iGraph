@@ -1585,6 +1585,18 @@ body.layout-resizing canvas {
   overflow: hidden;
   background: var(--bg2);
 }
+.bubble-agent > .inline-graph-card {
+  width: 700px;
+  height: 600px;
+  margin: 10px auto 6px;
+  display: flex;
+  flex-direction: column;
+}
+.bubble-agent > .inline-graph-card .inline-graph-body {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
 .inline-graph-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 6px 10px; border-bottom: 1px solid var(--border);
@@ -6328,12 +6340,13 @@ function renderGraph() {
   // Create simulation
   const nodesCopy = sampled.nodes.map(n => ({...n}));
   const edgesCopy = sampled.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target, weight: e.weight}));
+  _annotateGraphNodeDegrees(nodesCopy, edgesCopy);
   
   graphSimulation = d3.forceSimulation(nodesCopy)
     .force('link', d3.forceLink(edgesCopy).id(d => d.id).distance(80))
     .force('charge', d3.forceManyBody().strength(-200))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(25));
+    .force('collision', d3.forceCollide().radius(d => _graphNodeRadius(d, 'main') + 12));
   
   // Apply layout positions
   if (currentLayout === 'circle') {
@@ -6367,7 +6380,7 @@ function renderGraph() {
       .on('end', dragended));
   
   node.append('circle')
-    .attr('r', d => Math.sqrt((d.total_degree || 0) + 1) * 4 + 6)
+    .attr('r', d => _graphNodeRadius(d, 'main'))
     .attr('fill', d => {
       if (showCommunity && graphData.community?.node_community) {
         const cid = graphData.community.node_community[d.id] || 0;
@@ -6379,7 +6392,7 @@ function renderGraph() {
     .attr('stroke-width', 2);
   
   node.append('text')
-    .attr('dy', d => Math.sqrt((d.total_degree || 0) + 1) * 4 + 14)
+    .attr('dy', d => _graphNodeLabelDy(d, 'main'))
     .attr('text-anchor', 'middle')
     .text(d => d.label || d.id);
   
@@ -6394,7 +6407,7 @@ function renderGraph() {
       <strong>节点:</strong> ${d.label || d.id} &nbsp;|&nbsp;
       <strong>入度:</strong> ${d.in_degree || 0} &nbsp;|&nbsp;
       <strong>出度:</strong> ${d.out_degree || 0} &nbsp;|&nbsp;
-      <strong>总度:</strong> ${d.total_degree || 0} &nbsp;|&nbsp;
+      <strong>总度:</strong> ${d._visualDegree || d.total_degree || 0} &nbsp;|&nbsp;
       <strong>邻居:</strong> [${neighbors.slice(0, 10).join(', ')}${neighbors.length > 10 ? '...' : ''}]
     `;
 
@@ -6710,11 +6723,24 @@ function _sampleGraphForRender(allNodes, allEdges, limit) {
   }
   // Build degree map from edges
   const degree = {};
-  allNodes.forEach(n => { degree[n.id || n.label] = (n.total_degree || n.in_degree || 0) + (n.out_degree || 0); });
+  const visibleDegree = {};
+  allNodes.forEach(n => {
+    const id = n.id || n.label;
+    const total = Number(n.total_degree);
+    const inDegree = Number(n.in_degree);
+    const outDegree = Number(n.out_degree);
+    visibleDegree[id] = 0;
+    degree[id] = Number.isFinite(total)
+      ? total
+      : (Number.isFinite(inDegree) ? inDegree : 0) + (Number.isFinite(outDegree) ? outDegree : 0);
+  });
   allEdges.forEach(e => {
     const s = e.src || e.source, t = e.dst || e.target;
-    degree[s] = (degree[s] || 0) + 1;
-    degree[t] = (degree[t] || 0) + 1;
+    visibleDegree[s] = (visibleDegree[s] || 0) + 1;
+    visibleDegree[t] = (visibleDegree[t] || 0) + 1;
+  });
+  Object.keys(visibleDegree).forEach(id => {
+    degree[id] = Math.max(degree[id] || 0, visibleDegree[id] || 0);
   });
   // Sort descending by degree, keep top-limit
   const sorted = [...allNodes].sort((a, b) => {
@@ -6728,6 +6754,47 @@ function _sampleGraphForRender(allNodes, allEdges, limit) {
     return keptSet.has(s) && keptSet.has(t);
   });
   return { nodes: kept, edges: keptEdges, truncated: true, renderedCount: kept.length };
+}
+
+function _graphEndpointId(endpoint) {
+  if (endpoint == null) return '';
+  if (typeof endpoint === 'object') return String(endpoint.id || endpoint.label || endpoint.name || '');
+  return String(endpoint);
+}
+
+function _annotateGraphNodeDegrees(nodes, edges) {
+  const visibleDegree = {};
+  nodes.forEach(n => {
+    visibleDegree[_graphEndpointId(n.id || n.label)] = 0;
+  });
+  edges.forEach(e => {
+    const s = _graphEndpointId(e.src || e.source);
+    const t = _graphEndpointId(e.dst || e.target);
+    if (s) visibleDegree[s] = (visibleDegree[s] || 0) + 1;
+    if (t) visibleDegree[t] = (visibleDegree[t] || 0) + 1;
+  });
+  nodes.forEach(n => {
+    const id = _graphEndpointId(n.id || n.label);
+    const total = Number(n.total_degree);
+    const inDegree = Number(n.in_degree);
+    const outDegree = Number(n.out_degree);
+    const explicitDegree = Number.isFinite(total) ? total : 0;
+    const directedDegree = (Number.isFinite(inDegree) ? inDegree : 0) + (Number.isFinite(outDegree) ? outDegree : 0);
+    n._visibleDegree = visibleDegree[id] || 0;
+    n._visualDegree = Math.max(explicitDegree, directedDegree, n._visibleDegree);
+  });
+}
+
+function _graphNodeRadius(d, mode = 'inline') {
+  const degree = Math.max(0, Number(d?._visualDegree ?? d?.total_degree ?? d?.totalDegree ?? 0) || 0);
+  const base = Math.max(8, Math.min(Math.sqrt(degree + 1) * 3, 30));
+  if (mode === 'expanded') return Math.max(10, Math.min(base * 1.14, 36));
+  if (mode === 'main') return Math.max(9, Math.min(base * 1.05, 33));
+  return Math.max(8, Math.min(base * 0.94, 28));
+}
+
+function _graphNodeLabelDy(d, mode = 'inline') {
+  return _graphNodeRadius(d, mode) + (mode === 'expanded' ? 12 : mode === 'main' ? 11 : 9);
 }
 
 function buildInlineGraphCardHtml(graphInfo) {
@@ -6826,6 +6893,7 @@ function renderInlineGraph(graphInfo) {
 
   const nodesCopy = sampled.nodes.map(n => ({...n}));
   const edgesCopy = sampled.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target, weight: e.weight}));
+  _annotateGraphNodeDegrees(nodesCopy, edgesCopy);
 
   const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
   const layout = graphInfo._layout || 'force';
@@ -6834,7 +6902,7 @@ function renderInlineGraph(graphInfo) {
     .force('link', d3.forceLink(edgesCopy).id(d => d.id).distance(80))
     .force('charge', d3.forceManyBody().strength(-200))
     .force('center', d3.forceCenter(width/2, height/2))
-    .force('collision', d3.forceCollide().radius(20));
+    .force('collision', d3.forceCollide().radius(d => _graphNodeRadius(d, 'inline') + 10));
 
   if (layout === 'circle') {
     const step = (2*Math.PI)/nodesCopy.length;
@@ -6846,12 +6914,12 @@ function renderInlineGraph(graphInfo) {
   const link = g.selectAll('line').data(edgesCopy).join('line').attr('class','graph-link').attr('stroke','#cbd5e1').attr('stroke-width',1.5).attr('marker-end',graphInfo.directed?`url(#arrow-${gid})`:null);
   const node = g.selectAll('g').data(nodesCopy).join('g').attr('class','graph-node').call(d3.drag().on('start',e=>{if(!e.active)sim.alphaTarget(0.3).restart();e.subject.fx=e.subject.x;e.subject.fy=e.subject.y;}).on('drag',e=>{e.subject.fx=e.x;e.subject.fy=e.y;}).on('end',e=>{if(!e.active)sim.alphaTarget(0);e.subject.fx=null;e.subject.fy=null;}));
 
-  node.append('circle').attr('r',d=>Math.sqrt((d.total_degree||0)+1)*3+5).attr('fill',d=>{
+  node.append('circle').attr('r',d=>_graphNodeRadius(d,'inline')).attr('fill',d=>{
     if(graphInfo.communities?.node_community){const cid=graphInfo.communities.node_community[d.id]||0;return colorScale(cid);}
     return '#3b82f6';
   }).attr('stroke','#fff').attr('stroke-width',1.5);
 
-  node.append('text').attr('dy',d=>Math.sqrt((d.total_degree||0)+1)*3+12).attr('text-anchor','middle').attr('font-size','10px').attr('fill','var(--text2)').text(d=>d.label||d.id);
+  node.append('text').attr('dy',d=>_graphNodeLabelDy(d,'inline')).attr('text-anchor','middle').attr('font-size','10px').attr('fill','var(--text2)').text(d=>d.label||d.id);
 
   node.on('click',(ev,d)=>{
     ev.stopPropagation();
@@ -7105,22 +7173,23 @@ function expandInlineGraph(gid) {
     }
     const nodesCopy = sampledEx.nodes.map(n => ({...n}));
     const edgesCopy = sampledEx.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target}));
+    _annotateGraphNodeDegrees(nodesCopy, edgesCopy);
     const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
     
     const g = svg.append('g');
     const link = g.selectAll('line').data(edgesCopy).join('line').attr('class','graph-link').attr('stroke','var(--border2)').attr('stroke-width',1.5).attr('marker-end', graphInfo.directed ? 'url(#expand-arrow)' : null);
     const node = g.selectAll('g').data(nodesCopy).join('g').attr('class','graph-node').style('cursor','pointer').call(d3.drag().on('start',e=>{if(!sim.alphaTarget(0.3).restart())sim.alphaTarget(0.3).restart();e.subject.fx=e.subject.x;e.subject.fy=e.subject.y;}).on('drag',e=>{e.subject.fx=e.x;e.subject.fy=e.y;}).on('end',e=>{if(!e.active)sim.alphaTarget(0);e.subject.fx=null;e.subject.fy=null;}));
     
-    node.append('circle').attr('r',d=>Math.sqrt((d.total_degree||0)+1)*4+7).attr('fill',d=>{
+    node.append('circle').attr('r',d=>_graphNodeRadius(d,'expanded')).attr('fill',d=>{
       if(graphInfo.communities?.node_community){const cid=graphInfo.communities.node_community[d.id]||0;return colorScale(cid);}
       return 'var(--accent)';
     }).attr('stroke','var(--bg1)').attr('stroke-width',2);
-    node.append('text').attr('dy',d=>Math.sqrt((d.total_degree||0)+1)*4+14).attr('text-anchor','middle').attr('font-size','12px').attr('fill','var(--text)').text(d=>d.label||d.id);
+    node.append('text').attr('dy',d=>_graphNodeLabelDy(d,'expanded')).attr('text-anchor','middle').attr('font-size','12px').attr('fill','var(--text)').text(d=>d.label||d.id);
     
     node.on('click',(ev,d)=>{
       ev.stopPropagation();
       const nb=edgesCopy.filter(e=>e.source.id===d.id||e.target.id===d.id).map(e=>e.source.id===d.id?e.target.id:e.source.id);
-      header.innerHTML = `<span style="font-weight:600;color:var(--text)">📊 <strong>${d.label||d.id}</strong> · 入度:${d.in_degree||0} · 出度:${d.out_degree||0} · 度:${d.total_degree||0} · 邻居:[${nb.slice(0,12).join(',')}${nb.length>12?'...':''}]</span><button id="expand-close" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px">×</button>`;
+      header.innerHTML = `<span style="font-weight:600;color:var(--text)">📊 <strong>${d.label||d.id}</strong> · 入度:${d.in_degree||0} · 出度:${d.out_degree||0} · 度:${d._visualDegree||d.total_degree||0} · 邻居:[${nb.slice(0,12).join(',')}${nb.length>12?'...':''}]</span><button id="expand-close" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px">×</button>`;
       document.getElementById('expand-close').onclick = closeExpandModal;
       // Show floating node card
       showNodeCard({
@@ -7152,7 +7221,7 @@ function expandInlineGraph(gid) {
     window._expandNodes = nodesCopy;
     window._expandEdges = edgesCopy;
     
-    const sim = d3.forceSimulation(nodesCopy).force('link',d3.forceLink(edgesCopy).id(d=>d.id).distance(120)).force('charge',d3.forceManyBody().strength(-300)).force('center',d3.forceCenter(w/2,h/2)).force('collision',d3.forceCollide().radius(30));
+    const sim = d3.forceSimulation(nodesCopy).force('link',d3.forceLink(edgesCopy).id(d=>d.id).distance(120)).force('charge',d3.forceManyBody().strength(-300)).force('center',d3.forceCenter(w/2,h/2)).force('collision',d3.forceCollide().radius(d=>_graphNodeRadius(d,'expanded')+14));
     sim.on('tick',()=>{link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);node.attr('transform',d=>`translate(${d.x},${d.y})`);});
     window._expandSim = sim;
     window._expandSvg = svg;
