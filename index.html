@@ -325,9 +325,21 @@ textarea { resize: none; overflow-y: auto; }
   grid-template-rows: 1fr auto;
   overflow: hidden;
   min-width: 0;
+  transition: grid-template-columns 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .body-layout.has-graph-sidebar {
   grid-template-columns: var(--left-sidebar-width) minmax(320px, 1fr) var(--graph-sidebar-width);
+}
+.body-layout.task-panel-collapsed {
+  grid-template-columns: 0px minmax(0, 1fr);
+}
+.body-layout.has-graph-sidebar.task-panel-collapsed {
+  grid-template-columns: 0px minmax(320px, 1fr) var(--graph-sidebar-width);
+}
+.body-layout.task-panel-animating,
+.body-layout.task-panel-animating .sidebar,
+.body-layout.task-panel-animating .task-panel-floating-actions {
+  transition: none !important;
 }
 @media (max-width: 1023px) {
   .body-layout,
@@ -341,12 +353,26 @@ textarea { resize: none; overflow-y: auto; }
 /* ── Sidebar ── */
 .sidebar {
   grid-column: 1; grid-row: 1 / 3;
-  width: 100%; flex-shrink: 0;
+  width: var(--left-sidebar-width); flex-shrink: 0;
   display: flex; flex-direction: column;
   position: relative;
   background: var(--bg1);
   border-right: 1px solid var(--border);
   overflow: hidden;
+  transform: translateX(0);
+  transition: opacity 0.2s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0s;
+  will-change: opacity, transform;
+}
+.body-layout.task-panel-collapsed .sidebar {
+  opacity: 0;
+  transform: translateX(calc(-1 * var(--left-sidebar-width)));
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.32s;
+}
+.body-layout.task-panel-collapsed .left-sidebar-resizer {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* ── Graph Sidebar (Right) ── */
@@ -489,9 +515,84 @@ body.layout-resizing canvas {
   color: var(--accent);
 }
 
+.sidebar-action-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+}
+.task-panel-icon-btn,
+.task-panel-floating-btn {
+  border: 1px solid var(--border);
+  background: var(--bg1);
+  color: var(--text3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s, color 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  flex-shrink: 0;
+}
+.task-panel-icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+}
+.task-panel-icon-btn:hover:not(:disabled),
+.task-panel-floating-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--icon-border);
+  background: var(--new-btn-hover-bg);
+  box-shadow: 0 0 14px var(--icon-glow);
+  transform: translateY(-1px);
+}
+.task-panel-icon-btn:disabled,
+.task-panel-floating-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.task-panel-floating-actions {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--header-bg);
+  box-shadow: 0 8px 26px rgba(15,23,42,0.08);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-10px);
+  transition: opacity 0.18s ease, transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.18s;
+}
+.body-layout.task-panel-collapsed .task-panel-floating-actions {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition-delay: 0.1s, 0.1s, 0s;
+}
+[data-theme="dark"] .task-panel-floating-actions {
+  box-shadow: 0 10px 28px rgba(0,0,0,0.26);
+}
+.task-panel-floating-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: transparent;
+}
 .sidebar-new-btn {
-  margin: 12px;
-  padding: 8px;
+  margin: 0;
+  min-width: 0;
+  height: 34px;
+  padding: 7px 10px;
   border-radius: 8px;
   border: 1px solid var(--new-btn-border);
   background: var(--new-btn-bg);
@@ -500,6 +601,7 @@ body.layout-resizing canvas {
   font-size: 0.72rem;
   font-weight: 600;
   display: flex; align-items: center; justify-content: center; gap: 6px;
+  flex: 1 1 auto;
   cursor: pointer; transition: all 0.15s;
   letter-spacing: 0.03em;
 }
@@ -1904,6 +2006,7 @@ body.layout-resizing canvas {
 // ── State ──────────────────────────────────────────────────────────
 
 const API_BASE = window.location.origin;
+const _LS_TASK_PANEL_COLLAPSED = 'igraph_task_panel_collapsed';
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
@@ -1946,12 +2049,19 @@ function logout() {
   location.reload();
 }
 
+function getInitialTaskPanelCollapsed() {
+  return localStorage.getItem(_LS_TASK_PANEL_COLLAPSED) === '1';
+}
+
 const state = {
   sessionId: null,
   currentUserId: getCurrentUserId(),
+  leftSidebarCollapsed: getInitialTaskPanelCollapsed(),
   availableModels: [],
   defaultModel: 'qwen3.6-plus',
   sessions: [],
+  allSessions: [],
+  draftSessionId: null,
   sessionsLoading: false,
   switchingSession: false,
   sessionNotice: null,
@@ -2049,6 +2159,7 @@ function layoutAvailableWidth() {
 }
 
 function leftSidebarWidth() {
+  if (state.leftSidebarCollapsed) return 0;
   const rect = document.querySelector('.sidebar')?.getBoundingClientRect();
   return rect?.width || storedLayoutWidth(_LS_LEFT_SIDEBAR_WIDTH, _LEFT_SIDEBAR_DEFAULT);
 }
@@ -2098,6 +2209,7 @@ function rerenderVisibleGraphsAfterResize() {
 function initResizableLayout() {
   syncLayoutVars();
   if (window.matchMedia && !window.matchMedia('(min-width: 1024px)').matches) return;
+  if (state.leftSidebarCollapsed) return;
 
   const leftHandle = document.getElementById('left-sidebar-resizer');
   const graphHandle = document.getElementById('graph-sidebar-resizer');
@@ -2156,6 +2268,115 @@ window.addEventListener('resize', () => {
   syncLayoutVars();
   rerenderVisibleGraphsAfterResize();
 });
+
+let _taskPanelAnimationFrame = 0;
+
+function setTaskPanelCollapsed(collapsed) {
+  const next = !!collapsed;
+  const layout = document.querySelector('.body-layout');
+  const sidebar = document.querySelector('.sidebar');
+  if (!layout) {
+    state.leftSidebarCollapsed = next;
+    localStorage.setItem(_LS_TASK_PANEL_COLLAPSED, next ? '1' : '0');
+    render();
+    return;
+  }
+  const current = layout.classList.contains('task-panel-collapsed');
+  if (current === next && state.leftSidebarCollapsed === next) return;
+
+  state.leftSidebarCollapsed = next;
+  localStorage.setItem(_LS_TASK_PANEL_COLLAPSED, next ? '1' : '0');
+
+  if (_taskPanelAnimationFrame) {
+    cancelAnimationFrame(_taskPanelAnimationFrame);
+    _taskPanelAnimationFrame = 0;
+  }
+
+  const floating = document.querySelector('.task-panel-floating-actions');
+  const graphOpen = layout.classList.contains('has-graph-sidebar');
+  const startProgress = current ? 1 : 0;
+  const endProgress = next ? 1 : 0;
+  const leftWidth = Math.max(
+    _LEFT_SIDEBAR_MIN,
+    sidebar?.getBoundingClientRect().width || storedLayoutWidth(_LS_LEFT_SIDEBAR_WIDTH, _LEFT_SIDEBAR_DEFAULT)
+  );
+  const duration = 320;
+  const startedAt = performance.now();
+
+  layout.classList.add('task-panel-animating');
+  if (sidebar) {
+    sidebar.style.width = `${leftWidth}px`;
+    sidebar.style.visibility = 'visible';
+    sidebar.style.pointerEvents = 'none';
+  }
+  if (floating) {
+    floating.style.visibility = 'visible';
+    floating.style.pointerEvents = 'none';
+  }
+
+  const easeOut = t => 1 - Math.pow(1 - t, 3);
+  const applyFrame = progress => {
+    const left = Math.max(0, leftWidth * (1 - progress));
+    layout.style.gridTemplateColumns = graphOpen
+      ? `${left}px minmax(320px, 1fr) var(--graph-sidebar-width)`
+      : `${left}px minmax(0, 1fr)`;
+    if (sidebar) {
+      sidebar.style.transform = `translateX(${-leftWidth * progress}px)`;
+      sidebar.style.opacity = String(1 - progress);
+    }
+    if (floating) {
+      const visible = Math.max(0, Math.min(1, (progress - 0.35) / 0.65));
+      floating.style.opacity = String(visible);
+      floating.style.transform = `translateX(${(-10 * (1 - visible)).toFixed(2)}px)`;
+    }
+  };
+
+  const finish = () => {
+    _taskPanelAnimationFrame = 0;
+    layout.classList.toggle('task-panel-collapsed', next);
+    layout.classList.remove('task-panel-animating');
+    layout.style.gridTemplateColumns = '';
+    if (sidebar) {
+      sidebar.style.width = '';
+      sidebar.style.transform = '';
+      sidebar.style.opacity = '';
+      sidebar.style.visibility = '';
+      sidebar.style.pointerEvents = '';
+      sidebar.setAttribute('aria-hidden', next ? 'true' : 'false');
+    }
+    if (floating) {
+      floating.style.opacity = '';
+      floating.style.transform = '';
+      floating.style.visibility = '';
+      floating.style.pointerEvents = '';
+    }
+    if (!next) initResizableLayout();
+    rerenderVisibleGraphsAfterResize();
+  };
+
+  const step = now => {
+    const elapsed = Math.min(1, (now - startedAt) / duration);
+    const eased = easeOut(elapsed);
+    const progress = startProgress + (endProgress - startProgress) * eased;
+    applyFrame(progress);
+    if (elapsed < 1) {
+      _taskPanelAnimationFrame = requestAnimationFrame(step);
+    } else {
+      finish();
+    }
+  };
+
+  applyFrame(startProgress);
+  _taskPanelAnimationFrame = requestAnimationFrame(step);
+}
+
+function hideTaskPanel() {
+  setTaskPanelCollapsed(true);
+}
+
+function showTaskPanel() {
+  setTaskPanelCollapsed(false);
+}
 
 const ALL_MODEL_OPTIONS = [
   { value: 'claude-opus-4-6',   label: 'Claude Opus 4-6' },
@@ -2790,7 +3011,7 @@ function patchContextMeter() {
 }
 
 function sessionItemHtml(s) {
-  const active = s.session_id === state.sessionId;
+  const active = sameSessionId(s.session_id, state.sessionId);
   const streaming = _bgSessions.has(s.session_id) && !_bgSessions.get(s.session_id)._done;
   const title   = (s.title && s.title !== '新会话') ? s.title : null;
   const preview = s.last_message_preview || '';
@@ -2806,6 +3027,77 @@ function sessionItemHtml(s) {
       </svg>
     </button>
   </div>`;
+}
+
+function sameSessionId(a, b) {
+  return String(a || '').trim() !== '' && String(a || '').trim() === String(b || '').trim();
+}
+
+function setDraftSessionId(sessionId) {
+  const sid = String(sessionId || '').trim();
+  state.draftSessionId = sid || null;
+}
+
+function sessionSummaryLooksUnused(session) {
+  if (!session || !session.session_id) return false;
+  if (_bgSessions.has(session.session_id) && !_bgSessions.get(session.session_id)._done) return false;
+  const title = String(session.title || '').trim();
+  const preview = String(session.last_message_preview || '').trim();
+  return (!title || title === '新会话') && !preview;
+}
+
+function activeSessionHasLocalContent(sessionId = state.sessionId) {
+  return sameSessionId(sessionId, state.sessionId) && (
+    state.messages.length > 0 ||
+    state.hasGraph ||
+    state.loading ||
+    !!state.pendingFeedback
+  );
+}
+
+function shouldHideSessionFromSidebar(session) {
+  if (!session || !session.session_id) return false;
+  if (activeSessionHasLocalContent(session.session_id)) return false;
+  return sameSessionId(session.session_id, state.draftSessionId) || sessionSummaryLooksUnused(session);
+}
+
+function visibleSessions(sessions) {
+  return (Array.isArray(sessions) ? sessions : []).filter(s => !shouldHideSessionFromSidebar(s));
+}
+
+function hasActiveUnusedSession() {
+  return !!state.sessionId &&
+    state.messages.length === 0 &&
+    !state.hasGraph &&
+    !state.loading &&
+    !state.pendingFeedback;
+}
+
+function findReusableDraftSessionId() {
+  if (state.draftSessionId) {
+    const draftExists = sameSessionId(state.draftSessionId, state.sessionId) ||
+      (state.allSessions || []).some(s => sameSessionId(s?.session_id, state.draftSessionId));
+    if (draftExists) return state.draftSessionId;
+    setDraftSessionId(null);
+  }
+  const draft = (state.allSessions || []).find(sessionSummaryLooksUnused);
+  return draft ? String(draft.session_id || '').trim() : null;
+}
+
+function markActiveSessionUsed() {
+  if (sameSessionId(state.sessionId, state.draftSessionId)) setDraftSessionId(null);
+}
+
+function syncDraftStateFromActiveSession() {
+  if (!sameSessionId(state.sessionId, state.draftSessionId)) return;
+  if (activeSessionHasLocalContent()) setDraftSessionId(null);
+}
+
+function focusChatInputSoon() {
+  requestAnimationFrame(() => {
+    const ta = document.getElementById('inp-chat');
+    if (ta && !ta.disabled) ta.focus();
+  });
 }
 
 // ── Plan / Solver panels ───────────────────────────────────────────
@@ -3175,6 +3467,8 @@ function render() {
 function renderChat(root, snapshot = null) {
   const selectedModel = syncModelSelect(state.model);
   const disabled = !state.sessionId || state.loading || state.creating || state.switchingSession;
+  const newSessionDisabled = state.creating || state.loading || state.switchingSession || hasActiveUnusedSession();
+  const taskPanelCollapsed = state.leftSidebarCollapsed;
   const planBtnCls = state.planningMode === 'always' ? 'chip active-blue'
                    : state.planningMode === 'never'  ? 'chip muted'
                    : 'chip active-cyan';
@@ -3224,7 +3518,7 @@ function renderChat(root, snapshot = null) {
         </svg>
       </button>
       <button id="btn-new-session" title="新建会话"
-        ${state.creating || state.loading || state.switchingSession ? 'disabled' : ''}
+        ${newSessionDisabled ? 'disabled' : ''}
         class="chip lg:hidden">+ 新建</button>
       ${state.currentUserId ? `<button class="user-badge" id="btn-logout" title="退出登录" aria-label="退出登录">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
@@ -3233,15 +3527,24 @@ function renderChat(root, snapshot = null) {
     </div>
   </header>
 
-  <div class="body-layout ${state.graphSidebarOpen ? 'has-graph-sidebar' : ''}">
-    <aside class="sidebar hidden lg:flex">
-      <button id="btn-new-session-side" class="sidebar-new-btn"
-        ${state.creating || state.loading || state.switchingSession ? 'disabled' : ''}>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        ${state.creating ? '创建中…' : '新建会话'}
-      </button>
+  <div class="body-layout ${state.graphSidebarOpen ? 'has-graph-sidebar' : ''} ${taskPanelCollapsed ? 'task-panel-collapsed' : ''}">
+    <aside class="sidebar hidden lg:flex" aria-hidden="${taskPanelCollapsed ? 'true' : 'false'}">
+      <div class="sidebar-action-row">
+        <button id="btn-new-session-side" class="sidebar-new-btn"
+          ${newSessionDisabled ? 'disabled' : ''}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          ${state.creating ? '创建中…' : '新建会话'}
+        </button>
+        <button id="btn-hide-task-panel" class="task-panel-icon-btn" title="Hide Task Panel" aria-label="Hide Task Panel">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+            <path d="M9 4v16"/>
+            <path d="M15 9l-3 3 3 3"/>
+          </svg>
+        </button>
+      </div>
       <div class="sidebar-label">历史会话</div>
       <div class="session-list">
         ${state.sessionsLoading
@@ -3263,6 +3566,23 @@ function renderChat(root, snapshot = null) {
     </aside>
 
     <div class="main-content" id="main-content-area">
+      <div class="task-panel-floating-actions" aria-label="Task panel controls">
+        <button id="btn-show-task-panel" class="task-panel-floating-btn" title="Show Task Panel" aria-label="Show Task Panel">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+            <path d="M9 4v16"/>
+            <path d="M13 9l3 3-3 3"/>
+          </svg>
+        </button>
+        <button id="btn-new-task-collapsed" class="task-panel-floating-btn"
+          title="New task" aria-label="New task"
+          ${newSessionDisabled ? 'disabled' : ''}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.35" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="4" width="16" height="16" rx="3"/>
+            <path d="M12 8v8M8 12h8"/>
+          </svg>
+        </button>
+      </div>
       <div class="chat-pane">
         <!-- Graph Sidebar Toggle Button -->
         <button id="graph-sidebar-toggle" class="graph-sidebar-toggle ${state.graphSidebarOpen ? 'active' : ''}" onclick="toggleGraphSidebar()" title="图可视化" ${!state.hasGraph ? 'disabled' : ''}>
@@ -3384,6 +3704,9 @@ function renderChat(root, snapshot = null) {
   $('#btn-mgmt')?.addEventListener('click', openMgmt);
   $('#btn-new-session')?.addEventListener('click', startNewSession);
   $('#btn-new-session-side')?.addEventListener('click', startNewSession);
+  $('#btn-hide-task-panel')?.addEventListener('click', hideTaskPanel);
+  $('#btn-show-task-panel')?.addEventListener('click', showTaskPanel);
+  $('#btn-new-task-collapsed')?.addEventListener('click', startNewSession);
   $('#btn-logout')?.addEventListener('click', () => { if (confirm('确认退出登录？')) logout(); });
   const modelSelect = $('#sel-model');
   syncModelSelect(selectedModel);
@@ -4490,7 +4813,11 @@ async function refreshSessionList() {
   try {
     const res = await apiFetch(`${API_BASE}/api/sessions`);
     const data = await res.json();
-    if (res.ok && data.success) { state.sessions = Array.isArray(data.sessions) ? data.sessions : []; state.error = null; }
+    if (res.ok && data.success) {
+      state.allSessions = Array.isArray(data.sessions) ? data.sessions : [];
+      state.sessions = visibleSessions(state.allSessions);
+      state.error = null;
+    }
     else throw new Error(data.detail || data.error || '获取会话列表失败');
   } catch (err) { state.error = err.message || '获取会话列表失败'; }
   finally { state.sessionsLoading = false; render(); }
@@ -4508,6 +4835,7 @@ async function createSession({ activate = true } = {}) {
     if (data.success) {
       applyModelAccess(data);
       state.sessionId = data.session_id; state.messages = []; state.currentPlan = null; state.hasGraph = false;
+      setDraftSessionId(data.session_id);
       state.contextCompressing = false;
       state.pendingFeedback = null; state.feedbackArgsText = ''; state.feedbackComment = '';
       state.streamFeedbackRequest = null; state.streamFeedbackRequests = [];
@@ -4525,30 +4853,57 @@ async function createSession({ activate = true } = {}) {
 
 async function startNewSession() {
   if (state.creating || state.loading || state.switchingSession) return;
+  if (hasActiveUnusedSession()) {
+    setDraftSessionId(state.sessionId);
+    render();
+    focusChatInputSoon();
+    return;
+  }
+  const reusableDraftId = findReusableDraftSessionId();
+  if (reusableDraftId) {
+    setDraftSessionId(reusableDraftId);
+    if (!sameSessionId(reusableDraftId, state.sessionId)) {
+      await activateSession(reusableDraftId);
+    } else {
+      render();
+    }
+    focusChatInputSoon();
+    return;
+  }
   await createSession({ activate: true });
+  focusChatInputSoon();
 }
 
 async function deleteSession(sessionId) {
   const sid = String(sessionId || '').trim();
   if (!sid || state.loading || state.switchingSession) return;
   if (!confirm(`确认删除会话 #${sid}？\n此操作不可撤销。`)) return;
-  const wasActive = sid === state.sessionId;
+  const wasActive = sameSessionId(sid, state.sessionId);
   try {
     const res = await apiFetch(`${API_BASE}/api/sessions/${sid}`, { method: 'DELETE' });
     if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.detail || data.error || '删除失败'); }
+    if (sameSessionId(sid, state.draftSessionId)) setDraftSessionId(null);
     if (wasActive) { state.sessionId = null; state.messages = []; state.currentPlan = null; state.hasGraph = false; state.sessionNotice = null; state.contextCompressing = false; }
     if (wasActive) { state.pendingFeedback = null; state.streamFeedbackRequest = null; state.streamFeedbackRequests = []; state.feedbackArgsText = ''; state.feedbackComment = ''; }
     await refreshSessionList();
     if (wasActive) {
       if (state.sessions.length > 0) await activateSession(state.sessions[0].session_id);
-      else await createSession({ activate: true });
+      else {
+        const reusableDraftId = findReusableDraftSessionId();
+        if (reusableDraftId) {
+          setDraftSessionId(reusableDraftId);
+          await activateSession(reusableDraftId);
+        } else {
+          await createSession({ activate: true });
+        }
+      }
     }
   } catch (err) { state.error = err.message || '删除失败'; render(); }
 }
 
 async function activateSession(sessionId) {
   const sid = String(sessionId || '').trim();
-  if (!sid || sid === state.sessionId || state.switchingSession || state.creating) return;
+  if (!sid || sameSessionId(sid, state.sessionId) || state.switchingSession || state.creating) return;
 
   // Move active stream to background instead of aborting it
   if (state.loading && _streamAbortController) {
@@ -4600,6 +4955,7 @@ async function activateSession(sessionId) {
     }
 
     state.hasGraph = !!data.has_graph;
+    syncDraftStateFromActiveSession();
     setContextUsage(data.context_usage);
     syncModelSelect(data.model);
     state.reasoningMode = data.reasoning_mode || state.reasoningMode;
@@ -4941,9 +5297,11 @@ async function loadDataset(datasetId) {
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.detail || data.error || '加载数据集失败');
     state.hasGraph = true; state.datasetModalOpen = false;
+    markActiveSessionUsed();
     state.messages.push({ role: 'user', content: `请加载数据集 ${datasetName}` });
     state.messages.push({ role: 'assistant', content: `已完成数据集「${datasetName}」的加载，我可以运用图的专业知识帮你对其进行分析。`, tools: [], progressItems: [], thinking: [], streaming: false });
     state.autoScroll = true;
+    await refreshSessionList();
     render(); patchGraphBadge();
   } catch (err) { state.error = err.message || '加载数据集失败'; }
   finally { state.datasetLoading = false; render(); patchGraphBadge(); }
@@ -5071,6 +5429,7 @@ async function sendMessage() {
   }
 
   ta.value = ''; ta.style.height = '42px';
+  markActiveSessionUsed();
   state.messages.push({ role: 'user', content: finalText });
   state.currentPlan = null; state.autoScroll = true;
   state.sessionNotice = null; state.contextCompressing = false; state.loading = true; state.error = null;
@@ -5157,10 +5516,12 @@ async function handleUpload(e) {
     const res  = await apiFetch(`${API_BASE}/api/sessions/${state.sessionId}/upload`, { method: 'POST', body: fd });
     const data = await res.json();
     if (data.success) {
+      markActiveSessionUsed();
       state.messages.push({ role: 'user', content: `请上传文件 ${data.filename}` });
       state.messages.push({ role: 'assistant', content: `已完成文件「${data.filename}」的上传，我可以运用图的专业知识帮你对其进行分析。`, tools: [], progressItems: [], thinking: [], streaming: false });
       state.autoScroll = true; state.uploading = false;
       const fi = $('#file-input'); if (fi) fi.value = '';
+      await refreshSessionList();
       render();
       return;
     }
@@ -6271,6 +6632,12 @@ async function bootstrap() {
 async function startApp() {
   await refreshSessionList();
   if (state.sessions.length > 0) { await activateSession(state.sessions[0].session_id); return; }
+  const reusableDraftId = findReusableDraftSessionId();
+  if (reusableDraftId) {
+    setDraftSessionId(reusableDraftId);
+    await activateSession(reusableDraftId);
+    return;
+  }
   await createSession({ activate: true });
 }
 
