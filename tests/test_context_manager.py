@@ -72,6 +72,23 @@ class ContextManagerTests(unittest.TestCase):
         prompt = build_role_system_prompt("staged")
         self.assertIn("可以进一步考虑使用图机器学习相关工具进行建模与推断", prompt)
 
+    def test_role_system_prompt_contains_graph_analysis_reporting_rules(self) -> None:
+        prompt = build_role_system_prompt("direct", protocol="text")
+        self.assertIn("## 图分析报告原则", prompt)
+        self.assertIn("整体理解、统计总结、结构解释、模式发现", prompt)
+        self.assertIn("轻量文本答复", prompt)
+        self.assertIn("create_analysis_report", prompt)
+        self.assertIn("report_intent", prompt)
+        self.assertIn("analysis_goal", prompt)
+        self.assertIn("不在聊天区重复完整表格", prompt)
+
+    def test_native_role_system_prompt_contains_graph_analysis_reporting_rules(self) -> None:
+        prompt = build_role_system_prompt("direct", protocol="native")
+        self.assertIn("## 图分析报告原则", prompt)
+        self.assertIn("生成报告前必须先取得可靠工具结果", prompt)
+        self.assertIn("create_analysis_report", prompt)
+        self.assertIn("source_results", prompt)
+
     def test_driver_is_none_without_provider_gateway(self) -> None:
         cm = ContextManager(session_id="s1")
         self.assertIsNone(cm._driver)
@@ -343,12 +360,31 @@ class ContextManagerTests(unittest.TestCase):
         self.assertIn("graph_ml_inference", prompt)
         self.assertNotIn("当用户请求与 GraphML 相关", prompt)
 
+    def test_skill_prompt_loads_statistical_reporting_skill_when_report_tool_available(self) -> None:
+        prompt = build_skills_system_prompt(
+            [
+                {"name": "create_analysis_report"},
+                {"name": "get_graph_info"},
+                {"name": "community_detection"},
+                {"name": "degree_analysis"},
+            ],
+            graph_state={"loaded": True},
+        )
+
+        self.assertIn("graph_statistical_reporting", prompt)
+        self.assertIn("图分析报告生成流程", prompt)
+
+        skill_body = handle_skill_tool_call("skill_view", {"name": "graph_statistical_reporting"})
+        self.assertIsInstance(skill_body, str)
+        self.assertIn("analysis_goal", skill_body)
+        self.assertIn("report_intent", skill_body)
+
     def test_skill_view_loads_full_skill_body(self) -> None:
         result = handle_skill_tool_call("skill_view", {"name": "graph_ml_training"})
         self.assertIsInstance(result, str)
-        self.assertIn("GraphML Training", result)
-        self.assertIn("Rely on the `train` tool schema", result)
-        self.assertIn("confirmation/edit flow", result)
+        self.assertIn("GraphML 训练", result)
+        self.assertIn("`train` 工具 schema", result)
+        self.assertIn("高风险确认流程", result)
 
 
 if __name__ == "__main__":
