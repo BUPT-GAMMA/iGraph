@@ -12,7 +12,11 @@
 
 from __future__ import annotations
 
+import os
 from typing import List
+
+_REPORTING_TOOLS_ENV = "MCP_ENABLE_REPORTING_TOOLS"
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 
 # ─────────────────────────────────────────────────────────────────
 # 图分析工具（对外暴露给 LLM）
@@ -1432,6 +1436,69 @@ GRAPH_ML_TOOLS: List[dict] = [
 ]
 
 # ─────────────────────────────────────────────────────────────────
+# 报告生成工具（默认不暴露，待执行逻辑接入后开启）
+# ─────────────────────────────────────────────────────────────────
+
+REPORTING_TOOLS: List[dict] = [
+    {
+        "name": "create_analysis_report",
+        "description": (
+            "基于前序图分析工具结果生成图分析可视化报告规格。"
+            "适用于整体理解、统计总结、结构解释、模式发现、对比分析、诊断判断或报告生成等请求。"
+            "报告图表数据必须来自 source_results、图状态或用户明确提供的数据。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "report_intent": {
+                    "type": "string",
+                    "enum": ["overview", "analysis", "diagnosis", "comparison", "custom"],
+                    "description": "报告意图。",
+                    "default": "analysis",
+                },
+                "analysis_goal": {
+                    "type": "string",
+                    "description": "用户原始分析目标或 Agent 归纳后的分析目标。",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "报告标题。",
+                },
+                "source_results": {
+                    "type": "object",
+                    "description": "前序工具结果，按工具名组织，例如 get_graph_info、degree_analysis、node_centrality 或 global_metrics。",
+                    "additionalProperties": True,
+                },
+                "options": {
+                    "type": "object",
+                    "description": "报告生成选项。",
+                    "properties": {
+                        "top_k": {
+                            "type": "integer",
+                            "description": "图表和表格展示上限。",
+                            "default": 10,
+                        },
+                        "include_narrative": {
+                            "type": "boolean",
+                            "description": "是否生成规则化文字洞察。",
+                            "default": True,
+                        },
+                        "max_sections": {
+                            "type": "integer",
+                            "description": "报告 section 数量上限。",
+                            "default": 6,
+                        },
+                    },
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["report_intent", "analysis_goal", "source_results"],
+        },
+        "category": "reporting",
+    },
+]
+
+# ─────────────────────────────────────────────────────────────────
 # 内部工具（不暴露给 LLM，仅用于会话管理）
 # ─────────────────────────────────────────────────────────────────
 
@@ -1461,9 +1528,20 @@ INTERNAL_TOOLS: List[dict] = [
 ]
 
 
-def get_all_public_tools(include_graph_ml: bool = True) -> List[dict]:
+def _reporting_tools_enabled_from_env() -> bool:
+    return os.getenv(_REPORTING_TOOLS_ENV, "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def get_all_public_tools(
+    include_graph_ml: bool = True,
+    include_reporting: bool | None = None,
+) -> List[dict]:
     """返回对 LLM 暴露的工具规格列表。"""
     tools = list(GRAPH_TOOLS)
+    if include_reporting is None:
+        include_reporting = _reporting_tools_enabled_from_env()
+    if include_reporting:
+        tools.extend(REPORTING_TOOLS)
     if include_graph_ml:
         tools.extend(GRAPH_ML_TOOLS)
     return tools

@@ -24,7 +24,8 @@ from backend.agent.sub_agents.file_format_classifier import FileFormatPreCheckSu
 from backend.agent.sub_agents.text_graph_extractor import TextGraphExtractionSubAgent
 from graph_data_service.data_pipeline import GraphBuilder
 from graph_data_service.dataset_registry import DatasetRegistry
-from graph_data_service.tool_catalog import GRAPH_ML_TOOLS, get_all_public_tools
+from graph_data_service.reporting import build_analysis_report
+from graph_data_service.tool_catalog import GRAPH_ML_TOOLS, REPORTING_TOOLS, get_all_public_tools
 from graph_data_service.codec import (
     edge_type_values_for_graph,
     graph_ml_readiness_for_graph,
@@ -56,6 +57,7 @@ _DATA_TOOLS = {
 
 _GRAPH_ML_TOOL_NAMES = {spec.get("name", "").strip() for spec in GRAPH_ML_TOOLS}
 _GRAPH_ML_HEAVY_TOOLS = {"train", "infer"}
+_REPORTING_TOOL_NAMES = {spec.get("name", "").strip() for spec in REPORTING_TOOLS}
 
 
 class LoadGraphTextReq(BaseModel):
@@ -1226,6 +1228,27 @@ class GraphDataService:
             "graph_ml_readiness": ml_readiness,
         }
 
+    def do_create_analysis_report(self, session_id: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
+        source_arg = arguments.get("source_results")
+        source_results_valid = isinstance(source_arg, dict)
+        source_results = dict(source_arg) if source_results_valid else {}
+        if source_results_valid and "get_graph_info" not in source_results and "graph_info" not in source_results:
+            try:
+                session = self.get_required(session_id, user_id=user_id)
+                if session.get_graph() is not None:
+                    source_results["get_graph_info"] = self.do_get_graph_info(session_id, user_id=user_id)
+            except HTTPException:
+                pass
+
+        options_arg = arguments.get("options")
+        return build_analysis_report(
+            report_intent=str(arguments.get("report_intent") or ""),
+            analysis_goal=str(arguments.get("analysis_goal") or ""),
+            title=str(arguments.get("title") or ""),
+            source_results=source_results,
+            options=options_arg if isinstance(options_arg, dict) else None,
+        )
+
     @staticmethod
     def _graph_preview(gd, node_limit: int = 10, edge_limit: int = 30) -> Dict[str, Any]:
         id2node = gd.id2node
@@ -1362,6 +1385,9 @@ class GraphDataService:
         if tool_name == "cancel_job":
             job_id = _required_str(arguments, "job_id")
             return {"success": self._job_manager.cancel(job_id), "job_id": job_id}
+
+        if tool_name == "create_analysis_report":
+            return self.do_create_analysis_report(session_id, arguments, user_id=user_id)
 
         _, gd, nx_graph = self._require_graph(session_id, user_id=user_id)
 
@@ -1824,9 +1850,12 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         return {"status": "ok", "sessions": svc.session_count}
 
     @app.get("/tools")
-    def list_tools(include_graph_ml: bool = True):
+    def list_tools(include_graph_ml: bool = True, include_reporting: bool | None = None):
         """返回工具规格列表（tool_catalog 唯一真相源）。"""
-        return get_all_public_tools(include_graph_ml=include_graph_ml)
+        return get_all_public_tools(
+            include_graph_ml=include_graph_ml,
+            include_reporting=include_reporting,
+        )
 
     @app.post("/sessions/{session_id}/uploads/register")
     def register_upload(session_id: str, req: RegisterUploadReq, request: Request):
@@ -1957,6 +1986,8 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             svc_name = "graph_data"
         elif tool_name in _GRAPH_ML_TOOL_NAMES:
             svc_name = "graph_ml"
+        elif tool_name in _REPORTING_TOOL_NAMES:
+            svc_name = "graph_compute"
         else:
             svc_name = "graph_compute"
         svc_log = _service_logger(session_id, svc_name, user_id=user_id)

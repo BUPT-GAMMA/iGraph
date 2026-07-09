@@ -36,6 +36,9 @@ outputs/
 datasets/
 *.log
 
+# Local planning docs
+plan.md
+
 # Runtime memory and session state
 !backend/agent/memory/.gitkeep
 backend/agent/memory/default_user/*

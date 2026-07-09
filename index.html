@@ -1718,14 +1718,16 @@ body.layout-resizing canvas {
   overflow: hidden;
   background: var(--bg2);
 }
-.bubble-agent > .inline-graph-card {
+.bubble-agent > .inline-graph-card,
+#streaming-graphs > .inline-graph-card {
   width: 700px;
   height: 600px;
   margin: 10px auto 6px;
   display: flex;
   flex-direction: column;
 }
-.bubble-agent > .inline-graph-card .inline-graph-body {
+.bubble-agent > .inline-graph-card .inline-graph-body,
+#streaming-graphs > .inline-graph-card .inline-graph-body {
   flex: 1;
   height: auto;
   min-height: 0;
