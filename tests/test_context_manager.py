@@ -75,12 +75,19 @@ class ContextManagerTests(unittest.TestCase):
     def test_role_system_prompt_contains_graph_analysis_reporting_rules(self) -> None:
         prompt = build_role_system_prompt("direct", protocol="text")
         self.assertIn("## 图分析报告原则", prompt)
-        self.assertIn("整体理解、统计总结、结构解释、模式发现", prompt)
+        self.assertIn("整体理解、统计总结、结构解释、模式发现、诊断判断、对比分析", prompt)
+        self.assertIn("图表化呈现", prompt)
         self.assertIn("轻量文本答复", prompt)
+        self.assertIn("单个节点、单条边、单条路径、单个指标值", prompt)
         self.assertIn("create_analysis_report", prompt)
         self.assertIn("report_intent", prompt)
         self.assertIn("analysis_goal", prompt)
-        self.assertIn("不在聊天区重复完整表格", prompt)
+        self.assertIn("source_results", prompt)
+        self.assertIn("get_graph_info", prompt)
+        self.assertIn("visualize_subgraph", prompt)
+        self.assertIn("回退为普通文本总结", prompt)
+        self.assertIn("1-3 句简短结论", prompt)
+        self.assertIn("不在聊天区重复完整表格、完整图表数据或报告 JSON", prompt)
 
     def test_native_role_system_prompt_contains_graph_analysis_reporting_rules(self) -> None:
         prompt = build_role_system_prompt("direct", protocol="native")
@@ -88,6 +95,9 @@ class ContextManagerTests(unittest.TestCase):
         self.assertIn("生成报告前必须先取得可靠工具结果", prompt)
         self.assertIn("create_analysis_report", prompt)
         self.assertIn("source_results", prompt)
+        self.assertIn("overview、analysis、diagnosis、comparison、custom", prompt)
+        self.assertIn("报告规则不覆盖图可视化规则", prompt)
+        self.assertIn("点击查看报告", prompt)
 
     def test_driver_is_none_without_provider_gateway(self) -> None:
         cm = ContextManager(session_id="s1")
@@ -378,6 +388,34 @@ class ContextManagerTests(unittest.TestCase):
         self.assertIsInstance(skill_body, str)
         self.assertIn("analysis_goal", skill_body)
         self.assertIn("report_intent", skill_body)
+        self.assertIn("`report_intent` 选择策略", skill_body)
+        self.assertIn("`source_results` 组织规则", skill_body)
+        self.assertIn("`options` 建议", skill_body)
+        self.assertIn("失败回退", skill_body)
+        self.assertIn("overview", skill_body)
+        self.assertIn("analysis", skill_body)
+        self.assertIn("diagnosis", skill_body)
+        self.assertIn("comparison", skill_body)
+        self.assertIn("custom", skill_body)
+        self.assertIn("top_k: 10", skill_body)
+        self.assertIn("max_sections: 6", skill_body)
+        self.assertIn("include_narrative: true", skill_body)
+        self.assertIn("visualize_subgraph", skill_body)
+
+    def test_reporting_skill_is_not_active_without_report_tool(self) -> None:
+        prompt = build_skills_system_prompt(
+            [
+                {"name": "get_graph_info"},
+                {"name": "degree_analysis"},
+                {"name": "community_detection"},
+            ],
+            graph_state={"loaded": True},
+        )
+
+        self.assertNotIn("graph_statistical_reporting", prompt)
+        role_prompt = build_role_system_prompt("direct", protocol="text")
+        self.assertIn("create_analysis_report", role_prompt)
+        self.assertIn("回退为普通文本总结", role_prompt)
 
     def test_skill_view_loads_full_skill_body(self) -> None:
         result = handle_skill_tool_call("skill_view", {"name": "graph_ml_training"})

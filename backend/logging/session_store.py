@@ -497,6 +497,9 @@ class SessionStore:
                 graphs = rec.get("graphs")
                 if isinstance(graphs, list) and graphs:
                     row["graphs"] = graphs
+                reports = rec.get("reports")
+                if isinstance(reports, list) and reports:
+                    row["reports"] = reports
             rows.append(row)
         return self._merge_assistant_continuations(rows)
 
@@ -535,6 +538,11 @@ class SessionStore:
                 if isinstance(row.get("graphs"), list) and row.get("graphs"):
                     prev_graphs = prev.get("graphs") if isinstance(prev.get("graphs"), list) else []
                     prev["graphs"] = [*prev_graphs, *row["graphs"]]
+                if isinstance(row.get("reports"), list) and row.get("reports"):
+                    prev["reports"] = SessionStore._merge_report_lists(
+                        prev.get("reports"),
+                        row.get("reports"),
+                    )
                 feedback_request = row.get("feedback_request")
                 if isinstance(feedback_request, dict) and feedback_request:
                     attached = SessionStore._attach_feedback_to_solver_step(
@@ -635,6 +643,24 @@ class SessionStore:
         for i, tool in enumerate(fallback_tools):
             if i not in used:
                 merged.append(tool)
+        return merged
+
+    @staticmethod
+    def _merge_report_lists(primary: Any, incoming: Any) -> List[dict]:
+        merged: List[dict] = []
+        seen_ids: set[str] = set()
+        for source in (primary, incoming):
+            if not isinstance(source, list):
+                continue
+            for report in source:
+                if not isinstance(report, dict):
+                    continue
+                report_id = str(report.get("id") or "").strip()
+                if report_id and report_id in seen_ids:
+                    continue
+                merged.append(dict(report))
+                if report_id:
+                    seen_ids.add(report_id)
         return merged
 
     @staticmethod

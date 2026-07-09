@@ -69,11 +69,11 @@ class GraphMLConfigCatalogTest(unittest.TestCase):
 
 
 class ReportingToolCatalogTest(unittest.TestCase):
-    def test_reporting_tool_is_hidden_by_default(self) -> None:
+    def test_reporting_tool_is_visible_by_default(self) -> None:
         with mock.patch.dict(os.environ, {"MCP_ENABLE_REPORTING_TOOLS": ""}):
             names = {tool["name"] for tool in get_all_public_tools(include_graph_ml=False)}
 
-        self.assertNotIn("create_analysis_report", names)
+        self.assertIn("create_analysis_report", names)
 
     def test_reporting_tool_can_be_included_explicitly(self) -> None:
         tools = get_all_public_tools(include_graph_ml=False, include_reporting=True)
@@ -102,6 +102,12 @@ class ReportingToolCatalogTest(unittest.TestCase):
                 tool["name"]
                 for tool in get_all_public_tools(include_graph_ml=False, include_reporting=False)
             }
+
+        self.assertNotIn("create_analysis_report", names)
+
+    def test_reporting_tool_can_be_disabled_by_environment(self) -> None:
+        with mock.patch.dict(os.environ, {"MCP_ENABLE_REPORTING_TOOLS": "off"}):
+            names = {tool["name"] for tool in get_all_public_tools(include_graph_ml=False)}
 
         self.assertNotIn("create_analysis_report", names)
 

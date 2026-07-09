@@ -106,7 +106,7 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertIn("infer", names)
         self.assertIn("visualize_model_architecture", names)
         self.assertIn("load_graph_from_triples", names)
-        self.assertNotIn("create_analysis_report", names)
+        self.assertIn("create_analysis_report", names)
         self.assertNotIn("get_train_config", names)
         self.assertNotIn("get_infer_config", names)
         load_text = next(t for t in tools if t.get("name") == "load_graph_from_text")
