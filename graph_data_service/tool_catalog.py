@@ -16,7 +16,7 @@ import os
 from typing import List
 
 _REPORTING_TOOLS_ENV = "MCP_ENABLE_REPORTING_TOOLS"
-_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 
 # ─────────────────────────────────────────────────────────────────
 # 图分析工具（对外暴露给 LLM）
@@ -1529,7 +1529,10 @@ INTERNAL_TOOLS: List[dict] = [
 
 
 def _reporting_tools_enabled_from_env() -> bool:
-    return os.getenv(_REPORTING_TOOLS_ENV, "").strip().lower() in _TRUE_ENV_VALUES
+    value = os.getenv(_REPORTING_TOOLS_ENV, "").strip().lower()
+    if value in _FALSE_ENV_VALUES:
+        return False
+    return True
 
 
 def get_all_public_tools(

@@ -32,7 +32,7 @@ def build_analysis_report(
     normalized_sources = _normalize_source_results(source_results)
     data_sources = _data_sources(normalized_sources)
     if not data_sources:
-        return {"success": False, "error": "source_results 中没有可用于生成报告的工具结果。"}
+        return {"success": False, "error": "source_results 中没有可用于生成报告的分析事实。"}
 
     limitations: list[str] = []
     sections: list[dict] = []
@@ -53,7 +53,7 @@ def build_analysis_report(
             sections.append(built)
 
     if not sections:
-        limitations.append("当前工具结果可提取的结构化字段有限。")
+        limitations.append("当前可结构化展示的分析事实有限。")
         sections.append(_minimal_section(data_sources))
 
     report = {
@@ -61,7 +61,7 @@ def build_analysis_report(
         "id": _report_id(intent, goal, report_title, normalized_sources, normalized_options),
         "intent": intent,
         "title": report_title,
-        "subtitle": "基于当前可用图分析结果生成",
+        "subtitle": "结构、分布与关键发现摘要",
         "summary": _build_summary(goal, sections, data_sources),
         "sections": sections,
         "data_sources": data_sources,
@@ -233,7 +233,7 @@ def _build_centrality_section(source_results: dict, options: dict) -> dict | Non
     return _section(
         section_id="centrality-ranking",
         title="关键对象",
-        summary=f"基于 {result.get('centrality_type') or 'centrality'} 指标得到的关键节点排序。",
+        summary=f"关键节点按 {result.get('centrality_type') or 'centrality'} 指标排序。",
         metrics=_stats_metrics("中心性", result.get("value_stats") if isinstance(result.get("value_stats"), dict) else {}),
         charts=_compact_list([chart]),
         tables=_compact_list([table]),
@@ -299,15 +299,14 @@ def _build_supplemental_section(source_results: dict, options: dict) -> dict | N
         if source_name in known or not _successful_mapping(result):
             continue
         for key, value in _scalar_items(result).items():
-            rows.append({"source": source_name, "field": key, "value": value})
+            rows.append({"field": key, "value": value})
             if len(rows) >= options["top_k"]:
                 break
     table = _table(
         "补充事实",
         rows,
         [
-            {"key": "source", "label": "来源"},
-            {"key": "field", "label": "字段"},
+            {"key": "field", "label": "指标"},
             {"key": "value", "label": "值"},
         ],
         top_k=options["top_k"],
@@ -317,7 +316,7 @@ def _build_supplemental_section(source_results: dict, options: dict) -> dict | N
     return _section(
         section_id="supplemental-results",
         title="补充分析结果",
-        summary="其他工具结果中的可展示标量事实。",
+        summary="其他可展示的补充事实。",
         tables=[table],
     )
 
@@ -394,11 +393,14 @@ def _minimal_section(data_sources: list[str]) -> dict:
     return _section(
         section_id="available-results",
         title="可用分析结果",
-        summary="当前报告基于已提供的工具结果生成。",
+        summary="当前可展示的结构化内容较少，建议补充图规模、连接分布或关键节点等分析结果。",
         tables=[{
-            "title": "数据来源",
-            "columns": [{"key": "source", "label": "来源"}],
-            "rows": [{"source": name} for name in data_sources],
+            "title": "当前状态",
+            "columns": [{"key": "item", "label": "内容"}, {"key": "value", "label": "说明"}],
+            "rows": [{
+                "item": "可展示事实",
+                "value": f"已识别到 {len(data_sources)} 类分析结果，但缺少可直接图表化的统计字段。",
+            }],
         }],
     )
 
@@ -406,8 +408,8 @@ def _minimal_section(data_sources: list[str]) -> dict:
 def _build_summary(goal: str, sections: list[dict], data_sources: list[str]) -> str:
     if sections:
         section_titles = "、".join(str(s.get("title")) for s in sections[:3] if s.get("title"))
-        return f"围绕“{goal}”，报告基于 {len(data_sources)} 类工具结果生成，覆盖{section_titles}等内容。"
-    return f"围绕“{goal}”，报告基于当前可用工具结果生成。"
+        return f"围绕“{goal}”，报告整理了{section_titles}等核心内容。"
+    return f"围绕“{goal}”，报告整理了当前可展示的分析内容。"
 
 
 def _overview_summary(info: dict) -> str:

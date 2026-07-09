@@ -12,6 +12,7 @@ iGraph — 图分析 Agent 核心
   {"type": "token",          "content": str}
   {"type": "tool_call",      "tool": str, "args": dict, "call_id": str}
   {"type": "tool_result",    "tool": str, "call_id": str}
+  {"type": "analysis_report","call_id": str, "data": {"report": dict}}
   {"type": "done",           "has_graph": bool}
   {"type": "error",          "error": str}
 """
@@ -260,6 +261,7 @@ class IGraph:
         self._tool_selector: Optional[LLMToolSelector] = None
         self._expanded_tool_names: set[str] = set()
         self._visible_graphs_for_turn: List[dict] = []
+        self._visible_reports_for_turn: List[dict] = []
         self._turn_selected_tool_names: set[str] = set()
         self._skill_registry = self._build_skill_registry()
         self._query_analyzer = QueryAnalyzer(provider_gateway=self._provider_gateway)
@@ -1776,12 +1778,53 @@ class IGraph:
             return
         self._visible_graphs_for_turn.append(self._clone_data(graph))
 
+    @staticmethod
+    def _build_report_event(result_str: str, call_id: str = "") -> Optional[dict]:
+        try:
+            payload = json.loads(result_str)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            return None
+        report = payload.get("report")
+        if not isinstance(report, dict) or report.get("version") != "analysis_report.v1":
+            return None
+        return {
+            "type": "analysis_report",
+            "call_id": str(call_id or ""),
+            "data": {"report": copy.deepcopy(report)},
+        }
+
+    def _remember_visible_report(self, report: Optional[dict]) -> None:
+        if not isinstance(report, dict):
+            return
+        if not isinstance(self._visible_reports_for_turn, list):
+            self._visible_reports_for_turn = []
+        report_id = str(report.get("id") or "").strip()
+        if report_id and any(
+            str(item.get("id") or "").strip() == report_id
+            for item in self._visible_reports_for_turn
+            if isinstance(item, dict)
+        ):
+            return
+        self._visible_reports_for_turn.append(self._clone_data(report))
+
     def _prepare_tool_result_for_observation(
         self,
         tool_name: str,
         result_str: str,
         call_id: str = "",
     ) -> tuple[List[dict], str]:
+        if tool_name == "create_analysis_report":
+            try:
+                report_event = self._build_report_event(result_str, call_id=call_id)
+                if report_event is None:
+                    return [], result_str
+                self._remember_visible_report(report_event["data"]["report"])
+                return [report_event], self._summarize_report_result(result_str)
+            except Exception:
+                return [], result_str
+
         if tool_name != "visualize_subgraph":
             return [], result_str
 
@@ -1798,6 +1841,45 @@ class IGraph:
         except Exception:
             events = []
         return events, self._summarize_visualize_result(result_str)
+
+    @staticmethod
+    def _summarize_report_result(result_str: str) -> str:
+        try:
+            payload = json.loads(result_str)
+        except (json.JSONDecodeError, TypeError):
+            return result_str
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            return result_str
+        report = payload.get("report")
+        if not isinstance(report, dict) or report.get("version") != "analysis_report.v1":
+            return result_str
+
+        sections = report.get("sections")
+        sections = sections if isinstance(sections, list) else []
+        metric_count = 0
+        chart_count = 0
+        table_count = 0
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            metrics = section.get("metrics")
+            charts = section.get("charts")
+            tables = section.get("tables")
+            metric_count += len(metrics) if isinstance(metrics, list) else 0
+            chart_count += len(charts) if isinstance(charts, list) else 0
+            table_count += len(tables) if isinstance(tables, list) else 0
+
+        title = str(report.get("title") or "图分析报告").strip()
+        intent = str(report.get("intent") or "analysis").strip()
+        summary = str(report.get("summary") or "").strip()
+        result = (
+            f"图分析报告已生成：标题「{title}」，意图 {intent}，"
+            f"包含 {len(sections)} 个章节、{metric_count} 个指标、"
+            f"{chart_count} 个图表和 {table_count} 个表格。"
+        )
+        if summary:
+            result += f" 摘要：{summary}"
+        return result + " 完整报告已作为 artifact 发送到前端，无需在回答中重复完整数据。"
 
     @staticmethod
     def _summarize_visualize_result(result_str: str) -> str:
@@ -2750,6 +2832,7 @@ class IGraph:
     ):
         await self._ensure_connected()
         self._visible_graphs_for_turn = []
+        self._visible_reports_for_turn = []
 
         request = self._pending_feedback
         if request is None:
@@ -3023,6 +3106,7 @@ class IGraph:
             progress_items=list(run_state.get("progress_items", [])),
             feedback_request=resolved_feedback_request if isinstance(resolved_feedback_request, dict) else None,
             graphs=list(self._visible_graphs_for_turn),
+            reports=list(self._visible_reports_for_turn),
         )
         self.context_manager.update_messages(self.context_manager.messages)
         yield {
@@ -3058,6 +3142,7 @@ class IGraph:
         """实际执行聊天循环。"""
         await self._ensure_connected()
         self._visible_graphs_for_turn = []
+        self._visible_reports_for_turn = []
 
         # Mark new user turn so selected tools and selector cache reset together.
         self._turn_selected_tool_names.clear()
@@ -3204,6 +3289,7 @@ class IGraph:
                 feedback_request=self.pending_feedback(),
                 progress_items=list(run_state.get("progress_items", [])),
                 graphs=list(self._visible_graphs_for_turn),
+                reports=list(self._visible_reports_for_turn),
             )
 
             turn_messages_for_memory = [

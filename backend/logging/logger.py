@@ -416,6 +416,7 @@ class SessionLogger:
         feedback_request: Optional[dict[str, Any]] = None,
         progress_items: Optional[list[dict[str, Any]]] = None,
         graphs: Optional[list[dict[str, Any]]] = None,
+        reports: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         # 仅记录用户可见最终答复，不参与上下文恢复。
         self._append_message_record(
@@ -432,6 +433,7 @@ class SessionLogger:
                 "feedback_request": feedback_request if isinstance(feedback_request, dict) else None,
                 "progress_items": progress_items if isinstance(progress_items, list) else [],
                 "graphs": graphs if isinstance(graphs, list) else [],
+                "reports": reports if isinstance(reports, list) else [],
             },
         )
 
