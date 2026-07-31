@@ -34,6 +34,8 @@ uploads/
 artifacts/
 outputs/
 datasets/
+!graph_data_service/graph_ml/datasets/
+!graph_data_service/graph_ml/datasets/*.py
 *.log
 
 # Local planning docs

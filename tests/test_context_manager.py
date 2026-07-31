@@ -267,9 +267,9 @@ class ContextManagerTests(unittest.TestCase):
     def test_skill_view_loads_full_skill_body(self) -> None:
         result = handle_skill_tool_call("skill_view", {"name": "graph_ml_training"})
         self.assertIsInstance(result, str)
-        self.assertIn("GraphML Training", result)
-        self.assertIn("Rely on the `train` tool schema", result)
-        self.assertIn("confirmation/edit flow", result)
+        self.assertIn("GraphML 训练", result)
+        self.assertIn("依据 `train` 工具 schema 准备参数", result)
+        self.assertIn("高风险确认流程", result)
 
 
 if __name__ == "__main__":

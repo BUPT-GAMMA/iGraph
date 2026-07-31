@@ -358,6 +358,7 @@ class GraphDataService:
 
     def delete_session(self, session_id: str, user_id: str = "") -> None:
         key = self._session_key(session_id, user_id)
+        self._graph_ml.release_session(key)
         self._sessions.pop(key, None)
         self._rag_cache.pop(key, None)
         self._search_index_cache.pop(key, None)
@@ -1554,6 +1555,11 @@ class GraphDataService:
         user_id: str = "",
     ) -> dict:
         runtime_session_id = self._cache_key(session_id, user_id)
+        if tool_name == "load_graph_classification_dataset":
+            return self._graph_ml.load_graph_classification_dataset(
+                runtime_session_id,
+                arguments,
+            )
         if tool_name == "train":
             return self._graph_ml.train(runtime_session_id, arguments, progress_callback=progress_callback)
         if tool_name == "infer":
