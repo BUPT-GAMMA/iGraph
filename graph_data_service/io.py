@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import numpy as np
@@ -356,7 +357,38 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
             "加载 .pt 文件需要安装 PyTorch：pip install torch"
         ) from e
 
-    data = torch.load(path, weights_only=False)
+    data = torch.load(path, map_location="cpu", weights_only=False)
+
+    # Some datasets store multiple graph snapshots as {sample_id: graph_dict}.
+    # GraphData represents one graph, so load the first sample deterministically.
+    if isinstance(data, dict):
+        graph_keys = {
+            "num_nodes",
+            "edge_index",
+            "x",
+            "x_original",
+            "y",
+            "labels",
+        }
+        if not graph_keys.intersection(data) and data:
+            sample_keys = list(data)
+            try:
+                sample_keys.sort()
+            except TypeError:
+                sample_keys.sort(key=lambda key: (type(key).__name__, repr(key)))
+            first_sample = data[sample_keys[0]]
+            if isinstance(first_sample, dict):
+                data = first_sample
+
+        if isinstance(data, dict):
+            normalized = dict(data)
+            if "y" not in normalized and "labels" in normalized:
+                normalized["y"] = normalized["labels"]
+            if "y" not in normalized and "label" in normalized:
+                normalized["y"] = normalized["label"]
+            if "x" not in normalized and "node_feature" in normalized:
+                normalized["x"] = normalized["node_feature"]
+            data = SimpleNamespace(**normalized)
 
     # ── num_nodes ────────────────────────────────────────────────────
     if hasattr(data, "num_nodes") and isinstance(getattr(data, "num_nodes"), int):
@@ -368,9 +400,38 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
     else:
         raise ValueError(f"无法从 .pt 文件确定节点数: {path}")
 
+    # ── node name maps ──────────────────────────────────────────────
+    id2node: Optional[Dict[int, str]] = None
+    node2id: Optional[Dict[str, int]] = None
+    node_index = getattr(data, "node_index", None)
+    if isinstance(node_index, dict):
+        candidate_node2id = {
+            str(node_name): int(node_id)
+            for node_name, node_id in node_index.items()
+        }
+        if (
+            len(candidate_node2id) == num_nodes
+            and set(candidate_node2id.values()) == set(range(num_nodes))
+        ):
+            node2id = candidate_node2id
+            id2node = {node_id: node_name for node_name, node_id in node2id.items()}
+
     # ── edge_index ───────────────────────────────────────────────────
     if hasattr(data, "edge_index") and data.edge_index is not None:
         edge_index = data.edge_index.cpu().numpy().astype(np.int64)
+        if edge_index.ndim != 2:
+            raise ValueError(
+                f".pt 文件中的 edge_index 必须是二维数组，实际 shape={edge_index.shape}: {path}"
+            )
+        if edge_index.shape[0] == 2:
+            pass
+        elif edge_index.shape[1] == 2:
+            edge_index = np.ascontiguousarray(edge_index.T)
+        else:
+            raise ValueError(
+                ".pt 文件中的 edge_index 必须是 [2, E] 或 [E, 2]，"
+                f"实际 shape={edge_index.shape}: {path}"
+            )
     else:
         edge_index = np.empty((2, 0), dtype=np.int64)
 
@@ -432,30 +493,76 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
             break
 
     # ── 划分掩码 ─────────────────────────────────────────────────────
-    def _extract_mask(singular: str, plural: str) -> Optional[np.ndarray]:
-        val = getattr(data, singular, None)
-        if val is not None and isinstance(val, torch.Tensor):
-            return val.cpu().numpy().astype(bool)
-        val = getattr(data, plural, None)
-        if val is not None and isinstance(val, list) and len(val) > 0:
-            m = val[0]
-            if isinstance(m, torch.Tensor):
-                return m.cpu().numpy().astype(bool)
-        return None
+    def _extract_mask(*attrs: str) -> Optional[np.ndarray]:
+        value = None
+        for attr in attrs:
+            candidate = getattr(data, attr, None)
+            if candidate is None:
+                continue
+            if isinstance(candidate, list):
+                if not candidate:
+                    continue
+                candidate = candidate[0]
+            if isinstance(candidate, torch.Tensor):
+                value = candidate.cpu().numpy()
+                break
+
+        if value is None:
+            return None
+
+        value = np.asarray(value)
+        if value.ndim == 2 and 1 in value.shape:
+            value = value.reshape(-1)
+        if value.ndim != 1:
+            raise ValueError(
+                f"{attrs[0]} 必须是一维布尔掩码或节点索引，实际 shape={value.shape}: {path}"
+            )
+
+        if value.shape[0] == num_nodes and (
+            np.issubdtype(value.dtype, np.bool_)
+            or np.all((value == 0) | (value == 1))
+        ):
+            return value.astype(bool)
+
+        if not np.issubdtype(value.dtype, np.integer):
+            raise ValueError(
+                f"{attrs[0]} 长度与节点数不一致时必须是整数节点索引，"
+                f"实际 dtype={value.dtype}, shape={value.shape}: {path}"
+            )
+
+        indices = value.astype(np.int64, copy=False)
+        if indices.size and (indices.min() < 0 or indices.max() >= num_nodes):
+            raise ValueError(
+                f"{attrs[0]} 包含越界节点索引，有效范围为 [0, {num_nodes - 1}]: {path}"
+            )
+        mask = np.zeros(num_nodes, dtype=bool)
+        mask[indices] = True
+        return mask
 
     train_mask = _extract_mask("train_mask", "train_masks")
-    val_mask = _extract_mask("val_mask", "val_masks")
+    val_mask = _extract_mask("val_mask", "valid_mask", "val_masks", "valid_masks")
     test_mask = _extract_mask("test_mask", "test_masks")
 
     # ── name ─────────────────────────────────────────────────────────
     name = os.path.splitext(os.path.basename(path))[0]
 
+    directed = True
+    if hasattr(data, "is_directed"):
+        if callable(data.is_directed):
+            directed = data.is_directed()
+        else:
+            directed = bool(data.is_directed)
+    elif hasattr(data, "directed"):
+        directed = bool(data.directed)
+
     return graph_cls(
         num_nodes=num_nodes,
         edge_index=edge_index,
+        id2node=id2node,
+        node2id=node2id,
         node_feat=node_feat,
         edge_feat=edge_feat,
-        directed=True,
+        directed=directed,
         name=name,
         node_label=node_label,
         node_text=node_text,
