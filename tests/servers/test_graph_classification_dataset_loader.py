@@ -108,6 +108,7 @@ class GraphClassificationDatasetLoaderTest(unittest.TestCase):
         self.assertEqual(bundle.metric, "roc_auc")
         self.assertEqual(bundle.num_tasks, 1)
         self.assertEqual(bundle.fingerprint, expected_fingerprint)
+        self.assertEqual(bundle.metadata["missing_label_rate"], 0.0)
         self.assertEqual(bundle.dataset_id, f"gds_{expected_fingerprint[:8]}")
         self.assertEqual(bundle.split_indices, {"train": [0, 1, 2, 3], "val": [4], "test": [5]})
         self.assertEqual(bundle.node_vocab_size, 4)

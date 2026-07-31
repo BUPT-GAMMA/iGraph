@@ -11,6 +11,7 @@ from torch_geometric.data import Batch
 from graph_data_service.graph_ml.datasets import (
     GraphClassificationDatasetBundle,
     build_graph_classification_dataloaders,
+    graph_classification_readiness_for_dataset,
     load_graph_classification_dataset,
     validate_graph_classification_batch,
 )
@@ -74,6 +75,19 @@ def _graph_order(loader) -> list[int]:
 
 
 class GraphClassificationBatchingTest(unittest.TestCase):
+    def test_dataset_readiness_is_separate_and_reports_missing_label_rate(self) -> None:
+        bundle = _make_bundle("pcba", num_graphs=10)
+        readiness = graph_classification_readiness_for_dataset(bundle)
+
+        self.assertTrue(readiness["supported"])
+        self.assertEqual(readiness["reason"], "ready")
+        self.assertEqual(readiness["num_graphs"], 10)
+        self.assertEqual(readiness["num_tasks"], 128)
+        self.assertEqual(readiness["split_sizes"], {"train": 8, "val": 1, "test": 1})
+        self.assertEqual(readiness["metric"], "ap")
+        self.assertAlmostEqual(readiness["missing_label_rate"], 1 / (10 * 128))
+        self.assertFalse(readiness["uses_edge_features"])
+
     def test_safe_loader_output_flows_directly_into_pcba_batching(self) -> None:
         old_data_root = os.environ.get("IGRAPH_DATA_ROOT")
         try:

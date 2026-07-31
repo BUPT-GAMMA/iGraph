@@ -25,6 +25,7 @@ from backend.runtime.dotenv_compat import load_dotenv_compat
 from mcp_service.config import MCPConfig
 from mcp_service.graph_data_client import GraphDataClient
 from mcp_service.session_registry import SessionRegistry
+from mcp_service.tool_forwarding import forwarded_graph_tool_arguments
 
 load_dotenv_compat()
 
@@ -94,18 +95,11 @@ def _service_logger(session_id: str, service: str, user_id: str = ""):
 async def _invoke_graph_tool(tool_name: str, ctx: Context, arguments: dict) -> str:
     sid = _sid(ctx)
     user_id = _uid(ctx)
-    forwarded_arguments = dict(arguments or {})
-    if tool_name == "train":
-        algo_config = forwarded_arguments.get("algo_config")
-        if not isinstance(algo_config, dict):
-            algo_config = {}
-        forwarded_arguments["algo_config"] = {
-            **algo_config,
-            "__igraph_async_job": True,
-        }
+    forwarded_arguments = forwarded_graph_tool_arguments(tool_name, arguments)
+
     mcp_log = _service_logger(sid, "mcp", user_id=user_id)
     mcp_log.request(tool_name, forwarded_arguments)
-    if tool_name in {"train", "infer"}:
+    if tool_name in {"load_graph_classification_dataset", "train", "infer"}:
         mcp_log.event(
             "GRAPH_DATA_FORWARD",
             tool=tool_name,

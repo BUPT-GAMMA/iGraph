@@ -24,7 +24,13 @@ GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS = _env_float(
     "GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS",
     900.0,
 )
-_GRAPH_DATA_HEAVY_TOOLS = {"train", "infer", "load_graph_from_text", "load_graph_from_upload"}
+_GRAPH_DATA_HEAVY_TOOLS = {
+    "load_graph_classification_dataset",
+    "train",
+    "infer",
+    "load_graph_from_text",
+    "load_graph_from_upload",
+}
 
 
 def _retry_delay(attempt: int) -> float:
@@ -200,7 +206,7 @@ class GraphDataClient:
                 last_error = _exception_message(e)
                 # Never retry on timeout: the server-side task is still running;
                 # retrying only piles up more tasks and worsens CPU contention.
-                retry_note = "；未重试以避免重复执行训练/推理" if is_heavy_tool else ""
+                retry_note = "；未重试以避免重复执行重型工具" if is_heavy_tool else ""
                 return {
                     "success": False,
                     "error": (

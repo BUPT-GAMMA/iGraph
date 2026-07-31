@@ -257,6 +257,7 @@ class GraphMLDatasetStoreTest(unittest.TestCase):
         )
         self.assertTrue(result["success"])
         self.assertEqual(result["dataset"]["dataset_id"], "gds_module")
+        self.assertTrue(result["readiness"]["supported"])
 
         module._ensure_runtime()
         self.assertIs(module._trainer._dataset_store, store)

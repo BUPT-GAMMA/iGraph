@@ -12,13 +12,13 @@
 | 路径、流与生成树 | 5 | 7 |
 | 全局结构分析 | 7 | 27 |
 | 子图与高级分析 | 5 | 18 |
-| 图机器学习 | 3 | 11 |
+| 图机器学习 | 4 | 16 |
 | 作业管理 | 2 | 2 |
 | Agent 虚拟工具 | 10 | 10 |
 | 内部会话工具（不对 LLM 暴露） | 2 | 2 |
-| **合计** | **53** | **96** |
+| **合计** | **54** | **101** |
 
-> **算法计数规则**：一个工具下若提供多个可选方法（method / algorithm / centrality_type / metric 等枚举参数），每个枚举值计为一个独立算法。`shortest_path` 按 BFS / Dijkstra / Yen-K 计 3 种；`train` 按 GCN/GAT/SAGE×node_classification + GCN/GAT/SAGE×link_prediction + Node2Vec pretrain 计 7 种；`infer` 按 3 种任务类型计 3 种。
+> **算法计数规则**：一个工具下若提供多个可选方法（method / algorithm / centrality_type / metric 等枚举参数），每个枚举值计为一个独立算法。`shortest_path` 按 BFS / Dijkstra / Yen-K 计 3 种；`train` 按 GCN/GAT/SAGE×node_classification + GCN/GAT/SAGE×link_prediction + GCN/GAT/SAGE×graph_classification + Node2Vec pretrain 计 10 种；`infer` 按 4 种任务类型计 4 种。
 
 ## 复杂度符号
 
@@ -46,7 +46,7 @@
 - 路径、流与生成树（5，7 算法）：`shortest_path`、`all_shortest_paths`、`maximum_flow`、`minimum_cut`、`minimum_spanning_tree`
 - 全局结构分析（7，27 算法）：`community_detection`、`node_centrality`、`graph_connectivity`、`find_cycles`、`topological_sort`、`degree_analysis`、`global_metrics`
 - 子图与高级分析（5，18 算法）：`subgraph_extraction`、`link_prediction_score`、`path_analysis`、`clique_analysis`、`reachability`
-- 图机器学习（3，11 算法）：`train`、`infer`、`visualize_model_architecture`
+- 图机器学习（4，16 算法）：`load_graph_classification_dataset`、`train`、`infer`、`visualize_model_architecture`
 - 作业管理（2）：`get_job_status`、`cancel_job`
 - Agent 虚拟工具（10）：`tool_select`、`tool_expand`、`request_user_feedback`、`skills_list`、`skill_view`、`skill_manage`、`memory_read`、`memory_write`、`memory_update`、`memory_delete`
 - 内部会话工具（2，不对 LLM 暴露）：`register_session`、`delete_graph_session`
@@ -386,10 +386,18 @@
 
 > GraphML 工具依赖 PyTorch 和 PyTorch Geometric，需可选安装。支持 3 种 GNN 架构（GCN / GAT / GraphSAGE）和 1 种预训练方法（Node2Vec）。
 
+#### `load_graph_classification_dataset`
+
+- 功能：从当前会话已注册上传中安全加载 HIV/PCBA 多图 `.pt`，生成 fingerprint、绑定独立 DatasetStore，并返回 dataset readiness。多图文件不能使用单图 `load_graph_from_upload`。
+- 算法数：1。
+- 时间复杂度：`O(file_size + total_nodes + total_edges + total_labels)`。
+- 空间复杂度：`O(dataset_size)`；受 `GRAPH_ML_MAX_RESIDENT_DATASETS` 常驻上限约束。
+- 返回内容：异步 `job_id`；完成结果含 `dataset_id`、fingerprint、图/任务数、split、metric、缺失标签率和词表大小。
+
 #### `train`
 
-- 功能：发起图机器学习训练，支持 3 种任务类型 × 3 种 GNN 架构（节点分类和链路预测），以及 Node2Vec 预训练。模型/方法和超参由 `model`、`method`、`data`、`train_config`、`algo_config` 指定；可异步执行。
-- 算法数：7（GCN/GAT/SAGE × node_classification、GCN/GAT/SAGE × link_prediction、Node2Vec pretrain）
+- 功能：发起图机器学习训练，支持节点分类、链路预测、整图分类，以及 Node2Vec 预训练。模型/方法和超参由 `model`、`method`、`data`、`train_config`、`algo_config` 指定；可异步执行。
+- 算法数：10（GCN/GAT/SAGE × node_classification、link_prediction、graph_classification，以及 Node2Vec pretrain）
 - 时间复杂度：GNN 类训练通常约 `O(epoch*(V+E)*hidden_dim*num_layers)`；Node2Vec 预训练约 `O(V*walks_per_node*walk_length)` 加优化训练成本。
 - 空间复杂度：`O(V*feature_dim + E + model_params + optimizer_state)`。
 - 返回内容：同步训练返回 `success`、`task`、`model_id`、`model`、`method`、`graph_version`、训练指标、模型元信息和 artifact 路径摘要；异步训练返回 `async=true`、`job_id`、`status=queued` 和提示。
@@ -398,15 +406,16 @@
 |------|----------|------|
 | `node_classification` | GCN / GAT / GraphSAGE | 有监督节点分类 |
 | `link_prediction` | GCN / GAT / GraphSAGE | 有监督链路预测 |
+| `graph_classification` | GCN / GAT / GraphSAGE | HIV ROC-AUC / PCBA 128 任务 AP |
 | `pretrain` | Node2Vec | 无监督节点 embedding 预训练 |
 
 #### `infer`
 
-- 功能：使用已训练模型执行节点分类、链接预测或 embedding/pretrain 推理。
-- 算法数：3（node_classification、link_prediction、pretrain，由模型决定）
+- 功能：使用已训练模型执行节点分类、链接预测、整图分类或 embedding/pretrain 推理。图分类支持完整 split 指标和指定 `graph_indices`；PCBA 默认只返回 top-k 任务概率。
+- 算法数：4（node_classification、link_prediction、graph_classification、pretrain，由模型决定）
 - 时间复杂度：GNN 前向约 `O(V+E)`；指定少量节点/边时仍可能需要整图 embedding；链接预测候选边打分约 `O(K*embedding_dim)`。
 - 空间复杂度：`O(V*embedding_dim + model_params)`。
-- 返回内容：包含 `success`、`task`、`model_id`、`graph_version`、`mode`；节点分类返回 `evaluation` 和 `predictions`/`sample_predictions`；链接预测返回 `predictions` 或 `top_predictions`；pretrain 返回 embedding 样本或节点 embedding。
+- 返回内容：包含 `success`、`task`、`model_id` 和 `mode`；图分类返回 dataset 信息、完整集合 `evaluation` 和分页 `predictions`，其他任务保持原有返回。
 
 #### `visualize_model_architecture`
 
@@ -560,8 +569,9 @@
 | 高级分析 | `path_analysis` | **3** | 简单路径/可达/平均最短路 | `O(V+E)` 到指数级 | `O(V+E)` | 路径、布尔值或标量 |
 | 高级分析 | `clique_analysis` | **3** | 团分析（find_cliques/clique_number/number_of_cliques） | 最坏 `O(3^(V/3))` | 最坏与团数量同阶 | 团预览、最大团或团计数 |
 | 高级分析 | `reachability` | **3** | 后代/祖先/传递闭包 | `O(V+E)` 或 `O(V*(V+E))` | `O(V)` 或 `O(V^2)` | 节点/边预览和总数 |
-| GraphML | `train` | **7** | 图机器学习训练（GCN/GAT/SAGE × 节点分类+链路预测，Node2Vec 预训练） | `O(epoch*(V+E)*model_cost)` | `O(V*dim+E+params)` | 模型 ID、指标、元信息或异步 job |
-| GraphML | `infer` | **3** | 图机器学习推理（节点分类/链路预测/pretrain） | `O(V+E+K*dim)` | `O(V*dim+params)` | 评估、预测、embedding 样本 |
+| GraphML | `load_graph_classification_dataset` | 1 | 安全加载并绑定 HIV/PCBA 多图数据 | `O(file_size+Σ(V+E)+labels)` | `O(dataset_size)` | 异步 job、dataset 摘要和 readiness |
+| GraphML | `train` | **10** | 图机器学习训练（GCN/GAT/SAGE × 节点/链路/整图分类，Node2Vec 预训练） | `O(epoch*(V+E)*model_cost)` | `O(V*dim+E+params)` | 模型 ID、指标、元信息或异步 job |
+| GraphML | `infer` | **4** | 图机器学习推理（节点/链路/整图分类/pretrain） | `O(V+E+K*dim)` | `O(V*dim+params)` | 评估、预测、embedding 样本 |
 | GraphML | `visualize_model_architecture` | 1 | 模型结构可视化 | `O(model_layers)` | `O(model_layers)` | Mermaid、层级摘要、超参 |
 | 作业管理 | `get_job_status` | 1 | 查询异步作业 | `O(P_pending)` | `O(P_pending)` | job 状态和进度更新 |
 | 作业管理 | `cancel_job` | 1 | 取消异步作业 | `O(1)` | `O(1)` | 取消状态、job ID |

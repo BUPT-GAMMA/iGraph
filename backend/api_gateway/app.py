@@ -251,7 +251,12 @@ GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS = _env_float(
     "GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS",
     900.0,
 )
-_GRAPH_DATA_HEAVY_TOOLS = {"train", "infer", "load_graph_from_text"}
+_GRAPH_DATA_HEAVY_TOOLS = {
+    "load_graph_classification_dataset",
+    "train",
+    "infer",
+    "load_graph_from_text",
+}
 
 
 def _graph_data_retry_delay(attempt: int) -> float:
@@ -756,8 +761,14 @@ class ApiGatewayServer:
         hints: List[str] = []
         for n in names:
             ext = os.path.splitext(n)[1].lower()
-            if ext in (".npz", ".pt"):
-                hints.append(f"- {n}（二进制图文件，调用 load_graph_from_upload）")
+            if ext == ".pt":
+                hints.append(
+                    f"- {n}（若为 HIV/PCBA 或多图图分类数据集，调用 "
+                    "load_graph_classification_dataset；若为普通单图，调用 "
+                    "load_graph_from_upload）"
+                )
+            elif ext == ".npz":
+                hints.append(f"- {n}（二进制单图文件，调用 load_graph_from_upload）")
             elif ext in (".csv", ".tsv", ".edgelist"):
                 hints.append(f"- {n}（表格/边列表，调用 load_graph_from_upload）")
             elif ext == ".json":

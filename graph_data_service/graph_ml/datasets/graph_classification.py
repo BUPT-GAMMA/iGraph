@@ -76,6 +76,7 @@ class GraphClassificationDatasetBundle:
             "node_vocab_size": self.node_vocab_size,
             "edge_vocab_size": self.edge_vocab_size,
             "has_missing_labels": bool(self.metadata.get("has_missing_labels", False)),
+            "missing_label_rate": float(self.metadata.get("missing_label_rate", 0.0)),
             "num_edgeless_graphs": int(self.metadata.get("num_edgeless_graphs", 0)),
         }
 
@@ -230,6 +231,8 @@ def _validate_and_normalize_payload(
     max_node_category = -1
     max_edge_category = -1
     has_missing_labels = False
+    num_total_labels = 0
+    num_missing_labels = 0
     num_edgeless_graphs = 0
     total_graphs = len(graphs)
     _emit_progress(progress_callback, "validate_graphs", 0, total_graphs, "正在校验图样本")
@@ -297,10 +300,14 @@ def _validate_and_normalize_payload(
         if y.dtype == torch.bool or torch.is_complex(y):
             raise ValueError(f"graphs[{graph_index}].y 必须是数值标签 Tensor")
         y_float = y.detach().cpu().to(dtype=torch.float32).reshape(-1)
+        missing_mask = torch.isnan(y_float)
+        missing_count = int(missing_mask.sum().item())
+        num_total_labels += int(y_float.numel())
+        num_missing_labels += missing_count
         if torch.isinf(y_float).any().item():
             raise ValueError(f"graphs[{graph_index}].y 不能包含无穷值")
         invalid_labels = (
-            ~torch.isnan(y_float)
+            ~missing_mask
             & (y_float != 0)
             & (y_float != 1)
         )
@@ -308,7 +315,7 @@ def _validate_and_normalize_payload(
             raise ValueError(
                 f"graphs[{graph_index}].y 只能包含 0、1 或 NaN"
             )
-        if torch.isnan(y_float).any().item():
+        if missing_count:
             has_missing_labels = True
 
         graph_num_tasks = int(y_float.numel())
@@ -370,6 +377,11 @@ def _validate_and_normalize_payload(
         "source_size_bytes": int(source_size_bytes),
         "source_mtime_ns": int(source_mtime_ns),
         "has_missing_labels": has_missing_labels,
+        "num_total_labels": num_total_labels,
+        "num_missing_labels": num_missing_labels,
+        "missing_label_rate": (
+            num_missing_labels / num_total_labels if num_total_labels else 0.0
+        ),
         "num_edgeless_graphs": num_edgeless_graphs,
         "uses_edge_features": False,
     }
@@ -541,9 +553,55 @@ def _emit_progress(
         return
     callback(
         {
+            "kind": (
+                "graph_classification_dataset_load_done"
+                if stage == "complete"
+                else "graph_classification_dataset_load_progress"
+            ),
             "stage": stage,
             "current": int(current),
             "total": int(total),
+            "progress": (
+                max(0.0, min(1.0, float(current) / float(total)))
+                if total > 0
+                else 0.0
+            ),
             "message": message,
         }
     )
+
+
+def graph_classification_readiness_for_dataset(
+    bundle: GraphClassificationDatasetBundle,
+) -> Dict[str, Any]:
+    """Return dataset-level readiness without mixing it into single-graph state."""
+    if not isinstance(bundle, GraphClassificationDatasetBundle):
+        raise ValueError("graph classification readiness 需要已校验的数据集 bundle")
+    total_labels = bundle.metadata.get("num_total_labels")
+    missing_labels = bundle.metadata.get("num_missing_labels")
+    if not isinstance(total_labels, int) or not isinstance(missing_labels, int):
+        total_labels = 0
+        missing_labels = 0
+        for graph in bundle.graphs:
+            labels = graph.y.detach().cpu().reshape(-1)
+            total_labels += int(labels.numel())
+            missing_labels += int(torch.isnan(labels).sum().item())
+    missing_label_rate = (
+        float(missing_labels) / float(total_labels) if total_labels else 0.0
+    )
+    return {
+        "supported": True,
+        "reason": "ready",
+        "dataset_id": bundle.dataset_id,
+        "dataset_name": bundle.name,
+        "num_graphs": len(bundle.graphs),
+        "num_tasks": bundle.num_tasks,
+        "split_sizes": {
+            split: len(indices) for split, indices in bundle.split_indices.items()
+        },
+        "metric": bundle.metric,
+        "missing_label_rate": missing_label_rate,
+        "node_vocab_size": bundle.node_vocab_size,
+        "edge_vocab_size": bundle.edge_vocab_size,
+        "uses_edge_features": bool(bundle.metadata.get("uses_edge_features", False)),
+    }

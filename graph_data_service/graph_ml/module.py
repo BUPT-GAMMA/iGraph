@@ -15,7 +15,11 @@ from graph_data_service.session import GraphSession
 
 from .artifact_store import ArtifactStore
 from .config_catalog import model_architecture_view
-from .datasets import GraphClassificationDatasetBundle, GraphMLDatasetStore
+from .datasets import (
+    GraphClassificationDatasetBundle,
+    GraphMLDatasetStore,
+    graph_classification_readiness_for_dataset,
+)
 from .schemas import (
     InferRequest,
     LoadGraphClassificationDatasetRequest,
@@ -83,6 +87,7 @@ class GraphMLModule:
         self,
         session_id: str,
         payload: Dict[str, Any],
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
         req = LoadGraphClassificationDatasetRequest.model_validate(payload)
         session = self._get_session(session_id)
@@ -91,10 +96,12 @@ class GraphMLModule:
             session,
             req.filename,
             req.dataset_profile,
+            progress_callback=progress_callback,
         )
         return {
             "success": True,
             "dataset": bundle.to_summary(),
+            "readiness": graph_classification_readiness_for_dataset(bundle),
         }
 
     def resolve_graph_classification_dataset(
@@ -121,7 +128,12 @@ class GraphMLModule:
             raise ValueError(f"模型不存在: {req.model_id}")
         meta = self._store.load_json(ref.model_dir, "meta.json")
         task = str(meta.get("task", "")).strip()
-        if task not in {"node_classification", "link_prediction", "pretrain"}:
+        if task not in {
+            "node_classification",
+            "link_prediction",
+            "graph_classification",
+            "pretrain",
+        }:
             raise ValueError(f"模型 task 不支持结构可视化: {task}")
         return model_architecture_view(
             task=task,
