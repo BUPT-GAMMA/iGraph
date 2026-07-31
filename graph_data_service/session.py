@@ -371,7 +371,12 @@ class GraphSession:
                 continue
             self._session_dir.mkdir(parents=True, exist_ok=True)
             self._snapshots_dir.mkdir(parents=True, exist_ok=True)
-            for name in ("graph_current.npz", "session_meta.json", "dataset_binding.json"):
+            for name in (
+                "graph_current.npz",
+                "session_meta.json",
+                "dataset_binding.json",
+                "graph_ml_dataset_binding.json",
+            ):
                 src = legacy_dir / name
                 if src.exists() and not (self._session_dir / name).exists():
                     shutil.copy2(src, self._session_dir / name)
@@ -654,6 +659,62 @@ class GraphSession:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+
+    def bind_graph_ml_dataset(
+        self,
+        *,
+        dataset_id: str,
+        source_filename: str,
+        fingerprint: str,
+        dataset_profile: str,
+    ) -> None:
+        """Persist the independent graph-classification dataset binding."""
+        values = {
+            "dataset_id": str(dataset_id or "").strip(),
+            "source_filename": str(source_filename or "").strip(),
+            "fingerprint": str(fingerprint or "").strip(),
+            "dataset_profile": str(dataset_profile or "").strip().lower(),
+        }
+        missing = [name for name, value in values.items() if not value]
+        if missing:
+            raise ValueError("图分类数据集绑定缺少字段: " + ", ".join(missing))
+        if values["dataset_profile"] not in {"hiv", "pcba"}:
+            raise ValueError("图分类数据集绑定 profile 必须是 hiv 或 pcba")
+
+        path = self._session_dir / "graph_ml_dataset_binding.json"
+        temp_path = self._session_dir / ".graph_ml_dataset_binding.json.tmp"
+        temp_path.write_text(
+            json.dumps(values, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+
+    def load_graph_ml_dataset_binding(self) -> dict:
+        path = self._session_dir / "graph_ml_dataset_binding.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        required = {
+            "dataset_id",
+            "source_filename",
+            "fingerprint",
+            "dataset_profile",
+        }
+        if not required.issubset(payload):
+            return {}
+        if not all(
+            isinstance(payload[key], str) and payload[key].strip()
+            for key in required
+        ):
+            return {}
+        if payload["dataset_profile"] not in {"hiv", "pcba"}:
+            return {}
+        return {key: payload[key] for key in sorted(required)}
 
     @classmethod
     def discover_restorable_sessions(cls) -> list[str]:

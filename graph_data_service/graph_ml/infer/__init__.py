@@ -12,6 +12,7 @@ import torch
 from graph_data_service.graph_data import GraphData
 
 from ..artifact_store import ArtifactStore
+from ..datasets import GraphMLDatasetStore
 from ..device_utils import select_best_gpu
 from ..schemas import InferRequest
 from ..tasks import base_node_features, node_names
@@ -25,9 +26,11 @@ class GraphMLInferencer:
         self,
         graph_loader: Callable[[str], Tuple[int, GraphData]],
         store: ArtifactStore,
+        dataset_store: GraphMLDatasetStore | None = None,
     ) -> None:
         self._graph_loader = graph_loader
         self._store = store
+        self._dataset_store = dataset_store
         self._node_infer = NodeClassificationInfer(store)
         self._link_infer = LinkPredictionInfer(store)
         self._pre_infer = PreTrainInfer(store)

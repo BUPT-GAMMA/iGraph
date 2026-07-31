@@ -15,8 +15,10 @@ from graph_data_service.session import GraphSession
 
 from .artifact_store import ArtifactStore
 from .config_catalog import model_architecture_view
+from .datasets import GraphClassificationDatasetBundle, GraphMLDatasetStore
 from .schemas import (
     InferRequest,
+    LoadGraphClassificationDatasetRequest,
     TrainRequest,
     VisualizeArchitectureRequest,
 )
@@ -33,8 +35,10 @@ class GraphMLModule:
         self,
         get_session: Callable[[str], GraphSession],
         artifact_root: str | None = None,
+        dataset_store: GraphMLDatasetStore | None = None,
     ) -> None:
         self._get_session = get_session
+        self._dataset_store = dataset_store or GraphMLDatasetStore()
         store = ArtifactStore(artifact_root or os.getenv("GRAPH_ML_ARTIFACT_ROOT", "artifacts/graph_ml"))
         self._store = store
         self._trainer = None
@@ -46,8 +50,16 @@ class GraphMLModule:
         from .infer import GraphMLInferencer
         from .trainer import GraphMLTrainer
 
-        self._trainer = GraphMLTrainer(graph_loader=self._load_graph_snapshot, store=self._store)
-        self._inferencer = GraphMLInferencer(graph_loader=self._load_graph_snapshot, store=self._store)
+        self._trainer = GraphMLTrainer(
+            graph_loader=self._load_graph_snapshot,
+            store=self._store,
+            dataset_store=self._dataset_store,
+        )
+        self._inferencer = GraphMLInferencer(
+            graph_loader=self._load_graph_snapshot,
+            store=self._store,
+            dataset_store=self._dataset_store,
+        )
 
     def _load_graph_snapshot(self, session_id: str) -> Tuple[int, GraphData]:
         session = self._get_session(session_id)
@@ -62,10 +74,53 @@ class GraphMLModule:
         payload: Dict[str, Any],
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
+        req = TrainRequest.model_validate(payload)
+        if req.task == "graph_classification":
+            from .tasks import validate_train_request
+
+            bound_dataset_id = self._dataset_store.current_dataset_id(session_id)
+            dataset_id = validate_train_request(
+                req,
+                bound_graph_classification_dataset_id=bound_dataset_id,
+            )
+            self._dataset_store.resolve_for_session(session_id, dataset_id)
+            raise ValueError(
+                "graph_classification 请求契约已通过校验"
+                f"（dataset_id={dataset_id}），但图分类训练器尚未接入"
+            )
+
         self._ensure_runtime()
         assert self._trainer is not None
-        req = TrainRequest.model_validate(payload)
         return self._trainer.train(session_id, req, progress_callback=progress_callback)
+
+    def load_graph_classification_dataset(
+        self,
+        session_id: str,
+        payload: Dict[str, Any],
+    ) -> dict:
+        req = LoadGraphClassificationDatasetRequest.model_validate(payload)
+        session = self._get_session(session_id)
+        bundle = self._dataset_store.load(
+            session_id,
+            session,
+            req.filename,
+            req.dataset_profile,
+        )
+        return {
+            "success": True,
+            "dataset": bundle.to_summary(),
+        }
+
+    def resolve_graph_classification_dataset(
+        self,
+        session_id: str,
+        dataset_id: str | None = None,
+    ) -> GraphClassificationDatasetBundle:
+        """Shared resolution entry point for graph-classification train/infer."""
+        return self._dataset_store.resolve_for_session(session_id, dataset_id)
+
+    def release_session(self, session_id: str) -> bool:
+        return self._dataset_store.release_session(session_id)
 
     def infer(self, session_id: str, payload: Dict[str, Any]) -> dict:
         self._ensure_runtime()

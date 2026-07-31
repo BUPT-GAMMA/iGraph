@@ -1163,6 +1163,11 @@ _GNN_ALGO_CONFIG_SCHEMA: dict = {
             "default": "auto",
         },
         "hidden_dim": {"type": "integer", "description": "GNN 隐藏层维度。", "default": 64},
+        "node_embedding_dim": {
+            "type": "integer",
+            "description": "图分类节点类别 Embedding 维度。",
+            "default": 64,
+        },
         "embedding_dim": {"type": "integer", "description": "输出 embedding 维度。", "default": 64},
         "num_layers": {"type": "integer", "description": "GNN 层数，最少 2。", "default": 2},
         "dropout": {"type": "number", "description": "dropout 比例。", "default": 0.2},
@@ -1229,8 +1234,15 @@ _TRAIN_DATA_CONFIG_SCHEMA: dict = {
                 "maxItems": 2,
             },
         },
+        "dataset_id": {
+            "type": "string",
+            "description": (
+                "图分类数据集 ID；未传时使用当前会话通过 "
+                "load_graph_classification_dataset 绑定的数据集。"
+            ),
+        },
     },
-    "additionalProperties": True,
+    "additionalProperties": False,
 }
 
 _TRAIN_CONFIG_SCHEMA: dict = {
@@ -1264,6 +1276,18 @@ _TRAIN_CONFIG_SCHEMA: dict = {
             "description": "早停最小提升阈值。",
             "default": 0.0,
         },
+        "batch_size": {
+            "type": "integer",
+            "description": "图分类 mini-batch 大小；现有单图任务忽略。",
+            "default": 64,
+            "minimum": 1,
+        },
+        "num_workers": {
+            "type": "integer",
+            "description": "图分类 DataLoader worker 数，默认 0。",
+            "default": 0,
+            "minimum": 0,
+        },
     },
     "additionalProperties": True,
 }
@@ -1280,7 +1304,12 @@ _INFER_QUERY_SCHEMA: dict = {
         "split": {
             "type": "string",
             "enum": ["train", "val", "test"],
-            "description": "节点分类按划分集合推理。",
+            "description": "节点分类或图分类按划分集合推理。",
+        },
+        "graph_indices": {
+            "type": "array",
+            "description": "图分类指定数据集内的图索引。",
+            "items": {"type": "integer", "minimum": 0},
         },
         "edges": {
             "type": "array",
@@ -1308,6 +1337,12 @@ _INFER_CONFIG_SCHEMA: dict = {
     "description": "推理配置。不同任务使用不同字段，未使用字段可省略。",
     "properties": {
         "return_prob": {"type": "boolean", "description": "是否返回概率。", "default": True},
+        "batch_size": {
+            "type": "integer",
+            "description": "图分类推理 mini-batch 大小。",
+            "default": 128,
+            "minimum": 1,
+        },
         "allow_version_mismatch": {
             "type": "boolean",
             "description": "是否允许模型图版本与当前图版本不一致。",
@@ -1350,6 +1385,38 @@ _INFER_CONFIG_SCHEMA: dict = {
 
 GRAPH_ML_TOOLS: List[dict] = [
     {
+        "name": "load_graph_classification_dataset",
+        "description": (
+            "从当前会话已注册的上传文件中加载多图图分类数据集。\n\n"
+            "该工具专用于 HIV/PCBA 等多图 `.pt` 文件；普通单图仍使用 "
+            "`load_graph_from_upload`。\n\n"
+            "参数:\n"
+            "- filename: 当前会话中已注册的上传文件名，不接受任意路径。\n"
+            "- dataset_profile: auto / hiv / pcba，默认 auto。\n\n"
+            "返回:\n"
+            "- 数据集 ID、指纹、图数量、任务数、指标、划分大小和类别词表大小。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "当前会话中已注册的多图 .pt 文件名",
+                    "minLength": 1,
+                },
+                "dataset_profile": {
+                    "type": "string",
+                    "enum": ["auto", "hiv", "pcba"],
+                    "description": "数据集契约，默认自动识别。",
+                    "default": "auto",
+                },
+            },
+            "required": ["filename"],
+            "additionalProperties": False,
+        },
+        "category": "graph_ml",
+    },
+    {
         "name": "visualize_model_architecture",
         "description": (
             "可视化模型结构（返回 Mermaid 与层级摘要）。\n\n"
@@ -1372,7 +1439,8 @@ GRAPH_ML_TOOLS: List[dict] = [
         "description": (
             "发起图机器学习训练任务（GraphML）。\n\n"
             "参数:\n"
-            "- task: 任务类型，可选 `node_classification` / `link_prediction` / `pretrain`。\n"
+            "- task: 任务类型，可选 `node_classification` / `link_prediction` / "
+            "`graph_classification` / `pretrain`。\n"
             "- model(可选): 模型名称。\n"
             "- method(可选): 训练方法或 pipeline 名称。\n"
             "- graph_version(可选): 指定图版本；不传则由服务端决定默认版本。\n"
@@ -1388,7 +1456,12 @@ GRAPH_ML_TOOLS: List[dict] = [
             "properties": {
                 "task": {
                     "type": "string",
-                    "enum": ["node_classification", "link_prediction", "pretrain"],
+                    "enum": [
+                        "node_classification",
+                        "link_prediction",
+                        "graph_classification",
+                        "pretrain",
+                    ],
                     "description": "任务类型",
                 },
                 "model": {"type": "string", "description": "模型名称（可选）"},

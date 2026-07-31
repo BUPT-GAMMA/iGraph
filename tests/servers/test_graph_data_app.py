@@ -4,7 +4,9 @@ import asyncio
 import os
 import threading
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 import numpy as np
 
 from fastapi.testclient import TestClient
@@ -15,18 +17,49 @@ from graph_data_service.graph_data import GraphData
 
 class GraphDataAppTest(unittest.TestCase):
     def setUp(self) -> None:
-        async def fake_text_graph_llm(_prompt: str) -> str:
+        async def fake_text_graph_llm(prompt: str) -> str:
+            if "文件内容样本" in prompt:
+                if "A B 1" in prompt:
+                    return (
+                        '{"format":"edge_list","separator":"space",'
+                        '"reason":"weighted edge rows","extraction_goal":"无"}'
+                    )
+                return (
+                    '{"format":"freetext","separator":null,'
+                    '"reason":"natural language","extraction_goal":"extract entities and relations"}'
+                )
             return (
-                '{"triples": ['
-                '{"source":"Alice","relation":"knows","target":"Bob","confidence":0.91,'
-                '"evidence":"Alice knows Bob."},'
-                '{"source":"Bob","relation":"works at","target":"OpenAI","confidence":0.86,'
-                '"evidence":"Bob works at OpenAI."}'
-                '], "warnings": []}'
+                "<triples>\n"
+                "Alice | knows | Bob\n"
+                "Bob | works at | OpenAI\n"
+                "</triples>"
             )
 
         self.service = GraphDataService(text_graph_llm_factory=fake_text_graph_llm)
         self.client = TestClient(create_app(self.service))
+
+    def _wait_for_job_result(self, sid: str, payload: dict) -> dict:
+        if not payload.get("async"):
+            return payload
+        job_id = str(payload.get("job_id") or "")
+        self.assertTrue(job_id)
+        for _ in range(200):
+            status_resp = self.client.post(
+                f"/sessions/{sid}/tools/get_job_status",
+                json={"arguments": {"job_id": job_id}},
+            )
+            self.assertEqual(status_resp.status_code, 200)
+            job = status_resp.json().get("job") or {}
+            status = str(job.get("status") or "")
+            if status == "done":
+                result = job.get("result")
+                self.assertIsInstance(result, dict)
+                self.assertTrue(result.get("success"), result)
+                return result
+            if status in {"failed", "cancelled"}:
+                self.fail(f"job {job_id} ended with {status}: {job.get('message')}")
+            time.sleep(0.01)
+        self.fail(f"job {job_id} did not finish")
 
     def test_health_and_load_graph(self) -> None:
         health = self.client.get("/health")
@@ -104,12 +137,50 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertIn("train", names)
         self.assertIn("infer", names)
         self.assertIn("visualize_model_architecture", names)
+        self.assertIn("load_graph_classification_dataset", names)
         self.assertIn("load_graph_from_triples", names)
         self.assertNotIn("get_train_config", names)
         self.assertNotIn("get_infer_config", names)
         load_text = next(t for t in tools if t.get("name") == "load_graph_from_text")
         self.assertIn("append", load_text["inputSchema"]["properties"])
         self.assertIn("extraction_goal", load_text["inputSchema"]["properties"])
+        train = next(t for t in tools if t.get("name") == "train")
+        self.assertIn(
+            "graph_classification",
+            train["inputSchema"]["properties"]["task"]["enum"],
+        )
+
+    def test_graph_classification_contract_errors_do_not_require_single_graph(self) -> None:
+        sid = "s-graph-classification-contract"
+        self.client.post(f"/sessions/{sid}")
+
+        load_resp = self.client.post(
+            f"/sessions/{sid}/tools/load_graph_classification_dataset",
+            json={"arguments": {"filename": "hiv.pt", "dataset_profile": "auto"}},
+        )
+        self.assertEqual(load_resp.status_code, 200)
+        self.assertFalse(load_resp.json()["success"])
+        self.assertIn("未找到已注册上传文件", load_resp.json()["error"])
+
+        train_resp = self.client.post(
+            f"/sessions/{sid}/tools/train",
+            json={"arguments": {"task": "graph_classification", "model": "GCN"}},
+        )
+        self.assertEqual(train_resp.status_code, 200)
+        self.assertFalse(train_resp.json()["success"])
+        self.assertIn("load_graph_classification_dataset", train_resp.json()["error"])
+
+    def test_delete_session_releases_graph_ml_dataset_memory(self) -> None:
+        self.service.get_or_create("s-release", user_id="alice")
+        with patch.object(
+            self.service._graph_ml,
+            "release_session",
+            wraps=self.service._graph_ml.release_session,
+        ) as release:
+            self.service.delete_session("s-release", user_id="alice")
+
+        release.assert_called_once_with("alice:s-release")
+        self.assertNotIn("alice:s-release", self.service._sessions)
 
     def test_heavy_graph_ml_duplicate_calls_share_inflight_task(self) -> None:
         asyncio.run(self._run_heavy_graph_ml_duplicate_calls_share_inflight_task())
@@ -120,7 +191,12 @@ class GraphDataAppTest(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def fake_dispatch(session_id: str, tool_name: str, arguments: dict) -> dict:
+        def fake_dispatch(
+            session_id: str,
+            tool_name: str,
+            arguments: dict,
+            user_id: str = "",
+        ) -> dict:
             nonlocal calls
             calls += 1
             started.set()
@@ -219,6 +295,7 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertEqual(text_resp.status_code, 200)
         payload = text_resp.json()
         self.assertTrue(payload["success"])
+        payload = self._wait_for_job_result(sid, payload)
         self.assertGreaterEqual(payload["num_nodes"], 2)
         self.assertEqual(payload["chunks_processed"], 1)
         self.assertEqual(payload["raw_triples"], 2)

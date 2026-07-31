@@ -192,27 +192,17 @@ class RawMCPClientTimeoutTest(unittest.IsolatedAsyncioTestCase):
 
             async def post(self, url: str, **kwargs):
                 _FakeAsyncClient.posts.append(kwargs)
-                request = httpx.Request("POST", url)
-                # Real httpx prefers ``content``/``text`` over ``json`` for
-                # the body, while the fake module in this test file uses
-                # ``json``. Build a Response that works with both: the body
-                # is the JSON-encoded text.
-                body = '{"jsonrpc":"2.0","result":{"success":true}}'
-                try:
-                    return httpx.Response(
-                        200,
-                        text=body,
-                        request=request,
-                        headers={"content-type": "application/json"},
-                    )
-                except TypeError:
-                    return httpx.Response(
-                        200,
-                        json={"jsonrpc": "2.0", "result": {"success": True}},
-                        text=body,
-                        request=request,
-                        headers={"content-type": "application/json"},
-                    )
+
+                class _JSONResponse:
+                    status_code = 200
+                    text = '{"jsonrpc":"2.0","result":{"success":true}}'
+                    headers = {"content-type": "application/json"}
+
+                    @staticmethod
+                    def json():
+                        return {"jsonrpc": "2.0", "result": {"success": True}}
+
+                return _JSONResponse()
 
             async def aclose(self) -> None:
                 return

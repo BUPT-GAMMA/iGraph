@@ -13,6 +13,7 @@ import torch
 from graph_data_service.graph_data import GraphData
 
 from ..artifact_store import ArtifactStore
+from ..datasets import GraphMLDatasetStore
 from ..device_utils import select_best_gpu
 from ..schemas import TrainRequest
 from ..tasks import PreTrainTask, base_node_features, node_names, validate_train_request
@@ -26,9 +27,11 @@ class GraphMLTrainer:
         self,
         graph_loader: Callable[[str], Tuple[int, GraphData]],
         store: ArtifactStore,
+        dataset_store: GraphMLDatasetStore | None = None,
     ) -> None:
         self._graph_loader = graph_loader
         self._store = store
+        self._dataset_store = dataset_store
         self._node_trainer = NodeClassificationTrainer(store)
         self._link_trainer = LinkPredictionTrainer(store)
         self._pre_trainer = PreTrainTrainer(store)
