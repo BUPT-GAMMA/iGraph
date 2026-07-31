@@ -55,7 +55,11 @@ _DATA_TOOLS = {
 }
 
 _GRAPH_ML_TOOL_NAMES = {spec.get("name", "").strip() for spec in GRAPH_ML_TOOLS}
-_GRAPH_ML_HEAVY_TOOLS = {"train", "infer"}
+_GRAPH_ML_HEAVY_TOOLS = {
+    "load_graph_classification_dataset",
+    "train",
+    "infer",
+}
 
 
 class LoadGraphTextReq(BaseModel):
@@ -1559,6 +1563,7 @@ class GraphDataService:
             return self._graph_ml.load_graph_classification_dataset(
                 runtime_session_id,
                 arguments,
+                progress_callback=progress_callback,
             )
         if tool_name == "train":
             return self._graph_ml.train(runtime_session_id, arguments, progress_callback=progress_callback)
@@ -1584,7 +1589,11 @@ class GraphDataService:
             user_id,
             tool_name,
             clean_arguments,
-            _progress_kwarg="progress_callback" if tool_name == "train" else None,
+            _progress_kwarg=(
+                "progress_callback"
+                if tool_name in {"load_graph_classification_dataset", "train"}
+                else None
+            ),
         )
         return {
             "success": True,

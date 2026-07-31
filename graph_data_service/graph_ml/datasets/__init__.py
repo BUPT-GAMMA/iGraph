@@ -8,6 +8,7 @@ from .batching import (
 )
 from .graph_classification import (
     GraphClassificationDatasetBundle,
+    graph_classification_readiness_for_dataset,
     load_graph_classification_dataset,
 )
 from .store import GraphMLDatasetStore
@@ -18,6 +19,7 @@ __all__ = [
     "GraphClassificationDatasetBundle",
     "GraphMLDatasetStore",
     "build_graph_classification_dataloaders",
+    "graph_classification_readiness_for_dataset",
     "load_graph_classification_dataset",
     "validate_graph_classification_batch",
 ]

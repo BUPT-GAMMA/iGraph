@@ -1343,6 +1343,30 @@ _INFER_CONFIG_SCHEMA: dict = {
             "default": 128,
             "minimum": 1,
         },
+        "device": {
+            "type": "string",
+            "enum": ["auto", "cpu", "cuda"],
+            "description": "图分类推理设备，默认 auto。",
+            "default": "auto",
+        },
+        "threshold": {
+            "type": "number",
+            "description": "图分类二分类概率阈值。",
+            "default": 0.5,
+            "minimum": 0.0,
+            "maximum": 1.0,
+        },
+        "top_k_tasks": {
+            "type": "integer",
+            "description": "PCBA 每张图默认返回的最高概率任务数。",
+            "default": 5,
+            "minimum": 1,
+        },
+        "return_all_task_probs": {
+            "type": "boolean",
+            "description": "PCBA 是否返回完整 128 维概率、预测和真实标签数组。",
+            "default": False,
+        },
         "allow_version_mismatch": {
             "type": "boolean",
             "description": "是否允许模型图版本与当前图版本不一致。",
@@ -1358,11 +1382,13 @@ _INFER_CONFIG_SCHEMA: dict = {
             "type": "integer",
             "description": "指定节点或 split 推理时最多返回的预测明细数。",
             "default": 20,
+            "minimum": 0,
         },
         "result_offset": {
             "type": "integer",
             "description": "指定节点或 split 推理时的分页偏移量。",
             "default": 0,
+            "minimum": 0,
         },
         "topk": {
             "type": "integer",
@@ -1394,7 +1420,7 @@ GRAPH_ML_TOOLS: List[dict] = [
             "- filename: 当前会话中已注册的上传文件名，不接受任意路径。\n"
             "- dataset_profile: auto / hiv / pcba，默认 auto。\n\n"
             "返回:\n"
-            "- 数据集 ID、指纹、图数量、任务数、指标、划分大小和类别词表大小。"
+            "- 异步 job_id；完成后结果包含数据集摘要和图分类 readiness。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1449,7 +1475,9 @@ GRAPH_ML_TOOLS: List[dict] = [
             "- train_config(可选): 训练超参配置（字典）。\n"
             "- algo_config(可选): 算法特定配置（字典）。\n\n"
             "返回:\n"
-            "- JSON 字符串，包含任务提交结果、模型信息、状态或错误详情。"
+            "- JSON 字符串，包含任务提交结果、模型信息、状态或错误详情。\n"
+            "图分类必须先调用 load_graph_classification_dataset，不能把多图 .pt "
+            "交给 load_graph_from_upload，也不接受自定义 split/metric。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1489,6 +1517,9 @@ GRAPH_ML_TOOLS: List[dict] = [
             "- 节点分类若 query 指定 nodes/split，返回该集合 evaluation 指标，并最多返回 20 条 predictions；超出会给出截断提示。\n"
             "- 链接预测若 query 指定 edges/source_node，返回指定对象的 predictions。\n"
             "- 若 query 为空，返回 evaluation 指标摘要和少量 sample/top 预测结果。"
+            "\n- 图分类支持 query.split 或 query.graph_indices；完整 split 指标不受"
+            " result_limit 分页影响，PCBA 完整 128 维概率需显式开启"
+            " return_all_task_probs。"
         ),
         "inputSchema": {
             "type": "object",

@@ -61,9 +61,33 @@ from mcp_service.config import MCPConfig
 from mcp_service.graph_data_client import GraphDataClient
 from mcp_service.raw_client import RawMCPClient
 from mcp_service.session_registry import SessionRegistry
+from mcp_service.tool_forwarding import forwarded_graph_tool_arguments
 
 
 class MCPModulesTest(unittest.TestCase):
+    def test_graph_classification_dataset_load_gets_private_async_marker(self) -> None:
+        original = {"filename": "hiv.pt", "dataset_profile": "hiv"}
+        forwarded = forwarded_graph_tool_arguments(
+            "load_graph_classification_dataset",
+            original,
+        )
+
+        self.assertEqual(original, {"filename": "hiv.pt", "dataset_profile": "hiv"})
+        self.assertTrue(forwarded["__async"])
+        self.assertNotIn("algo_config", forwarded)
+
+    def test_graph_classification_dataset_load_uses_heavy_timeouts(self) -> None:
+        self.assertEqual(
+            graph_data_client._request_timeout(
+                "/sessions/sid/tools/load_graph_classification_dataset"
+            ),
+            graph_data_client.GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            raw_client._tool_timeout("load_graph_classification_dataset", 30.0),
+            raw_client.MCP_HEAVY_TOOL_TIMEOUT_SECONDS,
+        )
+
     def test_session_registry(self) -> None:
         reg = SessionRegistry()
         self.assertEqual(reg.count, 0)
@@ -179,7 +203,7 @@ class GraphDataClientRetryTest(unittest.IsolatedAsyncioTestCase):
             _TimeoutAsyncClient.timeouts,
             [graph_data_client.GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS],
         )
-        self.assertIn("未重试以避免重复执行训练/推理", result["error"])
+        self.assertIn("未重试以避免重复执行重型工具", result["error"])
 
 
 class RawMCPClientTimeoutTest(unittest.IsolatedAsyncioTestCase):

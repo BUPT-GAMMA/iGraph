@@ -6,13 +6,16 @@ import threading
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 import numpy as np
+import torch
 
 from fastapi.testclient import TestClient
 
 from graph_data_service.app import GraphDataService, create_app
 from graph_data_service.graph_data import GraphData
+from tests.fixtures.graph_classification import make_graph_classification_payload
 
 
 class GraphDataAppTest(unittest.TestCase):
@@ -170,6 +173,55 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertFalse(train_resp.json()["success"])
         self.assertIn("load_graph_classification_dataset", train_resp.json()["error"])
 
+    def test_graph_classification_dataset_load_runs_as_async_job_with_progress(self) -> None:
+        asyncio.run(self._run_graph_classification_dataset_load_async())
+
+    async def _run_graph_classification_dataset_load_async(self) -> None:
+        sid = "s-graph-classification-async-load"
+        session = self.service.get_or_create(sid)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_path = Path(temp_dir) / "hiv.pt"
+            torch.save(make_graph_classification_payload("hiv"), dataset_path)
+            session.register_upload("token-hiv-async", "hiv.pt", str(dataset_path))
+
+            initial = await self.service.dispatch_tool(
+                sid,
+                "load_graph_classification_dataset",
+                {"filename": "hiv.pt", "dataset_profile": "hiv", "__async": True},
+            )
+            self.assertTrue(initial["success"])
+            self.assertTrue(initial["async"])
+            job_id = initial["job_id"]
+            progress_updates = []
+            for _ in range(200):
+                status_payload = await self.service.dispatch_tool(
+                    sid,
+                    "get_job_status",
+                    {"job_id": job_id},
+                )
+                progress_updates.extend(status_payload.get("progress_updates") or [])
+                job = status_payload.get("job") or {}
+                if job.get("status") == "done":
+                    result = job["result"]
+                    self.assertTrue(result["success"])
+                    self.assertTrue(result["readiness"]["supported"])
+                    self.assertEqual(result["dataset"]["name"], "hiv")
+                    break
+                if job.get("status") in {"failed", "cancelled"}:
+                    self.fail(str(job))
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("graph classification dataset load job did not finish")
+
+        self.assertIsNone(session.get_graph())
+        self.assertTrue(progress_updates)
+        self.assertTrue(
+            any(
+                update.get("kind") == "graph_classification_dataset_load_done"
+                for update in progress_updates
+            )
+        )
+
     def test_delete_session_releases_graph_ml_dataset_memory(self) -> None:
         self.service.get_or_create("s-release", user_id="alice")
         with patch.object(
@@ -184,6 +236,52 @@ class GraphDataAppTest(unittest.TestCase):
 
     def test_heavy_graph_ml_duplicate_calls_share_inflight_task(self) -> None:
         asyncio.run(self._run_heavy_graph_ml_duplicate_calls_share_inflight_task())
+
+    def test_duplicate_dataset_load_calls_share_heavy_inflight_task(self) -> None:
+        asyncio.run(self._run_duplicate_dataset_load_calls_share_inflight_task())
+
+    async def _run_duplicate_dataset_load_calls_share_inflight_task(self) -> None:
+        service = GraphDataService()
+        calls = 0
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_dispatch(
+            session_id: str,
+            tool_name: str,
+            arguments: dict,
+            user_id: str = "",
+        ) -> dict:
+            nonlocal calls
+            calls += 1
+            started.set()
+            self.assertTrue(release.wait(timeout=2.0))
+            return {"success": True, "dataset_id": "gds_one", "calls": calls}
+
+        service._dispatch_graph_ml_tool = fake_dispatch
+        arguments = {"filename": "hiv.pt", "dataset_profile": "hiv"}
+        first = asyncio.create_task(
+            service.dispatch_tool(
+                "sid-dataset-inflight",
+                "load_graph_classification_dataset",
+                arguments,
+            )
+        )
+        self.assertTrue(await asyncio.to_thread(started.wait, 2.0))
+        second = asyncio.create_task(
+            service.dispatch_tool(
+                "sid-dataset-inflight",
+                "load_graph_classification_dataset",
+                dict(arguments),
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(calls, 1)
+        release.set()
+        first_result, second_result = await asyncio.gather(first, second)
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(first_result, second_result)
 
     async def _run_heavy_graph_ml_duplicate_calls_share_inflight_task(self) -> None:
         service = GraphDataService()

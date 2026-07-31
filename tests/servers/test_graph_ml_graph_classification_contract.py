@@ -180,9 +180,15 @@ class GraphClassificationContractTest(unittest.TestCase):
                     },
                 },
             )
+            visualization = module.visualize_model_architecture(
+                "session-graph-classification",
+                {"model_id": result["model_id"]},
+            )
 
         self.assertEqual(get_session_calls, [])
         self.assertTrue(result["success"])
+        self.assertEqual(visualization["task"], "graph_classification")
+        self.assertEqual(visualization["architecture"]["pooling"], "global_mean")
 
     def test_tool_catalog_exposes_graph_classification_contract(self) -> None:
         by_name = {tool["name"]: tool for tool in GRAPH_ML_TOOLS}
@@ -205,6 +211,8 @@ class GraphClassificationContractTest(unittest.TestCase):
         infer_props = by_name["infer"]["inputSchema"]["properties"]
         self.assertIn("graph_indices", infer_props["query"]["properties"])
         self.assertEqual(infer_props["infer_config"]["properties"]["batch_size"]["default"], 128)
+        self.assertIn("top_k_tasks", infer_props["infer_config"]["properties"])
+        self.assertIn("return_all_task_probs", infer_props["infer_config"]["properties"])
 
 
 if __name__ == "__main__":
