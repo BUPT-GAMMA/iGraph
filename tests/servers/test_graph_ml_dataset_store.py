@@ -257,15 +257,6 @@ class GraphMLDatasetStoreTest(unittest.TestCase):
         )
         self.assertTrue(result["success"])
         self.assertEqual(result["dataset"]["dataset_id"], "gds_module")
-        with self.assertRaisesRegex(ValueError, "训练器尚未接入"):
-            module.train(
-                "alice:module",
-                {
-                    "task": "graph_classification",
-                    "model": "GCN",
-                    "data": {"dataset_id": "gds_module"},
-                },
-            )
 
         module._ensure_runtime()
         self.assertIs(module._trainer._dataset_store, store)

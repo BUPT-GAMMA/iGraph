@@ -12,6 +12,9 @@ from graph_data_service.graph_ml.schemas import (
 )
 from graph_data_service.graph_ml.tasks import validate_train_request
 from graph_data_service.tool_catalog import GRAPH_ML_TOOLS
+from tests.fixtures.graph_classification import (
+    make_trainable_graph_classification_bundle,
+)
 
 
 class GraphClassificationContractTest(unittest.TestCase):
@@ -139,17 +142,18 @@ class GraphClassificationContractTest(unittest.TestCase):
 
     def test_graph_classification_contract_does_not_load_single_graph(self) -> None:
         get_session_calls: list[str] = []
+        bundle = make_trainable_graph_classification_bundle("hiv")
 
         class BoundDatasetStore:
             @staticmethod
             def current_dataset_id(_session_id: str) -> str:
-                return "gds_bound"
+                return bundle.dataset_id
 
             @staticmethod
             def resolve_for_session(_session_id: str, dataset_id: str):
-                if dataset_id != "gds_bound":
+                if dataset_id != bundle.dataset_id:
                     raise AssertionError(dataset_id)
-                return object()
+                return bundle
 
         def get_session(session_id: str):
             get_session_calls.append(session_id)
@@ -161,13 +165,24 @@ class GraphClassificationContractTest(unittest.TestCase):
                 artifact_root=td,
                 dataset_store=BoundDatasetStore(),
             )
-            with self.assertRaisesRegex(ValueError, "训练器尚未接入"):
-                module.train(
-                    "session-graph-classification",
-                    {"task": "graph_classification", "model": "SAGE"},
-                )
+            result = module.train(
+                "session-graph-classification",
+                {
+                    "task": "graph_classification",
+                    "model": "SAGE",
+                    "train_config": {"epochs": 1, "batch_size": 4, "lr": 0.01},
+                    "algo_config": {
+                        "device": "cpu",
+                        "node_embedding_dim": 8,
+                        "hidden_dim": 8,
+                        "embedding_dim": 8,
+                        "dropout": 0.0,
+                    },
+                },
+            )
 
         self.assertEqual(get_session_calls, [])
+        self.assertTrue(result["success"])
 
     def test_tool_catalog_exposes_graph_classification_contract(self) -> None:
         by_name = {tool["name"]: tool for tool in GRAPH_ML_TOOLS}

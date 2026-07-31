@@ -11,6 +11,8 @@ from torch import nn
 from .GAT import GATBackbone
 from .GCN import GCNBackbone
 from .SAGE import SAGEBackbone
+from .graph_classifier import GraphClassifier, build_graph_classifier
+from .node_encoder import NodeCategoryEncoder
 
 _BACKBONE_REGISTRY: Dict[str, Type[nn.Module]] = {
     "GCN": GCNBackbone,
@@ -89,8 +91,11 @@ def build_backbone(
 
 __all__ = [
     "build_backbone",
+    "build_graph_classifier",
     "parse_gnn_options",
     "GCNBackbone",
     "GATBackbone",
     "SAGEBackbone",
+    "NodeCategoryEncoder",
+    "GraphClassifier",
 ]

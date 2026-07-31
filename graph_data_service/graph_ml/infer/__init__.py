@@ -16,6 +16,7 @@ from ..datasets import GraphMLDatasetStore
 from ..device_utils import select_best_gpu
 from ..schemas import InferRequest
 from ..tasks import base_node_features, node_names
+from .infer_graph_classification import GraphClassificationInfer
 from .infer_link_prediction import LinkPredictionInfer
 from .infer_node_classification import NodeClassificationInfer
 from .infer_pre_train import PreTrainInfer
@@ -34,6 +35,10 @@ class GraphMLInferencer:
         self._node_infer = NodeClassificationInfer(store)
         self._link_infer = LinkPredictionInfer(store)
         self._pre_infer = PreTrainInfer(store)
+        self._graph_classification_infer = GraphClassificationInfer(
+            store,
+            dataset_store,
+        )
 
     def infer(self, session_id: str, req: InferRequest) -> Dict[str, Any]:
         ref = self._store.resolve_model(session_id, req.model_id)
@@ -41,6 +46,14 @@ class GraphMLInferencer:
             raise ValueError(f"模型不存在: {req.model_id}")
         meta = self._store.load_json(ref.model_dir, "meta.json")
         task = str(meta.get("task", ""))
+
+        if task == "graph_classification":
+            return self._graph_classification_infer.infer(
+                ref,
+                meta,
+                req,
+                self._resolve_graph_classification_device(req),
+            )
 
         if task == "pretrain":
             return self._pre_infer.infer(ref, meta, req)
@@ -99,6 +112,19 @@ class GraphMLInferencer:
             if j is not None:
                 aligned[i] = emb[j]
         return torch.as_tensor(aligned, dtype=torch.float32)
+
+    @staticmethod
+    def _resolve_graph_classification_device(req: InferRequest) -> torch.device:
+        requested = str(req.infer_config.get("device", "auto") or "auto").lower()
+        if requested == "cpu":
+            return torch.device("cpu")
+        if requested.startswith("cuda"):
+            if not torch.cuda.is_available():
+                raise ValueError(f"请求 device={requested}，但当前环境无可用 GPU")
+            return torch.device(requested)
+        if requested != "auto":
+            raise ValueError("图分类推理 device 仅支持 auto、cpu 或 cuda[:index]")
+        return select_best_gpu()
 
 
 __all__ = ["GraphMLInferencer"]

@@ -17,6 +17,7 @@ from ..datasets import GraphMLDatasetStore
 from ..device_utils import select_best_gpu
 from ..schemas import TrainRequest
 from ..tasks import PreTrainTask, base_node_features, node_names, validate_train_request
+from .trainer_graph_classification import GraphClassificationTrainer
 from .trainer_link_prediction import LinkPredictionTrainer
 from .trainer_node_classification import NodeClassificationTrainer
 from .trainer_pre_train import PreTrainTrainer
@@ -35,6 +36,10 @@ class GraphMLTrainer:
         self._node_trainer = NodeClassificationTrainer(store)
         self._link_trainer = LinkPredictionTrainer(store)
         self._pre_trainer = PreTrainTrainer(store)
+        self._graph_classification_trainer = GraphClassificationTrainer(
+            store,
+            dataset_store,
+        )
 
     def train(
         self,
@@ -42,6 +47,25 @@ class GraphMLTrainer:
         req: TrainRequest,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> Dict[str, Any]:
+        if req.task == "graph_classification":
+            if self._dataset_store is None:
+                raise ValueError("图分类 DatasetStore 未初始化")
+            bound_dataset_id = self._dataset_store.current_dataset_id(session_id)
+            dataset_id = validate_train_request(
+                req,
+                bound_graph_classification_dataset_id=bound_dataset_id,
+            )
+            assert dataset_id is not None
+            self._set_seed(req.train_config.seed)
+            device = self._resolve_device(req)
+            return self._graph_classification_trainer.train(
+                session_id=session_id,
+                dataset_id=dataset_id,
+                req=req,
+                device=device,
+                progress_callback=progress_callback,
+            )
+
         validate_train_request(req)
         self._set_seed(req.train_config.seed)
         device = self._resolve_device(req)
