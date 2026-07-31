@@ -75,20 +75,6 @@ class GraphMLModule:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
         req = TrainRequest.model_validate(payload)
-        if req.task == "graph_classification":
-            from .tasks import validate_train_request
-
-            bound_dataset_id = self._dataset_store.current_dataset_id(session_id)
-            dataset_id = validate_train_request(
-                req,
-                bound_graph_classification_dataset_id=bound_dataset_id,
-            )
-            self._dataset_store.resolve_for_session(session_id, dataset_id)
-            raise ValueError(
-                "graph_classification 请求契约已通过校验"
-                f"（dataset_id={dataset_id}），但图分类训练器尚未接入"
-            )
-
         self._ensure_runtime()
         assert self._trainer is not None
         return self._trainer.train(session_id, req, progress_callback=progress_callback)
