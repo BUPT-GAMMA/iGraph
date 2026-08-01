@@ -1444,6 +1444,39 @@ GRAPH_ML_TOOLS: List[dict] = [
         "category": "graph_ml",
     },
     {
+        "name": "load_graph_classification_graph",
+        "description": (
+            "从当前会话已加载的 HIV/PCBA 多图图分类数据集中按索引导出一张图，"
+            "并设置为当前会话单图。\n\n"
+            "典型用法：用户要求查看/可视化/分析某个 graph_index（例如 5）时，"
+            "先调用本工具，然后继续调用 get_graph_info、get_node_info、"
+            "visualize_subgraph 或 subgraph_extraction。\n\n"
+            "参数:\n"
+            "- graph_index: 0-based 图索引，范围为 [0, num_graphs-1]。\n"
+            "- dataset_id: 可选；默认使用当前会话绑定的图分类数据集。\n\n"
+            "返回:\n"
+            "- 导出的单图摘要、graph_version、split、graph_label、节点/边预览，"
+            "以及当前图分析 readiness。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "graph_index": {
+                    "type": "integer",
+                    "description": "0-based 图索引，例如 5 表示第 6 张图。",
+                    "minimum": 0,
+                },
+                "dataset_id": {
+                    "type": "string",
+                    "description": "可选；指定当前会话中已绑定的图分类数据集 ID。",
+                },
+            },
+            "required": ["graph_index"],
+            "additionalProperties": False,
+        },
+        "category": "graph_ml",
+    },
+    {
         "name": "visualize_model_architecture",
         "description": (
             "可视化模型结构（返回 Mermaid 与层级摘要）。\n\n"

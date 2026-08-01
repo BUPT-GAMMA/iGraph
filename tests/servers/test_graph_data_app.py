@@ -13,6 +13,7 @@ import torch
 
 from fastapi.testclient import TestClient
 
+from backend.logging.logger import close_service_loggers
 from graph_data_service.app import (
     GraphDataService,
     _graph_classification_profile_hint,
@@ -180,6 +181,9 @@ class GraphDataAppTest(unittest.TestCase):
     def test_graph_classification_dataset_load_runs_as_async_job_with_progress(self) -> None:
         asyncio.run(self._run_graph_classification_dataset_load_async())
 
+    def test_load_graph_classification_graph_exports_sample_as_current_graph(self) -> None:
+        asyncio.run(self._run_load_graph_classification_graph_exports_sample())
+
     def test_load_graph_from_upload_routes_hiv_pt_to_graph_classification_job(self) -> None:
         asyncio.run(self._run_load_graph_from_upload_routes_hiv_pt())
 
@@ -273,6 +277,49 @@ class GraphDataAppTest(unittest.TestCase):
                 for update in progress_updates
             )
         )
+
+    async def _run_load_graph_classification_graph_exports_sample(self) -> None:
+        sid = f"s-graph-classification-sample-export-{time.time_ns()}"
+        session = self.service.get_or_create(sid)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_path = Path(temp_dir) / "hiv.pt"
+            torch.save(make_graph_classification_payload("hiv"), dataset_path)
+            session.register_upload("token-hiv-sample", "hiv.pt", str(dataset_path))
+
+            dataset_result = await self.service.dispatch_tool(
+                sid,
+                "load_graph_classification_dataset",
+                {"filename": "hiv.pt", "dataset_profile": "hiv"},
+            )
+            self.assertTrue(dataset_result["success"])
+            self.assertIsNone(session.get_graph())
+
+            exported = await self.service.dispatch_tool(
+                sid,
+                "load_graph_classification_graph",
+                {"graph_index": 5},
+            )
+
+        self.assertTrue(exported["success"])
+        self.assertEqual(exported["dataset_name"], "hiv")
+        self.assertEqual(exported["graph_index"], 5)
+        self.assertEqual(exported["split"], "test")
+        self.assertEqual(exported["num_nodes"], 4)
+        self.assertEqual(exported["num_edges"], 3)
+        self.assertEqual(exported["graph_info"]["graph_label"], 1)
+
+        graph = session.get_graph()
+        self.assertIsNotNone(graph)
+        assert graph is not None
+        self.assertTrue(graph.has_node_type)
+        self.assertTrue(graph.has_edge_type)
+        self.assertIn("node category 1", graph.node_types)
+        self.assertIn("edge category 0", graph.edge_types)
+
+        graph_info = self.service.do_get_graph_info(sid)
+        self.assertTrue(graph_info["loaded"])
+        self.assertEqual(graph_info["graph_info"]["graph_label"], 1)
+        self.assertEqual(graph_info["graph_info"]["node_type_values"][0], "node category 1")
 
     def test_delete_session_releases_graph_ml_dataset_memory(self) -> None:
         self.service.get_or_create("s-release", user_id="alice")
@@ -519,36 +566,39 @@ class GraphDataAppTest(unittest.TestCase):
 
     def test_user_subgraph_version_saved_under_session_dir(self) -> None:
         old_root = os.environ.get("IGRAPH_DATA_ROOT")
+        sid = "s-subgraph-user-path"
         try:
             with tempfile.TemporaryDirectory() as td:
-                os.environ["IGRAPH_DATA_ROOT"] = td
-                sid = "s-subgraph-user-path"
-                headers = {"X-User-ID": "alice"}
-                self.client.post(f"/sessions/{sid}", headers=headers)
-                self.client.post(
-                    f"/sessions/{sid}/graph/load_text",
-                    headers=headers,
-                    json={"edge_text": "A B\nB C\nC D\nD A"},
-                )
-                result = self.client.post(
-                    f"/sessions/{sid}/tools/subgraph_extraction",
-                    headers=headers,
-                    json={"arguments": {"method": "ego_graph", "node": "A", "k": 1}},
-                ).json()
-
-                self.assertTrue(result["success"])
-                self.assertTrue(result["current_graph_replaced"])
-                self.assertEqual(result["graph_version"], 2)
-
-                session_dir = os.path.join(td, "users", "alice", "sessions", sid)
-                self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_current.npz")))
-                self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_versions.json")))
-                self.assertTrue(os.path.exists(os.path.join(session_dir, "snapshots", "v002.npz")))
-                self.assertFalse(
-                    os.path.exists(
-                        os.path.join(td, "users", "alice", "uploads", sid, "graph_current.npz")
+                try:
+                    os.environ["IGRAPH_DATA_ROOT"] = td
+                    headers = {"X-User-ID": "alice"}
+                    self.client.post(f"/sessions/{sid}", headers=headers)
+                    self.client.post(
+                        f"/sessions/{sid}/graph/load_text",
+                        headers=headers,
+                        json={"edge_text": "A B\nB C\nC D\nD A"},
                     )
-                )
+                    result = self.client.post(
+                        f"/sessions/{sid}/tools/subgraph_extraction",
+                        headers=headers,
+                        json={"arguments": {"method": "ego_graph", "node": "A", "k": 1}},
+                    ).json()
+
+                    self.assertTrue(result["success"])
+                    self.assertTrue(result["current_graph_replaced"])
+                    self.assertEqual(result["graph_version"], 2)
+
+                    session_dir = os.path.join(td, "users", "alice", "sessions", sid)
+                    self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_current.npz")))
+                    self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_versions.json")))
+                    self.assertTrue(os.path.exists(os.path.join(session_dir, "snapshots", "v002.npz")))
+                    self.assertFalse(
+                        os.path.exists(
+                            os.path.join(td, "users", "alice", "uploads", sid, "graph_current.npz")
+                        )
+                    )
+                finally:
+                    close_service_loggers(sid)
         finally:
             if old_root is None:
                 os.environ.pop("IGRAPH_DATA_ROOT", None)

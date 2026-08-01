@@ -193,6 +193,7 @@ class GraphClassificationContractTest(unittest.TestCase):
     def test_tool_catalog_exposes_graph_classification_contract(self) -> None:
         by_name = {tool["name"]: tool for tool in GRAPH_ML_TOOLS}
         self.assertIn("load_graph_classification_dataset", by_name)
+        self.assertIn("load_graph_classification_graph", by_name)
 
         load_schema = by_name["load_graph_classification_dataset"]["inputSchema"]
         self.assertEqual(load_schema["required"], ["filename"])
@@ -200,6 +201,9 @@ class GraphClassificationContractTest(unittest.TestCase):
             load_schema["properties"]["dataset_profile"]["enum"],
             ["auto", "hiv", "pcba"],
         )
+        sample_schema = by_name["load_graph_classification_graph"]["inputSchema"]
+        self.assertEqual(sample_schema["required"], ["graph_index"])
+        self.assertEqual(sample_schema["properties"]["graph_index"]["minimum"], 0)
 
         train_props = by_name["train"]["inputSchema"]["properties"]
         self.assertIn("graph_classification", train_props["task"]["enum"])

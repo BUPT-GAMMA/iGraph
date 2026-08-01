@@ -85,3 +85,20 @@ class LoadGraphClassificationDatasetRequest(BaseModel):
         if not filename:
             raise ValueError("filename 不能为空")
         return filename
+
+
+class LoadGraphClassificationGraphRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    graph_index: int = Field(ge=0)
+    dataset_id: Optional[str] = None
+
+    @field_validator("dataset_id")
+    @classmethod
+    def _strip_dataset_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        dataset_id = value.strip()
+        if not dataset_id:
+            return None
+        return dataset_id
