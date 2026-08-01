@@ -103,6 +103,15 @@ def _graph_data_upload_root() -> str:
     return os.path.abspath(root)
 
 
+def _graph_classification_profile_hint(filename: str) -> str | None:
+    stem = os.path.splitext(os.path.basename(filename or ""))[0].lower()
+    if "pcba" in stem:
+        return "pcba"
+    if "hiv" in stem:
+        return "hiv"
+    return None
+
+
 def _required_str(arguments: Dict[str, Any], key: str) -> str:
     value = arguments.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -468,6 +477,45 @@ class GraphDataService:
         )
 
         lower_path = record.saved_path.lower()
+        lower_filename = str(record.original_filename or filename).lower()
+        graph_classification_profile = _graph_classification_profile_hint(
+            record.original_filename or filename
+        )
+        if (
+            (lower_path.endswith(".pt") or lower_filename.endswith(".pt"))
+            and graph_classification_profile is not None
+        ):
+            if append:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "graph_version": session.graph_version,
+                    "filename": record.original_filename,
+                    "format_detected": "graph_classification_dataset",
+                    "error": (
+                        "HIV/PCBA multi-graph .pt datasets cannot be appended to the "
+                        "current single-graph state; load with append=false."
+                    ),
+                }
+            svc_log.event(
+                "UPLOAD_FORMAT_DETECTED",
+                filename=record.original_filename,
+                format="graph_classification_dataset",
+                dataset_profile=graph_classification_profile,
+            )
+            result = await self._submit_graph_ml_tool_job(
+                session_id,
+                "load_graph_classification_dataset",
+                {
+                    "filename": filename,
+                    "dataset_profile": graph_classification_profile,
+                },
+                user_id=user_id,
+            )
+            result["filename"] = record.original_filename
+            result["format_detected"] = "graph_classification_dataset"
+            result["dataset_profile"] = graph_classification_profile
+            return result
 
         # 二进制或结构化 JSON：由 session 层按扩展名处理
         if lower_path.endswith((".npz", ".pt", ".json")):

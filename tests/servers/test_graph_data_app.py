@@ -13,7 +13,11 @@ import torch
 
 from fastapi.testclient import TestClient
 
-from graph_data_service.app import GraphDataService, create_app
+from graph_data_service.app import (
+    GraphDataService,
+    _graph_classification_profile_hint,
+    create_app,
+)
 from graph_data_service.graph_data import GraphData
 from tests.fixtures.graph_classification import make_graph_classification_payload
 
@@ -175,6 +179,54 @@ class GraphDataAppTest(unittest.TestCase):
 
     def test_graph_classification_dataset_load_runs_as_async_job_with_progress(self) -> None:
         asyncio.run(self._run_graph_classification_dataset_load_async())
+
+    def test_load_graph_from_upload_routes_hiv_pt_to_graph_classification_job(self) -> None:
+        asyncio.run(self._run_load_graph_from_upload_routes_hiv_pt())
+
+    def test_graph_classification_profile_hint_detects_hiv_and_pcba(self) -> None:
+        self.assertEqual(_graph_classification_profile_hint("hiv.pt"), "hiv")
+        self.assertEqual(_graph_classification_profile_hint("ogbg-molpcba.pt"), "pcba")
+        self.assertIsNone(_graph_classification_profile_hint("single_graph.pt"))
+
+    async def _run_load_graph_from_upload_routes_hiv_pt(self) -> None:
+        sid = "s-upload-hiv-auto-route"
+        session = self.service.get_or_create(sid)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_path = Path(temp_dir) / "hiv.pt"
+            torch.save(make_graph_classification_payload("hiv"), dataset_path)
+            session.register_upload("token-hiv-upload", "hiv.pt", str(dataset_path))
+
+            initial = await self.service.dispatch_tool(
+                sid,
+                "load_graph_from_upload",
+                {"filename": "hiv.pt"},
+            )
+
+            self.assertTrue(initial["success"])
+            self.assertTrue(initial["async"])
+            self.assertEqual(initial["format_detected"], "graph_classification_dataset")
+            self.assertEqual(initial["dataset_profile"], "hiv")
+            job_id = initial["job_id"]
+            for _ in range(200):
+                status_payload = await self.service.dispatch_tool(
+                    sid,
+                    "get_job_status",
+                    {"job_id": job_id},
+                )
+                job = status_payload.get("job") or {}
+                if job.get("status") == "done":
+                    result = job["result"]
+                    self.assertTrue(result["success"])
+                    self.assertTrue(result["readiness"]["supported"])
+                    self.assertEqual(result["dataset"]["name"], "hiv")
+                    break
+                if job.get("status") in {"failed", "cancelled"}:
+                    self.fail(str(job))
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("auto-routed HIV dataset load job did not finish")
+
+        self.assertIsNone(session.get_graph())
 
     async def _run_graph_classification_dataset_load_async(self) -> None:
         sid = "s-graph-classification-async-load"

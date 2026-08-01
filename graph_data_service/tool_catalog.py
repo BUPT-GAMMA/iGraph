@@ -54,6 +54,7 @@ GRAPH_TOOLS: List[dict] = [
         "description": (
             "从当前会话已注册的上传文件中加载图数据，**自动检测格式**并路由处理：\n"
             "- 二进制/JSON 图文件（.npz / .pt / .json graph_data.v1）→ 结构化直接加载；\n"
+            "- HIV/PCBA 等多图 .pt 文件 → 自动路由到 load_graph_classification_dataset 异步加载；\n"
             "- 边列表（每行 `src dst [weight]`，空格/Tab/逗号分隔）→ 直接解析；\n"
             "- 三元组（每行 `source relation target`）→ 直接解析；\n"
             "- 自然语言文本（散文、文章、文档）→ LLM 预检提取 extraction_goal 后提交异步 text2graph 作业，返回 job_id，需用 job_status/job_result 轮询。\n\n"
@@ -63,7 +64,7 @@ GRAPH_TOOLS: List[dict] = [
             "- append(可选, 默认 false): false 覆盖当前图；true 追加到当前图。\n\n"
             "返回:\n"
             "- 同步格式（binary/edge_list/triple）：加载状态、检测格式、图版本；\n"
-            "- 异步格式（freetext）：async=true、job_id、status='queued'；\n"
+            "- 异步格式（freetext/graph_classification_dataset）：async=true、job_id、status='queued'；\n"
             "- 图规模/结构详情请调用 `get_graph_info`。"
         ),
         "inputSchema": {

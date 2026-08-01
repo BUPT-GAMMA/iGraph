@@ -13,6 +13,8 @@ from typing import Any, Dict, Mapping, Optional
 
 import numpy as np
 
+import backend.data_paths as _dp
+
 
 @dataclass
 class ArtifactRef:
@@ -26,11 +28,14 @@ class ArtifactStore:
         self.root_dir = os.path.abspath(root_dir)
         os.makedirs(self.root_dir, exist_ok=True)
 
+    def _session_dir(self, session_id: str) -> str:
+        return os.path.join(self.root_dir, _dp.safe_path_component(session_id))
+
     def create_model_dir(self, session_id: str, task: str) -> ArtifactRef:
         ts = int(time.time())
         suffix = secrets.token_hex(3)
         model_id = f"mdl_{task}_{ts}_{suffix}"
-        model_dir = os.path.join(self.root_dir, session_id, model_id)
+        model_dir = os.path.join(self._session_dir(session_id), model_id)
         os.makedirs(model_dir, exist_ok=True)
         return ArtifactRef(model_id=model_id, session_id=session_id, model_dir=model_dir)
 
@@ -151,7 +156,10 @@ class ArtifactStore:
         return normalized
 
     def resolve_model(self, session_id: str, model_id: str) -> Optional[ArtifactRef]:
-        primary = os.path.join(self.root_dir, session_id, model_id)
+        primary = os.path.join(self._session_dir(session_id), model_id)
         if os.path.isdir(primary):
             return ArtifactRef(model_id=model_id, session_id=session_id, model_dir=primary)
+        legacy = os.path.join(self.root_dir, session_id, model_id)
+        if legacy != primary and os.path.isdir(legacy):
+            return ArtifactRef(model_id=model_id, session_id=session_id, model_dir=legacy)
         return None
