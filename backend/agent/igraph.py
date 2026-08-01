@@ -724,6 +724,7 @@ class IGraph:
             "load_graph",
             "load_graph_from_upload",
             "load_dataset",
+            "load_graph_classification_graph",
             "load_graph_from_text",
             "load_graph_from_triples",
             "undo_graph",

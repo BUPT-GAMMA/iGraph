@@ -8,10 +8,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Sequence
 
+import numpy as np
 import torch
 from torch_geometric.data import Data
 from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
 from torch_geometric.data.storage import GlobalStorage
+
+from graph_data_service.graph_data import GraphData
 
 from ..schemas import GraphClassificationDatasetProfile
 
@@ -79,6 +82,129 @@ class GraphClassificationDatasetBundle:
             "missing_label_rate": float(self.metadata.get("missing_label_rate", 0.0)),
             "num_edgeless_graphs": int(self.metadata.get("num_edgeless_graphs", 0)),
         }
+
+
+def graph_classification_sample_to_graph_data(
+    bundle: GraphClassificationDatasetBundle,
+    graph_index: int,
+) -> GraphData:
+    """Convert one validated graph-classification sample into regular GraphData."""
+    if isinstance(graph_index, bool) or not isinstance(graph_index, int):
+        raise ValueError("graph_index must be an integer")
+    total = len(bundle.graphs)
+    if graph_index < 0 or graph_index >= total:
+        raise ValueError(f"graph_index out of range: {graph_index}; valid range is [0, {total - 1}]")
+
+    sample = bundle.graphs[graph_index]
+    if not isinstance(sample, Data):
+        raise ValueError(f"graphs[{graph_index}] must be torch_geometric.data.Data")
+    _require_graph_tensor_fields(sample, graph_index)
+
+    x = sample.x.detach().cpu().to(dtype=torch.long).reshape(-1)
+    edge_index_tensor = sample.edge_index.detach().cpu().to(dtype=torch.long).contiguous()
+    edge_index = edge_index_tensor.numpy().astype(np.int64, copy=False)
+    num_nodes = int(x.numel())
+    num_edges = int(edge_index.shape[1])
+
+    xe = sample.xe.detach().cpu().to(dtype=torch.long).reshape(-1)
+    if int(xe.numel()) != num_edges:
+        raise ValueError(
+            f"graphs[{graph_index}].xe length does not match edge_index edge count"
+        )
+
+    node_type_ids = x.numpy().astype(np.int64, copy=False)
+    edge_type_ids = xe.numpy().astype(np.int64, copy=False)
+    node_types = [
+        _vocab_text(bundle.node_texts, int(type_id), "node_type")
+        for type_id in node_type_ids.tolist()
+    ]
+    edge_types = [
+        _vocab_text(bundle.edge_texts, int(type_id), "edge_type")
+        for type_id in edge_type_ids.tolist()
+    ]
+
+    split = _split_for_graph_index(bundle, graph_index)
+    graph_label = _graph_label_value(sample.y)
+    label_preview = _json_safe_label(graph_label)
+    graph_desc = (
+        f"Graph classification sample graph_index={graph_index}; "
+        f"dataset_id={bundle.dataset_id}; dataset_name={bundle.name}; "
+        f"split={split or 'unknown'}; graph_label={label_preview}"
+    )
+    id2node = {node_id: f"n{node_id}" for node_id in range(num_nodes)}
+    node2id = {name: node_id for node_id, name in id2node.items()}
+
+    return GraphData(
+        num_nodes=num_nodes,
+        edge_index=edge_index,
+        id2node=id2node,
+        node2id=node2id,
+        edge_names=[f"e{edge_id}" for edge_id in range(num_edges)],
+        node_feat=node_type_ids.reshape(-1, 1).astype(np.float32),
+        edge_feat=edge_type_ids.reshape(-1, 1).astype(np.float32),
+        graph_desc=graph_desc,
+        directed=_is_pyg_graph_directed(sample),
+        name=f"{bundle.name}_graph_{graph_index}",
+        node_type=node_types,
+        edge_type=edge_types,
+        graph_label=graph_label,
+        node_text=[
+            f"node_type_id={int(type_id)}; node_type={node_type}"
+            for type_id, node_type in zip(node_type_ids.tolist(), node_types)
+        ],
+        edge_text=[
+            f"edge_type_id={int(type_id)}; edge_type={edge_type}"
+            for type_id, edge_type in zip(edge_type_ids.tolist(), edge_types)
+        ],
+        label_names=bundle.label_texts,
+    )
+
+
+def _vocab_text(values: Sequence[str], index: int, fallback_prefix: str) -> str:
+    if 0 <= index < len(values):
+        return str(values[index])
+    return f"{fallback_prefix}_{index}"
+
+
+def _split_for_graph_index(
+    bundle: GraphClassificationDatasetBundle,
+    graph_index: int,
+) -> str | None:
+    for split_name, indices in bundle.split_indices.items():
+        if graph_index in indices:
+            return split_name
+    return None
+
+
+def _graph_label_value(label: torch.Tensor) -> int | float | np.ndarray:
+    label_array = label.detach().cpu().to(dtype=torch.float32).reshape(-1).numpy()
+    if label_array.size == 1:
+        value = float(label_array[0])
+        if np.isfinite(value) and value.is_integer():
+            return int(value)
+        return value
+    return label_array.astype(np.float32, copy=False)
+
+
+def _json_safe_label(label: int | float | np.ndarray) -> Any:
+    if isinstance(label, np.ndarray):
+        return [
+            None if isinstance(value, float) and not np.isfinite(value) else value
+            for value in label.astype(float, copy=False).tolist()
+        ]
+    if isinstance(label, float) and not np.isfinite(label):
+        return None
+    return label
+
+
+def _is_pyg_graph_directed(graph: Data) -> bool:
+    is_directed = getattr(graph, "is_directed", None)
+    if callable(is_directed):
+        try:
+            return bool(is_directed())
+        except Exception:
+            return True
+    return True
 
 
 def load_graph_classification_dataset(
