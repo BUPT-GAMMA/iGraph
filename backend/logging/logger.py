@@ -26,7 +26,7 @@ _svc_logger_cache: dict[str, "ServiceLogger"] = {}
 
 def _ensure_session_dir(session_id: str, logs_dir: str) -> str:
     """确保 logs/{session_id}/ 目录存在，返回其绝对路径。"""
-    path = os.path.join(logs_dir, session_id)
+    path = os.path.join(logs_dir, _dp.safe_path_component(session_id))
     os.makedirs(path, exist_ok=True)
     return path
 

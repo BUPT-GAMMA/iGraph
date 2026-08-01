@@ -26,6 +26,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+_INVALID_PATH_CHARS = frozenset('<>:"/\\|?*')
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+    }
+)
+
 
 def data_root() -> Path:
     raw = (
@@ -105,3 +117,18 @@ def session_index_dir() -> Path:
 
 def session_index_path(session_id: str) -> Path:
     return session_index_dir() / session_id
+
+
+def safe_path_component(value: str, default: str = "_") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    cleaned = "".join(
+        "_" if (ord(ch) < 32 or ch in _INVALID_PATH_CHARS) else ch
+        for ch in text
+    ).rstrip(" .")
+    if not cleaned:
+        cleaned = default
+    if cleaned.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+    return cleaned

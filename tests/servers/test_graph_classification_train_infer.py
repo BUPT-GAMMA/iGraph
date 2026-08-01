@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest.mock import patch
 
 import torch
 
+from backend.logging.logger import close_service_loggers
 from graph_data_service.graph_ml.artifact_store import ArtifactStore
 from graph_data_service.graph_ml.infer import GraphMLInferencer
 from graph_data_service.graph_ml.models import GraphClassifier
@@ -115,6 +117,35 @@ class GraphClassificationTrainingTest(unittest.TestCase):
                     self.assertIn("trained_at", meta)
 
         self.assertEqual(graph_loader_calls, [])
+
+    def test_windows_invalid_session_key_is_safe_for_logs_and_artifacts(self) -> None:
+        bundle = make_trainable_graph_classification_bundle("hiv")
+        session_id = "admin:91ba0949"
+
+        with tempfile.TemporaryDirectory() as artifact_root, tempfile.TemporaryDirectory() as log_root, patch.dict(
+            os.environ,
+            {"IGRAPH_LOGS_DIR": log_root},
+            clear=False,
+        ):
+            store = ArtifactStore(artifact_root)
+            trainer = GraphMLTrainer(
+                lambda _session_id: (_ for _ in ()).throw(AssertionError()),
+                store,
+                _BoundDatasetStore(bundle),
+            )
+            try:
+                result = trainer.train(session_id, _request("GCN"))
+            finally:
+                close_service_loggers(session_id)
+
+            ref = store.resolve_model(session_id, result["model_id"])
+            self.assertIsNotNone(ref)
+            assert ref is not None
+            self.assertTrue(result["success"])
+            self.assertEqual(Path(ref.model_dir).parent.name, "admin_91ba0949")
+            self.assertTrue(
+                (Path(log_root) / "admin_91ba0949" / "graph_ml.log").exists()
+            )
 
     def test_early_stop_finishes_selection_before_touching_test_split(self) -> None:
         bundle = make_trainable_graph_classification_bundle("hiv")
