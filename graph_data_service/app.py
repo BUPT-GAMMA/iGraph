@@ -44,6 +44,10 @@ from graph_data_service.job_manager import JobManager
 from graph_data_service.rag import LightweightRAG
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
 from graph_data_service.session import GraphSession
+from graph_data_service.storage.nebula_backend import (
+    NebulaGraphRepository,
+    NebulaRepositoryError,
+)
 
 # 数据操作工具名集合（写入 graph_data.log）
 _DATA_TOOLS = {
@@ -51,11 +55,16 @@ _DATA_TOOLS = {
     "list_graph_versions", "load_graph_version", "discard_graph_version",
     "to_undirected", "get_graph_info", "list_datasets", "load_dataset",
     "save_as_dataset", "load_graph_from_text", "load_graph_from_triples",
-    "upload_document",
+    "upload_document", "nebula_status", "nebula_sync_graph",
 }
 
 _GRAPH_ML_TOOL_NAMES = {spec.get("name", "").strip() for spec in GRAPH_ML_TOOLS}
 _GRAPH_ML_HEAVY_TOOLS = {"train", "infer"}
+_NEBULA_QUERY_TOOLS = {
+    "nebula_get_node_info",
+    "nebula_get_neighbors",
+    "nebula_shortest_path",
+}
 
 
 class LoadGraphTextReq(BaseModel):
@@ -217,6 +226,7 @@ class GraphDataService:
         self,
         *,
         text_graph_llm_factory: Callable[[str], Awaitable[str]] | None = None,
+        nebula_repository: NebulaGraphRepository | None = None,
     ) -> None:
         self._sessions: Dict[str, GraphSession] = {}
         self._compute = GraphCompute()
@@ -240,6 +250,7 @@ class GraphDataService:
             provider_gateway=_pg,
         )
         self._job_manager = JobManager()
+        self._nebula = nebula_repository or NebulaGraphRepository()
         self._embedding_provider: Any = None  # lazy-initialized on first search/rag use
         _workers = max(1, int(os.getenv("GRAPH_COMPUTE_CONCURRENCY", str(min(4, (os.cpu_count() or 2))))))
         self._process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=_workers)
@@ -425,6 +436,131 @@ class GraphDataService:
             raise ValueError("尚未加载任何图数据。")
         nx_graph = self._compute.resolve_graph(self._cache_key(session_id, user_id), session.graph_version, gd)
         return session, gd, nx_graph
+
+    # ── NebulaGraph 混合存储 ────────────────────────────────────────
+
+    @staticmethod
+    def _nebula_error_result(exc: NebulaRepositoryError) -> dict:
+        return exc.to_dict()
+
+    def do_nebula_status(self, session_id: str, user_id: str = "") -> dict:
+        session = self.get_or_create(session_id, user_id=user_id)
+        return self._nebula.session_status(user_id, session_id, session.graph_version)
+
+    def _do_nebula_sync_job(
+        self,
+        session: GraphSession,
+        graph: GraphData,
+        graph_version: int,
+        user_id: str,
+        progress_callback=None,
+    ) -> dict:
+        try:
+            return self._nebula.sync_graph(
+                graph,
+                user_id=user_id,
+                session_id=session.session_id,
+                graph_version=graph_version,
+                current_version_getter=lambda: session.graph_version,
+                progress_callback=progress_callback,
+            )
+        except NebulaRepositoryError as exc:
+            return self._nebula_error_result(exc)
+
+    async def submit_nebula_sync(self, session_id: str, user_id: str = "") -> dict:
+        session = self.get_required(session_id, user_id=user_id)
+        graph = session.get_graph()
+        if graph is None:
+            return {
+                "success": False,
+                "backend": "nebula",
+                "code": "NOT_SYNCED",
+                "error": "尚未加载任何图数据，无法同步到 NebulaGraph。",
+            }
+        if not self._nebula.enabled:
+            return NebulaRepositoryError(
+                "NEBULA_DISABLED", "NebulaGraph 未启用，请设置 NEBULA_ENABLED=1"
+            ).to_dict()
+        graph_version = session.graph_version
+        job_id = await self._job_manager.submit(
+            session_id,
+            "nebula_sync_graph",
+            self._do_nebula_sync_job,
+            session,
+            graph,
+            graph_version,
+            user_id,
+            _progress_kwarg="progress_callback",
+        )
+        return {
+            "success": True,
+            "backend": "nebula",
+            "async": True,
+            "job_id": job_id,
+            "status": "queued",
+            "session_id": session_id,
+            "graph_version": graph_version,
+            "message": "NebulaGraph 同步任务已提交。",
+        }
+
+    def _dispatch_nebula_query(
+        self,
+        session_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user_id: str = "",
+    ) -> dict:
+        session = self.get_required(session_id, user_id=user_id)
+        graph = session.get_graph()
+        if graph is None:
+            return {
+                "success": False,
+                "backend": "nebula",
+                "code": "NOT_SYNCED",
+                "error": "尚未加载任何图数据。",
+            }
+        try:
+            if tool_name == "nebula_get_node_info":
+                return self._nebula.get_node_info(
+                    graph,
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    node_name=_required_str(arguments, "node_name"),
+                )
+            if tool_name == "nebula_get_neighbors":
+                return self._nebula.get_neighbors(
+                    graph,
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    node_name=_required_str(arguments, "node_name"),
+                    direction=str(arguments.get("direction") or "out"),
+                    limit=int(arguments.get("limit", 20)),
+                )
+            if tool_name == "nebula_shortest_path":
+                return self._nebula.shortest_path(
+                    graph,
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    source=_required_str(arguments, "source"),
+                    target=_required_str(arguments, "target"),
+                    direction=str(arguments.get("direction") or "out"),
+                    max_steps=int(arguments.get("max_steps", 10)),
+                )
+            return {
+                "success": False,
+                "backend": "nebula",
+                "code": "QUERY_FAILED",
+                "error": f"未知 NebulaGraph 工具: {tool_name}",
+            }
+        except NebulaRepositoryError as exc:
+            return self._nebula_error_result(exc)
+        except (TypeError, ValueError) as exc:
+            return NebulaRepositoryError(
+                "QUERY_FAILED", f"NebulaGraph 查询参数无效: {exc}"
+            ).to_dict()
 
     # ── 数据操作 ──────────────────────────────────────────────────
 
@@ -1691,6 +1827,18 @@ class GraphDataService:
 
     async def dispatch_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
         """统一工具分发入口。"""
+        if tool_name == "nebula_status":
+            return await asyncio.to_thread(self.do_nebula_status, session_id, user_id)
+        if tool_name == "nebula_sync_graph":
+            return await self.submit_nebula_sync(session_id, user_id=user_id)
+        if tool_name in _NEBULA_QUERY_TOOLS:
+            return await asyncio.to_thread(
+                self._dispatch_nebula_query,
+                session_id,
+                tool_name,
+                arguments,
+                user_id,
+            )
         if tool_name == "load_graph_from_upload":
             filename = _required_str(arguments, "filename")
             append = _optional_bool(arguments, "append", False)
@@ -1768,6 +1916,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             await asyncio.sleep(0)
         # 不等待 ProcessPool worker 进程自然结束，直接让 OS 回收
         svc._process_pool.shutdown(wait=False, cancel_futures=True)
+        svc._nebula.close()
 
     app = FastAPI(title="GraphDataServer", version="2.1.0", lifespan=lifespan)
     app.add_middleware(
