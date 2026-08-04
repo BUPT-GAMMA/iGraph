@@ -1146,6 +1146,86 @@ GRAPH_TOOLS: List[dict] = [
         },
         "category": "data",
     },
+    {
+        "name": "nebula_status",
+        "description": (
+            "检查 NebulaGraph 配置、连接、Schema 以及当前会话图的同步状态。"
+            "该工具不会修改图数据。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "category": "data",
+    },
+    {
+        "name": "nebula_sync_graph",
+        "description": (
+            "将当前会话中的 GraphData 显式同步到 NebulaGraph。同步作为异步任务执行，"
+            "返回 job_id；使用 get_job_status/get_job_result 查询进度和结果。"
+            "NPZ 快照和现有 NetworkX/GraphML 功能不受影响。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "category": "data",
+    },
+    {
+        "name": "nebula_get_node_info",
+        "description": "使用 NebulaGraph FETCH PROP 原生查询当前已同步图中的节点属性。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node_name": {"type": "string", "description": "当前图中的节点名称"},
+            },
+            "required": ["node_name"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "nebula_get_neighbors",
+        "description": "使用 NebulaGraph GO 原生查询当前已同步图中的一跳邻居。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node_name": {"type": "string", "description": "当前图中的节点名称"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                    "description": "出边、入边或双向遍历",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "返回上限，服务端限制为 1 到 200",
+                },
+            },
+            "required": ["node_name"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "nebula_shortest_path",
+        "description": (
+            "使用 NebulaGraph FIND SHORTEST PATH 查询按跳数计算的最短路径。"
+            "该工具不计算加权最短路径；加权场景继续使用现有 shortest_path 工具。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "起点节点名称"},
+                "target": {"type": "string", "description": "终点节点名称"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "最大跳数，服务端限制为 1 到 20",
+                },
+            },
+            "required": ["source", "target"],
+        },
+        "category": "compute",
+    },
 ]
 
 # ─────────────────────────────────────────────────────────────────
