@@ -63,7 +63,18 @@ _MAX_STEPS = 16
 _MAX_PROTOCOL_RETRIES = 2
 _DEFAULT_CONTEXT_TOKEN_LIMIT = 192_000
 _DEFAULT_PRESERVE_RECENT_USER_TURNS = 3
-_HIDDEN_TOOLS = {"register_session", "delete_graph_session", "set_session_config", "discard_graph_version"}
+_HIDDEN_TOOLS = {
+    "register_session",
+    "delete_graph_session",
+    "set_session_config",
+    "discard_graph_version",
+    # Backend-specific aliases remain available over MCP/HTTP for diagnostics,
+    # but the Agent uses the unified tools to avoid duplicate native + wrapper
+    # calls for the same graph query.
+    "nebula_get_node_info",
+    "nebula_get_neighbors",
+    "nebula_shortest_path",
+}
 # Hard-coded baseline of tools that always require user confirmation. The
 # effective set is the union of this baseline with any tool declared by a
 # SKILL.md whose frontmatter says ``risk_level: high`` — see
@@ -74,6 +85,19 @@ _HIGH_RISK_TOOLS_BASE = frozenset({"train", "infer", "clear_graph"})
 # serially within a tool_call batch so their continuation semantics are
 # preserved. Agent computes the dynamic counterpart at call time.
 _FEEDBACK_ONLY_TOOLS = frozenset({"request_user_feedback"})
+_GRAPH_MUTATION_TOOLS = frozenset({
+    "load_graph",
+    "load_graph_from_upload",
+    "load_graph_from_text",
+    "load_graph_from_triples",
+    "load_dataset",
+    "load_graph_version",
+    "discard_graph_version",
+    "clear_graph",
+    "undo_graph",
+    "to_undirected",
+    "subgraph_extraction",
+})
 _CORE_TOOL_NAMES_TEXT = ", ".join(sorted(CORE_TOOL_NAMES))
 _COMPACT_JSON = {"ensure_ascii": False, "separators": (",", ":")}
 _VIRTUAL_TOOL_SPECS: List[dict] = [
@@ -992,10 +1016,11 @@ class IGraph:
         self,
         job_id: str,
         *,
+        tool_name: str,
         progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict:
-        first_progress_seen = False
-        poll_interval = 1.0
+        is_upload = tool_name == "load_graph_from_upload"
+        poll_interval = 5.0 if is_upload else 1.0
         last_delivered_kind = ""
         while True:
             try:
@@ -1003,16 +1028,20 @@ class IGraph:
                     await self._mcp_client.call_tool("get_job_status", {"job_id": job_id})
                 )
             except Exception as exc:
-                return {"success": False, "error": f"轮询 text2graph 作业失败: {exc}", "job_id": job_id}
+                return {"success": False, "error": f"轮询后台图任务失败: {exc}", "job_id": job_id}
 
             job = status_payload.get("job") if isinstance(status_payload, dict) else None
             if not isinstance(job, dict):
-                return {"success": False, "error": f"text2graph 作业不存在: {job_id}", "job_id": job_id}
+                return {"success": False, "error": f"后台图任务不存在: {job_id}", "job_id": job_id}
 
             pending_updates = status_payload.get("progress_updates") or []
-            if pending_updates and not first_progress_seen:
-                first_progress_seen = True
-                poll_interval = 0.5
+            if pending_updates:
+                poll_interval = 5.0 if is_upload else 0.5
+            elif is_upload:
+                # Binary uploads can spend minutes parsing or importing a large
+                # graph. Poll less often while progress is unchanged so status
+                # checks do not compete with the CPU-bound worker.
+                poll_interval = min(30.0, poll_interval * 2.0)
             for update in pending_updates:
                 if progress_callback is not None and isinstance(update, dict):
                     progress_callback(update)
@@ -1053,7 +1082,11 @@ class IGraph:
         job_id = str(initial.get("job_id") or "").strip() if isinstance(initial, dict) else ""
         if not job_id:
             return initial if isinstance(initial, dict) else {"success": False, "error": str(initial)}
-        return await self._poll_text2graph_job(job_id, progress_callback=progress_callback)
+        return await self._poll_text2graph_job(
+            job_id,
+            tool_name=tool_name,
+            progress_callback=progress_callback,
+        )
 
     @staticmethod
     def _as_bool(value: Any, default: bool = False) -> bool:
@@ -1180,7 +1213,11 @@ class IGraph:
         feedback_triggering = self._feedback_triggering_tool_names()
         for tc in tool_calls:
             name = str(tc.get("name") or "")
-            if name in feedback_triggering or name in virtual_names:
+            if (
+                name in feedback_triggering
+                or name in virtual_names
+                or name in _GRAPH_MUTATION_TOOLS
+            ):
                 return True
         return False
 
