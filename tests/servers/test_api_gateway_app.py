@@ -106,6 +106,20 @@ class _ReportFakeAgent(_FakeAgent):
 
 class ApiGatewayAppTest(unittest.TestCase):
     def setUp(self) -> None:
+        self._admin_model_patch = patch.object(
+            gateway_app,
+            "_DEFAULT_ADMIN_MODEL",
+            gateway_app.DEFAULT_MODEL,
+        )
+        self._user_model_patch = patch.object(
+            gateway_app,
+            "_DEFAULT_NON_ADMIN_MODEL",
+            "qwen3.6-plus",
+        )
+        self._admin_model_patch.start()
+        self._user_model_patch.start()
+        self.addCleanup(self._admin_model_patch.stop)
+        self.addCleanup(self._user_model_patch.stop)
         self.server = create_server(
             config=_test_config(),
             manage_subprocesses=False,

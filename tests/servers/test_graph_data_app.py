@@ -20,6 +20,7 @@ from graph_data_service.app import (
     _graph_classification_profile_hint,
     create_app,
 )
+from graph_data_service.embedding import LexicalProvider
 from graph_data_service.graph_data import GraphData
 from tests.fixtures.graph_classification import make_graph_classification_payload
 
@@ -45,30 +46,8 @@ class GraphDataAppTest(unittest.TestCase):
             )
 
         self.service = GraphDataService(text_graph_llm_factory=fake_text_graph_llm)
+        self.service._embedding_provider = LexicalProvider()
         self.client = TestClient(create_app(self.service))
-
-    def _wait_for_job_result(self, sid: str, payload: dict) -> dict:
-        if not payload.get("async"):
-            return payload
-        job_id = str(payload.get("job_id") or "")
-        self.assertTrue(job_id)
-        for _ in range(200):
-            status_resp = self.client.post(
-                f"/sessions/{sid}/tools/get_job_status",
-                json={"arguments": {"job_id": job_id}},
-            )
-            self.assertEqual(status_resp.status_code, 200)
-            job = status_resp.json().get("job") or {}
-            status = str(job.get("status") or "")
-            if status == "done":
-                result = job.get("result")
-                self.assertIsInstance(result, dict)
-                self.assertTrue(result.get("success"), result)
-                return result
-            if status in {"failed", "cancelled"}:
-                self.fail(f"job {job_id} ended with {status}: {job.get('message')}")
-            time.sleep(0.01)
-        self.fail(f"job {job_id} did not finish")
 
     def test_health_and_load_graph(self) -> None:
         health = self.client.get("/health")
