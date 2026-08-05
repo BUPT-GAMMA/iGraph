@@ -41,6 +41,8 @@ from graph_data_service.compute import GraphCompute, NX_TOOL_NAMES, run_nx_tool
 from graph_data_service.embedding import default_provider
 from graph_data_service.graph_data import GraphData
 from graph_data_service.graph_ml import GraphMLModule
+from graph_data_service.graph_ml.datasets import graph_classification_sample_to_graph_data
+from graph_data_service.graph_ml.schemas import LoadGraphClassificationGraphRequest
 from graph_data_service.job_manager import JobManager
 from graph_data_service.rag import LightweightRAG
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
@@ -56,7 +58,11 @@ _DATA_TOOLS = {
 }
 
 _GRAPH_ML_TOOL_NAMES = {spec.get("name", "").strip() for spec in GRAPH_ML_TOOLS}
-_GRAPH_ML_HEAVY_TOOLS = {"train", "infer"}
+_GRAPH_ML_HEAVY_TOOLS = {
+    "load_graph_classification_dataset",
+    "train",
+    "infer",
+}
 _REPORTING_TOOL_NAMES = {spec.get("name", "").strip() for spec in REPORTING_TOOLS}
 
 
@@ -99,6 +105,15 @@ def _sanitize_filename(filename: str) -> str:
 def _graph_data_upload_root() -> str:
     root = os.getenv("GRAPH_DATA_UPLOAD_DIR", "uploads/graph_data")
     return os.path.abspath(root)
+
+
+def _graph_classification_profile_hint(filename: str) -> str | None:
+    stem = os.path.splitext(os.path.basename(filename or ""))[0].lower()
+    if "pcba" in stem:
+        return "pcba"
+    if "hiv" in stem:
+        return "hiv"
+    return None
 
 
 def _required_str(arguments: Dict[str, Any], key: str) -> str:
@@ -360,6 +375,7 @@ class GraphDataService:
 
     def delete_session(self, session_id: str, user_id: str = "") -> None:
         key = self._session_key(session_id, user_id)
+        self._graph_ml.release_session(key)
         self._sessions.pop(key, None)
         self._rag_cache.pop(key, None)
         self._search_index_cache.pop(key, None)
@@ -465,6 +481,45 @@ class GraphDataService:
         )
 
         lower_path = record.saved_path.lower()
+        lower_filename = str(record.original_filename or filename).lower()
+        graph_classification_profile = _graph_classification_profile_hint(
+            record.original_filename or filename
+        )
+        if (
+            (lower_path.endswith(".pt") or lower_filename.endswith(".pt"))
+            and graph_classification_profile is not None
+        ):
+            if append:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "graph_version": session.graph_version,
+                    "filename": record.original_filename,
+                    "format_detected": "graph_classification_dataset",
+                    "error": (
+                        "HIV/PCBA multi-graph .pt datasets cannot be appended to the "
+                        "current single-graph state; load with append=false."
+                    ),
+                }
+            svc_log.event(
+                "UPLOAD_FORMAT_DETECTED",
+                filename=record.original_filename,
+                format="graph_classification_dataset",
+                dataset_profile=graph_classification_profile,
+            )
+            result = await self._submit_graph_ml_tool_job(
+                session_id,
+                "load_graph_classification_dataset",
+                {
+                    "filename": filename,
+                    "dataset_profile": graph_classification_profile,
+                },
+                user_id=user_id,
+            )
+            result["filename"] = record.original_filename
+            result["format_detected"] = "graph_classification_dataset"
+            result["dataset_profile"] = graph_classification_profile
+            return result
 
         # 二进制或结构化 JSON：由 session 层按扩展名处理
         if lower_path.endswith((".npz", ".pt", ".json")):
@@ -733,6 +788,95 @@ class GraphDataService:
             "graph_version": session.graph_version,
             "num_nodes": graph.num_nodes,
             "num_edges": graph.num_edges,
+        }
+
+    def do_load_graph_classification_graph(
+        self,
+        session_id: str,
+        arguments: Dict[str, Any],
+        user_id: str = "",
+    ) -> dict:
+        req = LoadGraphClassificationGraphRequest.model_validate(arguments or {})
+        session = self.get_required(session_id, user_id=user_id)
+        runtime_session_id = self._cache_key(session_id, user_id)
+        bundle = self._graph_ml.resolve_graph_classification_dataset(
+            runtime_session_id,
+            req.dataset_id,
+        )
+        graph = graph_classification_sample_to_graph_data(bundle, req.graph_index)
+        session.set_graph(
+            graph,
+            description=(
+                f"从图分类数据集 {bundle.dataset_id} 导出 graph_index={req.graph_index}"
+            ),
+        )
+        self._compute.invalidate(runtime_session_id)
+        split_name = next(
+            (
+                split
+                for split, indices in bundle.split_indices.items()
+                if req.graph_index in indices
+            ),
+            None,
+        )
+        label_stats = node_label_stats_for_graph(graph)
+        label_values = node_label_values_for_graph(graph)
+        label_classes = node_label_class_mapping_for_graph(graph)
+        node_types = node_type_values_for_graph(graph)
+        edge_types = edge_type_values_for_graph(graph)
+        preview_payload = self._graph_preview(graph)
+        ml_readiness = graph_ml_readiness_for_graph(graph)
+        graph_label = self._json_safe_value(graph.graph_label)
+        graph_info_payload = {
+            "num_nodes": graph.num_nodes,
+            "num_edges": graph.num_edges,
+            "directed": graph.directed,
+            "has_node_names": graph.has_node_names,
+            "has_edge_weight": graph.has_edge_weight,
+            "has_node_feat": graph.has_node_feat,
+            "node_feat_dim": graph.node_feat_dim,
+            "has_edge_feat": graph.has_edge_feat,
+            "edge_feat_dim": graph.edge_feat_dim,
+            "has_node_label": graph.has_node_label,
+            "node_label_stats": label_stats,
+            "node_label_values": label_values,
+            "node_label_classes": label_classes,
+            "has_node_type": graph.has_node_type,
+            "node_type_values": node_types,
+            "has_edge_type": graph.has_edge_type,
+            "edge_type_values": edge_types,
+            "has_graph_label": graph.has_graph_label,
+            "graph_label": graph_label,
+            "has_node_text": graph.has_node_text,
+            "has_split_masks": graph.has_split_masks,
+            "split_stats": None,
+            "label_names": graph.label_names,
+            "graph_desc": graph.graph_desc,
+        }
+        return {
+            "success": True,
+            "session_id": session_id,
+            "dataset_id": bundle.dataset_id,
+            "dataset_name": bundle.name,
+            "graph_index": req.graph_index,
+            "split": split_name,
+            "graph_version": session.graph_version,
+            "num_nodes": graph.num_nodes,
+            "num_edges": graph.num_edges,
+            "directed": graph.directed,
+            "has_node_names": graph.has_node_names,
+            "has_edge_weight": graph.has_edge_weight,
+            "node_label_stats": label_stats,
+            "nodes": preview_payload["nodes"],
+            "edges": preview_payload["edges"],
+            "preview": preview_payload["preview"],
+            "graph_info": graph_info_payload,
+            "graph_ml_readiness": ml_readiness,
+            "message": (
+                f"已将图分类数据集 {bundle.dataset_id} 的 graph_index={req.graph_index} "
+                "导出为当前会话图。现在可以继续使用 get_graph_info、get_node_info、"
+                "visualize_subgraph 和 subgraph_extraction。"
+            ),
         }
 
     def do_save_as_dataset(self, session_id: str, name: str, description: str, user_id: str = "") -> dict:
@@ -1202,6 +1346,7 @@ class GraphDataService:
             "has_edge_type": gd.has_edge_type,
             "edge_type_values": edge_types,
             "has_graph_label": gd.has_graph_label,
+            "graph_label": self._json_safe_value(gd.graph_label),
             "has_node_text": gd.has_node_text,
             "has_split_masks": gd.has_split_masks,
             "split_stats": {
@@ -1248,6 +1393,18 @@ class GraphDataService:
             source_results=source_results,
             options=options_arg if isinstance(options_arg, dict) else None,
         )
+
+    @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            if value.ndim == 0:
+                return GraphDataService._json_safe_value(value.item())
+            return [GraphDataService._json_safe_value(item) for item in value.tolist()]
+        if isinstance(value, np.generic):
+            return GraphDataService._json_safe_value(value.item())
+        if isinstance(value, float) and not np.isfinite(value):
+            return None
+        return value
 
     @staticmethod
     def _graph_preview(gd, node_limit: int = 10, edge_limit: int = 30) -> Dict[str, Any]:
@@ -1579,7 +1736,19 @@ class GraphDataService:
         progress_callback=None,
         user_id: str = "",
     ) -> dict:
+        if tool_name == "load_graph_classification_graph":
+            return self.do_load_graph_classification_graph(
+                session_id,
+                arguments,
+                user_id=user_id,
+            )
         runtime_session_id = self._cache_key(session_id, user_id)
+        if tool_name == "load_graph_classification_dataset":
+            return self._graph_ml.load_graph_classification_dataset(
+                runtime_session_id,
+                arguments,
+                progress_callback=progress_callback,
+            )
         if tool_name == "train":
             return self._graph_ml.train(runtime_session_id, arguments, progress_callback=progress_callback)
         if tool_name == "infer":
@@ -1604,7 +1773,11 @@ class GraphDataService:
             user_id,
             tool_name,
             clean_arguments,
-            _progress_kwarg="progress_callback" if tool_name == "train" else None,
+            _progress_kwarg=(
+                "progress_callback"
+                if tool_name in {"load_graph_classification_dataset", "train"}
+                else None
+            ),
         )
         return {
             "success": True,

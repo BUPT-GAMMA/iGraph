@@ -7,17 +7,36 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+from pathlib import Path
+from unittest.mock import patch
 import numpy as np
+import torch
 
 from fastapi.testclient import TestClient
 
-from graph_data_service.app import GraphDataService, create_app
+from backend.logging.logger import close_service_loggers
+from graph_data_service.app import (
+    GraphDataService,
+    _graph_classification_profile_hint,
+    create_app,
+)
 from graph_data_service.graph_data import GraphData
+from tests.fixtures.graph_classification import make_graph_classification_payload
 
 
 class GraphDataAppTest(unittest.TestCase):
     def setUp(self) -> None:
-        async def fake_text_graph_llm(_prompt: str) -> str:
+        async def fake_text_graph_llm(prompt: str) -> str:
+            if "文件内容样本" in prompt:
+                if "A B 1" in prompt:
+                    return (
+                        '{"format":"edge_list","separator":"space",'
+                        '"reason":"weighted edge rows","extraction_goal":"无"}'
+                    )
+                return (
+                    '{"format":"freetext","separator":null,'
+                    '"reason":"natural language","extraction_goal":"extract entities and relations"}'
+                )
             return (
                 "<triples>\n"
                 "Alice | knows | Bob\n"
@@ -27,6 +46,29 @@ class GraphDataAppTest(unittest.TestCase):
 
         self.service = GraphDataService(text_graph_llm_factory=fake_text_graph_llm)
         self.client = TestClient(create_app(self.service))
+
+    def _wait_for_job_result(self, sid: str, payload: dict) -> dict:
+        if not payload.get("async"):
+            return payload
+        job_id = str(payload.get("job_id") or "")
+        self.assertTrue(job_id)
+        for _ in range(200):
+            status_resp = self.client.post(
+                f"/sessions/{sid}/tools/get_job_status",
+                json={"arguments": {"job_id": job_id}},
+            )
+            self.assertEqual(status_resp.status_code, 200)
+            job = status_resp.json().get("job") or {}
+            status = str(job.get("status") or "")
+            if status == "done":
+                result = job.get("result")
+                self.assertIsInstance(result, dict)
+                self.assertTrue(result.get("success"), result)
+                return result
+            if status in {"failed", "cancelled"}:
+                self.fail(f"job {job_id} ended with {status}: {job.get('message')}")
+            time.sleep(0.01)
+        self.fail(f"job {job_id} did not finish")
 
     def test_health_and_load_graph(self) -> None:
         health = self.client.get("/health")
@@ -105,6 +147,7 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertIn("train", names)
         self.assertIn("infer", names)
         self.assertIn("visualize_model_architecture", names)
+        self.assertIn("load_graph_classification_dataset", names)
         self.assertIn("load_graph_from_triples", names)
         self.assertIn("create_analysis_report", names)
         self.assertNotIn("get_train_config", names)
@@ -112,6 +155,186 @@ class GraphDataAppTest(unittest.TestCase):
         load_text = next(t for t in tools if t.get("name") == "load_graph_from_text")
         self.assertIn("append", load_text["inputSchema"]["properties"])
         self.assertIn("extraction_goal", load_text["inputSchema"]["properties"])
+        train = next(t for t in tools if t.get("name") == "train")
+        self.assertIn(
+            "graph_classification",
+            train["inputSchema"]["properties"]["task"]["enum"],
+        )
+
+    def test_graph_classification_contract_errors_do_not_require_single_graph(self) -> None:
+        sid = "s-graph-classification-contract"
+        self.client.post(f"/sessions/{sid}")
+
+        load_resp = self.client.post(
+            f"/sessions/{sid}/tools/load_graph_classification_dataset",
+            json={"arguments": {"filename": "hiv.pt", "dataset_profile": "auto"}},
+        )
+        self.assertEqual(load_resp.status_code, 200)
+        self.assertFalse(load_resp.json()["success"])
+        self.assertIn("未找到已注册上传文件", load_resp.json()["error"])
+
+        train_resp = self.client.post(
+            f"/sessions/{sid}/tools/train",
+            json={"arguments": {"task": "graph_classification", "model": "GCN"}},
+        )
+        self.assertEqual(train_resp.status_code, 200)
+        self.assertFalse(train_resp.json()["success"])
+        self.assertIn("load_graph_classification_dataset", train_resp.json()["error"])
+
+    def test_graph_classification_dataset_load_runs_as_async_job_with_progress(self) -> None:
+        asyncio.run(self._run_graph_classification_dataset_load_async())
+
+    def test_load_graph_classification_graph_exports_sample_as_current_graph(self) -> None:
+        asyncio.run(self._run_load_graph_classification_graph_exports_sample())
+
+    def test_load_graph_from_upload_routes_hiv_pt_to_graph_classification_job(self) -> None:
+        asyncio.run(self._run_load_graph_from_upload_routes_hiv_pt())
+
+    def test_graph_classification_profile_hint_detects_hiv_and_pcba(self) -> None:
+        self.assertEqual(_graph_classification_profile_hint("hiv.pt"), "hiv")
+        self.assertEqual(_graph_classification_profile_hint("ogbg-molpcba.pt"), "pcba")
+        self.assertIsNone(_graph_classification_profile_hint("single_graph.pt"))
+
+    async def _run_load_graph_from_upload_routes_hiv_pt(self) -> None:
+        sid = "s-upload-hiv-auto-route"
+        session = self.service.get_or_create(sid)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_path = Path(temp_dir) / "hiv.pt"
+            torch.save(make_graph_classification_payload("hiv"), dataset_path)
+            session.register_upload("token-hiv-upload", "hiv.pt", str(dataset_path))
+
+            initial = await self.service.dispatch_tool(
+                sid,
+                "load_graph_from_upload",
+                {"filename": "hiv.pt"},
+            )
+
+            self.assertTrue(initial["success"])
+            self.assertTrue(initial["async"])
+            self.assertEqual(initial["format_detected"], "graph_classification_dataset")
+            self.assertEqual(initial["dataset_profile"], "hiv")
+            job_id = initial["job_id"]
+            for _ in range(200):
+                status_payload = await self.service.dispatch_tool(
+                    sid,
+                    "get_job_status",
+                    {"job_id": job_id},
+                )
+                job = status_payload.get("job") or {}
+                if job.get("status") == "done":
+                    result = job["result"]
+                    self.assertTrue(result["success"])
+                    self.assertTrue(result["readiness"]["supported"])
+                    self.assertEqual(result["dataset"]["name"], "hiv")
+                    break
+                if job.get("status") in {"failed", "cancelled"}:
+                    self.fail(str(job))
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("auto-routed HIV dataset load job did not finish")
+
+        self.assertIsNone(session.get_graph())
+
+    async def _run_graph_classification_dataset_load_async(self) -> None:
+        sid = "s-graph-classification-async-load"
+        session = self.service.get_or_create(sid)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_path = Path(temp_dir) / "hiv.pt"
+            torch.save(make_graph_classification_payload("hiv"), dataset_path)
+            session.register_upload("token-hiv-async", "hiv.pt", str(dataset_path))
+
+            initial = await self.service.dispatch_tool(
+                sid,
+                "load_graph_classification_dataset",
+                {"filename": "hiv.pt", "dataset_profile": "hiv", "__async": True},
+            )
+            self.assertTrue(initial["success"])
+            self.assertTrue(initial["async"])
+            job_id = initial["job_id"]
+            progress_updates = []
+            for _ in range(200):
+                status_payload = await self.service.dispatch_tool(
+                    sid,
+                    "get_job_status",
+                    {"job_id": job_id},
+                )
+                progress_updates.extend(status_payload.get("progress_updates") or [])
+                job = status_payload.get("job") or {}
+                if job.get("status") == "done":
+                    result = job["result"]
+                    self.assertTrue(result["success"])
+                    self.assertTrue(result["readiness"]["supported"])
+                    self.assertEqual(result["dataset"]["name"], "hiv")
+                    break
+                if job.get("status") in {"failed", "cancelled"}:
+                    self.fail(str(job))
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("graph classification dataset load job did not finish")
+
+        self.assertIsNone(session.get_graph())
+        self.assertTrue(progress_updates)
+        self.assertTrue(
+            any(
+                update.get("kind") == "graph_classification_dataset_load_done"
+                for update in progress_updates
+            )
+        )
+
+    async def _run_load_graph_classification_graph_exports_sample(self) -> None:
+        sid = f"s-graph-classification-sample-export-{time.time_ns()}"
+        session = self.service.get_or_create(sid)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_path = Path(temp_dir) / "hiv.pt"
+            torch.save(make_graph_classification_payload("hiv"), dataset_path)
+            session.register_upload("token-hiv-sample", "hiv.pt", str(dataset_path))
+
+            dataset_result = await self.service.dispatch_tool(
+                sid,
+                "load_graph_classification_dataset",
+                {"filename": "hiv.pt", "dataset_profile": "hiv"},
+            )
+            self.assertTrue(dataset_result["success"])
+            self.assertIsNone(session.get_graph())
+
+            exported = await self.service.dispatch_tool(
+                sid,
+                "load_graph_classification_graph",
+                {"graph_index": 5},
+            )
+
+        self.assertTrue(exported["success"])
+        self.assertEqual(exported["dataset_name"], "hiv")
+        self.assertEqual(exported["graph_index"], 5)
+        self.assertEqual(exported["split"], "test")
+        self.assertEqual(exported["num_nodes"], 4)
+        self.assertEqual(exported["num_edges"], 3)
+        self.assertEqual(exported["graph_info"]["graph_label"], 1)
+
+        graph = session.get_graph()
+        self.assertIsNotNone(graph)
+        assert graph is not None
+        self.assertTrue(graph.has_node_type)
+        self.assertTrue(graph.has_edge_type)
+        self.assertIn("node category 1", graph.node_types)
+        self.assertIn("edge category 0", graph.edge_types)
+
+        graph_info = self.service.do_get_graph_info(sid)
+        self.assertTrue(graph_info["loaded"])
+        self.assertEqual(graph_info["graph_info"]["graph_label"], 1)
+        self.assertEqual(graph_info["graph_info"]["node_type_values"][0], "node category 1")
+
+    def test_delete_session_releases_graph_ml_dataset_memory(self) -> None:
+        self.service.get_or_create("s-release", user_id="alice")
+        with patch.object(
+            self.service._graph_ml,
+            "release_session",
+            wraps=self.service._graph_ml.release_session,
+        ) as release:
+            self.service.delete_session("s-release", user_id="alice")
+
+        release.assert_called_once_with("alice:s-release")
+        self.assertNotIn("alice:s-release", self.service._sessions)
 
     def test_reporting_tool_is_available_from_graph_data_when_requested(self) -> None:
         tools_resp = self.client.get("/tools?include_reporting=true")
@@ -267,6 +490,52 @@ class GraphDataAppTest(unittest.TestCase):
 
     def test_heavy_graph_ml_duplicate_calls_share_inflight_task(self) -> None:
         asyncio.run(self._run_heavy_graph_ml_duplicate_calls_share_inflight_task())
+
+    def test_duplicate_dataset_load_calls_share_heavy_inflight_task(self) -> None:
+        asyncio.run(self._run_duplicate_dataset_load_calls_share_inflight_task())
+
+    async def _run_duplicate_dataset_load_calls_share_inflight_task(self) -> None:
+        service = GraphDataService()
+        calls = 0
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_dispatch(
+            session_id: str,
+            tool_name: str,
+            arguments: dict,
+            user_id: str = "",
+        ) -> dict:
+            nonlocal calls
+            calls += 1
+            started.set()
+            self.assertTrue(release.wait(timeout=2.0))
+            return {"success": True, "dataset_id": "gds_one", "calls": calls}
+
+        service._dispatch_graph_ml_tool = fake_dispatch
+        arguments = {"filename": "hiv.pt", "dataset_profile": "hiv"}
+        first = asyncio.create_task(
+            service.dispatch_tool(
+                "sid-dataset-inflight",
+                "load_graph_classification_dataset",
+                arguments,
+            )
+        )
+        self.assertTrue(await asyncio.to_thread(started.wait, 2.0))
+        second = asyncio.create_task(
+            service.dispatch_tool(
+                "sid-dataset-inflight",
+                "load_graph_classification_dataset",
+                dict(arguments),
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(calls, 1)
+        release.set()
+        first_result, second_result = await asyncio.gather(first, second)
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(first_result, second_result)
 
     async def _run_heavy_graph_ml_duplicate_calls_share_inflight_task(self) -> None:
         service = GraphDataService()
@@ -469,36 +738,39 @@ class GraphDataAppTest(unittest.TestCase):
 
     def test_user_subgraph_version_saved_under_session_dir(self) -> None:
         old_root = os.environ.get("IGRAPH_DATA_ROOT")
+        sid = "s-subgraph-user-path"
         try:
             with tempfile.TemporaryDirectory() as td:
-                os.environ["IGRAPH_DATA_ROOT"] = td
-                sid = "s-subgraph-user-path"
-                headers = {"X-User-ID": "alice"}
-                self.client.post(f"/sessions/{sid}", headers=headers)
-                self.client.post(
-                    f"/sessions/{sid}/graph/load_text",
-                    headers=headers,
-                    json={"edge_text": "A B\nB C\nC D\nD A"},
-                )
-                result = self.client.post(
-                    f"/sessions/{sid}/tools/subgraph_extraction",
-                    headers=headers,
-                    json={"arguments": {"method": "ego_graph", "node": "A", "k": 1}},
-                ).json()
-
-                self.assertTrue(result["success"])
-                self.assertTrue(result["current_graph_replaced"])
-                self.assertEqual(result["graph_version"], 2)
-
-                session_dir = os.path.join(td, "users", "alice", "sessions", sid)
-                self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_current.npz")))
-                self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_versions.json")))
-                self.assertTrue(os.path.exists(os.path.join(session_dir, "snapshots", "v002.npz")))
-                self.assertFalse(
-                    os.path.exists(
-                        os.path.join(td, "users", "alice", "uploads", sid, "graph_current.npz")
+                try:
+                    os.environ["IGRAPH_DATA_ROOT"] = td
+                    headers = {"X-User-ID": "alice"}
+                    self.client.post(f"/sessions/{sid}", headers=headers)
+                    self.client.post(
+                        f"/sessions/{sid}/graph/load_text",
+                        headers=headers,
+                        json={"edge_text": "A B\nB C\nC D\nD A"},
                     )
-                )
+                    result = self.client.post(
+                        f"/sessions/{sid}/tools/subgraph_extraction",
+                        headers=headers,
+                        json={"arguments": {"method": "ego_graph", "node": "A", "k": 1}},
+                    ).json()
+
+                    self.assertTrue(result["success"])
+                    self.assertTrue(result["current_graph_replaced"])
+                    self.assertEqual(result["graph_version"], 2)
+
+                    session_dir = os.path.join(td, "users", "alice", "sessions", sid)
+                    self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_current.npz")))
+                    self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_versions.json")))
+                    self.assertTrue(os.path.exists(os.path.join(session_dir, "snapshots", "v002.npz")))
+                    self.assertFalse(
+                        os.path.exists(
+                            os.path.join(td, "users", "alice", "uploads", sid, "graph_current.npz")
+                        )
+                    )
+                finally:
+                    close_service_loggers(sid)
         finally:
             if old_root is None:
                 os.environ.pop("IGRAPH_DATA_ROOT", None)

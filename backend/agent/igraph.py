@@ -708,6 +708,11 @@ class IGraph:
                 args=args,
                 progress_callback=progress_callback,
             )
+        elif name == "load_graph_classification_dataset":
+            result = await self._execute_graph_classification_dataset_with_progress(
+                args=args,
+                progress_callback=progress_callback,
+            )
         elif name in {"load_graph_from_text", "load_graph_from_upload"}:
             result = await self._execute_text2graph_tool_with_progress(
                 tool_name=name,
@@ -723,6 +728,7 @@ class IGraph:
             "load_graph",
             "load_graph_from_upload",
             "load_dataset",
+            "load_graph_classification_graph",
             "load_graph_from_text",
             "load_graph_from_triples",
             "undo_graph",
@@ -900,6 +906,88 @@ class IGraph:
                 }
             await asyncio.sleep(poll_interval)
 
+    async def _execute_graph_classification_dataset_with_progress(
+        self,
+        *,
+        args: dict,
+        progress_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> dict:
+        initial = self._decode_mcp_payload(
+            await self._mcp_client.call_tool(
+                "load_graph_classification_dataset",
+                dict(args or {}),
+            )
+        )
+        job_id = str(initial.get("job_id") or "").strip() if isinstance(initial, dict) else ""
+        if not job_id:
+            return initial if isinstance(initial, dict) else {
+                "success": False,
+                "error": str(initial),
+            }
+
+        last_delivered_kind = ""
+        poll_interval = 1.0
+        while True:
+            try:
+                status_payload = self._decode_mcp_payload(
+                    await self._mcp_client.call_tool(
+                        "get_job_status",
+                        {"job_id": job_id},
+                    )
+                )
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "error": f"轮询图分类数据集加载作业失败: {exc}",
+                    "job_id": job_id,
+                }
+            job = status_payload.get("job") if isinstance(status_payload, dict) else None
+            if not isinstance(job, dict):
+                return {
+                    "success": False,
+                    "error": f"图分类数据集加载作业不存在: {job_id}",
+                    "job_id": job_id,
+                }
+
+            pending_updates = status_payload.get("progress_updates") or []
+            if pending_updates:
+                poll_interval = 0.2
+            for update in pending_updates:
+                if progress_callback is not None and isinstance(update, dict):
+                    progress_callback(update)
+                    last_delivered_kind = str(update.get("kind") or "")
+
+            status = str(job.get("status") or "").lower()
+            if status == "done":
+                result = job.get("result")
+                if (
+                    progress_callback is not None
+                    and last_delivered_kind != "graph_classification_dataset_load_done"
+                ):
+                    detail = job.get("detail") if isinstance(job.get("detail"), dict) else {}
+                    progress_callback(
+                        {
+                            **detail,
+                            "kind": "graph_classification_dataset_load_done",
+                            "progress": 1.0,
+                            "message": "graph classification dataset loaded",
+                            "job_id": job_id,
+                        }
+                    )
+                return result if isinstance(result, dict) else {
+                    "success": True,
+                    "result": result,
+                    "job_id": job_id,
+                }
+            if status in {"failed", "cancelled"}:
+                return {
+                    "success": False,
+                    "error": str(job.get("message") or status),
+                    "job_id": job_id,
+                    "status": status,
+                }
+            await asyncio.sleep(poll_interval)
+
     async def _poll_text2graph_job(
         self,
         job_id: str,
@@ -1013,6 +1101,10 @@ class IGraph:
             }
             if model == "GAT":
                 model_config["gat_heads"] = int(algo.get("gat_heads", 2))
+            if task == "graph_classification":
+                model_config["node_embedding_dim"] = int(
+                    algo.get("node_embedding_dim", 64)
+                )
             display_model = model
 
         return {
@@ -1026,6 +1118,9 @@ class IGraph:
                 "lr": float(train.get("lr", 0.05)),
                 "weight_decay": float(train.get("weight_decay", 0.0)),
                 "early_stop_patience": int(train.get("early_stop_patience", 0)),
+                "seed": int(train.get("seed", 42)),
+                "batch_size": int(train.get("batch_size", 64)),
+                "num_workers": int(train.get("num_workers", 0)),
             },
         }
 

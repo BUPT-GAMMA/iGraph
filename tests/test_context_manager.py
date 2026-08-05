@@ -421,7 +421,7 @@ class ContextManagerTests(unittest.TestCase):
         result = handle_skill_tool_call("skill_view", {"name": "graph_ml_training"})
         self.assertIsInstance(result, str)
         self.assertIn("GraphML 训练", result)
-        self.assertIn("`train` 工具 schema", result)
+        self.assertIn("依据 `train` 工具 schema 准备参数", result)
         self.assertIn("高风险确认流程", result)
 
 
