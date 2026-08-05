@@ -6,7 +6,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
 
-TaskType = Literal["node_classification", "link_prediction", "pretrain"]
+TaskType = Literal[
+    "node_classification",
+    "link_prediction",
+    "graph_classification",
+    "pretrain",
+]
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -92,6 +97,67 @@ def model_architecture_view(
         layer_annotations.append(f"{norm_type}@{norm_pos}")
     if layer_annotations:
         conv_label = f"{conv_label}, {' + '.join(layer_annotations)}"
+    if task == "graph_classification":
+        node_embedding_dim = int(meta_cfg.get("node_embedding_dim", 64))
+        num_tasks = int((meta or {}).get("num_tasks", meta_cfg.get("num_tasks", 1)))
+        pooling = str((meta or {}).get("pooling") or "global_mean")
+        uses_edge_features = _as_bool((meta or {}).get("uses_edge_features"), False)
+        mermaid = (
+            "flowchart TD\n"
+            "  I[\"Categorical Node IDs\"] --> N"
+            f"[\"Node Embedding (dim={node_embedding_dim})\"]\n"
+            f"  N --> C[\"{conv_label} x {layers}\"]\n"
+            f"  C --> E[\"Node Embedding (dim={emb_dim})\"]\n"
+            "  E --> P[\"Global Mean Pool\"]\n"
+            f"  P --> H[\"Linear Multi-task Head (tasks={num_tasks})\"]\n"
+            "  H --> O[\"Sigmoid Probabilities\"]"
+        )
+        return {
+            "success": True,
+            "task": task,
+            "model_id": model_id,
+            "model": model_name,
+            "method": None,
+            "architecture": {
+                "type": "graph_classifier",
+                "model": model_name,
+                "node_embedding_dim": node_embedding_dim,
+                "hidden_dim": hidden,
+                "embedding_dim": emb_dim,
+                "num_layers": layers,
+                "dropout": dropout,
+                "gat_heads": heads,
+                "num_tasks": num_tasks,
+                "pooling": pooling,
+                "uses_edge_features": uses_edge_features,
+                "edge_feature_note": "xe is validated and preserved but not consumed by the first baseline",
+                "use_residual_connection": use_residual,
+                "use_normalization": use_norm,
+                "norm_pos": norm_pos,
+                "norm_type": norm_type,
+            },
+            "layers": [
+                {"name": "categorical_node_ids"},
+                {"name": "node_embedding", "embedding_dim": node_embedding_dim},
+                {
+                    "name": "gnn_backbone",
+                    "model": model_name,
+                    "num_layers": layers,
+                    "hidden_dim": hidden,
+                    "use_residual_connection": use_residual,
+                    "use_normalization": use_norm,
+                    "norm_pos": norm_pos,
+                    "norm_type": norm_type,
+                },
+                {"name": "global_mean_pool", "pooling": pooling},
+                {"name": "linear_multitask_head", "num_tasks": num_tasks},
+                {"name": "sigmoid_probabilities", "num_tasks": num_tasks},
+            ],
+            "limitations": [
+                "Edge category xe is validated and retained, but is not used by the first baseline."
+            ],
+            "mermaid": mermaid,
+        }
     mermaid = (
         "flowchart TD\n"
         "  I[\"Node Features\"] --> C1\n"

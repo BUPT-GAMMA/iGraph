@@ -24,7 +24,13 @@ def _env_float(name: str, default: float) -> float:
 
 
 MCP_HEAVY_TOOL_TIMEOUT_SECONDS = _env_float("MCP_HEAVY_TOOL_TIMEOUT_SECONDS", 900.0)
-_MCP_HEAVY_TOOLS = {"train", "infer", "load_graph_from_text", "load_graph_from_upload"}
+_MCP_HEAVY_TOOLS = {
+    "load_graph_classification_dataset",
+    "train",
+    "infer",
+    "load_graph_from_text",
+    "load_graph_from_upload",
+}
 
 
 def _tool_timeout(tool_name: str, default_timeout: float) -> float:

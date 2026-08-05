@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import backend.api_gateway.app as gateway_app
-from backend.api_gateway.app import ApiGatewayConfig, create_server
+from backend.api_gateway.app import AttachmentRef, ApiGatewayConfig, create_server
 
 ADMIN_HEADERS = {"X-User-ID": "admin"}
 ALICE_HEADERS = {"X-User-ID": "alice"}
@@ -134,6 +134,23 @@ class ApiGatewayAppTest(unittest.TestCase):
         chat_body = chatted.json()
         self.assertTrue(chat_body["success"])
         self.assertEqual(chat_body["response"], "echo:hello")
+
+    def test_pt_attachment_hint_distinguishes_multigraph_and_single_graph(self) -> None:
+        key = self.server._agent_key("alice", "session-attachment")
+        self.server._uploaded_files[key] = {
+            "token-hiv": {"original": "hiv.pt"},
+        }
+
+        resolved = self.server._resolve_attachments(
+            "session-attachment",
+            "请加载数据",
+            [AttachmentRef(file_token="token-hiv", filename="hiv.pt")],
+            user_id="alice",
+        )
+
+        self.assertIn("load_graph_classification_dataset", resolved)
+        self.assertIn("load_graph_from_upload", resolved)
+        self.assertIn("HIV/PCBA", resolved)
 
     def test_auth_validate_returns_model_access(self) -> None:
         resp = self.client.post("/api/auth/validate", headers=ADMIN_HEADERS)

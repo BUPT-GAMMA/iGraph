@@ -1,103 +1,157 @@
 # GraphML 模块说明（内置于 GraphData）
 
-`graph_ml` 是 `graph_data_service` 的内置子模块（与 `GraphCompute` 并列），不作为独立 HTTP 服务部署。
+`graph_ml` 是 `graph_data_service` 的进程内子模块。节点分类、链路预测和预训练直接使用当前会话的单图 `GraphData`；图分类使用独立、会话隔离的多图 `GraphMLDatasetStore`，两种状态互不替代。
 
-## 1. 模块职责
+## 1. 支持范围
 
-1. 执行 `train` / `infer`（GCN / GAT / SAGE 三种 backbone）。
-2. 提供 `visualize_model_architecture`；训练/推理参数 schema 直接由 `train` / `infer` 工具暴露。
-3. 使用 `GRAPH_ML_ARTIFACT_ROOT` 管理模型产物（权重 + meta + embedding）。
+| 任务 | 模型 | 数据和指标 |
+|---|---|---|
+| `node_classification` | GCN / GAT / SAGE | 当前单图的节点标签 |
+| `link_prediction` | GCN / GAT / SAGE | 当前单图的边 |
+| `graph_classification` | GCN / GAT / SAGE | HIV：ROC-AUC；PCBA：128 任务宏平均 AP |
+| `pretrain` | Node2Vec / GNN 自监督方法 | 当前单图的节点 embedding |
 
-## 2. 关键设计
+图分类第一版不是新算法，而是统一 baseline：
 
-1. 不通过 `graph_document` 拉取图——训练/推理直接读取 `GraphDataService` 会话内存中的 `GraphData` 与 `graph_version`。
-2. MCP 不连接独立 GraphML 服务，统一转发到 GraphData 的工具端点。
-3. GraphML 工具是**可选能力**——PyTorch/PyG 未安装时工具仍可注册到 MCP，但调用时返回安装提示错误，不影响其他工具。
-4. `train` / `infer` 在 `GraphDataService.dispatch_tool()` 中通过 `asyncio.to_thread()` 异步执行，避免阻塞事件循环。
+```text
+Categorical Node IDs
+→ Node Embedding
+→ GCN / GAT / GraphSAGE
+→ Global Mean Pool
+→ Linear Graph-level Head
+→ Sigmoid Probabilities
+```
 
-## 3. 支持的任务与模型
+`xe` 边类别会被安全读取、校验和保留，但第一版不会进入模型计算，artifact 中固定记录 `uses_edge_features=false`。暂不支持 GIN/GINE、任意 OGB 数据、可切换 pooling 或自定义 metric/split。
 
-| 任务 | 说明 | 支持的 backbone |
-|------|------|----------------|
-| `node_classification` | 节点分类 | GCN / GAT / SAGE |
-| `link_prediction` | 链接预测 | GCN / GAT / SAGE |
-| `pretrain` | 预训练嵌入 | Node2Vec（无需 GNN）/ contrastive_learning / mask_autoencoding |
+## 2. 图分类调用顺序
 
-预训练产生的嵌入可作为下游任务的输入特征（`feature_source="embedding"` + `upstream_model_id`）。
+多图 `.pt` 不能交给单图工具 `load_graph_from_upload`。调用顺序固定为：
 
-## 4. 调用入口
+```text
+上传并注册 hiv.pt / pcba.pt
+→ load_graph_classification_dataset
+→ get_job_status（轮询加载作业）
+→ train(task="graph_classification")
+→ get_job_status（轮询训练作业）
+→ infer / visualize_model_architecture
+```
 
-统一通过 GraphData 工具端点调用：
-
-| 端点 | 功能 |
-|------|------|
-| `POST /sessions/{sid}/tools/train` | 训练 GNN 模型 |
-| `POST /sessions/{sid}/tools/infer` | 模型推理 |
-| `POST /sessions/{sid}/tools/visualize_model_architecture` | 模型结构可视化（Mermaid + 层级摘要） |
-
-请求体格式：
+加载请求：
 
 ```json
 {
-  "arguments": {
-    "task": "node_classification",
-    "model": "GCN"
+  "filename": "hiv.pt",
+  "dataset_profile": "hiv"
+}
+```
+
+训练请求：
+
+```json
+{
+  "task": "graph_classification",
+  "model": "GCN",
+  "data": {"dataset_id": "gds_0123abcd"},
+  "train_config": {
+    "epochs": 100,
+    "lr": 0.001,
+    "weight_decay": 0.0,
+    "seed": 42,
+    "early_stop_patience": 10,
+    "batch_size": 64,
+    "num_workers": 0
+  },
+  "algo_config": {
+    "device": "auto",
+    "node_embedding_dim": 64,
+    "hidden_dim": 64,
+    "embedding_dim": 64,
+    "num_layers": 2,
+    "dropout": 0.2
   }
 }
 ```
 
-## 5. 模型产物存储
+图分类不接受 `graph_version`、`feature_source="embedding"`、自定义 split、metric、method 或节点/边目标字段。未显式传 `dataset_id` 时使用当前 session 已绑定的多图数据集。
 
+## 3. 数据安全和生命周期
+
+- 数据文件只能通过当前 `GraphSession` 的上传注册表按文件名解析，不接受任意路径。
+- `.pt` 加载前扫描全局类型，反序列化固定使用 `weights_only=True`、`map_location="cpu"` 和 PyG 白名单。
+- Loader 严格校验根字段、节点/边类别、标签、词表和 train/valid/test 完整无重叠划分。
+- 每个运行时 session 最多绑定一个多图 bundle；服务重启后不会隐式恢复，必须重新调用加载工具。
+- `clear_graph` 只清理单图，不影响多图 bundle；删除 session 会释放多图内存。
+- 数据加载、训练和推理均在 GraphData 的重型任务限流内执行；MCP/Agent 对数据加载和训练使用异步作业与进度轮询。
+
+`load_graph_classification_dataset` 返回独立 readiness，包括图数、任务数、固定 split、metric、缺失标签率和词表大小；它不会把图分类状态写入单图 `get_graph_info.graph_ml_readiness`。
+
+## 4. 训练与评测语义
+
+- 始终使用文件自带的 train/valid/test，测试集只在最佳验证模型确定后评估。
+- HIV：单任务 masked BCE，按 `val_roc_auc` 选择模型。
+- PCBA：128 个独立二分类任务，NaN 标签不参与 loss；逐任务计算 AP，跳过全缺失、无正样本或无负样本任务，再对有效任务求宏平均，按 `val_ap` 选择模型。
+- 全 NaN batch 会跳过；若整个 train split 没有有效标签则明确失败。
+- 相同 seed 会同时设置 Python、NumPy、PyTorch 和 CUDA 随机源。
+
+## 5. 推理
+
+支持完整 split 或指定图索引：
+
+```json
+{"model_id": "mdl_graph_classification_xxx", "query": {"split": "test"}}
 ```
-artifacts/graph_ml/
-└── {session_id}/
-    └── mdl_{task}_{timestamp}_{hex}/
-        ├── meta.json           # 模型元信息（task / graph_version / feature_source / metrics 等）
-        ├── model.pt            # PyTorch 模型权重
-        ├── node_names.json     # 训练时节点名列表
-        └── embedding.npy       # 节点嵌入（pretrain 产出）
+
+```json
+{
+  "model_id": "mdl_graph_classification_xxx",
+  "query": {"graph_indices": [0, 12, 42]},
+  "infer_config": {"result_limit": 20, "result_offset": 0}
+}
 ```
 
-`model_id` 格式：`mdl_{task}_{unix_timestamp}_{6_hex_chars}`
+split 指标基于完整集合计算，预测明细才受分页影响。PCBA 默认每张图只返回 `top_k_tasks`；只有 `return_all_task_probs=true` 才返回完整 128 维数组。推理会严格匹配 session 内 bundle 的 dataset fingerprint、任务数、词表、metric 和 split 大小；服务重启后需先重新加载相同数据集。
 
-`resolve_model()` 支持跨 session 查找 model_id（用于上游 embedding 模型复用）。
+## 6. Artifact
 
-## 6. 与 Planner 的集成
-
-`algorithm_catalog.py` 的 `TASK_TYPE_MAP` 包含 ML 任务类型：
-
-```python
-"ml_node_classification": ["train", "infer"],
-"ml_link_prediction":     ["train", "infer"],
-"ml_embedding":           ["pre_train"],
+```text
+artifacts/graph_ml/{session_id}/{model_id}/
+├── checkpoint.pt
+├── meta.json
+├── metrics.json
+└── per_task_metrics.json
 ```
 
-Planner 可将 ML 步骤纳入分析计划（如"先训练节点嵌入，再用嵌入辅助社区检测"）。当前 Planner 的 `_fallback_plan` 识别 `train` / `embedding` 等关键词时会自动生成 ML 步骤。
+图分类 checkpoint 只包含 `{"model": state_dict}`。专用读取器固定 `weights_only=True`，并校验根键、参数键、Tensor 类型、dtype 和 metadata 重建模型的维度；旧 node/link/pretrain artifact loader 的兼容行为不变。
 
-## 7. Skill 约束
+## 7. 工具入口和配置
 
-当 MCP 工具集包含 `train` / `infer` 时，GraphML training/inference Skill 自动激活，流程基于工具 schema 起草参数、展示给用户确认或修改，再执行训练/推理。
-
-## 8. 运行与配置
-
-启动服务：
-
-```bash
-python -m graph_data_service        # GraphML 随 GraphData 自动可用
-python -m mcp_service streamable-http
-```
+| 工具 | 说明 |
+|---|---|
+| `load_graph_classification_dataset` | 异步安全加载并绑定 HIV/PCBA |
+| `train` | 训练四类 GraphML 任务；Agent/MCP 默认异步 |
+| `infer` | 节点、边、embedding 或整图推理 |
+| `visualize_model_architecture` | Mermaid 与结构化层摘要 |
+| `get_job_status` | 获取作业状态及增量进度 |
 
 环境变量：
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `GRAPH_ML_ARTIFACT_ROOT` | 模型产物存储目录 | `artifacts/graph_ml` |
-| `MCP_ENABLE_GRAPH_ML_TOOLS` | 强制启用/禁用 ML 工具暴露 | 自动探测 |
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `GRAPH_ML_ARTIFACT_ROOT` | `artifacts/graph_ml` | 模型产物根目录 |
+| `GRAPH_ML_MAX_RESIDENT_DATASETS` | `2` | 进程内常驻多图 bundle 上限 |
+| `GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS` | `900` | GraphData 重型工具超时 |
+| `MCP_HEAVY_TOOL_TIMEOUT_SECONDS` | `900` | Agent 到 MCP 重型工具超时 |
 
-已移除的独立部署变量：`GRAPH_ML_HOST` / `GRAPH_ML_PORT` / `GRAPH_ML_URL` / `GRAPH_ML_SERVER_URL`
+## 8. 测试和真实数据联调
 
-## 9. 已知限制
+日常测试只使用临时生成的合成 `.pt`。真实测试通过环境变量显式启用：
 
-1. 模型产物的 `meta.json` 尚未包含 `dataset_id` / `dataset_version` 字段，跨数据集版本的模型一致性校验需后续补充。
-2. `JobManager` 异步作业系统已实现骨架，但 `train` / `infer` 尚未接入（当前通过 `asyncio.to_thread` 同步执行），进度回调和前端进度条待后续开发。
-3. Planner 的 ML 步骤编排目前仅通过关键词触发，尚未实现自动检查已有模型产物并跳过训练的智能逻辑。
+```bash
+GRAPH_ML_TEST_HIV_PT=/path/to/hiv.pt \
+GRAPH_ML_TEST_PCBA_PT=/path/to/pcba.pt \
+python -m unittest discover -s tests/servers \
+  -p 'test_graph_classification_real_data.py' -v
+```
+
+真实训练还需显式开启相应开关，避免日常 CI 意外执行大数据训练。详细命令、结果字段和本次验收记录见 [GRAPH_CLASSIFICATION_BENCHMARK.md](GRAPH_CLASSIFICATION_BENCHMARK.md)。
