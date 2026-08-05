@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import numpy as np
@@ -343,11 +345,15 @@ def _as_label_array(v: Any) -> Optional[np.ndarray]:
 
 def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
     """
-    从 PyTorch Geometric .pt 文件（TAGLAS 格式）加载 GraphData。
+    从 PyTorch .pt 文件加载 GraphData。
 
-    支持以下字段（自动适配多种命名变体）：
+    支持 PyG/TAGLAS 属性对象及普通 dict，自动适配以下字段：
         edge_index, x (数值 Tensor), y, raw_texts/raw_text, label_name/label_names,
-        train_mask/train_masks, val_mask/val_masks, test_mask/test_masks
+        edge_attr, node_type, edge_type,
+        train_mask/train_masks, val_mask/valid_mask/val_masks, test_mask/test_masks。
+
+    split 字段既可以是长度为 num_nodes 的布尔/0-1 mask，也可以是节点索引数组；
+    索引数组会被展开为 GraphData 所需的布尔 mask。
     """
     try:
         import torch
@@ -356,44 +362,103 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
             "加载 .pt 文件需要安装 PyTorch：pip install torch"
         ) from e
 
-    data = torch.load(path, weights_only=False)
+    # 保持对现有 PyG/TAGLAS 自定义对象的兼容。map_location="cpu" 避免文件由
+    # CUDA 环境保存时，在仅 CPU 的 GraphData 服务中加载失败。调用方只应加载
+    # 可信的 .pt 文件；weights_only=False 会执行 pickle 反序列化。
+    data = torch.load(path, map_location="cpu", weights_only=False)
+
+    missing = object()
+
+    def _get(*names: str, default: Any = None) -> Any:
+        """同时读取 Mapping 键和 PyG/TAGLAS 对象属性。"""
+        for field_name in names:
+            if isinstance(data, Mapping) and field_name in data:
+                return data[field_name]
+            value = getattr(data, field_name, missing)
+            if value is not missing:
+                return value
+        return default
+
+    def _to_numpy(value: Any) -> np.ndarray:
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().numpy()
+        return np.asarray(value)
+
+    x_val = _get("x")
+    y_val = _get("y")
+    edge_index_val = _get("edge_index")
 
     # ── num_nodes ────────────────────────────────────────────────────
-    if hasattr(data, "num_nodes") and isinstance(getattr(data, "num_nodes"), int):
-        num_nodes: int = data.num_nodes
-    elif hasattr(data, "x") and isinstance(data.x, torch.Tensor):
-        num_nodes = data.x.shape[0]
-    elif hasattr(data, "y") and isinstance(data.y, torch.Tensor):
-        num_nodes = data.y.shape[0]
+    num_nodes_val = _get("num_nodes")
+    if isinstance(num_nodes_val, torch.Tensor) and num_nodes_val.numel() == 1:
+        num_nodes: int = int(num_nodes_val.item())
+    elif isinstance(num_nodes_val, (int, np.integer)):
+        num_nodes = int(num_nodes_val)
+    elif x_val is not None and hasattr(x_val, "shape") and len(x_val.shape) > 0:
+        num_nodes = int(x_val.shape[0])
+    elif isinstance(x_val, (list, tuple)):
+        num_nodes = len(x_val)
+    elif y_val is not None and hasattr(y_val, "shape") and len(y_val.shape) > 0:
+        num_nodes = int(y_val.shape[0])
+    elif edge_index_val is not None:
+        edge_arr = _to_numpy(edge_index_val)
+        num_nodes = int(edge_arr.max()) + 1 if edge_arr.size else 0
     else:
-        raise ValueError(f"无法从 .pt 文件确定节点数: {path}")
+        detected = sorted(str(k) for k in data.keys()) if isinstance(data, Mapping) else []
+        detail = f"，检测到字段: {detected}" if detected else ""
+        raise ValueError(f"无法从 .pt 文件确定节点数: {path}{detail}")
 
     # ── edge_index ───────────────────────────────────────────────────
-    if hasattr(data, "edge_index") and data.edge_index is not None:
-        edge_index = data.edge_index.cpu().numpy().astype(np.int64)
+    if edge_index_val is not None:
+        edge_index_arr = _to_numpy(edge_index_val)
+        if edge_index_arr.ndim != 2:
+            raise ValueError(
+                f"edge_index 必须是二维数组，实际 shape={edge_index_arr.shape}"
+            )
+        if edge_index_arr.shape[0] == 2:
+            # PyG 标准布局：[2, E]。
+            edge_index = edge_index_arr
+        elif edge_index_arr.shape[1] == 2:
+            # 可能数据集布局：[E, 2]。
+            edge_index = edge_index_arr.T
+        else:
+            raise ValueError(
+                "edge_index 必须是 shape [2, E] 或 [E, 2] 的数组，"
+                f"实际 shape={edge_index_arr.shape}"
+            )
+        edge_index = edge_index.astype(np.int64, copy=False)
     else:
         edge_index = np.empty((2, 0), dtype=np.int64)
 
     # ── node_feat ────────────────────────────────────────────────────
     node_feat: Optional[np.ndarray] = None
-    x_val = getattr(data, "x", None)
     if x_val is not None and isinstance(x_val, torch.Tensor):
-        node_feat = x_val.cpu().numpy().astype(np.float32)
+        node_feat = _to_numpy(x_val).astype(np.float32)
     # 若 x 已被重命名（TAGLAS 处理后格式：x_original 存数值特征）
-    x_orig = getattr(data, "x_original", None)
+    x_orig = _get("x_original")
     if x_orig is not None and isinstance(x_orig, torch.Tensor):
-        node_feat = x_orig.cpu().numpy().astype(np.float32)
+        node_feat = _to_numpy(x_orig).astype(np.float32)
 
     # ── node_label ───────────────────────────────────────────────────
     node_label: Optional[np.ndarray] = None
-    y_val = getattr(data, "y", None)
-    if y_val is not None and isinstance(y_val, torch.Tensor):
-        node_label = y_val.cpu().numpy().astype(np.int64)
+    if y_val is not None:
+        node_label = _as_label_array(_to_numpy(y_val))
+
+    # ── node_type / edge_type ────────────────────────────────────────
+    node_type: Optional[np.ndarray] = None
+    node_type_val = _get("node_type")
+    if node_type_val is not None:
+        node_type = _to_numpy(node_type_val).reshape(-1)
+
+    edge_type: Optional[np.ndarray] = None
+    edge_type_val = _get("edge_type")
+    if edge_type_val is not None:
+        edge_type = _to_numpy(edge_type_val).reshape(-1)
 
     # ── node_text ────────────────────────────────────────────────────
     node_text: Optional[List[str]] = None
     for attr in ("raw_texts", "raw_text"):
-        val = getattr(data, attr, None)
+        val = _get(attr)
         if val is not None and isinstance(val, list) and len(val) > 0 and isinstance(val[0], str):
             node_text = val
             break
@@ -405,13 +470,13 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
     # ── edge_text / edge_feat ────────────────────────────────────────
     edge_text: Optional[List[str]] = None
     edge_feat: Optional[np.ndarray] = None
-    ea = getattr(data, "edge_attr", None)
+    ea = _get("edge_attr")
     if ea is not None:
         if isinstance(ea, list) and len(ea) > 0 and isinstance(ea[0], str):
-            emap = getattr(data, "edge_map", None)
+            emap = _get("edge_map")
             if emap is not None:
                 if isinstance(emap, torch.Tensor):
-                    emap = emap.cpu().numpy()
+                    emap = _to_numpy(emap)
                 edge_text = [ea[int(i)] for i in emap]
             else:
                 # 若 edge_attr 长度 == num_edges，直接用；否则广播第一个
@@ -421,34 +486,73 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
                 elif len(ea) > 0:
                     edge_text = [ea[0]] * num_edges
         elif isinstance(ea, torch.Tensor):
-            edge_feat = ea.cpu().numpy().astype(np.float32)
+            edge_feat = _to_numpy(ea).astype(np.float32)
+
+    # GraphData 暂无命名的 edge_timestamp 字段，不能无损映射为 edge_feat
+    # （后者会被强制转成 float32）。明确告警，避免调用方误以为时间戳已保存。
+    if _get("edge_timestamp") is not None:
+        warnings.warn(
+            "PT 文件包含 edge_timestamp，但当前 GraphData 尚无对应字段；"
+            "图结构可正常加载，该字段暂未导入。",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     # ── label_names ──────────────────────────────────────────────────
     label_names: Optional[List[str]] = None
     for attr in ("label_name", "label_names"):
-        val = getattr(data, attr, None)
+        val = _get(attr)
         if val is not None and isinstance(val, list) and len(val) > 0 and isinstance(val[0], str):
             label_names = val
             break
 
     # ── 划分掩码 ─────────────────────────────────────────────────────
-    def _extract_mask(singular: str, plural: str) -> Optional[np.ndarray]:
-        val = getattr(data, singular, None)
-        if val is not None and isinstance(val, torch.Tensor):
-            return val.cpu().numpy().astype(bool)
-        val = getattr(data, plural, None)
+    def _extract_mask(*field_names: str) -> Optional[np.ndarray]:
+        val = _get(*field_names)
         if val is not None and isinstance(val, list) and len(val) > 0:
-            m = val[0]
-            if isinstance(m, torch.Tensor):
-                return m.cpu().numpy().astype(bool)
-        return None
+            # TAGLAS/PyG 的 plural 变体通常是多个 split，沿用原行为取第一个。
+            if isinstance(val[0], (torch.Tensor, np.ndarray, list, tuple)):
+                val = val[0]
+        if val is None:
+            return None
+
+        arr = _to_numpy(val).reshape(-1)
+        if arr.shape[0] == num_nodes:
+            if arr.dtype.kind == "b":
+                return arr.astype(bool, copy=False)
+            if arr.dtype.kind in ("i", "u", "f") and np.all((arr == 0) | (arr == 1)):
+                return arr.astype(bool)
+
+        # DGraphFin 等数据集虽命名为 *_mask，实际保存的是 split 节点索引。
+        if arr.dtype.kind not in ("i", "u"):
+            raise ValueError(
+                f"{field_names[0]} 必须是长度为 num_nodes 的布尔/0-1 mask，"
+                "或一维整数节点索引数组"
+            )
+        indices = arr.astype(np.int64, copy=False)
+        if indices.size and (int(indices.min()) < 0 or int(indices.max()) >= num_nodes):
+            raise ValueError(f"{field_names[0]} 包含超出节点范围的索引")
+        mask = np.zeros(num_nodes, dtype=bool)
+        mask[indices] = True
+        return mask
 
     train_mask = _extract_mask("train_mask", "train_masks")
-    val_mask = _extract_mask("val_mask", "val_masks")
+    val_mask = _extract_mask(
+        "val_mask",
+        "valid_mask",
+        "validation_mask",
+        "val_masks",
+        "valid_masks",
+    )
     test_mask = _extract_mask("test_mask", "test_masks")
 
     # ── name ─────────────────────────────────────────────────────────
-    name = os.path.splitext(os.path.basename(path))[0]
+    name_val = _get("name")
+    name = (
+        str(name_val)
+        if isinstance(name_val, str) and name_val
+        else os.path.splitext(os.path.basename(path))[0]
+    )
 
     return graph_cls(
         num_nodes=num_nodes,
@@ -458,6 +562,8 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
         directed=True,
         name=name,
         node_label=node_label,
+        node_type=node_type,
+        edge_type=edge_type,
         node_text=node_text,
         edge_text=edge_text,
         label_names=label_names,
