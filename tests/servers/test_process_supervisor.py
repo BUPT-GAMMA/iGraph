@@ -7,6 +7,15 @@ from backend.runtime.process_supervisor import ProcessSupervisor
 
 
 class ProcessSupervisorStartTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._pid_lookup_patch = patch.object(
+            ProcessSupervisor,
+            "_find_local_pid_by_port",
+            return_value=None,
+        )
+        self._pid_lookup_patch.start()
+        self.addCleanup(self._pid_lookup_patch.stop)
+
     @staticmethod
     def _new_supervisor(graph_data_url: str | None = None) -> ProcessSupervisor:
         return ProcessSupervisor(

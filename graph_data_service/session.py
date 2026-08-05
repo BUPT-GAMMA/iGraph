@@ -61,6 +61,9 @@ class GraphSession:
         self.user_id = user_id.strip()
         self.llm_model: str = ""
         self._graph: Optional[GraphData] = None
+        # Nebula primary mode keeps only a durable graph reference in the
+        # session. Bounded GraphData objects are materialised on demand.
+        self._remote_graph: Optional[dict] = None
         self._graph_version: int = 0
         self._uploads_by_name: Dict[str, UploadFileRecord] = {}
         if self.user_id:
@@ -95,8 +98,113 @@ class GraphSession:
     def set_graph(self, gd: GraphData, description: str = "") -> None:
         gd.ensure_node_names()
         self._graph = gd
+        self._remote_graph = None
         self._bump_version()
         self.save_snapshot(description=description or "更新图")
+
+    def next_graph_version(self) -> int:
+        """Return the next durable version without mutating session state."""
+        max_existing = self._graph_version
+        for path in self._snapshots_dir.glob("v*.npz"):
+            try:
+                max_existing = max(max_existing, int(path.stem[1:]))
+            except Exception:
+                continue
+        for rec in self._load_version_records():
+            try:
+                max_existing = max(max_existing, int(rec.get("graph_version", 0)))
+            except Exception:
+                continue
+        return max_existing + 1
+
+    @property
+    def remote_graph(self) -> Optional[dict]:
+        return dict(self._remote_graph) if self._remote_graph is not None else None
+
+    @property
+    def is_remote(self) -> bool:
+        return self._remote_graph is not None
+
+    def set_remote_graph(
+        self,
+        *,
+        graph_key: str,
+        graph_version: int,
+        node_count: int,
+        edge_count: int,
+        directed: bool,
+        graph_name: str = "",
+        graph_desc: str = "",
+        has_weights: bool = False,
+        description: str = "",
+        record_version: bool = True,
+    ) -> None:
+        """Attach a Nebula-backed graph without retaining a full GraphData."""
+        self._graph = None
+        self._graph_version = int(graph_version)
+        self._remote_graph = {
+            "backend": "nebula",
+            "graph_key": str(graph_key),
+            "graph_version": int(graph_version),
+            "node_count": int(node_count),
+            "edge_count": int(edge_count),
+            "directed": bool(directed),
+            "graph_name": str(graph_name or ""),
+            "graph_desc": str(graph_desc or ""),
+            "has_weights": bool(has_weights),
+        }
+        if record_version:
+            records = [
+                row for row in self._load_version_records()
+                if int(row.get("graph_version", -1)) != self._graph_version
+            ]
+            records.append(
+                {
+                    "graph_version": self._graph_version,
+                    "description": description or "NebulaGraph 图版本",
+                    "created_at": self._now_iso(),
+                    "loaded": True,
+                    "node_count": int(node_count),
+                    "edge_count": int(edge_count),
+                    "is_directed": bool(directed),
+                    "has_weights": bool(has_weights),
+                    "snapshot": "",
+                    "backend": "nebula",
+                    "graph_key": str(graph_key),
+                }
+            )
+            self._write_version_records(records)
+        else:
+            # Keep the persisted current-version pointer in sync when merely
+            # activating an existing Nebula graph version.
+            self._write_version_records(self._load_version_records())
+        self._write_session_meta(None)
+
+    def clear_remote_graph(self, description: str = "清空图") -> None:
+        self._graph = None
+        self._remote_graph = None
+        self._graph_version = self.next_graph_version()
+        records = [
+            row for row in self._load_version_records()
+            if int(row.get("graph_version", -1)) != self._graph_version
+        ]
+        records.append(
+            {
+                "graph_version": self._graph_version,
+                "description": description,
+                "created_at": self._now_iso(),
+                "loaded": False,
+                "node_count": 0,
+                "edge_count": 0,
+                "is_directed": True,
+                "has_weights": False,
+                "snapshot": "",
+                "backend": "nebula",
+                "graph_key": "",
+            }
+        )
+        self._write_version_records(records)
+        self._write_session_meta(None)
 
     def _parse_edgelist(self, text: str, append: bool = False) -> Tuple[int, int]:
         """从文本边列表建图，返回 (节点数, 边数)。"""
@@ -223,6 +331,7 @@ class GraphSession:
 
     def clear_graph(self) -> None:
         self._graph = None
+        self._remote_graph = None
         self._bump_version()
         self.save_snapshot(description="清空图")
         logger.info("clear_graph  session=%s  version=%d", self.session_id, self.graph_version)
@@ -251,6 +360,67 @@ class GraphSession:
 
     def resolve_upload_by_name(self, filename: str) -> Optional[UploadFileRecord]:
         return self._uploads_by_name.get(filename)
+
+    def mark_version_upload_source(
+        self,
+        graph_version: int,
+        upload: UploadFileRecord,
+    ) -> bool:
+        """Persist the upload identity that produced a graph version."""
+        records = self._load_version_records()
+        updated = False
+        for row in records:
+            if int(row.get("graph_version", -1)) != int(graph_version):
+                continue
+            row["source"] = {
+                "kind": "upload",
+                "file_token": str(upload.file_token),
+                "original_filename": str(upload.original_filename),
+                "saved_name": os.path.basename(upload.saved_path),
+            }
+            updated = True
+            break
+        if updated:
+            self._write_version_records(records)
+        return updated
+
+    def nebula_versions_for_upload(
+        self,
+        upload: UploadFileRecord,
+    ) -> list[dict]:
+        """Return reusable Nebula versions produced by the same upload.
+
+        Older records predate explicit source metadata, so their exact saved
+        filename in the description is accepted as a backwards-compatible
+        match. A newly uploaded file with the same display name has a new token
+        and therefore is not mistaken for the previous upload.
+        """
+        expected_description = (
+            f"从上传文件加载图: {os.path.basename(upload.saved_path)}"
+        )
+        matches: list[dict] = []
+        for row in self.list_versions():
+            if (
+                row.get("backend") != "nebula"
+                or not row.get("loaded")
+                or not row.get("graph_key")
+            ):
+                continue
+            source = (
+                row.get("source")
+                if isinstance(row.get("source"), dict)
+                else {}
+            )
+            token = str(source.get("file_token") or "")
+            if token == str(upload.file_token) or (
+                not token
+                and str(row.get("description") or "") == expected_description
+            ):
+                matches.append(dict(row))
+        return sorted(
+            matches,
+            key=lambda row: int(row.get("graph_version", 0)),
+        )
 
     @staticmethod
     def _project_root() -> str:
@@ -306,9 +476,19 @@ class GraphSession:
         return self._graph
 
     def has_graph(self) -> bool:
-        return self._graph is not None
+        return self._graph is not None or self._remote_graph is not None
 
     def graph_summary(self) -> GraphSessionSummary:
+        if self._remote_graph is not None:
+            return GraphSessionSummary(
+                loaded=True,
+                graph_version=self.graph_version,
+                num_nodes=int(self._remote_graph.get("node_count", 0)),
+                num_edges=int(self._remote_graph.get("edge_count", 0)),
+                directed=bool(self._remote_graph.get("directed", True)),
+                has_node_names=True,
+                has_edge_weight=bool(self._remote_graph.get("has_weights", False)),
+            )
         if self._graph is None:
             return GraphSessionSummary(
                 loaded=False,
@@ -493,6 +673,7 @@ class GraphSession:
         self._migrate_legacy_session_storage()
         current_path = self._session_dir / "graph_current.npz"
         meta_path = self._session_dir / "session_meta.json"
+        meta: dict = {}
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -506,8 +687,17 @@ class GraphSession:
                         )
             except Exception:
                 pass
+        remote = meta.get("remote_graph") if isinstance(meta, dict) else None
+        if isinstance(remote, dict) and remote.get("graph_key"):
+            self._remote_graph = dict(remote)
+            self._graph = None
+            self._graph_version = int(
+                remote.get("graph_version") or meta.get("graph_version") or 0
+            )
+            return True
         if not current_path.exists():
             return False
+        self._remote_graph = None
         self._graph = GraphData.load(str(current_path))
         meta_version = 0
         try:
@@ -777,28 +967,81 @@ class GraphSession:
             return []
         rows: list[str] = []
         for child in root.iterdir():
-            if child.is_dir() and (child / "graph_current.npz").exists():
+            if not child.is_dir():
+                continue
+            if (child / "graph_current.npz").exists():
                 rows.append(child.name)
+                continue
+            meta_path = child / "session_meta.json"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(meta.get("remote_graph"), dict):
+                        rows.append(child.name)
+                except Exception:
+                    pass
         return sorted(rows)
 
     def _write_session_meta(self, graph: Optional[GraphData]) -> None:
         path = self._session_dir / "session_meta.json"
+        remote = self._remote_graph or {}
         payload = {
             "session_id": self.session_id,
             "graph_version": self.graph_version,
-            "node_count": graph.num_nodes if graph is not None else 0,
-            "edge_count": graph.num_edges if graph is not None else 0,
-            "edge_entry_count": graph.num_edge_entries if graph is not None else 0,
-            "unique_edge_count": graph.num_unique_edges if graph is not None else 0,
-            "num_unique_directed_edges": graph.num_unique_directed_edges if graph is not None else 0,
-            "num_unique_undirected_edges": graph.num_unique_undirected_edges if graph is not None else 0,
-            "semantic_type": graph.semantic_type if graph is not None else "unknown",
-            "storage_type": graph.storage_type if graph is not None else "mixed",
-            "is_symmetric": graph.is_symmetric if graph is not None else False,
-            "has_self_loops": graph.has_self_loops if graph is not None else False,
-            "has_duplicate_entries": graph.has_duplicate_entries if graph is not None else False,
-            "is_directed": graph.directed if graph is not None else True,
-            "has_weights": graph.has_edge_weight if graph is not None else False,
+            "node_count": (
+                graph.num_nodes if graph is not None
+                else int(remote.get("node_count", 0))
+            ),
+            "edge_count": (
+                graph.num_edges if graph is not None
+                else int(remote.get("edge_count", 0))
+            ),
+            "edge_entry_count": (
+                graph.num_edge_entries if graph is not None
+                else int(remote.get("edge_entry_count", remote.get("edge_count", 0)))
+            ),
+            "unique_edge_count": (
+                graph.num_unique_edges if graph is not None
+                else int(remote.get("unique_edge_count", remote.get("edge_count", 0)))
+            ),
+            "num_unique_directed_edges": (
+                graph.num_unique_directed_edges if graph is not None
+                else int(remote.get("num_unique_directed_edges", 0))
+            ),
+            "num_unique_undirected_edges": (
+                graph.num_unique_undirected_edges if graph is not None
+                else int(remote.get("num_unique_undirected_edges", 0))
+            ),
+            "semantic_type": (
+                graph.semantic_type if graph is not None
+                else str(remote.get("semantic_type") or "unknown")
+            ),
+            "storage_type": (
+                graph.storage_type if graph is not None
+                else str(remote.get("storage_type") or "mixed")
+            ),
+            "is_symmetric": (
+                graph.is_symmetric if graph is not None
+                else bool(remote.get("is_symmetric", False))
+            ),
+            "has_self_loops": (
+                graph.has_self_loops if graph is not None
+                else bool(remote.get("has_self_loops", False))
+            ),
+            "has_duplicate_entries": (
+                graph.has_duplicate_entries if graph is not None
+                else bool(remote.get("has_duplicate_entries", False))
+            ),
+            "is_directed": (
+                graph.directed if graph is not None
+                else bool(remote.get("directed", True))
+            ),
+            "has_weights": (
+                graph.has_edge_weight if graph is not None
+                else bool(remote.get("has_weights", False))
+            ),
+            "storage_backend": "nebula" if self._remote_graph is not None else "local",
+            "remote_graph": self._remote_graph,
             "uploads": {
                 name: {
                     "file_token": rec.file_token,

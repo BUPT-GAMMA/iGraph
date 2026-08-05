@@ -1524,6 +1524,7 @@ class GraphCompute:
                 "label": node,
                 "in_degree": g.in_degree(node) if g.is_directed() else g.degree(node),
                 "out_degree": g.out_degree(node) if g.is_directed() else 0,
+                "total_degree": g.degree(node),
                 "attrs": attrs if attrs else None,
             })
 

@@ -12,6 +12,7 @@ SUPPORTED_MODELS = {
     "qwen3.6-plus",
     "qwen3.7-max",
     "deepseek-v4-pro",
+    "deepseek-v4-flash",
     "deepseek-v4-lite",
     "doubao-seed-2-0-pro-260215",
 }

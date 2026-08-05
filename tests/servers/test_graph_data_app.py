@@ -6,6 +6,7 @@ import threading
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
@@ -23,13 +24,14 @@ try:
         _graph_classification_profile_hint,
         create_app,
     )
+    from graph_data_service.embedding import LexicalProvider
 except ImportError:  # pragma: no cover - optional in minimal environments
     TestClient = None
     close_service_loggers = None
     GraphDataService = None
     _graph_classification_profile_hint = None
     create_app = None
-
+    LexicalProvider = None
 from graph_data_service.graph_data import GraphData
 
 try:
@@ -60,30 +62,8 @@ class GraphDataAppTest(unittest.TestCase):
             )
 
         self.service = GraphDataService(text_graph_llm_factory=fake_text_graph_llm)
+        self.service._embedding_provider = LexicalProvider()
         self.client = TestClient(create_app(self.service))
-
-    def _wait_for_job_result(self, sid: str, payload: dict) -> dict:
-        if not payload.get("async"):
-            return payload
-        job_id = str(payload.get("job_id") or "")
-        self.assertTrue(job_id)
-        for _ in range(200):
-            status_resp = self.client.post(
-                f"/sessions/{sid}/tools/get_job_status",
-                json={"arguments": {"job_id": job_id}},
-            )
-            self.assertEqual(status_resp.status_code, 200)
-            job = status_resp.json().get("job") or {}
-            status = str(job.get("status") or "")
-            if status == "done":
-                result = job.get("result")
-                self.assertIsInstance(result, dict)
-                self.assertTrue(result.get("success"), result)
-                return result
-            if status in {"failed", "cancelled"}:
-                self.fail(f"job {job_id} ended with {status}: {job.get('message')}")
-            time.sleep(0.01)
-        self.fail(f"job {job_id} did not finish")
 
     def test_health_and_load_graph(self) -> None:
         health = self.client.get("/health")
@@ -159,7 +139,8 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertTrue(body["graph_ml_readiness"]["pretrain"]["supported"])
 
     def test_graph_ml_tools_are_available_from_graph_data(self) -> None:
-        tools_resp = self.client.get("/tools")
+        with mock.patch.dict(os.environ, {"MCP_ENABLE_REPORTING_TOOLS": ""}):
+            tools_resp = self.client.get("/tools")
         self.assertEqual(tools_resp.status_code, 200)
         tools = tools_resp.json()
         names = {str(t.get("name")) for t in tools if isinstance(t, dict)}
@@ -168,6 +149,7 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertIn("visualize_model_architecture", names)
         self.assertIn("load_graph_classification_dataset", names)
         self.assertIn("load_graph_from_triples", names)
+        self.assertIn("create_analysis_report", names)
         self.assertNotIn("get_train_config", names)
         self.assertNotIn("get_infer_config", names)
         load_text = next(t for t in tools if t.get("name") == "load_graph_from_text")
@@ -354,6 +336,158 @@ class GraphDataAppTest(unittest.TestCase):
         release.assert_called_once_with("alice:s-release")
         self.assertNotIn("alice:s-release", self.service._sessions)
 
+    def test_reporting_tool_is_available_from_graph_data_when_requested(self) -> None:
+        tools_resp = self.client.get("/tools?include_reporting=true")
+        self.assertEqual(tools_resp.status_code, 200)
+        tools = tools_resp.json()
+        by_name = {str(t.get("name")): t for t in tools if isinstance(t, dict)}
+        self.assertIn("create_analysis_report", by_name)
+
+        tool = by_name["create_analysis_report"]
+        self.assertEqual(tool["category"], "reporting")
+        props = tool["inputSchema"]["properties"]
+        self.assertIn("report_intent", props)
+        self.assertIn("analysis_goal", props)
+        self.assertIn("title", props)
+        self.assertIn("source_results", props)
+        self.assertIn("top_k", props["options"]["properties"])
+        self.assertIn("include_narrative", props["options"]["properties"])
+        self.assertIn("max_sections", props["options"]["properties"])
+
+    def test_create_analysis_report_from_source_results(self) -> None:
+        resp = self.client.post(
+            "/sessions/no-session/tools/create_analysis_report",
+            json={
+                "arguments": {
+                    "report_intent": "overview",
+                    "analysis_goal": "总结当前图的结构特征",
+                    "title": "结构报告",
+                    "source_results": {
+                        "get_graph_info": {
+                            "loaded": True,
+                            "graph_info": {
+                                "num_nodes": 4,
+                                "num_edges": 3,
+                                "directed": False,
+                                "has_edge_weight": False,
+                                "has_node_feat": False,
+                            },
+                        }
+                    },
+                }
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["success"])
+        report = body["report"]
+        self.assertEqual(report["version"], "analysis_report.v1")
+        self.assertEqual(report["title"], "结构报告")
+        self.assertIn("structure-overview", {section["id"] for section in report["sections"]})
+
+    def test_create_analysis_report_preserves_graph_version(self) -> None:
+        sid = "s-report-version"
+        self.client.post(f"/sessions/{sid}")
+        self.client.post(f"/sessions/{sid}/graph/load_text", json={"edge_text": "A B\nB C\nC A"})
+        before = self.client.get(f"/sessions/{sid}/graph/info").json()["graph_version"]
+
+        resp = self.client.post(
+            f"/sessions/{sid}/tools/create_analysis_report",
+            json={
+                "arguments": {
+                    "report_intent": "analysis",
+                    "analysis_goal": "查看连接分布",
+                    "source_results": {
+                        "degree_analysis": {
+                            "success": True,
+                            "directed": False,
+                            "degree_stats": {"mean": 2, "max": 2, "min": 2, "median": 2},
+                            "avg_degree": 2,
+                            "top_degree_nodes": [
+                                {"node": "A", "degree": 2},
+                                {"node": "B", "degree": 2},
+                                {"node": "C", "degree": 2},
+                            ],
+                        }
+                    },
+                }
+            },
+        )
+        after = self.client.get(f"/sessions/{sid}/graph/info").json()["graph_version"]
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["success"])
+        self.assertEqual(before, after)
+
+    def test_create_analysis_report_supplements_graph_info_when_loaded(self) -> None:
+        sid = "s-report-supplement"
+        self.client.post(f"/sessions/{sid}")
+        self.client.post(f"/sessions/{sid}/graph/load_text", json={"edge_text": "A B\nB C"})
+
+        resp = self.client.post(
+            f"/sessions/{sid}/tools/create_analysis_report",
+            json={
+                "arguments": {
+                    "report_intent": "analysis",
+                    "analysis_goal": "查看连接分布",
+                    "source_results": {
+                        "degree_analysis": {
+                            "success": True,
+                            "directed": False,
+                            "degree_stats": {"mean": 1.3, "max": 2, "min": 1, "median": 1},
+                            "avg_degree": 1.3,
+                            "top_degree_nodes": [
+                                {"node": "B", "degree": 2},
+                                {"node": "A", "degree": 1},
+                            ],
+                        }
+                    },
+                }
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        report = resp.json()["report"]
+        section_ids = {section["id"] for section in report["sections"]}
+        self.assertIn("structure-overview", section_ids)
+        self.assertIn("degree-distribution", section_ids)
+
+    def test_create_analysis_report_returns_error_for_invalid_source_results(self) -> None:
+        resp = self.client.post(
+            "/sessions/no-session/tools/create_analysis_report",
+            json={
+                "arguments": {
+                    "report_intent": "analysis",
+                    "analysis_goal": "生成报告",
+                    "source_results": [],
+                }
+            },
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertFalse(body["success"])
+        self.assertIn("source_results", body["error"])
+
+        sid = "s-report-invalid-loaded"
+        self.client.post(f"/sessions/{sid}")
+        self.client.post(f"/sessions/{sid}/graph/load_text", json={"edge_text": "A B\nB C"})
+        loaded_resp = self.client.post(
+            f"/sessions/{sid}/tools/create_analysis_report",
+            json={
+                "arguments": {
+                    "report_intent": "analysis",
+                    "analysis_goal": "生成报告",
+                    "source_results": [],
+                }
+            },
+        )
+        self.assertEqual(loaded_resp.status_code, 200)
+        loaded_body = loaded_resp.json()
+        self.assertFalse(loaded_body["success"])
+        self.assertIn("source_results", loaded_body["error"])
+
     def test_heavy_graph_ml_duplicate_calls_share_inflight_task(self) -> None:
         asyncio.run(self._run_heavy_graph_ml_duplicate_calls_share_inflight_task())
 
@@ -413,6 +547,7 @@ class GraphDataAppTest(unittest.TestCase):
             session_id: str,
             tool_name: str,
             arguments: dict,
+            progress_callback=None,
             user_id: str = "",
         ) -> dict:
             nonlocal calls
@@ -458,10 +593,11 @@ class GraphDataAppTest(unittest.TestCase):
                 self.assertTrue(ingest_body.get("success"))
                 self.assertEqual(ingest_body.get("filename"), "edges.txt")
 
-                loaded = self.client.post(
-                    f"/sessions/{sid}/graph/load_upload",
-                    json={"filename": "edges.txt", "append": False},
-                )
+                with mock.patch.object(self.service._file_format_classifier, "available", return_value=False):
+                    loaded = self.client.post(
+                        f"/sessions/{sid}/graph/load_upload",
+                        json={"filename": "edges.txt", "append": False},
+                    )
                 self.assertEqual(loaded.status_code, 200)
                 loaded_body = loaded.json()
                 self.assertTrue(loaded_body.get("success"))
@@ -513,7 +649,8 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertEqual(text_resp.status_code, 200)
         payload = text_resp.json()
         self.assertTrue(payload["success"])
-        payload = self._wait_for_job_result(sid, payload)
+        self.assertTrue(payload.get("async"))
+        payload = self._wait_for_job_result(sid, payload["job_id"])
         self.assertGreaterEqual(payload["num_nodes"], 2)
         self.assertEqual(payload["chunks_processed"], 1)
         self.assertEqual(payload["raw_triples"], 2)
@@ -551,6 +688,20 @@ class GraphDataAppTest(unittest.TestCase):
         resp = self.client.post(f"/sessions/{sid}/tools/{tool}", json={"arguments": arguments})
         self.assertEqual(resp.status_code, 200)
         return resp.json()
+
+    def _wait_for_job_result(self, sid: str, job_id: str, timeout: float = 3.0) -> dict:
+        deadline = time.monotonic() + timeout
+        last_job = None
+        while time.monotonic() < deadline:
+            status = self._invoke_tool(sid, "get_job_status", {"job_id": job_id})
+            last_job = status.get("job")
+            if isinstance(last_job, dict) and last_job.get("status") in {"done", "failed", "cancelled"}:
+                self.assertEqual(last_job.get("status"), "done", last_job)
+                result = last_job.get("result")
+                self.assertIsInstance(result, dict)
+                return result
+            time.sleep(0.05)
+        self.fail(f"job {job_id} did not finish: {last_job}")
 
     # ── 新增算法测试 ──────────────────────────────────────────────
 

@@ -31,6 +31,7 @@
   --text:     #1e293b;
   --text2:    #475569;
   --text3:    #94a3b8;
+  --graph-hover-bg: #ffffff;
   --mono:     'IBM Plex Mono', monospace;
   --body:     'Outfit', sans-serif;
   /* theme-specific */
@@ -56,7 +57,7 @@
   --subpanel-bg:        rgba(248,250,252,0.7);
   --heading-color:      #0f172a;
   --left-sidebar-width: 244px;
-  --graph-sidebar-width: 420px;
+  --artifact-workspace-width: 720px;
   --layout-resizer-hit: 9px;
 }
 
@@ -77,6 +78,7 @@
   --text:     #e2eaf6;
   --text2:    #8fa8c8;
   --text3:    #4d6a8a;
+  --graph-hover-bg: #ffffff;
   /* theme-specific */
   --header-bg:          rgba(13,20,33,0.92);
   --header-shadow:      none;
@@ -323,32 +325,61 @@ textarea { resize: none; overflow-y: auto; }
   grid-template-rows: 1fr auto;
   overflow: hidden;
   min-width: 0;
+  transition: grid-template-columns 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.body-layout.has-graph-sidebar {
-  grid-template-columns: var(--left-sidebar-width) minmax(320px, 1fr) var(--graph-sidebar-width);
+.body-layout.has-artifact-workspace {
+  grid-template-columns: var(--left-sidebar-width) minmax(420px, 1fr) var(--artifact-workspace-width);
 }
-@media (max-width: 1023px) {
+.body-layout.task-panel-collapsed {
+  grid-template-columns: 0px minmax(0, 1fr);
+}
+.body-layout.has-artifact-workspace.task-panel-collapsed {
+  grid-template-columns: 0px minmax(420px, 1fr) var(--artifact-workspace-width);
+}
+.body-layout.task-panel-animating,
+.body-layout.task-panel-animating .sidebar,
+.body-layout.task-panel-animating .task-panel-floating-actions {
+  transition: none !important;
+}
+@media (max-width: 1199px) {
   .body-layout,
-  .body-layout.has-graph-sidebar { grid-template-columns: 1fr; }
+  .body-layout.has-artifact-workspace { grid-template-columns: 1fr; }
   .main-content,
   .input-area { grid-column: 1; }
+  .artifact-workspace:not(.is-fullscreen) { display: none !important; }
+}
+@media (max-width: 1023px) {
   .layout-resizer,
-  .graph-sidebar { display: none !important; }
+  .sidebar { display: none !important; }
 }
 
 /* ── Sidebar ── */
 .sidebar {
   grid-column: 1; grid-row: 1 / 3;
-  width: 100%; flex-shrink: 0;
+  width: var(--left-sidebar-width); flex-shrink: 0;
   display: flex; flex-direction: column;
   position: relative;
   background: var(--bg1);
   border-right: 1px solid var(--border);
   overflow: hidden;
+  transform: translateX(0);
+  transition: opacity 0.2s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0s;
+  will-change: opacity, transform;
+}
+.body-layout.task-panel-collapsed .sidebar {
+  opacity: 0;
+  transform: translateX(calc(-1 * var(--left-sidebar-width)));
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.32s;
+}
+.body-layout.task-panel-collapsed .left-sidebar-resizer {
+  opacity: 0;
+  pointer-events: none;
 }
 
-/* ── Graph Sidebar (Right) ── */
-.graph-sidebar {
+/* ── Artifact Workspace (Right) ── */
+.artifact-workspace {
   grid-column: 3; grid-row: 1 / 3;
   width: 100%; min-width: 0; flex-shrink: 0;
   display: flex; flex-direction: column;
@@ -356,8 +387,22 @@ textarea { resize: none; overflow-y: auto; }
   background: var(--bg1);
   border-left: 1px solid var(--border);
   overflow: hidden;
+  z-index: 40;
 }
-.graph-sidebar.hidden { display: none; }
+.artifact-workspace.hidden { display: none; }
+.artifact-workspace.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  grid-column: auto;
+  grid-row: auto;
+  border: 0;
+  z-index: 2400;
+}
+.artifact-workspace.is-fullscreen .artifact-workspace-resizer { display: none; }
+body.artifact-fullscreen-open { overflow: hidden; }
 .layout-resizer {
   position: absolute;
   top: 0; bottom: 0;
@@ -382,7 +427,7 @@ textarea { resize: none; overflow-y: auto; }
   box-shadow: 0 0 10px rgba(6,214,199,0.25);
 }
 .left-sidebar-resizer { right: calc(var(--layout-resizer-hit) / -2); }
-.graph-sidebar-resizer { left: calc(var(--layout-resizer-hit) / -2); }
+.artifact-workspace-resizer { left: calc(var(--layout-resizer-hit) / -2); }
 body.layout-resizing {
   cursor: col-resize;
   user-select: none;
@@ -392,104 +437,225 @@ body.layout-resizing svg,
 body.layout-resizing canvas {
   pointer-events: none;
 }
-.graph-sidebar-header {
-  padding: 8px 14px 0;
-  display: flex; align-items: center; justify-content: space-between;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.graph-sidebar-title {
-  font-size: 0.75rem; font-weight: 600; color: var(--text2);
-}
-/* Tab 栏 */
-.graph-sidebar-tabs {
-  display: flex; align-items: flex-end; gap: 2px;
-  overflow-x: auto; flex: 1; padding: 0 6px 0 0;
-  scrollbar-width: none;
-}
-.graph-sidebar-tabs::-webkit-scrollbar { display: none; }
-.graph-sidebar-tab {
-  flex-shrink: 0;
-  font-family: var(--mono); font-size: 0.6rem;
-  padding: 3px 8px; border-radius: 5px 5px 0 0;
-  border: 1px solid transparent; border-bottom: none;
-  background: transparent; color: var(--text3);
-  cursor: pointer; transition: all 0.12s;
-  white-space: nowrap; max-width: 120px;
-  overflow: hidden; text-overflow: ellipsis;
-}
-.graph-sidebar-tab:hover { background: var(--bg2); color: var(--text2); }
-.graph-sidebar-tab.active {
-  background: var(--bg1); color: var(--text);
-  border-color: var(--border);
-}
-.graph-sidebar-close {
-  width: 24px; height: 24px; border-radius: 5px;
-  display: flex; align-items: center; justify-content: center;
-  background: transparent; border: none; cursor: pointer;
-  color: var(--text3); font-size: 1rem;
-}
-.graph-sidebar-close:hover { background: var(--bg2); color: var(--text); }
-.graph-sidebar-body {
-  flex: 1; overflow: hidden; padding: 0;
-  display: flex; flex-direction: column;
-}
-/* 侧边栏内图卡撑满整个 body */
-.graph-sidebar-body .inline-graph-card {
-  flex: 1; display: flex; flex-direction: column;
-  margin: 0; border-radius: 0; border: none;
-  min-height: 0;
-}
-.graph-sidebar-body .inline-graph-body {
-  flex: 1; height: auto;
-}
-.graph-sidebar-body .graph-sidebar-empty {
-  flex: 1;
-}
-.graph-sidebar-empty {
-  color: var(--text3); font-size: 0.75rem; text-align: center;
-  padding: 40px 20px;
-}
-.graph-sidebar-card {
-  margin-bottom: 12px;
-}
-
-/* ── Graph Sidebar Toggle Button ── */
-.graph-sidebar-toggle {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  border: 1px solid var(--border2);
-  background: var(--bg1);
-  color: var(--text2);
+.artifact-workspace-toolbar {
+  height: 48px;
+  min-height: 48px;
+  padding: 0 10px;
   display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+  flex-shrink: 0;
+}
+.artifact-mode-switch {
+  width: 64px;
+  height: 32px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg3);
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.artifact-mode-switch.is-hidden { visibility: hidden; pointer-events: none; }
+.artifact-toolbar-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text3);
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.15s;
-  z-index: 5;
+  transition: background 0.15s ease, color 0.15s ease;
+  flex: 0 0 32px;
 }
-.graph-sidebar-toggle:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: rgba(6,214,199,0.06);
+.artifact-mode-switch .artifact-toolbar-btn {
+  width: 30px;
+  height: 28px;
+  flex-basis: 30px;
 }
-.graph-sidebar-toggle:disabled {
-  opacity: 0.35;
+.artifact-toolbar-btn:hover:not(:disabled) {
+  background: var(--bg2);
+  color: var(--text);
+}
+.artifact-toolbar-btn.is-active {
+  background: var(--bg1);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(15,23,42,0.12);
+}
+.artifact-toolbar-btn:disabled {
+  opacity: 0.32;
   cursor: not-allowed;
 }
-.graph-sidebar-toggle.active {
-  background: rgba(6,214,199,0.1);
-  border-color: rgba(6,214,199,0.3);
-  color: var(--accent);
+.artifact-toolbar-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+}
+.artifact-workspace-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1;
+}
+.artifact-workspace-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.artifact-workspace-body {
+  flex: 1; overflow: hidden; padding: 0;
+  display: flex; flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+.artifact-report-frame {
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  border: 0;
+  background: #fff;
+}
+.artifact-code-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--code-pre-bg);
+  color: var(--code-pre-color);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  counter-reset: artifact-code-line;
+}
+.artifact-code-line {
+  display: grid;
+  grid-template-columns: 52px minmax(max-content, 1fr);
+  min-height: 20px;
+}
+.artifact-code-line::before {
+  counter-increment: artifact-code-line;
+  content: counter(artifact-code-line);
+  padding: 0 12px 0 8px;
+  color: var(--text3);
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
+.artifact-code-line > code {
+  display: block;
+  padding: 0 16px;
+  white-space: pre;
+}
+.artifact-workspace-body .inline-graph-card {
+  flex: 1; display: flex; flex-direction: column;
+  margin: 0; border-radius: 0; border: none;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+.artifact-workspace-body .inline-graph-body {
+  flex: 1; height: auto;
+}
+.artifact-workspace-body .artifact-workspace-empty {
+  flex: 1;
+}
+.artifact-workspace-empty {
+  color: var(--text3); font-size: 0.75rem; text-align: center;
+  padding: 40px 20px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .body-layout { transition: none; }
+  .artifact-toolbar-btn { transition: none; }
 }
 
+.sidebar-action-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+}
+.task-panel-icon-btn,
+.task-panel-floating-btn {
+  border: 1px solid var(--border);
+  background: var(--bg1);
+  color: var(--text3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s, color 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  flex-shrink: 0;
+}
+.task-panel-icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+}
+.task-panel-icon-btn:hover:not(:disabled),
+.task-panel-floating-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--icon-border);
+  background: var(--new-btn-hover-bg);
+  box-shadow: 0 0 14px var(--icon-glow);
+  transform: translateY(-1px);
+}
+.task-panel-icon-btn:disabled,
+.task-panel-floating-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.task-panel-floating-actions {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--header-bg);
+  box-shadow: 0 8px 26px rgba(15,23,42,0.08);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-10px);
+  transition: opacity 0.18s ease, transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.18s;
+}
+.body-layout.task-panel-collapsed .task-panel-floating-actions {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition-delay: 0.1s, 0.1s, 0s;
+}
+[data-theme="dark"] .task-panel-floating-actions {
+  box-shadow: 0 10px 28px rgba(0,0,0,0.26);
+}
+.task-panel-floating-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: transparent;
+}
 .sidebar-new-btn {
-  margin: 12px;
-  padding: 8px;
+  margin: 0;
+  min-width: 0;
+  height: 34px;
+  padding: 7px 10px;
   border-radius: 8px;
   border: 1px solid var(--new-btn-border);
   background: var(--new-btn-bg);
@@ -498,6 +664,7 @@ body.layout-resizing canvas {
   font-size: 0.72rem;
   font-weight: 600;
   display: flex; align-items: center; justify-content: center; gap: 6px;
+  flex: 1 1 auto;
   cursor: pointer; transition: all 0.15s;
   letter-spacing: 0.03em;
 }
@@ -663,6 +830,36 @@ body.layout-resizing canvas {
 }
 [data-theme="dark"] .bubble-agent:has(.md) {
   border-left-color: rgba(6,214,199,0.2);
+}
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.message-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text3);
+  font-family: var(--mono);
+  font-size: 0.63rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.message-action-btn:hover:not(:disabled),
+.message-action-btn.copied {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.message-action-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* ── Tool badges ── */
@@ -1441,66 +1638,16 @@ body.layout-resizing canvas {
 .mgmt-btn-ok:hover:not(:disabled) { background: rgba(52,211,153,0.12); border-color: rgba(52,211,153,0.5); }
 .mgmt-btn-danger { border-color: rgba(248,113,113,0.3); color: var(--red); background: rgba(248,113,113,0.05); }
 .mgmt-btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.5); }
-/* ── Graph Visualization Sidebar ── */
-.graph-sidebar-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 50%;
-  min-width: 500px;
-  max-width: 900px;
-  background: #fff;
-  box-shadow: -4px 0 24px rgba(0,0,0,0.12);
-  display: flex;
-  flex-direction: column;
-  z-index: 1000;
-  overflow: hidden;
-}
-.graph-viz-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-  font-weight: 600;
-  font-size: 14px;
-  color: #334155;
-}
-.graph-viz-close {
-  background: none;
-  border: none;
-  font-size: 18px;
-  cursor: pointer;
-  color: #94a3b8;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-.graph-viz-close:hover { background: #fee2e2; color: #ef4444; }
-.graph-viz-controls {
-  display: flex;
-  gap: 8px;
-  padding: 8px 14px;
-  background: #fafafa;
-  border-bottom: 1px solid #e2e8f0;
-  flex-wrap: wrap;
-}
-.graph-viz-ctrl-btn {
-  padding: 4px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.graph-viz-ctrl-btn:hover { background: #f1f5f9; }
-.graph-viz-ctrl-btn.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
 .graph-viz-canvas {
   flex: 1;
   overflow: hidden;
   position: relative;
+  transition: background-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.graph-viz-canvas.is-neighbor-hover,
+.inline-graph-body.is-neighbor-hover,
+#expand-canvas.is-neighbor-hover {
+  background-color: var(--graph-hover-bg) !important;
 }
 .graph-viz-canvas svg {
   width: 100%;
@@ -1516,11 +1663,34 @@ body.layout-resizing canvas {
 }
 
 /* D3 Graph Styles */
-.graph-node { cursor: pointer; }
+.graph-node {
+  cursor: pointer;
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 .graph-node:hover circle { stroke: #1e40af; stroke-width: 2px; }
 .graph-node.highlighted circle { stroke: #10b981; stroke-width: 3px; }
-.graph-node text { font-size: 11px; fill: #334155; pointer-events: none; }
-.graph-link { stroke: #cbd5e1; stroke-opacity: 0.6; }
+.graph-node circle {
+  transition:
+    fill 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke-width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.graph-node text {
+  font-size: 11px;
+  fill: #334155;
+  pointer-events: none;
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), fill 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.graph-link {
+  stroke: #cbd5e1;
+  stroke-opacity: 0.6;
+  transition:
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke-opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke-width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 .graph-link.highlighted { stroke: #10b981; stroke-opacity: 1; stroke-width: 2px; }
 /* Highlight type styles */
 /* Highlight type styles — fixed fallback colors */
@@ -1555,6 +1725,81 @@ body.layout-resizing canvas {
   overflow: hidden;
   background: var(--bg2);
 }
+.bubble-agent > .inline-graph-card,
+#streaming-graphs > .inline-graph-card {
+  width: 700px;
+  height: 600px;
+  margin: 10px auto 6px;
+  display: flex;
+  flex-direction: column;
+}
+.bubble-agent > .inline-graph-card .inline-graph-body,
+#streaming-graphs > .inline-graph-card .inline-graph-body {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+.analysis-report-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 700px);
+  margin: 10px auto 6px;
+  padding: 11px 12px;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.analysis-report-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 6px;
+  background: #ecfdf5;
+  color: #047857;
+}
+.analysis-report-icon svg { width: 17px; height: 17px; }
+.analysis-report-copy {
+  min-width: 0;
+  flex: 1;
+}
+.analysis-report-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.analysis-report-meta {
+  margin-top: 2px;
+  color: var(--text3);
+  font-size: 0.66rem;
+}
+.analysis-report-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  background: var(--bg1);
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.analysis-report-open:hover {
+  border-color: #6ee7b7;
+  background: #ecfdf5;
+  color: #047857;
+}
+.analysis-report-open svg { width: 13px; height: 13px; }
 .inline-graph-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 6px 10px; border-bottom: 1px solid var(--border);
@@ -1567,9 +1812,23 @@ body.layout-resizing canvas {
   border: 1px solid var(--border2); border-radius: 4px;
   background: var(--bg1); color: var(--text2); cursor: pointer; transition: all 0.15s;
 }
+.ig-ctrl-btn.ig-open-artifact {
+  display: inline-grid;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+}
+.ig-open-artifact svg { width: 13px; height: 13px; }
 .ig-ctrl-btn:hover { background: #f1f5f9; }
 .ig-ctrl-btn.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
-.inline-graph-body { position: relative; height: 320px; overflow: hidden; background: var(--bg1); }
+.inline-graph-body {
+  position: relative;
+  height: 320px;
+  overflow: hidden;
+  background: var(--bg1);
+  transition: background-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 .inline-graph-body svg { width: 100%; height: 100%; }
 .inline-graph-footer {
   display: flex; align-items: center; gap: 4px; padding: 5px 10px;
@@ -1825,6 +2084,7 @@ body.layout-resizing canvas {
 // ── State ──────────────────────────────────────────────────────────
 
 const API_BASE = window.location.origin;
+const _LS_TASK_PANEL_COLLAPSED = 'igraph_task_panel_collapsed';
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
@@ -1867,12 +2127,19 @@ function logout() {
   location.reload();
 }
 
+function getInitialTaskPanelCollapsed() {
+  return localStorage.getItem(_LS_TASK_PANEL_COLLAPSED) === '1';
+}
+
 const state = {
   sessionId: null,
   currentUserId: getCurrentUserId(),
+  leftSidebarCollapsed: getInitialTaskPanelCollapsed(),
   availableModels: [],
   defaultModel: 'qwen3.6-plus',
   sessions: [],
+  allSessions: [],
+  draftSessionId: null,
   sessionsLoading: false,
   switchingSession: false,
   sessionNotice: null,
@@ -1915,11 +2182,15 @@ const state = {
   autoScroll: true,
   // Management panel
   mgmtOpen: false,
-  // Graph sidebar
-  graphSidebarOpen: false,
-  graphSidebarContent: '',
-  graphSidebarGraphInfo: null,
-  graphSidebarTabIndex: -1, // -1 = 未选中/最新
+  // Unified graph/report artifact workspace
+  artifactWorkspaceOpen: false,
+  artifactWorkspaceMode: 'preview',
+  artifactWorkspaceFullscreen: false,
+  artifactWorkspaceAutoFullscreen: false,
+  activeArtifact: null, // { kind: 'report' | 'graph', id: string }
+  artifactPreviewRevision: 0,
+  artifactWorkspaceGraphInfo: null,
+  artifactWorkspaceTriggerId: '',
   mgmtTab: 'memory',       // 'memory' | 'skills'
   mgmtMemorySubTab: 'long_term',  // 'long_term' | 'user_profile' | 'playbook'
   mgmtSkillsSubTab: 'bundled',    // 'bundled' | 'user' | 'review_queue'
@@ -1945,14 +2216,15 @@ const state = {
 // ── Resizable shell layout ──────────────────────────────────────────────────
 
 const _LS_LEFT_SIDEBAR_WIDTH = 'igraph_left_sidebar_width';
-const _LS_GRAPH_SIDEBAR_WIDTH = 'igraph_graph_sidebar_width';
+const _LS_ARTIFACT_WORKSPACE_WIDTH = 'igraph_artifact_workspace_width';
+const _LS_LEGACY_GRAPH_SIDEBAR_WIDTH = 'igraph_graph_sidebar_width';
 const _LEFT_SIDEBAR_DEFAULT = 244;
-const _GRAPH_SIDEBAR_DEFAULT = 420;
 const _LEFT_SIDEBAR_MIN = 180;
 const _LEFT_SIDEBAR_MAX = 420;
-const _GRAPH_SIDEBAR_MIN = 320;
-const _GRAPH_SIDEBAR_MAX = 760;
-const _MIDDLE_MIN = 360;
+const _ARTIFACT_WORKSPACE_MIN = 480;
+const _ARTIFACT_WORKSPACE_MAX = 960;
+const _ARTIFACT_SPLIT_BREAKPOINT = 1200;
+const _MIDDLE_MIN = 420;
 
 function clampNumber(value, min, max) {
   const n = Number(value);
@@ -1970,36 +2242,58 @@ function layoutAvailableWidth() {
 }
 
 function leftSidebarWidth() {
+  if (state.leftSidebarCollapsed) return 0;
   const rect = document.querySelector('.sidebar')?.getBoundingClientRect();
   return rect?.width || storedLayoutWidth(_LS_LEFT_SIDEBAR_WIDTH, _LEFT_SIDEBAR_DEFAULT);
 }
 
-function graphSidebarWidth() {
-  const rect = document.getElementById('graph-sidebar')?.getBoundingClientRect();
-  return rect?.width || storedLayoutWidth(_LS_GRAPH_SIDEBAR_WIDTH, _GRAPH_SIDEBAR_DEFAULT);
+function storedArtifactWorkspaceWidth() {
+  const current = parseFloat(localStorage.getItem(_LS_ARTIFACT_WORKSPACE_WIDTH) || '');
+  if (Number.isFinite(current)) return current;
+  const legacy = parseFloat(localStorage.getItem(_LS_LEGACY_GRAPH_SIDEBAR_WIDTH) || '');
+  if (Number.isFinite(legacy)) return legacy;
+  return Math.round(layoutAvailableWidth() * 0.5);
 }
 
-function graphSidebarMaxWidth(leftWidth = leftSidebarWidth()) {
+function artifactWorkspaceWidth() {
+  const rect = document.getElementById('artifact-workspace')?.getBoundingClientRect();
+  return rect?.width || storedArtifactWorkspaceWidth();
+}
+
+function artifactWorkspaceMaxWidth(leftWidth = leftSidebarWidth()) {
   const available = layoutAvailableWidth();
-  return Math.max(_GRAPH_SIDEBAR_MIN, Math.min(_GRAPH_SIDEBAR_MAX, available - leftWidth - _MIDDLE_MIN));
+  return Math.max(
+    _ARTIFACT_WORKSPACE_MIN,
+    Math.min(_ARTIFACT_WORKSPACE_MAX, available - leftWidth - _MIDDLE_MIN)
+  );
 }
 
 function syncLayoutVars() {
   const available = layoutAvailableWidth();
-  const graphMax = graphSidebarMaxWidth(_LEFT_SIDEBAR_DEFAULT);
-  const graphWidth = clampNumber(
-    storedLayoutWidth(_LS_GRAPH_SIDEBAR_WIDTH, _GRAPH_SIDEBAR_DEFAULT),
-    _GRAPH_SIDEBAR_MIN,
-    graphMax
+  const requestedLeftWidth = state.leftSidebarCollapsed
+    ? 0
+    : clampNumber(
+        storedLayoutWidth(_LS_LEFT_SIDEBAR_WIDTH, _LEFT_SIDEBAR_DEFAULT),
+        _LEFT_SIDEBAR_MIN,
+        _LEFT_SIDEBAR_MAX
+      );
+  const workspaceMax = artifactWorkspaceMaxWidth(requestedLeftWidth);
+  const workspaceWidth = clampNumber(
+    storedArtifactWorkspaceWidth(),
+    _ARTIFACT_WORKSPACE_MIN,
+    workspaceMax
   );
-  const leftMax = Math.max(_LEFT_SIDEBAR_MIN, Math.min(_LEFT_SIDEBAR_MAX, available - graphWidth - _MIDDLE_MIN));
+  const leftMax = Math.max(
+    _LEFT_SIDEBAR_MIN,
+    Math.min(_LEFT_SIDEBAR_MAX, available - workspaceWidth - _MIDDLE_MIN)
+  );
   const leftWidth = clampNumber(
-    storedLayoutWidth(_LS_LEFT_SIDEBAR_WIDTH, _LEFT_SIDEBAR_DEFAULT),
+    requestedLeftWidth || _LEFT_SIDEBAR_DEFAULT,
     _LEFT_SIDEBAR_MIN,
     leftMax
   );
   document.documentElement.style.setProperty('--left-sidebar-width', `${leftWidth}px`);
-  document.documentElement.style.setProperty('--graph-sidebar-width', `${graphWidth}px`);
+  document.documentElement.style.setProperty('--artifact-workspace-width', `${workspaceWidth}px`);
 }
 
 function rerenderVisibleGraphsAfterResize() {
@@ -2010,18 +2304,19 @@ function rerenderVisibleGraphsAfterResize() {
         if (document.getElementById(`ig-body-${g.id}`)) renderInlineGraph(g);
       }
     }
-    if (state.graphSidebarOpen && state.graphSidebarGraphInfo) {
-      renderInlineGraph(state.graphSidebarGraphInfo);
+    if (state.artifactWorkspaceOpen && state.artifactWorkspaceGraphInfo) {
+      renderInlineGraph(state.artifactWorkspaceGraphInfo);
     }
   }));
 }
 
 function initResizableLayout() {
   syncLayoutVars();
-  if (window.matchMedia && !window.matchMedia('(min-width: 1024px)').matches) return;
+  if (window.innerWidth < _ARTIFACT_SPLIT_BREAKPOINT) return;
+  if (state.leftSidebarCollapsed) return;
 
   const leftHandle = document.getElementById('left-sidebar-resizer');
-  const graphHandle = document.getElementById('graph-sidebar-resizer');
+  const workspaceHandle = document.getElementById('artifact-workspace-resizer');
 
   function startDrag(event, kind) {
     if (event.button !== undefined && event.button !== 0) return;
@@ -2029,7 +2324,7 @@ function initResizableLayout() {
     const handle = event.currentTarget;
     const startX = event.clientX;
     const startLeft = leftSidebarWidth();
-    const startGraph = graphSidebarWidth();
+    const startWorkspace = artifactWorkspaceWidth();
     handle.classList.add('dragging');
     document.body.classList.add('layout-resizing');
     handle.setPointerCapture?.(event.pointerId);
@@ -2038,14 +2333,23 @@ function initResizableLayout() {
       const dx = moveEvent.clientX - startX;
       const available = layoutAvailableWidth();
       if (kind === 'left') {
-        const rightWidth = state.graphSidebarOpen ? graphSidebarWidth() : 0;
+        const rightWidth = state.artifactWorkspaceOpen && !state.artifactWorkspaceFullscreen
+          ? artifactWorkspaceWidth()
+          : 0;
         const maxLeft = Math.max(_LEFT_SIDEBAR_MIN, Math.min(_LEFT_SIDEBAR_MAX, available - rightWidth - _MIDDLE_MIN));
         const next = clampNumber(startLeft + dx, _LEFT_SIDEBAR_MIN, maxLeft);
         document.documentElement.style.setProperty('--left-sidebar-width', `${next}px`);
       } else {
-        const maxGraph = Math.max(_GRAPH_SIDEBAR_MIN, Math.min(_GRAPH_SIDEBAR_MAX, available - leftSidebarWidth() - _MIDDLE_MIN));
-        const next = clampNumber(startGraph - dx, _GRAPH_SIDEBAR_MIN, maxGraph);
-        document.documentElement.style.setProperty('--graph-sidebar-width', `${next}px`);
+        const maxWorkspace = Math.max(
+          _ARTIFACT_WORKSPACE_MIN,
+          Math.min(_ARTIFACT_WORKSPACE_MAX, available - leftSidebarWidth() - _MIDDLE_MIN)
+        );
+        const next = clampNumber(
+          startWorkspace - dx,
+          _ARTIFACT_WORKSPACE_MIN,
+          maxWorkspace
+        );
+        document.documentElement.style.setProperty('--artifact-workspace-width', `${next}px`);
       }
     }
 
@@ -2053,7 +2357,10 @@ function initResizableLayout() {
       handle.classList.remove('dragging');
       document.body.classList.remove('layout-resizing');
       localStorage.setItem(_LS_LEFT_SIDEBAR_WIDTH, String(Math.round(leftSidebarWidth())));
-      localStorage.setItem(_LS_GRAPH_SIDEBAR_WIDTH, String(Math.round(graphSidebarWidth())));
+      localStorage.setItem(
+        _LS_ARTIFACT_WORKSPACE_WIDTH,
+        String(Math.round(artifactWorkspaceWidth()))
+      );
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       rerenderVisibleGraphsAfterResize();
@@ -2067,16 +2374,126 @@ function initResizableLayout() {
     leftHandle.dataset.resizeBound = '1';
     leftHandle.addEventListener('pointerdown', e => startDrag(e, 'left'));
   }
-  if (graphHandle && !graphHandle.dataset.resizeBound) {
-    graphHandle.dataset.resizeBound = '1';
-    graphHandle.addEventListener('pointerdown', e => startDrag(e, 'graph'));
+  if (workspaceHandle && !workspaceHandle.dataset.resizeBound) {
+    workspaceHandle.dataset.resizeBound = '1';
+    workspaceHandle.addEventListener('pointerdown', e => startDrag(e, 'artifact'));
   }
 }
 
 window.addEventListener('resize', () => {
   syncLayoutVars();
+  syncArtifactWorkspaceResponsiveMode();
   rerenderVisibleGraphsAfterResize();
 });
+
+let _taskPanelAnimationFrame = 0;
+
+function setTaskPanelCollapsed(collapsed) {
+  const next = !!collapsed;
+  const layout = document.querySelector('.body-layout');
+  const sidebar = document.querySelector('.sidebar');
+  if (!layout) {
+    state.leftSidebarCollapsed = next;
+    localStorage.setItem(_LS_TASK_PANEL_COLLAPSED, next ? '1' : '0');
+    render();
+    return;
+  }
+  const current = layout.classList.contains('task-panel-collapsed');
+  if (current === next && state.leftSidebarCollapsed === next) return;
+
+  state.leftSidebarCollapsed = next;
+  localStorage.setItem(_LS_TASK_PANEL_COLLAPSED, next ? '1' : '0');
+
+  if (_taskPanelAnimationFrame) {
+    cancelAnimationFrame(_taskPanelAnimationFrame);
+    _taskPanelAnimationFrame = 0;
+  }
+
+  const floating = document.querySelector('.task-panel-floating-actions');
+  const artifactOpen = layout.classList.contains('has-artifact-workspace');
+  const startProgress = current ? 1 : 0;
+  const endProgress = next ? 1 : 0;
+  const leftWidth = Math.max(
+    _LEFT_SIDEBAR_MIN,
+    sidebar?.getBoundingClientRect().width || storedLayoutWidth(_LS_LEFT_SIDEBAR_WIDTH, _LEFT_SIDEBAR_DEFAULT)
+  );
+  const duration = 320;
+  const startedAt = performance.now();
+
+  layout.classList.add('task-panel-animating');
+  if (sidebar) {
+    sidebar.style.width = `${leftWidth}px`;
+    sidebar.style.visibility = 'visible';
+    sidebar.style.pointerEvents = 'none';
+  }
+  if (floating) {
+    floating.style.visibility = 'visible';
+    floating.style.pointerEvents = 'none';
+  }
+
+  const easeOut = t => 1 - Math.pow(1 - t, 3);
+  const applyFrame = progress => {
+    const left = Math.max(0, leftWidth * (1 - progress));
+    layout.style.gridTemplateColumns = artifactOpen
+      ? `${left}px minmax(420px, 1fr) var(--artifact-workspace-width)`
+      : `${left}px minmax(0, 1fr)`;
+    if (sidebar) {
+      sidebar.style.transform = `translateX(${-leftWidth * progress}px)`;
+      sidebar.style.opacity = String(1 - progress);
+    }
+    if (floating) {
+      const visible = Math.max(0, Math.min(1, (progress - 0.35) / 0.65));
+      floating.style.opacity = String(visible);
+      floating.style.transform = `translateX(${(-10 * (1 - visible)).toFixed(2)}px)`;
+    }
+  };
+
+  const finish = () => {
+    _taskPanelAnimationFrame = 0;
+    layout.classList.toggle('task-panel-collapsed', next);
+    layout.classList.remove('task-panel-animating');
+    layout.style.gridTemplateColumns = '';
+    if (sidebar) {
+      sidebar.style.width = '';
+      sidebar.style.transform = '';
+      sidebar.style.opacity = '';
+      sidebar.style.visibility = '';
+      sidebar.style.pointerEvents = '';
+      sidebar.setAttribute('aria-hidden', next ? 'true' : 'false');
+    }
+    if (floating) {
+      floating.style.opacity = '';
+      floating.style.transform = '';
+      floating.style.visibility = '';
+      floating.style.pointerEvents = '';
+    }
+    if (!next) initResizableLayout();
+    rerenderVisibleGraphsAfterResize();
+  };
+
+  const step = now => {
+    const elapsed = Math.min(1, (now - startedAt) / duration);
+    const eased = easeOut(elapsed);
+    const progress = startProgress + (endProgress - startProgress) * eased;
+    applyFrame(progress);
+    if (elapsed < 1) {
+      _taskPanelAnimationFrame = requestAnimationFrame(step);
+    } else {
+      finish();
+    }
+  };
+
+  applyFrame(startProgress);
+  _taskPanelAnimationFrame = requestAnimationFrame(step);
+}
+
+function hideTaskPanel() {
+  setTaskPanelCollapsed(true);
+}
+
+function showTaskPanel() {
+  setTaskPanelCollapsed(false);
+}
 
 const ALL_MODEL_OPTIONS = [
   { value: 'claude-opus-4-6',   label: 'Claude Opus 4-6' },
@@ -2086,6 +2503,7 @@ const ALL_MODEL_OPTIONS = [
   { value: 'qwen3.6-plus',      label: 'Qwen3.6 Plus' },
   { value: 'qwen3.7-max',       label: 'Qwen3.7 Max' },
   { value: 'deepseek-v4-pro',              label: 'DeepSeek V4 Pro' },
+  { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
   { value: 'deepseek-v4-lite',             label: 'DeepSeek V4 Lite' },
   { value: 'doubao-seed-2-0-pro-260215',   label: 'Seed 2.0 Pro' },
 ];
@@ -2138,7 +2556,14 @@ const _bgSessions = new Map(); // sessionId → bgCtx  (sessions streaming in ba
 function _makeBgCtx() {
   return {
     _done: false,
-    messages: state.messages.map(m => ({ ...m })),
+    messages: state.messages.map((m, messageIndex) => ({
+      ...m,
+      reports: Array.isArray(m.reports)
+        ? m.reports
+            .map((report, reportIndex) => normalizeReportInfo(report, `${messageIndex}-${reportIndex}`))
+            .filter(Boolean)
+        : [],
+    })),
     streamBuf: state.streamBuf,
     streamTools: [...state.streamTools],
     streamProgressItems: state.streamProgressItems.map(item => ({ ...item, progress: { ...(item.progress || {}) } })),
@@ -2627,6 +3052,375 @@ const ICO_GRAPH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
   <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
   <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
 </svg>`;
+const ICO_REPORT = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+  <path d="M14 2v6h6"/><path d="M8 17v-4"/><path d="M12 17v-7"/><path d="M16 17v-2"/>
+</svg>`;
+
+function normalizeReportInfo(value, fallbackId = '0') {
+  if (!value || typeof value !== 'object' || value.version !== 'analysis_report.v1') return null;
+  let report;
+  try {
+    report = JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+  report.id = String(report.id || `rpt-restored-${fallbackId}`);
+  report.intent = String(report.intent || 'analysis');
+  report.title = String(report.title || '图分析报告');
+  report.summary = String(report.summary || '');
+  report.sections = Array.isArray(report.sections)
+    ? report.sections.filter(section => section && typeof section === 'object')
+    : [];
+  return report;
+}
+
+function reportArtifactStats(report) {
+  const sections = Array.isArray(report?.sections) ? report.sections : [];
+  let charts = 0;
+  let tables = 0;
+  for (const section of sections) {
+    charts += Array.isArray(section?.charts) ? section.charts.length : 0;
+    tables += Array.isArray(section?.tables) ? section.tables.length : 0;
+  }
+  return { sections: sections.length, charts, tables };
+}
+
+function reportEntryCardHtml(report) {
+  const stats = reportArtifactStats(report);
+  const meta = `${stats.sections} 个章节 · ${stats.charts} 个图表${stats.tables ? ` · ${stats.tables} 个表格` : ''}`;
+  return `<div class="analysis-report-card" data-report-artifact-id="${attr(report.id)}">
+    <div class="analysis-report-icon" aria-hidden="true">${ICO_REPORT}</div>
+    <div class="analysis-report-copy">
+      <div class="analysis-report-title" title="${attr(report.title)}">${esc(report.title)}</div>
+      <div class="analysis-report-meta">${esc(meta)}</div>
+    </div>
+    <button class="analysis-report-open" type="button" data-report-id="${attr(report.id)}"
+      onclick="openAnalysisReport(this.dataset.reportId)" title="在分析工作区查看">
+      <span>查看报告</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m9 18 6-6-6-6"/>
+      </svg>
+    </button>
+  </div>`;
+}
+
+function allAnalysisReports() {
+  const reports = [];
+  for (const message of state.messages) {
+    if (Array.isArray(message.reports)) reports.push(...message.reports);
+  }
+  return reports;
+}
+
+function openAnalysisReport(reportId) {
+  const normalizedId = String(reportId || '');
+  const report = allAnalysisReports().find(item => String(item?.id || '') === normalizedId);
+  if (!report) return false;
+  openArtifactWorkspace('report', normalizedId, document.activeElement);
+  return true;
+}
+
+function onNewAnalysisReport(report) {
+  window.dispatchEvent(new CustomEvent('igraph:analysis-report-created', {
+    detail: { report },
+  }));
+}
+
+function reportDocumentEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function reportSectionId(value, index = 0) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || `section-${index + 1}`;
+}
+
+function reportDisplayValue(value, unit = '') {
+  if (value === null || value === undefined || value === '') return '—';
+  let text = value;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    text = Number.isInteger(value)
+      ? value.toLocaleString('zh-CN')
+      : value.toLocaleString('zh-CN', { maximumFractionDigits: 4 });
+  } else if (typeof value === 'object') {
+    try { text = JSON.stringify(value); } catch { text = String(value); }
+  }
+  return `${text}${unit ? ` ${unit}` : ''}`;
+}
+
+function reportPublicText(value, fallback = '') {
+  const text = String(value ?? '').trim();
+  if (!text) return fallback;
+  const internalPatterns = [
+    /工具结果/,
+    /数据来源/,
+    /报告基于/,
+    /基于当前可用图分析结果生成/,
+    /由\s*iGraph\s*基于/,
+  ];
+  return internalPatterns.some(pattern => pattern.test(text)) ? fallback : text;
+}
+
+function reportChartRows(chart) {
+  return (Array.isArray(chart?.data) ? chart.data : [])
+    .map((item, index) => ({
+      label: String(item?.label ?? item?.name ?? index + 1),
+      value: Number(item?.value),
+    }))
+    .filter(item => Number.isFinite(item.value));
+}
+
+function buildReportBarChartSvg(chart) {
+  const rows = reportChartRows(chart);
+  if (!rows.length) return '';
+  const width = 760;
+  const left = 188;
+  const right = 62;
+  const rowHeight = 42;
+  const height = Math.max(174, rows.length * rowHeight + 52);
+  const maxValue = Math.max(...rows.map(item => Math.abs(item.value)), 1);
+  const plotWidth = width - left - right;
+  const unit = String(chart?.unit || '');
+  const content = rows.map((item, index) => {
+    const y = 28 + index * rowHeight;
+    const barWidth = Math.max(2, Math.abs(item.value) / maxValue * plotWidth);
+    const label = item.label.length > 24 ? `${item.label.slice(0, 23)}…` : item.label;
+    return `
+      <text class="chart-label" x="${left - 12}" y="${y + 15}" text-anchor="end">${reportDocumentEscape(label)}</text>
+      <rect class="chart-bar" x="${left}" y="${y}" width="${barWidth.toFixed(2)}" height="20" rx="3"></rect>
+      <text class="chart-value" x="${Math.min(left + barWidth + 9, width - right + 4).toFixed(2)}" y="${y + 15}">${reportDocumentEscape(reportDisplayValue(item.value, unit))}</text>`;
+  }).join('');
+  return `<svg class="report-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${reportDocumentEscape(chart?.title || '柱状图')}">${content}</svg>`;
+}
+
+function buildReportDonutChartSvg(chart) {
+  const rows = reportChartRows(chart).filter(item => item.value >= 0);
+  const total = rows.reduce((sum, item) => sum + item.value, 0);
+  if (!rows.length || total <= 0) return '';
+  let offset = 0;
+  const palette = ['#0f766e', '#2563eb', '#7c3aed', '#db2777', '#d97706', '#0891b2', '#4f46e5', '#65a30d'];
+  const arcs = rows.map((item, index) => {
+    const percent = item.value / total * 100;
+    const arc = `<circle class="donut-arc" cx="110" cy="110" r="72" pathLength="100"
+      stroke="${palette[index % palette.length]}" stroke-dasharray="${percent.toFixed(4)} ${(100 - percent).toFixed(4)}"
+      stroke-dashoffset="${(-offset).toFixed(4)}"></circle>`;
+    offset += percent;
+    return arc;
+  }).join('');
+  const legend = rows.map((item, index) => `
+    <div class="chart-legend-item">
+      <span class="chart-legend-swatch" style="background:${palette[index % palette.length]}"></span>
+      <span class="chart-legend-label">${reportDocumentEscape(item.label)}</span>
+      <strong>${reportDocumentEscape(reportDisplayValue(item.value, chart?.unit || ''))}</strong>
+    </div>`).join('');
+  return `<div class="donut-layout">
+    <svg class="donut-svg" viewBox="0 0 220 220" role="img" aria-label="${reportDocumentEscape(chart?.title || '环图')}">
+      <circle class="donut-track" cx="110" cy="110" r="72"></circle>
+      ${arcs}
+      <text class="donut-total-label" x="110" y="103" text-anchor="middle">总计</text>
+      <text class="donut-total-value" x="110" y="128" text-anchor="middle">${reportDocumentEscape(reportDisplayValue(total, chart?.unit || ''))}</text>
+    </svg>
+    <div class="chart-legend">${legend}</div>
+  </div>`;
+}
+
+function buildReportLineChartSvg(chart) {
+  const rows = reportChartRows(chart);
+  if (rows.length < 2) return buildReportBarChartSvg(chart);
+  const width = 760;
+  const height = 270;
+  const pad = { left: 58, right: 28, top: 28, bottom: 54 };
+  const values = rows.map(item => item.value);
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const range = maxValue - minValue || 1;
+  const x = index => pad.left + index * ((width - pad.left - pad.right) / (rows.length - 1));
+  const y = value => pad.top + (maxValue - value) / range * (height - pad.top - pad.bottom);
+  const points = rows.map((item, index) => `${x(index).toFixed(2)},${y(item.value).toFixed(2)}`).join(' ');
+  const dots = rows.map((item, index) => `
+    <circle class="line-dot" cx="${x(index).toFixed(2)}" cy="${y(item.value).toFixed(2)}" r="4"></circle>
+    <text class="line-value" x="${x(index).toFixed(2)}" y="${(y(item.value) - 10).toFixed(2)}" text-anchor="middle">${reportDocumentEscape(reportDisplayValue(item.value, chart?.unit || ''))}</text>
+    <text class="line-label" x="${x(index).toFixed(2)}" y="${height - 20}" text-anchor="middle">${reportDocumentEscape(item.label.length > 12 ? `${item.label.slice(0, 11)}…` : item.label)}</text>`).join('');
+  return `<svg class="report-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${reportDocumentEscape(chart?.title || '折线图')}">
+    <line class="chart-axis" x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}"></line>
+    <polyline class="line-path" points="${points}"></polyline>
+    ${dots}
+  </svg>`;
+}
+
+function buildReportChartDocumentHtml(chart) {
+  const type = String(chart?.type || 'bar').toLowerCase();
+  const graphic = type === 'donut' || type === 'pie'
+    ? buildReportDonutChartSvg(chart)
+    : type === 'line'
+      ? buildReportLineChartSvg(chart)
+      : buildReportBarChartSvg(chart);
+  if (!graphic) return '';
+  return `<figure class="report-chart">
+    <figcaption>${reportDocumentEscape(chart?.title || '数据图表')}</figcaption>
+    ${graphic}
+  </figure>`;
+}
+
+function reportTableColumns(table) {
+  if (Array.isArray(table?.columns) && table.columns.length) {
+    return table.columns.map((column, index) => typeof column === 'object'
+      ? { key: String(column.key ?? index), label: String(column.label ?? column.key ?? index + 1) }
+      : { key: String(column), label: String(column) })
+      .filter(column => !(column.key === 'source' && column.label === '来源'));
+  }
+  const first = Array.isArray(table?.rows) ? table.rows.find(row => row && typeof row === 'object' && !Array.isArray(row)) : null;
+  return first ? Object.keys(first)
+    .filter(key => key !== 'source')
+    .map(key => ({ key, label: key })) : [];
+}
+
+function buildReportTableDocumentHtml(table) {
+  const rows = Array.isArray(table?.rows) ? table.rows : [];
+  const columns = reportTableColumns(table);
+  if (!rows.length || !columns.length) return '';
+  const head = columns.map(column => `<th>${reportDocumentEscape(column.label)}</th>`).join('');
+  const body = rows.map(row => {
+    const cells = columns.map((column, index) => {
+      const value = Array.isArray(row) ? row[index] : row?.[column.key];
+      return `<td>${reportDocumentEscape(reportDisplayValue(value))}</td>`;
+    }).join('');
+    return `<tr>${cells}</tr>`;
+  }).join('');
+  return `<div class="report-table-wrap">
+    ${table?.title ? `<h4>${reportDocumentEscape(table.title)}</h4>` : ''}
+    <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
+  </div>`;
+}
+
+function buildReportDocument(report, { theme = 'light' } = {}) {
+  const normalized = normalizeReportInfo(report, 'document') || {
+    id: 'report-document',
+    title: '图分析报告',
+    subtitle: '',
+    summary: '',
+    sections: [],
+  };
+  const isDark = theme === 'dark';
+  const sections = Array.isArray(normalized.sections) ? normalized.sections : [];
+  const subtitle = reportPublicText(normalized.subtitle || '');
+  const summary = reportPublicText(normalized.summary || '');
+  const sectionNav = sections.map((section, index) => {
+    const id = reportSectionId(section?.id, index);
+    return `<a href="#${id}">${reportDocumentEscape(section?.title || `章节 ${index + 1}`)}</a>`;
+  }).join('');
+  const sectionsHtml = sections.map((section, index) => {
+    const id = reportSectionId(section?.id, index);
+    const sectionSummary = reportPublicText(section?.summary || '');
+    const metrics = (Array.isArray(section?.metrics) ? section.metrics : []).map(metric => `
+      <div class="metric">
+        <span>${reportDocumentEscape(metric?.label || '指标')}</span>
+        <strong>${reportDocumentEscape(reportDisplayValue(metric?.value, metric?.unit || ''))}</strong>
+      </div>`).join('');
+    const charts = (Array.isArray(section?.charts) ? section.charts : [])
+      .map(buildReportChartDocumentHtml)
+      .join('');
+    const tables = (Array.isArray(section?.tables) ? section.tables : [])
+      .map(buildReportTableDocumentHtml)
+      .join('');
+    const insights = (Array.isArray(section?.insights) ? section.insights : [])
+      .map(item => reportPublicText(item))
+      .filter(Boolean)
+      .map(item => `<li>${reportDocumentEscape(item)}</li>`)
+      .join('');
+    const limitations = (Array.isArray(section?.limitations) ? section.limitations : [])
+      .map(item => reportPublicText(item))
+      .filter(Boolean)
+      .map(item => `<li>${reportDocumentEscape(item)}</li>`)
+      .join('');
+    return `<section id="${id}" class="report-section">
+      <div class="section-heading">
+        <span>${String(index + 1).padStart(2, '0')}</span>
+        <div>
+          <h2>${reportDocumentEscape(section?.title || `章节 ${index + 1}`)}</h2>
+          ${sectionSummary ? `<p>${reportDocumentEscape(sectionSummary)}</p>` : ''}
+        </div>
+      </div>
+      ${metrics ? `<div class="metrics">${metrics}</div>` : ''}
+      ${charts ? `<div class="charts">${charts}</div>` : ''}
+      ${tables}
+      ${insights ? `<div class="insights"><h3>关键发现</h3><ul>${insights}</ul></div>` : ''}
+      ${limitations ? `<div class="limitations"><h3>说明</h3><ul>${limitations}</ul></div>` : ''}
+    </section>`;
+  }).join('');
+  const reportLimitations = (Array.isArray(normalized.limitations) ? normalized.limitations : [])
+    .map(item => reportPublicText(item))
+    .filter(Boolean)
+    .map(item => `<li>${reportDocumentEscape(item)}</li>`)
+    .join('');
+  const palette = isDark
+    ? {
+        bg: '#0b1018', surface: '#111827', surface2: '#172033', text: '#e7edf7',
+        muted: '#93a4bb', border: '#273449', accent: '#2dd4bf', accentSoft: 'rgba(45,212,191,.12)',
+      }
+    : {
+        bg: '#f7f9fc', surface: '#ffffff', surface2: '#f1f5f9', text: '#142033',
+        muted: '#64748b', border: '#dbe3ee', accent: '#0f766e', accentSoft: 'rgba(15,118,110,.09)',
+      };
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="${isDark ? 'dark' : 'light'}">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+  <title>${reportDocumentEscape(normalized.title)}</title>
+  <style>
+    :root{--bg:${palette.bg};--surface:${palette.surface};--surface2:${palette.surface2};--text:${palette.text};--muted:${palette.muted};--border:${palette.border};--accent:${palette.accent};--accent-soft:${palette.accentSoft};font-family:Inter,"Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;color:var(--text);background:var(--bg)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);line-height:1.65}a{color:inherit}
+    .report-header{padding:38px clamp(22px,5vw,68px) 30px;background:var(--surface);border-bottom:1px solid var(--border)}
+    .report-header h1{margin:0;font-size:clamp(28px,4.5vw,52px);line-height:1.14;font-weight:750;letter-spacing:0}.report-header>p{max-width:860px;margin:14px 0 0;color:var(--muted);font-size:16px}
+    .report-nav{position:sticky;top:0;z-index:3;display:flex;gap:24px;overflow:auto;padding:12px clamp(22px,5vw,68px);background:color-mix(in srgb,var(--surface) 94%,transparent);border-bottom:1px solid var(--border);backdrop-filter:blur(10px);scrollbar-width:none}
+    .report-nav::-webkit-scrollbar{display:none}.report-nav a{flex:0 0 auto;color:var(--muted);font-size:13px;text-decoration:none}.report-nav a:hover{color:var(--accent)}
+    main{max-width:1160px;margin:0 auto;padding:30px clamp(20px,4vw,54px) 72px}.summary{padding:22px 24px;border-left:3px solid var(--accent);background:var(--accent-soft);font-size:17px}.summary p{margin:0}
+    .report-section{padding:42px 0;border-bottom:1px solid var(--border);scroll-margin-top:52px}.report-section:last-child{border-bottom:0}
+    .section-heading{display:grid;grid-template-columns:36px minmax(0,1fr);gap:14px;align-items:start}.section-heading>span{padding-top:4px;color:var(--accent);font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace}.section-heading h2{margin:0;font-size:24px;line-height:1.3;letter-spacing:0}.section-heading p{margin:7px 0 0;color:var(--muted)}
+    .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:24px}.metric{min-height:104px;padding:17px 18px;border:1px solid var(--border);border-radius:7px;background:var(--surface)}.metric span{display:block;color:var(--muted);font-size:13px}.metric strong{display:block;margin-top:10px;font-size:22px;line-height:1.25;overflow-wrap:anywhere}
+    .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:14px;margin-top:20px}.report-chart{min-width:0;margin:0;padding:18px;border:1px solid var(--border);border-radius:7px;background:var(--surface)}.report-chart figcaption,.report-table-wrap h4{margin:0 0 14px;font-size:14px;font-weight:650}
+    .report-chart-svg{display:block;width:100%;height:auto;overflow:visible}.chart-label,.chart-value,.line-label,.line-value{fill:var(--muted);font-size:12px}.chart-value,.line-value{fill:var(--text);font-weight:600}.chart-bar{fill:var(--accent)}.chart-axis{stroke:var(--border)}.line-path{fill:none;stroke:var(--accent);stroke-width:3;stroke-linejoin:round;stroke-linecap:round}.line-dot{fill:var(--surface);stroke:var(--accent);stroke-width:3}
+    .donut-layout{display:grid;grid-template-columns:minmax(170px,220px) 1fr;gap:18px;align-items:center}.donut-svg{width:100%;height:auto}.donut-track,.donut-arc{fill:none;stroke-width:24}.donut-track{stroke:var(--surface2)}.donut-arc{transform:rotate(-90deg);transform-origin:110px 110px}.donut-total-label{fill:var(--muted);font-size:12px}.donut-total-value{fill:var(--text);font-size:17px;font-weight:700}.chart-legend{display:grid;gap:8px}.chart-legend-item{display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:12px}.chart-legend-swatch{width:9px;height:9px;border-radius:2px}.chart-legend-label{min-width:0;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .report-table-wrap{margin-top:20px;overflow:auto;border:1px solid var(--border);border-radius:7px;background:var(--surface)}.report-table-wrap h4{padding:16px 18px 0}.report-table-wrap table{width:100%;border-collapse:collapse;font-size:13px}.report-table-wrap th,.report-table-wrap td{padding:11px 14px;border-top:1px solid var(--border);text-align:left;white-space:nowrap}.report-table-wrap th{color:var(--muted);font-weight:600;background:var(--surface2)}
+    .insights,.limitations{margin-top:20px;padding:18px 20px;background:var(--surface2);border-radius:7px}.insights h3,.limitations h3{margin:0 0 8px;font-size:14px}.insights ul,.limitations ul{margin:0;padding-left:19px}.insights li,.limitations li{margin:4px 0}.limitations{color:var(--muted)}
+    .report-footer{max-width:1160px;margin:0 auto;padding:0 clamp(20px,4vw,54px) 50px;color:var(--muted);font-size:12px}
+    @media(max-width:640px){.report-header{padding-top:26px}.report-nav{gap:18px}.donut-layout{grid-template-columns:1fr}.donut-svg{max-width:220px;margin:auto}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{min-height:92px;padding:14px}.metric strong{font-size:18px}}
+  </style>
+</head>
+<body>
+  <header class="report-header">
+    <h1>${reportDocumentEscape(normalized.title)}</h1>
+    ${subtitle ? `<p>${reportDocumentEscape(subtitle)}</p>` : ''}
+  </header>
+  ${sectionNav ? `<nav class="report-nav" aria-label="报告章节">${sectionNav}</nav>` : ''}
+  <main>
+    ${summary ? `<div class="summary"><p>${reportDocumentEscape(summary)}</p></div>` : ''}
+    ${sectionsHtml || '<div class="summary"><p>当前报告没有可展示的章节。</p></div>'}
+    ${reportLimitations ? `<div class="limitations"><h3>报告限制</h3><ul>${reportLimitations}</ul></div>` : ''}
+  </main>
+  <footer class="report-footer">iGraph 分析报告</footer>
+</body>
+</html>`;
+}
+
+function buildReportCodeViewHtml(source) {
+  return `<div class="artifact-code-view" aria-label="HTML 源代码">${String(source || '')
+    .split('\n')
+    .map(line => `<div class="artifact-code-line"><code>${esc(line) || ' '}</code></div>`)
+    .join('')}</div>`;
+}
 
 function graphBadgeHtml() {
   return state.hasGraph
@@ -2711,7 +3505,7 @@ function patchContextMeter() {
 }
 
 function sessionItemHtml(s) {
-  const active = s.session_id === state.sessionId;
+  const active = sameSessionId(s.session_id, state.sessionId);
   const streaming = _bgSessions.has(s.session_id) && !_bgSessions.get(s.session_id)._done;
   const title   = (s.title && s.title !== '新会话') ? s.title : null;
   const preview = s.last_message_preview || '';
@@ -2727,6 +3521,77 @@ function sessionItemHtml(s) {
       </svg>
     </button>
   </div>`;
+}
+
+function sameSessionId(a, b) {
+  return String(a || '').trim() !== '' && String(a || '').trim() === String(b || '').trim();
+}
+
+function setDraftSessionId(sessionId) {
+  const sid = String(sessionId || '').trim();
+  state.draftSessionId = sid || null;
+}
+
+function sessionSummaryLooksUnused(session) {
+  if (!session || !session.session_id) return false;
+  if (_bgSessions.has(session.session_id) && !_bgSessions.get(session.session_id)._done) return false;
+  const title = String(session.title || '').trim();
+  const preview = String(session.last_message_preview || '').trim();
+  return (!title || title === '新会话') && !preview;
+}
+
+function activeSessionHasLocalContent(sessionId = state.sessionId) {
+  return sameSessionId(sessionId, state.sessionId) && (
+    state.messages.length > 0 ||
+    state.hasGraph ||
+    state.loading ||
+    !!state.pendingFeedback
+  );
+}
+
+function shouldHideSessionFromSidebar(session) {
+  if (!session || !session.session_id) return false;
+  if (activeSessionHasLocalContent(session.session_id)) return false;
+  return sameSessionId(session.session_id, state.draftSessionId) || sessionSummaryLooksUnused(session);
+}
+
+function visibleSessions(sessions) {
+  return (Array.isArray(sessions) ? sessions : []).filter(s => !shouldHideSessionFromSidebar(s));
+}
+
+function hasActiveUnusedSession() {
+  return !!state.sessionId &&
+    state.messages.length === 0 &&
+    !state.hasGraph &&
+    !state.loading &&
+    !state.pendingFeedback;
+}
+
+function findReusableDraftSessionId() {
+  if (state.draftSessionId) {
+    const draftExists = sameSessionId(state.draftSessionId, state.sessionId) ||
+      (state.allSessions || []).some(s => sameSessionId(s?.session_id, state.draftSessionId));
+    if (draftExists) return state.draftSessionId;
+    setDraftSessionId(null);
+  }
+  const draft = (state.allSessions || []).find(sessionSummaryLooksUnused);
+  return draft ? String(draft.session_id || '').trim() : null;
+}
+
+function markActiveSessionUsed() {
+  if (sameSessionId(state.sessionId, state.draftSessionId)) setDraftSessionId(null);
+}
+
+function syncDraftStateFromActiveSession() {
+  if (!sameSessionId(state.sessionId, state.draftSessionId)) return;
+  if (activeSessionHasLocalContent()) setDraftSessionId(null);
+}
+
+function focusChatInputSoon() {
+  requestAnimationFrame(() => {
+    const ta = document.getElementById('inp-chat');
+    if (ta && !ta.disabled) ta.focus();
+  });
 }
 
 // ── Plan / Solver panels ───────────────────────────────────────────
@@ -3096,6 +3961,8 @@ function render() {
 function renderChat(root, snapshot = null) {
   const selectedModel = syncModelSelect(state.model);
   const disabled = !state.sessionId || state.loading || state.creating || state.switchingSession;
+  const newSessionDisabled = state.creating || state.loading || state.switchingSession || hasActiveUnusedSession();
+  const taskPanelCollapsed = state.leftSidebarCollapsed;
   const planBtnCls = state.planningMode === 'always' ? 'chip active-blue'
                    : state.planningMode === 'never'  ? 'chip muted'
                    : 'chip active-cyan';
@@ -3145,7 +4012,7 @@ function renderChat(root, snapshot = null) {
         </svg>
       </button>
       <button id="btn-new-session" title="新建会话"
-        ${state.creating || state.loading || state.switchingSession ? 'disabled' : ''}
+        ${newSessionDisabled ? 'disabled' : ''}
         class="chip lg:hidden">+ 新建</button>
       ${state.currentUserId ? `<button class="user-badge" id="btn-logout" title="退出登录" aria-label="退出登录">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
@@ -3154,15 +4021,24 @@ function renderChat(root, snapshot = null) {
     </div>
   </header>
 
-  <div class="body-layout ${state.graphSidebarOpen ? 'has-graph-sidebar' : ''}">
-    <aside class="sidebar hidden lg:flex">
-      <button id="btn-new-session-side" class="sidebar-new-btn"
-        ${state.creating || state.loading || state.switchingSession ? 'disabled' : ''}>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        ${state.creating ? '创建中…' : '新建会话'}
-      </button>
+  <div class="body-layout ${state.artifactWorkspaceOpen && !state.artifactWorkspaceFullscreen ? 'has-artifact-workspace' : ''} ${taskPanelCollapsed ? 'task-panel-collapsed' : ''}">
+    <aside class="sidebar hidden lg:flex" aria-hidden="${taskPanelCollapsed ? 'true' : 'false'}">
+      <div class="sidebar-action-row">
+        <button id="btn-new-session-side" class="sidebar-new-btn"
+          ${newSessionDisabled ? 'disabled' : ''}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          ${state.creating ? '创建中…' : '新建会话'}
+        </button>
+        <button id="btn-hide-task-panel" class="task-panel-icon-btn" title="Hide Task Panel" aria-label="Hide Task Panel">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+            <path d="M9 4v16"/>
+            <path d="M15 9l-3 3 3 3"/>
+          </svg>
+        </button>
+      </div>
       <div class="sidebar-label">历史会话</div>
       <div class="session-list">
         ${state.sessionsLoading
@@ -3184,18 +4060,28 @@ function renderChat(root, snapshot = null) {
     </aside>
 
     <div class="main-content" id="main-content-area">
-      <div class="chat-pane">
-        <!-- Graph Sidebar Toggle Button -->
-        <button id="graph-sidebar-toggle" class="graph-sidebar-toggle ${state.graphSidebarOpen ? 'active' : ''}" onclick="toggleGraphSidebar()" title="图可视化" ${!state.hasGraph ? 'disabled' : ''}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+      <div class="task-panel-floating-actions" aria-label="Task panel controls">
+        <button id="btn-show-task-panel" class="task-panel-floating-btn" title="Show Task Panel" aria-label="Show Task Panel">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+            <path d="M9 4v16"/>
+            <path d="M13 9l3 3-3 3"/>
           </svg>
         </button>
+        <button id="btn-new-task-collapsed" class="task-panel-floating-btn"
+          title="New task" aria-label="New task"
+          ${newSessionDisabled ? 'disabled' : ''}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.35" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="4" width="16" height="16" rx="3"/>
+            <path d="M12 8v8M8 12h8"/>
+          </svg>
+        </button>
+      </div>
+      <div class="chat-pane">
         <div id="msg-area" class="msg-area">
           <div class="msg-inner">
             <div id="session-notice">${sessionNoticeHtml()}</div>
-            ${state.messages.length === 0 ? emptyHtml() : state.messages.map((m, i) => msgRowHtml(m, i === state.messages.length - 1)).join('')}
+            ${state.messages.length === 0 ? emptyHtml() : state.messages.map((m, i) => msgRowHtml(m, i, i === state.messages.length - 1)).join('')}
             <div id="scroll-anchor"></div>
           </div>
         </div>
@@ -3237,17 +4123,7 @@ function renderChat(root, snapshot = null) {
       </div>
     </div>
 
-    <!-- Graph Sidebar (Right) -->
-    <aside id="graph-sidebar" class="graph-sidebar ${state.graphSidebarOpen ? '' : 'hidden'}">
-      <div id="graph-sidebar-resizer" class="layout-resizer graph-sidebar-resizer" title="拖拽调整可视化边栏宽度" aria-hidden="true"></div>
-      <div class="graph-sidebar-header" id="graph-sidebar-header">
-        <div class="graph-sidebar-tabs" id="graph-sidebar-tabs">${_sidebarTabsHtml()}</div>
-        <button class="graph-sidebar-close" onclick="toggleGraphSidebar()">×</button>
-      </div>
-      <div class="graph-sidebar-body" id="graph-sidebar-body">
-        ${state.graphSidebarContent || '<div class="graph-sidebar-empty">暂无可视化数据<br/><br/>发送图分析请求后自动显示</div>'}
-      </div>
-    </aside>
+    ${artifactWorkspaceShellHtml()}
   </div>
 
   ${state.datasetModalOpen ? `
@@ -3305,6 +4181,9 @@ function renderChat(root, snapshot = null) {
   $('#btn-mgmt')?.addEventListener('click', openMgmt);
   $('#btn-new-session')?.addEventListener('click', startNewSession);
   $('#btn-new-session-side')?.addEventListener('click', startNewSession);
+  $('#btn-hide-task-panel')?.addEventListener('click', hideTaskPanel);
+  $('#btn-show-task-panel')?.addEventListener('click', showTaskPanel);
+  $('#btn-new-task-collapsed')?.addEventListener('click', startNewSession);
   $('#btn-logout')?.addEventListener('click', () => { if (confirm('确认退出登录？')) logout(); });
   const modelSelect = $('#sel-model');
   syncModelSelect(selectedModel);
@@ -3371,14 +4250,7 @@ function renderChat(root, snapshot = null) {
         }
       }
     }
-    // Re-init graph sidebar if open
-    if (state.graphSidebarOpen && state.graphSidebarGraphInfo) {
-      patchSidebarTabs();
-      const sidebarBody = document.getElementById(`ig-body-${state.graphSidebarGraphInfo.id}`);
-      if (sidebarBody && !sidebarBody.querySelector('svg g')) {
-        renderInlineGraph(state.graphSidebarGraphInfo);
-      }
-    }
+    if (state.artifactWorkspaceOpen) renderArtifactWorkspace();
   }, 100);
 
   if (snapshot) {
@@ -3391,10 +4263,10 @@ function renderChat(root, snapshot = null) {
 }
 
 // ── Message row templates ──────────────────────────────────────────
-function msgRowHtml(m, isLast = false) {
+function msgRowHtml(m, index, isLast = false) {
   if (m.streaming) return streamingRowHtml();
   if (m.role === 'user') return userRowHtml(m.content);
-  return agentRowHtml(m.content, m.tools || [], m.progressItems || [], m.thinking || [], m.plan || null, m.solverSteps || [], m.feedbackRequests || m.feedbackRequest || null, m.graphs || [], isLast);
+  return agentRowHtml(m.content, m.tools || [], m.progressItems || [], m.thinking || [], m.plan || null, m.solverSteps || [], m.feedbackRequests || m.feedbackRequest || null, m.graphs || [], m.reports || [], index, isLast);
 }
 
 function userRowHtml(content) {
@@ -3403,18 +4275,25 @@ function userRowHtml(content) {
   </div>`;
 }
 
-function agentRowHtml(content, tools, progressItems, thinking, plan, solverSteps, feedbackRequest, graphs, isLast = false) {
+function agentRowHtml(content, tools, progressItems, thinking, plan, solverSteps, feedbackRequest, graphs, reports, messageIndex, isLast = false) {
   const feedbackList = normalizeFeedbackRequests(feedbackRequest);
   const activeFeedback = state.pendingFeedback && feedbackList.some(req => state.pendingFeedback.request_id === req.request_id);
   const isPendingFeedbackCard = feedbackList.some(req => String(req.status || 'pending') === 'pending');
-  const regenBtn = isLast && !state.loading && !state.pendingFeedback && !isPendingFeedbackCard
-    ? `<div style="display:flex;justify-content:flex-end;margin-top:8px">
-        <button onclick="regenerateLastMessage()" style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--text3);font-family:var(--mono);font-size:0.63rem;cursor:pointer;transition:all 0.15s" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--text3)'">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.35"/></svg>
-          重新生成
-        </button>
-      </div>`
+  const canCopy = String(content || '').trim().length > 0;
+  const canRegenerate = isLast && !state.loading && !state.pendingFeedback && !isPendingFeedbackCard;
+  const copyBtn = canCopy
+    ? `<button class="message-action-btn" onclick="copyAssistantMessage(${Number(messageIndex)}, this)" title="复制原始 Markdown" aria-label="复制该回复的原始 Markdown">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <span>复制</span>
+      </button>`
     : '';
+  const regenerateBtn = canRegenerate
+    ? `<button class="message-action-btn" onclick="regenerateLastMessage()" title="重新生成此回复" aria-label="重新生成此回复">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.35"/></svg>
+        <span>重新生成</span>
+      </button>`
+    : '';
+  const actionBtns = (copyBtn || regenerateBtn) ? `<div class="message-actions">${copyBtn}${regenerateBtn}</div>` : '';
   return `<div class="msg-row agent fade-in">
     <div class="bubble bubble-agent">
       ${planPanelHtml(plan || null, { analyzing: false })}
@@ -3424,8 +4303,9 @@ function agentRowHtml(content, tools, progressItems, thinking, plan, solverSteps
       ${toolsHtml(tools || [])}
       ${progressItemsHtml(progressItems || [])}
       ${(graphs && graphs.length) ? graphs.map(g => buildInlineGraphCardHtml(g)).join('') : ''}
+      ${(reports && reports.length) ? reports.map(report => reportEntryCardHtml(report)).join('') : ''}
       ${content ? `<div class="md">${md(content)}</div>` : ''}
-      ${regenBtn}
+      ${actionBtns}
     </div>
   </div>`;
 }
@@ -3442,6 +4322,7 @@ function streamingRowHtml() {
       <div id="streaming-tools"></div>
       <div id="streaming-progress"></div>
       <div id="streaming-graphs"></div>
+      <div id="streaming-reports"></div>
       <div id="streaming-content" class="md"></div>
     </div>
   </div>`;
@@ -3610,7 +4491,7 @@ function finalizeStreamingBubble() {
     last.feedbackRequest = null;
   }
   if (isActive) {
-    for (const id of ['streaming-row','streaming-bubble','streaming-thinking','streaming-plan','streaming-solver','streaming-feedback','streaming-tools','streaming-progress','streaming-content']) {
+    for (const id of ['streaming-row','streaming-bubble','streaming-thinking','streaming-plan','streaming-solver','streaming-feedback','streaming-tools','streaming-progress','streaming-reports','streaming-content']) {
       const el = document.getElementById(id);
       if (el) el.removeAttribute('id');
     }
@@ -3949,6 +4830,32 @@ function handleSseEvent(evt) {
       if (isActive) patchPlanPanel();
       break;
     }
+    case 'analysis_report': {
+      const incoming = evt.data && typeof evt.data === 'object' ? evt.data.report : null;
+      const fallbackId = String(evt.call_id || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+      const report = normalizeReportInfo(incoming, fallbackId);
+      if (!report) break;
+      const lastMsg = ctx.messages[ctx.messages.length - 1];
+      if (!lastMsg) break;
+      if (!Array.isArray(lastMsg.reports)) lastMsg.reports = [];
+      const exists = lastMsg.reports.some(item => String(item?.id || '') === report.id);
+      if (!exists) lastMsg.reports.push(report);
+      if (isActive && !exists) {
+        requestAnimationFrame(() => {
+          const reportsContainer = document.getElementById('streaming-reports')
+            || document.getElementById('streaming-bubble')
+            || document.querySelector('.msg-row.agent:last-child .bubble-agent');
+          if (!reportsContainer) return;
+          const temp = document.createElement('div');
+          temp.innerHTML = reportEntryCardHtml(report);
+          const card = temp.firstElementChild;
+          if (card) reportsContainer.appendChild(card);
+          onNewAnalysisReport(report);
+          scrollToBottom(false, false);
+        });
+      }
+      break;
+    }
     case 'graph_visualize': {
       // 从 agent 的 visualize_subgraph 工具结果中获取可视化数据
       if (evt.data && evt.data.nodes && evt.data.links) {
@@ -3973,10 +4880,6 @@ function handleSseEvent(evt) {
           if (!lastMsg.graphs) lastMsg.graphs = [];
           const graphId = 'ig-' + Date.now() + '-' + Math.random().toString(36).slice(2,6);
           lastMsg.graphs.push({ id: graphId, ...vizData, activeHighlights: {} });
-          // 图渲染较重，放到下一帧，避免阻塞 SSE reader 继续消费后续 token。
-          if (state.graphSidebarOpen) requestAnimationFrame(() => {
-            try { onNewSidebarGraph(); } catch (e) { console.error('[graph sidebar render error]', e); }
-          });
         }
         if (isActive) {
           const graphInfo = lastMsg?.graphs?.[lastMsg.graphs.length - 1];
@@ -4045,7 +4948,7 @@ function handleSseEvent(evt) {
         patchSessionNotice();
         const ec = document.getElementById('streaming-content');
         if (ec) ec.innerHTML = `<span style="color:var(--red)">❌ ${esc(evt.error)}</span>`;
-        for (const id of ['streaming-row','streaming-bubble','streaming-thinking','streaming-plan','streaming-solver','streaming-feedback','streaming-tools','streaming-progress','streaming-content']) {
+        for (const id of ['streaming-row','streaming-bubble','streaming-thinking','streaming-plan','streaming-solver','streaming-feedback','streaming-tools','streaming-progress','streaming-reports','streaming-content']) {
           const el = document.getElementById(id); if (el) el.removeAttribute('id');
         }
       }
@@ -4058,7 +4961,7 @@ function handleSseEvent(evt) {
 async function doStreamChat(message, attachments = [], { regenerate = false } = {}) {
   _streamCtx = state; // always start in foreground
   _streamAbortController = new AbortController();
-  state.messages.push({ role: 'assistant', content: '', tools: [], progressItems: [], streaming: true });
+  state.messages.push({ role: 'assistant', content: '', tools: [], progressItems: [], graphs: [], reports: [], streaming: true });
   state.streamBuf = ''; state.streamTools = []; state.streamProgressItems = []; state.streamThinking = [];
   state.contextCompressing = false;
   state.streamFeedbackRequest = null;
@@ -4118,7 +5021,7 @@ async function doStreamChat(message, attachments = [], { regenerate = false } = 
         patchSessionNotice();
         const ec = document.getElementById('streaming-content');
         if (ec) ec.innerHTML = `<span style="color:var(--red)">❌ 网络错误：${esc(e.message)}</span>`;
-        for (const id of ['streaming-row','streaming-bubble','streaming-thinking','streaming-plan','streaming-solver','streaming-feedback','streaming-tools','streaming-progress','streaming-content']) {
+        for (const id of ['streaming-row','streaming-bubble','streaming-thinking','streaming-plan','streaming-solver','streaming-feedback','streaming-tools','streaming-progress','streaming-reports','streaming-content']) {
           const el = document.getElementById(id); if (el) el.removeAttribute('id');
         }
       }
@@ -4178,7 +5081,7 @@ async function doFeedbackResume(payload) {
       || feedbackFromSolverSteps(state.solverSteps);
     lastMsg.streaming = true;
   } else {
-    state.messages.push({ role: 'assistant', content: '', tools: [], progressItems: [], streaming: true });
+    state.messages.push({ role: 'assistant', content: '', tools: [], progressItems: [], graphs: [], reports: [], streaming: true });
     state.streamBuf = ''; state.streamTools = []; state.streamProgressItems = []; state.streamThinking = [];
     state.streamFeedbackRequest = preservedFeedback;
     state.streamFeedbackRequests = preservedFeedbackRequests;
@@ -4247,7 +5150,7 @@ async function doFeedbackResume(payload) {
       patchContextMeter();
       patchSessionNotice();
       if (ec) ec.innerHTML = `<span style="color:var(--red)">❌ 网络错误：${esc(e.message)}</span>`;
-      for (const id of ['streaming-row','streaming-bubble','streaming-thinking','streaming-plan','streaming-solver','streaming-feedback','streaming-tools','streaming-progress','streaming-content']) {
+      for (const id of ['streaming-row','streaming-bubble','streaming-thinking','streaming-plan','streaming-solver','streaming-feedback','streaming-tools','streaming-progress','streaming-reports','streaming-content']) {
         const el = document.getElementById(id); if (el) el.removeAttribute('id');
       }
     }
@@ -4259,11 +5162,61 @@ async function doFeedbackResume(payload) {
 }
 
 // ── API calls ──────────────────────────────────────────────────────
+function normalizeGraphInfo(value, fallbackId = '0') {
+  if (!value || typeof value !== 'object') return null;
+  const nodes = Array.isArray(value.nodes) ? value.nodes : [];
+  const rawEdges = Array.isArray(value.edges)
+    ? value.edges
+    : (Array.isArray(value.links) ? value.links : []);
+  if (!nodes.length || !Array.isArray(rawEdges)) return null;
+  const edges = rawEdges
+    .filter(e => e && typeof e === 'object')
+    .map(e => {
+      const src = e.src ?? e.source;
+      const dst = e.dst ?? e.target;
+      if (src === undefined || src === null || dst === undefined || dst === null) return null;
+      return {
+        src, dst,
+        source: src,
+        target: dst,
+        weight: e.weight,
+      };
+    })
+    .filter(Boolean);
+  const nodeCount = Number(value.num_nodes ?? value.numNodes);
+  const edgeCount = Number(value.num_edges ?? value.numEdges);
+  const graph = {
+    id: String(value.id || `ig-restored-${fallbackId}`),
+    nodes: nodes.map(n => (n && typeof n === 'object') ? { ...n } : { id: String(n), label: String(n) }),
+    edges,
+    directed: value.directed !== false,
+    num_nodes: Number.isFinite(nodeCount) ? nodeCount : nodes.length,
+    num_edges: Number.isFinite(edgeCount) ? edgeCount : edges.length,
+    activeHighlights: (value.activeHighlights && typeof value.activeHighlights === 'object') ? { ...value.activeHighlights } : {},
+  };
+  if (Array.isArray(value.highlights)) {
+    graph.highlights = value.highlights
+      .filter(h => h && typeof h === 'object')
+      .map(h => ({ ...h }));
+  }
+  const communities = value.communities || value.community;
+  if (communities && typeof communities === 'object') graph.communities = { ...communities };
+  for (const key of ['truncated', 'total_nodes', 'truncated_to']) {
+    if (key in value) graph[key] = value[key];
+  }
+  return graph;
+}
+
 function normalizeChatMessages(rows) {
   if (!Array.isArray(rows)) return [];
-  const normalized = rows.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map(m => {
+  const normalized = rows.filter(m => m && (m.role === 'user' || m.role === 'assistant')).map((m, rowIndex) => {
     const row = { role: m.role, content: String(m.content || '') };
     if (m.role === 'assistant') {
+      row.reports = Array.isArray(m.reports)
+        ? m.reports
+            .map((report, reportIndex) => normalizeReportInfo(report, `${rowIndex}-${reportIndex}`))
+            .filter(Boolean)
+        : [];
       if (Array.isArray(m.tools)) row.tools = m.tools.map(normalizeToolItem).filter(Boolean);
       if (Array.isArray(m.progressItems || m.progress_items)) {
         row.progressItems = (m.progressItems || m.progress_items)
@@ -4286,6 +5239,11 @@ function normalizeChatMessages(rows) {
         m.feedbackRequests || m.feedback_requests,
         m.feedbackRequest || m.feedback_request,
       );
+      if (Array.isArray(m.graphs)) {
+        row.graphs = m.graphs
+          .map((g, graphIndex) => normalizeGraphInfo(g, `${rowIndex}-${graphIndex}`))
+          .filter(Boolean);
+      }
       if (row.feedbackRequests.length && Array.isArray(row.solverSteps)) {
         const topLevel = [];
         for (const req of row.feedbackRequests) {
@@ -4319,6 +5277,22 @@ function normalizeChatMessages(rows) {
   return mergeAssistantContinuations(normalized);
 }
 
+function mergeReportArtifacts(...groups) {
+  const merged = [];
+  const ids = new Set();
+  for (const group of groups) {
+    if (!Array.isArray(group)) continue;
+    for (const report of group) {
+      if (!report || typeof report !== 'object') continue;
+      const reportId = String(report.id || '');
+      if (reportId && ids.has(reportId)) continue;
+      merged.push(report);
+      if (reportId) ids.add(reportId);
+    }
+  }
+  return merged;
+}
+
 function mergeAssistantContinuations(rows) {
   const merged = [];
   for (const row of rows) {
@@ -4330,6 +5304,8 @@ function mergeAssistantContinuations(rows) {
       if (Array.isArray(row.thinking) && row.thinking.length) prev.thinking = row.thinking;
       if (row.plan) prev.plan = row.plan;
       if (Array.isArray(row.solverSteps) && row.solverSteps.length) prev.solverSteps = mergeSolverSteps(prev.solverSteps || [], row.solverSteps);
+      if (Array.isArray(row.graphs) && row.graphs.length) prev.graphs = [...(prev.graphs || []), ...row.graphs];
+      prev.reports = mergeReportArtifacts(prev.reports, row.reports);
       const rowFeedback = normalizeFeedbackRequests(row.feedbackRequests || row.feedbackRequest);
       const topLevel = [];
       for (const req of rowFeedback) {
@@ -4353,7 +5329,11 @@ async function refreshSessionList() {
   try {
     const res = await apiFetch(`${API_BASE}/api/sessions`);
     const data = await res.json();
-    if (res.ok && data.success) { state.sessions = Array.isArray(data.sessions) ? data.sessions : []; state.error = null; }
+    if (res.ok && data.success) {
+      state.allSessions = Array.isArray(data.sessions) ? data.sessions : [];
+      state.sessions = visibleSessions(state.allSessions);
+      state.error = null;
+    }
     else throw new Error(data.detail || data.error || '获取会话列表失败');
   } catch (err) { state.error = err.message || '获取会话列表失败'; }
   finally { state.sessionsLoading = false; render(); }
@@ -4370,7 +5350,9 @@ async function createSession({ activate = true } = {}) {
     const data = await res.json();
     if (data.success) {
       applyModelAccess(data);
+      resetArtifactWorkspaceState();
       state.sessionId = data.session_id; state.messages = []; state.currentPlan = null; state.hasGraph = false;
+      setDraftSessionId(data.session_id);
       state.contextCompressing = false;
       state.pendingFeedback = null; state.feedbackArgsText = ''; state.feedbackComment = '';
       state.streamFeedbackRequest = null; state.streamFeedbackRequests = [];
@@ -4388,30 +5370,61 @@ async function createSession({ activate = true } = {}) {
 
 async function startNewSession() {
   if (state.creating || state.loading || state.switchingSession) return;
+  if (hasActiveUnusedSession()) {
+    setDraftSessionId(state.sessionId);
+    render();
+    focusChatInputSoon();
+    return;
+  }
+  const reusableDraftId = findReusableDraftSessionId();
+  if (reusableDraftId) {
+    setDraftSessionId(reusableDraftId);
+    if (!sameSessionId(reusableDraftId, state.sessionId)) {
+      await activateSession(reusableDraftId);
+    } else {
+      render();
+    }
+    focusChatInputSoon();
+    return;
+  }
   await createSession({ activate: true });
+  focusChatInputSoon();
 }
 
 async function deleteSession(sessionId) {
   const sid = String(sessionId || '').trim();
   if (!sid || state.loading || state.switchingSession) return;
   if (!confirm(`确认删除会话 #${sid}？\n此操作不可撤销。`)) return;
-  const wasActive = sid === state.sessionId;
+  const wasActive = sameSessionId(sid, state.sessionId);
   try {
     const res = await apiFetch(`${API_BASE}/api/sessions/${sid}`, { method: 'DELETE' });
     if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.detail || data.error || '删除失败'); }
-    if (wasActive) { state.sessionId = null; state.messages = []; state.currentPlan = null; state.hasGraph = false; state.sessionNotice = null; state.contextCompressing = false; }
+    if (sameSessionId(sid, state.draftSessionId)) setDraftSessionId(null);
+    if (wasActive) {
+      resetArtifactWorkspaceState();
+      state.sessionId = null; state.messages = []; state.currentPlan = null; state.hasGraph = false; state.sessionNotice = null; state.contextCompressing = false;
+    }
     if (wasActive) { state.pendingFeedback = null; state.streamFeedbackRequest = null; state.streamFeedbackRequests = []; state.feedbackArgsText = ''; state.feedbackComment = ''; }
     await refreshSessionList();
     if (wasActive) {
       if (state.sessions.length > 0) await activateSession(state.sessions[0].session_id);
-      else await createSession({ activate: true });
+      else {
+        const reusableDraftId = findReusableDraftSessionId();
+        if (reusableDraftId) {
+          setDraftSessionId(reusableDraftId);
+          await activateSession(reusableDraftId);
+        } else {
+          await createSession({ activate: true });
+        }
+      }
     }
   } catch (err) { state.error = err.message || '删除失败'; render(); }
 }
 
 async function activateSession(sessionId) {
   const sid = String(sessionId || '').trim();
-  if (!sid || sid === state.sessionId || state.switchingSession || state.creating) return;
+  if (!sid || sameSessionId(sid, state.sessionId) || state.switchingSession || state.creating) return;
+  resetArtifactWorkspaceState();
 
   // Move active stream to background instead of aborting it
   if (state.loading && _streamAbortController) {
@@ -4463,6 +5476,7 @@ async function activateSession(sessionId) {
     }
 
     state.hasGraph = !!data.has_graph;
+    syncDraftStateFromActiveSession();
     setContextUsage(data.context_usage);
     syncModelSelect(data.model);
     state.reasoningMode = data.reasoning_mode || state.reasoningMode;
@@ -4804,9 +5818,11 @@ async function loadDataset(datasetId) {
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.detail || data.error || '加载数据集失败');
     state.hasGraph = true; state.datasetModalOpen = false;
+    markActiveSessionUsed();
     state.messages.push({ role: 'user', content: `请加载数据集 ${datasetName}` });
     state.messages.push({ role: 'assistant', content: `已完成数据集「${datasetName}」的加载，我可以运用图的专业知识帮你对其进行分析。`, tools: [], progressItems: [], thinking: [], streaming: false });
     state.autoScroll = true;
+    await refreshSessionList();
     render(); patchGraphBadge();
   } catch (err) { state.error = err.message || '加载数据集失败'; }
   finally { state.datasetLoading = false; render(); patchGraphBadge(); }
@@ -4934,6 +5950,7 @@ async function sendMessage() {
   }
 
   ta.value = ''; ta.style.height = '42px';
+  markActiveSessionUsed();
   state.messages.push({ role: 'user', content: finalText });
   state.currentPlan = null; state.autoScroll = true;
   state.sessionNotice = null; state.contextCompressing = false; state.loading = true; state.error = null;
@@ -4944,6 +5961,53 @@ async function sendMessage() {
 function stopGeneration() {
   if (_streamAbortController) {
     _streamAbortController.abort('user_stop');
+  }
+}
+
+async function writeClipboardText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {}
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-9999px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    const ok = document.execCommand('copy');
+    if (!ok) throw new Error('copy command failed');
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
+function setCopyButtonState(button, copied) {
+  if (!button) return;
+  button.classList.toggle('copied', !!copied);
+  button.innerHTML = copied
+    ? `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg><span>已复制</span>`
+    : `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>复制</span>`;
+}
+
+async function copyAssistantMessage(messageIndex, button) {
+  const row = state.messages[Number(messageIndex)];
+  const text = row && row.role === 'assistant' ? String(row.content || '') : '';
+  if (!text) return;
+  try {
+    setCopyButtonState(button, true);
+    await writeClipboardText(text);
+    window.setTimeout(() => setCopyButtonState(button, false), 1400);
+  } catch (e) {
+    setCopyButtonState(button, false);
+    console.error('[copy assistant message failed]', e);
+    state.error = '复制失败，请手动选择内容复制';
+    render();
   }
 }
 
@@ -4973,10 +6037,12 @@ async function handleUpload(e) {
     const res  = await apiFetch(`${API_BASE}/api/sessions/${state.sessionId}/upload`, { method: 'POST', body: fd });
     const data = await res.json();
     if (data.success) {
+      markActiveSessionUsed();
       state.messages.push({ role: 'user', content: `请上传文件 ${data.filename}` });
       state.messages.push({ role: 'assistant', content: `已完成文件「${data.filename}」的上传，我可以运用图的专业知识帮你对其进行分析。`, tools: [], progressItems: [], thinking: [], streaming: false });
       state.autoScroll = true; state.uploading = false;
       const fi = $('#file-input'); if (fi) fi.value = '';
+      await refreshSessionList();
       render();
       return;
     }
@@ -6015,6 +7081,10 @@ function toggleTheme() {
     window.mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: next === 'dark' ? 'dark' : 'default' });
     window.__graphAgentMermaidInited = true;
   }
+  if (state.artifactWorkspaceOpen) {
+    _artifactHtmlSourceKey = '';
+    renderArtifactWorkspace();
+  }
 }
 
 // ── Boot ───────────────────────────────────────────────────────────
@@ -6087,6 +7157,12 @@ async function bootstrap() {
 async function startApp() {
   await refreshSessionList();
   if (state.sessions.length > 0) { await activateSession(state.sessions[0].session_id); return; }
+  const reusableDraftId = findReusableDraftSessionId();
+  if (reusableDraftId) {
+    setDraftSessionId(reusableDraftId);
+    await activateSession(reusableDraftId);
+    return;
+  }
   await createSession({ activate: true });
 }
 
@@ -6174,16 +7250,6 @@ function renderGraph() {
   const sampled = _sampleGraphForRender(allNodes, allEdges, _GRAPH_RENDER_LIMIT);
   graphData._truncated = sampled.truncated;
   graphData._renderedCount = sampled.renderedCount;
-  // Show/hide sidebar truncation notice
-  const sidebarNotice = document.getElementById('graph-sidebar-truncation-notice');
-  if (sidebarNotice) {
-    if (sampled.truncated) {
-      sidebarNotice.textContent = `图共 ${graphData.nodes.length} 节点，当前展示度数最高的 ${sampled.renderedCount} 个节点。可向 Agent 提问查询局部子图。`;
-      sidebarNotice.style.display = '';
-    } else {
-      sidebarNotice.style.display = 'none';
-    }
-  }
   // ─────────────────────────────────────────────────────────────────
 
   // Color scale for communities
@@ -6193,12 +7259,14 @@ function renderGraph() {
   // Create simulation
   const nodesCopy = sampled.nodes.map(n => ({...n}));
   const edgesCopy = sampled.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target, weight: e.weight}));
+  _annotateGraphNodeDegrees(nodesCopy, edgesCopy);
+  const hoverIndex = _buildGraphHoverIndex(nodesCopy, edgesCopy);
   
   graphSimulation = d3.forceSimulation(nodesCopy)
     .force('link', d3.forceLink(edgesCopy).id(d => d.id).distance(80))
     .force('charge', d3.forceManyBody().strength(-200))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(25));
+    .force('collision', d3.forceCollide().radius(d => _graphNodeRadius(d, 'main') + 12));
   
   // Apply layout positions
   if (currentLayout === 'circle') {
@@ -6232,7 +7300,7 @@ function renderGraph() {
       .on('end', dragended));
   
   node.append('circle')
-    .attr('r', d => Math.sqrt((d.total_degree || 0) + 1) * 4 + 6)
+    .attr('r', d => _graphNodeRadius(d, 'main'))
     .attr('fill', d => {
       if (showCommunity && graphData.community?.node_community) {
         const cid = graphData.community.node_community[d.id] || 0;
@@ -6244,10 +7312,20 @@ function renderGraph() {
     .attr('stroke-width', 2);
   
   node.append('text')
-    .attr('dy', d => Math.sqrt((d.total_degree || 0) + 1) * 4 + 14)
+    .attr('dy', d => _graphNodeLabelDy(d, 'main'))
     .attr('text-anchor', 'middle')
     .text(d => d.label || d.id);
+
+  _bindGraphHoverElements(hoverIndex, node, link);
   
+  node
+    .on('mouseenter', (event, d) => {
+      _applyNeighborHover(hoverIndex, d.id, container);
+    })
+    .on('mouseleave', () => {
+      _clearNeighborHover(hoverIndex, container);
+    });
+
   // Click handler for node info + node card
   node.on('click', (event, d) => {
     event.stopPropagation();
@@ -6259,7 +7337,7 @@ function renderGraph() {
       <strong>节点:</strong> ${d.label || d.id} &nbsp;|&nbsp;
       <strong>入度:</strong> ${d.in_degree || 0} &nbsp;|&nbsp;
       <strong>出度:</strong> ${d.out_degree || 0} &nbsp;|&nbsp;
-      <strong>总度:</strong> ${d.total_degree || 0} &nbsp;|&nbsp;
+      <strong>总度:</strong> ${d._visualDegree || d.total_degree || 0} &nbsp;|&nbsp;
       <strong>邻居:</strong> [${neighbors.slice(0, 10).join(', ')}${neighbors.length > 10 ? '...' : ''}]
     `;
 
@@ -6269,14 +7347,6 @@ function renderGraph() {
       in_degree: d.in_degree || 0, out_degree: d.out_degree || 0,
       neighbors, attrs: d.attrs || null,
     }, event.clientX, event.clientY);
-    
-    // Highlight connected edges
-    link.attr('class', e => {
-      if (e.source.id === d.id || e.target.id === d.id) {
-        return 'graph-link highlighted';
-      }
-      return 'graph-link';
-    });
   });
   
   // Zoom behavior
@@ -6413,152 +7483,275 @@ function clearAllHighlights() {
 }
 
 
-// ── 侧边栏多图 Tab 管理 ──────────────────────────────────────────────
+// ── Unified graph/report artifact workspace ─────────────────────────
 
-// 收集 state.messages 里的所有图，按顺序返回
-function _allSidebarGraphs() {
+let _artifactHtmlSource = '';
+let _artifactHtmlSourceKey = '';
+
+function allGraphArtifacts() {
   const all = [];
-  for (const m of state.messages) {
-    if (m.graphs && m.graphs.length) {
-      for (const g of m.graphs) all.push(g);
-    }
+  for (const message of state.messages) {
+    if (Array.isArray(message.graphs)) all.push(...message.graphs);
   }
   return all;
 }
 
-// 生成 tab 标签 HTML
-function _sidebarTabsHtml() {
-  const all = _allSidebarGraphs();
-  if (!all.length) return '';
-  const activeIdx = state.graphSidebarTabIndex >= 0 && state.graphSidebarTabIndex < all.length
-    ? state.graphSidebarTabIndex : all.length - 1;
-  return all.map((g, i) => {
-    const label = _sidebarTabLabel(g, i);
-    const cls = i === activeIdx ? 'graph-sidebar-tab active' : 'graph-sidebar-tab';
-    return `<button class="${cls}" onclick="switchSidebarTab(${i})" title="${esc(label)}">${esc(label)}</button>`;
-  }).join('');
-}
-
-// 给一张图生成简短 tab 标签
-function _sidebarTabLabel(g, i) {
-  if (g.highlights && g.highlights.length) {
-    // 用第一个 highlight 的 label
-    const first = g.highlights[0];
-    return first.label || (first.type === 'path' ? '路径' : first.type === 'node' ? '节点' : '子图');
+function activeArtifactValue() {
+  const active = state.activeArtifact;
+  if (!active) return null;
+  if (active.kind === 'report') {
+    return allAnalysisReports().find(report => String(report?.id || '') === String(active.id)) || null;
   }
-  return `图 ${i + 1}`;
+  return active.kind === 'graph' ? _findGraphInfo(String(active.id || '')) : null;
 }
 
-// 切换到第 idx 张图（-1 = 最新）
-function switchSidebarTab(idx) {
-  const all = _allSidebarGraphs();
-  if (!all.length) return;
-  const realIdx = (idx < 0 || idx >= all.length) ? all.length - 1 : idx;
-  state.graphSidebarTabIndex = realIdx;
-  const graphInfo = all[realIdx];
-  // 停掉旧的 sidebar simulation
-  if (state.graphSidebarGraphInfo) {
-    const prev = _inlineGraphSimulations.get(state.graphSidebarGraphInfo.id);
-    if (prev) { prev.stop(); _inlineGraphSimulations.delete(state.graphSidebarGraphInfo.id); }
+function artifactWorkspaceTitle() {
+  const active = state.activeArtifact;
+  const value = activeArtifactValue();
+  if (!active || !value) return '分析结果';
+  if (active.kind === 'report') return String(value.title || '图分析报告');
+  const firstHighlight = Array.isArray(value.highlights) ? value.highlights[0] : null;
+  if (firstHighlight?.label) return String(firstHighlight.label);
+  const nodes = Number(value.num_nodes ?? value.nodes?.length ?? 0);
+  const edges = Number(value.num_edges ?? value.edges?.length ?? 0);
+  return `图可视化 · ${nodes} 节点 · ${edges} 边`;
+}
+
+function artifactToolbarIcon(name) {
+  const paths = {
+    code: '<path d="m8 9-3 3 3 3"/><path d="m16 9 3 3-3 3"/><path d="m14 5-4 14"/>',
+    preview: '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6"/><circle cx="12" cy="12" r="2.5"/>',
+    refresh: '<path d="M20 11a8 8 0 1 0-2.35 5.65"/><path d="M20 4v7h-7"/>',
+    maximize: '<path d="M8 3H3v5"/><path d="m3 3 6 6"/><path d="M16 21h5v-5"/><path d="m21 21-6-6"/>',
+    minimize: '<path d="M9 9H3V3"/><path d="m3 9 6-6"/><path d="M15 15h6v6"/><path d="m21 15-6 6"/>',
+    close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  };
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || ''}</svg>`;
+}
+
+function artifactWorkspaceToolbarHtml() {
+  const isReport = state.activeArtifact?.kind === 'report';
+  const mode = isReport ? state.artifactWorkspaceMode : 'preview';
+  const compact = window.innerWidth < _ARTIFACT_SPLIT_BREAKPOINT;
+  const fullscreenTitle = compact
+    ? '当前窗口宽度下使用全屏模式'
+    : state.artifactWorkspaceFullscreen ? '退出全屏' : '全屏查看';
+  return `
+    <div class="artifact-mode-switch ${isReport ? '' : 'is-hidden'}" aria-label="报告查看模式">
+      <button class="artifact-toolbar-btn ${mode === 'code' ? 'is-active' : ''}" type="button"
+        onclick="setArtifactWorkspaceMode('code')" title="查看 HTML 源代码" aria-label="查看 HTML 源代码" aria-pressed="${mode === 'code'}">
+        ${artifactToolbarIcon('code')}
+      </button>
+      <button class="artifact-toolbar-btn ${mode === 'preview' ? 'is-active' : ''}" type="button"
+        onclick="setArtifactWorkspaceMode('preview')" title="预览报告" aria-label="预览报告" aria-pressed="${mode === 'preview'}">
+        ${artifactToolbarIcon('preview')}
+      </button>
+    </div>
+    <div class="artifact-workspace-title" title="${attr(artifactWorkspaceTitle())}">${esc(artifactWorkspaceTitle())}</div>
+    <div class="artifact-workspace-actions">
+      <button class="artifact-toolbar-btn" type="button" onclick="refreshArtifactPreview()"
+        title="${isReport && mode === 'code' ? '切换到预览模式后刷新' : '刷新'}"
+        aria-label="刷新" ${isReport && mode === 'code' ? 'disabled' : ''}>
+        ${artifactToolbarIcon('refresh')}
+      </button>
+      <button class="artifact-toolbar-btn" type="button" onclick="toggleArtifactWorkspaceFullscreen()"
+        title="${fullscreenTitle}" aria-label="${fullscreenTitle}" ${compact && state.artifactWorkspaceAutoFullscreen ? 'disabled' : ''}>
+        ${artifactToolbarIcon(state.artifactWorkspaceFullscreen ? 'minimize' : 'maximize')}
+      </button>
+      <button class="artifact-toolbar-btn" type="button" onclick="closeArtifactWorkspace()"
+        title="关闭" aria-label="关闭">${artifactToolbarIcon('close')}</button>
+    </div>`;
+}
+
+function artifactWorkspaceShellHtml() {
+  return `<aside id="artifact-workspace"
+      class="artifact-workspace ${state.artifactWorkspaceOpen ? '' : 'hidden'} ${state.artifactWorkspaceFullscreen ? 'is-fullscreen' : ''}"
+      aria-hidden="${state.artifactWorkspaceOpen ? 'false' : 'true'}" tabindex="-1">
+    <div id="artifact-workspace-resizer" class="layout-resizer artifact-workspace-resizer"
+      title="拖拽调整分析工作区宽度" aria-hidden="true"></div>
+    <header id="artifact-workspace-toolbar" class="artifact-workspace-toolbar">${artifactWorkspaceToolbarHtml()}</header>
+    <div id="artifact-workspace-body" class="artifact-workspace-body">
+      <div class="artifact-workspace-empty">从聊天消息中打开图或分析报告</div>
+    </div>
+  </aside>`;
+}
+
+function artifactReportSource(report) {
+  const theme = document.documentElement.getAttribute('data-theme') || 'light';
+  const key = `${report?.id || ''}:${theme}`;
+  if (_artifactHtmlSourceKey !== key) {
+    _artifactHtmlSource = buildReportDocument(report, { theme });
+    _artifactHtmlSourceKey = key;
   }
-  const sbInfo = { ...graphInfo, id: graphInfo.id + '-sb' };
-  state.graphSidebarGraphInfo = sbInfo;
-  state.graphSidebarContent = buildInlineGraphCardHtml(sbInfo);
-  const b = document.getElementById('graph-sidebar-body');
-  if (b) b.innerHTML = state.graphSidebarContent;
-  // patch tabs 高亮
-  patchSidebarTabs();
-  requestAnimationFrame(() => requestAnimationFrame(() => renderInlineGraph(sbInfo)));
+  return _artifactHtmlSource;
 }
 
-// 只更新 tab 栏，不重绘图区
-function patchSidebarTabs() {
-  const el = document.getElementById('graph-sidebar-tabs');
-  if (el) el.innerHTML = _sidebarTabsHtml();
-}
-
-// 侧边栏已打开时，新图推入后追加 tab 并切过去
-function onNewSidebarGraph() {
-  if (!state.graphSidebarOpen) return;
-  const all = _allSidebarGraphs();
-  state.graphSidebarTabIndex = all.length - 1;
-  switchSidebarTab(state.graphSidebarTabIndex);
-}
-
-// Toggle graph sidebar - 点击直接展开全图
-async function toggleGraphSidebar() {
-  if (!state.hasGraph || !state.sessionId) return;
-
-  // Toggle sidebar open/close
-  if (state.graphSidebarOpen) {
-    state.graphSidebarOpen = false;
-    document.querySelector('.body-layout')?.classList.remove('has-graph-sidebar');
-    const sidebar = document.getElementById('graph-sidebar');
-    const toggleBtn = document.getElementById('graph-sidebar-toggle');
-    if (sidebar) sidebar.classList.add('hidden');
-    if (toggleBtn) toggleBtn.classList.remove('active');
-    syncLayoutVars();
+function renderArtifactWorkspaceBody() {
+  const body = document.getElementById('artifact-workspace-body');
+  const active = state.activeArtifact;
+  const value = activeArtifactValue();
+  if (!body) return;
+  if (!active || !value) {
+    body.innerHTML = '<div class="artifact-workspace-empty">当前分析结果不可用</div>';
+    return;
+  }
+  if (active.kind === 'report') {
+    state.artifactWorkspaceGraphInfo = null;
+    const source = artifactReportSource(value);
+    if (state.artifactWorkspaceMode === 'code') {
+      body.innerHTML = buildReportCodeViewHtml(source);
+      return;
+    }
+    body.innerHTML = '<iframe class="artifact-report-frame" title="分析报告预览" sandbox="" referrerpolicy="no-referrer"></iframe>';
+    const frame = body.querySelector('.artifact-report-frame');
+    if (frame) frame.srcdoc = source;
     return;
   }
 
-  state.graphSidebarOpen = true;
-  document.querySelector('.body-layout')?.classList.add('has-graph-sidebar');
-  syncLayoutVars();
-  initResizableLayout();
-  const sidebar = document.getElementById('graph-sidebar');
-  const toggleBtn = document.getElementById('graph-sidebar-toggle');
-  const body = document.getElementById('graph-sidebar-body');
-  if (sidebar) sidebar.classList.remove('hidden');
-  if (toggleBtn) toggleBtn.classList.add('active');
-
-  const all = _allSidebarGraphs();
-  if (all.length > 0) {
-    // 有缓存的图，直接切到最新一张
-    switchSidebarTab(all.length - 1);
-  } else {
-    // messages 里没有图，fetch 一张全图（无 highlights）
-    if (body) body.innerHTML = '<div class="graph-sidebar-empty">加载中…</div>';
-    try {
-      const res = await apiFetch(`${API_BASE}/api/sessions/${state.sessionId}/graph/visualize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ include_community: true }),
-      });
-      const data = await res.json();
-      if (data.success && data.nodes) {
-        const gid = 'ig-sidebar-fetch-' + Date.now();
-        const graphInfo = {
-          id: gid,
-          nodes: data.nodes,
-          edges: (data.edges || data.links || []).map(e => ({
-            src: e.src || e.source, dst: e.dst || e.target,
-            source: e.src || e.source, target: e.dst || e.target,
-            weight: e.weight,
-          })),
-          directed: data.directed,
-          num_nodes: data.num_nodes,
-          num_edges: data.num_edges,
-          highlights: data.highlights,
-          communities: data.communities || data.community,
-          activeHighlights: {},
-        };
-        // 把 fetch 来的图临时存到最后一条消息的 graphs 里，让 tab 系统能管理它
-        const lastMsg = state.messages[state.messages.length - 1];
-        if (lastMsg) {
-          if (!lastMsg.graphs) lastMsg.graphs = [];
-          lastMsg.graphs.push(graphInfo);
-        }
-        switchSidebarTab(_allSidebarGraphs().length - 1);
-      } else {
-        if (body) body.innerHTML = '<div class="graph-sidebar-empty">获取图数据失败</div>';
-      }
-    } catch (e) {
-      if (body) body.innerHTML = `<div class="graph-sidebar-empty">加载失败: ${esc(String(e.message || e))}</div>`;
-    }
+  const previous = state.artifactWorkspaceGraphInfo;
+  if (previous) {
+    _inlineGraphSimulations.get(previous.id)?.stop();
+    _inlineGraphSimulations.delete(previous.id);
   }
+  const graphViewState = previous?.id === `${value.id}-workspace` ? previous : value;
+  const workspaceGraph = {
+    ...value,
+    id: `${value.id}-workspace`,
+    _layout: graphViewState._layout || value._layout || 'force',
+    activeHighlights: { ...(graphViewState.activeHighlights || value.activeHighlights || {}) },
+  };
+  state.artifactWorkspaceGraphInfo = workspaceGraph;
+  body.innerHTML = buildInlineGraphCardHtml(workspaceGraph);
+  requestAnimationFrame(() => requestAnimationFrame(() => renderInlineGraph(workspaceGraph)));
 }
 
-// Sync graph sidebar content from current messages
+function renderArtifactWorkspace() {
+  const workspace = document.getElementById('artifact-workspace');
+  if (!workspace) return;
+  workspace.classList.toggle('hidden', !state.artifactWorkspaceOpen);
+  workspace.classList.toggle('is-fullscreen', !!state.artifactWorkspaceFullscreen);
+  workspace.setAttribute('aria-hidden', state.artifactWorkspaceOpen ? 'false' : 'true');
+  document.body.classList.toggle('artifact-fullscreen-open', state.artifactWorkspaceOpen && state.artifactWorkspaceFullscreen);
+  const toolbar = document.getElementById('artifact-workspace-toolbar');
+  if (toolbar) toolbar.innerHTML = artifactWorkspaceToolbarHtml();
+  if (state.artifactWorkspaceOpen) renderArtifactWorkspaceBody();
+}
+
+function syncArtifactWorkspaceResponsiveMode() {
+  if (!state.artifactWorkspaceOpen) return;
+  const compact = window.innerWidth < _ARTIFACT_SPLIT_BREAKPOINT;
+  if (compact && !state.artifactWorkspaceFullscreen) {
+    state.artifactWorkspaceFullscreen = true;
+    state.artifactWorkspaceAutoFullscreen = true;
+  } else if (!compact && state.artifactWorkspaceAutoFullscreen) {
+    state.artifactWorkspaceFullscreen = false;
+    state.artifactWorkspaceAutoFullscreen = false;
+  }
+  document.querySelector('.body-layout')?.classList.toggle(
+    'has-artifact-workspace',
+    state.artifactWorkspaceOpen && !state.artifactWorkspaceFullscreen
+  );
+  renderArtifactWorkspace();
+}
+
+function openArtifactWorkspace(kind, id, triggerElement = null) {
+  const normalizedKind = kind === 'graph' ? 'graph' : 'report';
+  const normalizedId = String(id || '');
+  const exists = normalizedKind === 'report'
+    ? allAnalysisReports().some(report => String(report?.id || '') === normalizedId)
+    : !!_findGraphInfo(normalizedId);
+  if (!exists) return false;
+
+  state.activeArtifact = { kind: normalizedKind, id: normalizedId };
+  state.artifactWorkspaceMode = 'preview';
+  state.artifactWorkspaceOpen = true;
+  state.artifactPreviewRevision += 1;
+  state.artifactWorkspaceTriggerId = triggerElement?.dataset?.reportId
+    || triggerElement?.dataset?.graphId
+    || normalizedId;
+  _artifactHtmlSourceKey = '';
+
+  const compact = window.innerWidth < _ARTIFACT_SPLIT_BREAKPOINT;
+  state.artifactWorkspaceFullscreen = compact;
+  state.artifactWorkspaceAutoFullscreen = compact;
+  document.querySelector('.body-layout')?.classList.toggle('has-artifact-workspace', !compact);
+  syncLayoutVars();
+  renderArtifactWorkspace();
+  initResizableLayout();
+  document.getElementById('artifact-workspace')?.focus({ preventScroll: true });
+  return true;
+}
+
+function closeArtifactWorkspace() {
+  const previous = state.artifactWorkspaceGraphInfo;
+  if (previous) {
+    _inlineGraphSimulations.get(previous.id)?.stop();
+    _inlineGraphSimulations.delete(previous.id);
+  }
+  const triggerId = state.artifactWorkspaceTriggerId;
+  state.artifactWorkspaceOpen = false;
+  state.artifactWorkspaceFullscreen = false;
+  state.artifactWorkspaceAutoFullscreen = false;
+  state.activeArtifact = null;
+  state.artifactWorkspaceGraphInfo = null;
+  state.artifactWorkspaceTriggerId = '';
+  _artifactHtmlSource = '';
+  _artifactHtmlSourceKey = '';
+  document.querySelector('.body-layout')?.classList.remove('has-artifact-workspace');
+  document.body.classList.remove('artifact-fullscreen-open');
+  renderArtifactWorkspace();
+  syncLayoutVars();
+  const escapedId = CSS.escape(triggerId || '');
+  document.querySelector(
+    `button[data-report-id="${escapedId}"], button[data-graph-id="${escapedId}"]`
+  )?.focus?.({ preventScroll: true });
+}
+
+function resetArtifactWorkspaceState() {
+  if (state.artifactWorkspaceOpen) closeArtifactWorkspace();
+  state.activeArtifact = null;
+}
+
+function setArtifactWorkspaceMode(mode) {
+  if (state.activeArtifact?.kind !== 'report') return;
+  const normalized = mode === 'code' ? 'code' : 'preview';
+  if (state.artifactWorkspaceMode === normalized) return;
+  state.artifactWorkspaceMode = normalized;
+  renderArtifactWorkspace();
+}
+
+function refreshArtifactPreview() {
+  if (!state.artifactWorkspaceOpen) return;
+  if (state.activeArtifact?.kind === 'report') {
+    if (state.artifactWorkspaceMode !== 'preview') return;
+    state.artifactPreviewRevision += 1;
+    const frame = document.querySelector('#artifact-workspace-body .artifact-report-frame');
+    const report = activeArtifactValue();
+    if (!frame || !report) return;
+    const source = artifactReportSource(report);
+    frame.srcdoc = '';
+    requestAnimationFrame(() => { frame.srcdoc = source; });
+    return;
+  }
+  renderArtifactWorkspaceBody();
+}
+
+function toggleArtifactWorkspaceFullscreen() {
+  if (!state.artifactWorkspaceOpen) return;
+  if (window.innerWidth < _ARTIFACT_SPLIT_BREAKPOINT && state.artifactWorkspaceAutoFullscreen) return;
+  state.artifactWorkspaceFullscreen = !state.artifactWorkspaceFullscreen;
+  state.artifactWorkspaceAutoFullscreen = false;
+  document.querySelector('.body-layout')?.classList.toggle('has-artifact-workspace', !state.artifactWorkspaceFullscreen);
+  renderArtifactWorkspace();
+  requestAnimationFrame(rerenderVisibleGraphsAfterResize);
+}
+
+window.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && state.artifactWorkspaceOpen && state.artifactWorkspaceFullscreen) {
+    event.preventDefault();
+    toggleArtifactWorkspaceFullscreen();
+  }
+});
 
 // ── Inline Graph Card (in chat messages) ────────────────────────────
 // Global registry of inline graph simulations for cleanup
@@ -6575,11 +7768,24 @@ function _sampleGraphForRender(allNodes, allEdges, limit) {
   }
   // Build degree map from edges
   const degree = {};
-  allNodes.forEach(n => { degree[n.id || n.label] = (n.total_degree || n.in_degree || 0) + (n.out_degree || 0); });
+  const visibleDegree = {};
+  allNodes.forEach(n => {
+    const id = n.id || n.label;
+    const total = Number(n.total_degree);
+    const inDegree = Number(n.in_degree);
+    const outDegree = Number(n.out_degree);
+    visibleDegree[id] = 0;
+    degree[id] = Number.isFinite(total)
+      ? total
+      : (Number.isFinite(inDegree) ? inDegree : 0) + (Number.isFinite(outDegree) ? outDegree : 0);
+  });
   allEdges.forEach(e => {
     const s = e.src || e.source, t = e.dst || e.target;
-    degree[s] = (degree[s] || 0) + 1;
-    degree[t] = (degree[t] || 0) + 1;
+    visibleDegree[s] = (visibleDegree[s] || 0) + 1;
+    visibleDegree[t] = (visibleDegree[t] || 0) + 1;
+  });
+  Object.keys(visibleDegree).forEach(id => {
+    degree[id] = Math.max(degree[id] || 0, visibleDegree[id] || 0);
   });
   // Sort descending by degree, keep top-limit
   const sorted = [...allNodes].sort((a, b) => {
@@ -6595,6 +7801,121 @@ function _sampleGraphForRender(allNodes, allEdges, limit) {
   return { nodes: kept, edges: keptEdges, truncated: true, renderedCount: kept.length };
 }
 
+function _graphEndpointId(endpoint) {
+  if (endpoint == null) return '';
+  if (typeof endpoint === 'object') return String(endpoint.id || endpoint.label || endpoint.name || '');
+  return String(endpoint);
+}
+
+function _annotateGraphNodeDegrees(nodes, edges) {
+  const visibleDegree = {};
+  nodes.forEach(n => {
+    visibleDegree[_graphEndpointId(n.id || n.label)] = 0;
+  });
+  edges.forEach(e => {
+    const s = _graphEndpointId(e.src || e.source);
+    const t = _graphEndpointId(e.dst || e.target);
+    if (s) visibleDegree[s] = (visibleDegree[s] || 0) + 1;
+    if (t) visibleDegree[t] = (visibleDegree[t] || 0) + 1;
+  });
+  nodes.forEach(n => {
+    const id = _graphEndpointId(n.id || n.label);
+    const total = Number(n.total_degree);
+    const inDegree = Number(n.in_degree);
+    const outDegree = Number(n.out_degree);
+    const explicitDegree = Number.isFinite(total) ? total : 0;
+    const directedDegree = (Number.isFinite(inDegree) ? inDegree : 0) + (Number.isFinite(outDegree) ? outDegree : 0);
+    n._visibleDegree = visibleDegree[id] || 0;
+    n._visualDegree = Math.max(explicitDegree, directedDegree, n._visibleDegree);
+  });
+}
+
+function _graphNodeRadius(d, mode = 'inline') {
+  const degree = Math.max(0, Number(d?._visualDegree ?? d?.total_degree ?? d?.totalDegree ?? 0) || 0);
+  const base = Math.max(8, Math.min(Math.sqrt(degree + 1) * 3, 30));
+  if (mode === 'expanded') return Math.max(10, Math.min(base * 1.14, 36));
+  if (mode === 'main') return Math.max(9, Math.min(base * 1.05, 33));
+  return Math.max(8, Math.min(base * 0.94, 28));
+}
+
+function _graphNodeLabelDy(d, mode = 'inline') {
+  return _graphNodeRadius(d, mode) + (mode === 'expanded' ? 12 : mode === 'main' ? 11 : 9);
+}
+
+function _setGraphHoverSurface(surfaceEl, active) {
+  if (surfaceEl && surfaceEl.classList) {
+    surfaceEl.classList.toggle('is-neighbor-hover', !!active);
+  }
+}
+
+function _buildGraphHoverIndex(nodes, edges) {
+  const index = {
+    adjacency: new Map(),
+    nodeEls: new Map(),
+    linkEls: new Map(),
+    activeNodeEls: [],
+    activeLinkEls: [],
+  };
+  const ensure = id => {
+    if (!index.adjacency.has(id)) {
+      index.adjacency.set(id, { nodeIds: new Set([id]), edgeIds: new Set() });
+    }
+    return index.adjacency.get(id);
+  };
+  nodes.forEach(node => ensure(_graphEndpointId(node?.id ?? node?.label)));
+  edges.forEach((edge, i) => {
+    const source = _graphEndpointId(edge?.source ?? edge?.src);
+    const target = _graphEndpointId(edge?.target ?? edge?.dst);
+    const edgeId = `${source}->${target}#${i}`;
+    edge._hoverEdgeId = edgeId;
+    if (source) {
+      const sourceInfo = ensure(source);
+      sourceInfo.nodeIds.add(target);
+      sourceInfo.edgeIds.add(edgeId);
+    }
+    if (target) {
+      const targetInfo = ensure(target);
+      targetInfo.nodeIds.add(source);
+      targetInfo.edgeIds.add(edgeId);
+    }
+  });
+  return index;
+}
+
+function _bindGraphHoverElements(index, nodeSel, linkSel) {
+  nodeSel.each(function(d) {
+    index.nodeEls.set(_graphEndpointId(d?.id ?? d?.label), this);
+  });
+  linkSel.each(function(d) {
+    if (d?._hoverEdgeId) index.linkEls.set(d._hoverEdgeId, this);
+  });
+}
+
+function _setElementClass(elements, cls, active) {
+  elements.forEach(el => {
+    if (el && el.classList) el.classList.toggle(cls, !!active);
+  });
+}
+
+function _applyNeighborHover(index, focusId, surfaceEl = null) {
+  _clearNeighborHover(index, null);
+  const info = index.adjacency.get(_graphEndpointId(focusId));
+  if (!info) return;
+  _setGraphHoverSurface(surfaceEl, true);
+  index.activeNodeEls = [...info.nodeIds].map(id => index.nodeEls.get(id)).filter(Boolean);
+  index.activeLinkEls = [...info.edgeIds].map(id => index.linkEls.get(id)).filter(Boolean);
+  _setElementClass(index.activeNodeEls, 'highlighted', true);
+  _setElementClass(index.activeLinkEls, 'highlighted', true);
+}
+
+function _clearNeighborHover(index, surfaceEl = null) {
+  _setGraphHoverSurface(surfaceEl, false);
+  _setElementClass(index.activeNodeEls || [], 'highlighted', false);
+  _setElementClass(index.activeLinkEls || [], 'highlighted', false);
+  index.activeNodeEls = [];
+  index.activeLinkEls = [];
+}
+
 function buildInlineGraphCardHtml(graphInfo) {
   if (!graphInfo || !graphInfo.nodes || !graphInfo.edges) return '';
   const gid = graphInfo.id;
@@ -6603,15 +7924,14 @@ function buildInlineGraphCardHtml(graphInfo) {
   const directed = graphInfo.directed;
   const isTruncated = graphInfo._truncated;
   const renderedCount = graphInfo._renderedCount || totalNodes;
+  const isWorkspaceGraph = gid.endsWith('-workspace');
 
   // Truncation notice
-  let truncationHtml = '';
-  if (isTruncated) {
-    truncationHtml = `<div style="padding:5px 12px 0;font-size:0.68rem;color:#f59e0b;font-family:var(--mono);">
+  const truncationHtml = `<div data-truncation-notice
+      style="padding:5px 12px 0;font-size:0.68rem;color:#f59e0b;font-family:var(--mono);${isTruncated ? '' : 'display:none'}">
       ⚠ 图共 ${totalNodes} 节点，当前仅展示度数最高的 ${renderedCount} 个节点。
       可向 Agent 提问：<em>"展示节点 X 的邻居子图"</em> 或 <em>"提取社区 N 的子图"</em> 来查看局部结构。
     </div>`;
-  }
 
   // Build highlight buttons with per-highlight color support
   let hlBtnsHtml = '';
@@ -6637,6 +7957,13 @@ function buildInlineGraphCardHtml(graphInfo) {
         <button class="ig-ctrl-btn active" data-graph-id="${esc(gid)}" data-layout="force" onclick="setInlineLayout('${esc(gid)}','force')">力导向</button>
         <button class="ig-ctrl-btn" data-graph-id="${esc(gid)}" data-layout="circle" onclick="setInlineLayout('${esc(gid)}','circle')">环形</button>
         <button class="ig-ctrl-btn" onclick="resetInlineGraphView('${esc(gid)}')">重置</button>
+        ${isWorkspaceGraph ? '' : `<button class="ig-ctrl-btn ig-open-artifact" type="button" data-graph-id="${esc(gid)}"
+          onclick="openGraphSidebarFull(this.dataset.graphId)" title="在分析工作区打开" aria-label="在分析工作区打开">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 3H3v5"/><path d="m3 3 6 6"/><path d="M16 21h5v-5"/><path d="m21 21-6-6"/>
+          </svg>
+        </button>`}
       </div>
     </div>
     ${truncationHtml}
@@ -6674,6 +8001,9 @@ function renderInlineGraph(graphInfo) {
   // Refresh truncation notice in the DOM without full re-render
   const noticeEl = container.closest('.inline-graph-card')?.querySelector('[data-truncation-notice]');
   if (noticeEl) {
+    noticeEl.innerHTML = sampled.truncated
+      ? `⚠ 图共 ${allNodes.length} 节点，当前仅展示度数最高的 ${sampled.renderedCount} 个节点。可向 Agent 提问查询局部子图。`
+      : '';
     noticeEl.style.display = sampled.truncated ? '' : 'none';
   }
   // ─────────────────────────────────────────────────────────────────
@@ -6691,6 +8021,8 @@ function renderInlineGraph(graphInfo) {
 
   const nodesCopy = sampled.nodes.map(n => ({...n}));
   const edgesCopy = sampled.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target, weight: e.weight}));
+  _annotateGraphNodeDegrees(nodesCopy, edgesCopy);
+  const hoverIndex = _buildGraphHoverIndex(nodesCopy, edgesCopy);
 
   const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
   const layout = graphInfo._layout || 'force';
@@ -6699,7 +8031,7 @@ function renderInlineGraph(graphInfo) {
     .force('link', d3.forceLink(edgesCopy).id(d => d.id).distance(80))
     .force('charge', d3.forceManyBody().strength(-200))
     .force('center', d3.forceCenter(width/2, height/2))
-    .force('collision', d3.forceCollide().radius(20));
+    .force('collision', d3.forceCollide().radius(d => _graphNodeRadius(d, 'inline') + 10));
 
   if (layout === 'circle') {
     const step = (2*Math.PI)/nodesCopy.length;
@@ -6711,12 +8043,22 @@ function renderInlineGraph(graphInfo) {
   const link = g.selectAll('line').data(edgesCopy).join('line').attr('class','graph-link').attr('stroke','#cbd5e1').attr('stroke-width',1.5).attr('marker-end',graphInfo.directed?`url(#arrow-${gid})`:null);
   const node = g.selectAll('g').data(nodesCopy).join('g').attr('class','graph-node').call(d3.drag().on('start',e=>{if(!e.active)sim.alphaTarget(0.3).restart();e.subject.fx=e.subject.x;e.subject.fy=e.subject.y;}).on('drag',e=>{e.subject.fx=e.x;e.subject.fy=e.y;}).on('end',e=>{if(!e.active)sim.alphaTarget(0);e.subject.fx=null;e.subject.fy=null;}));
 
-  node.append('circle').attr('r',d=>Math.sqrt((d.total_degree||0)+1)*3+5).attr('fill',d=>{
+  node.append('circle').attr('r',d=>_graphNodeRadius(d,'inline')).attr('fill',d=>{
     if(graphInfo.communities?.node_community){const cid=graphInfo.communities.node_community[d.id]||0;return colorScale(cid);}
     return '#3b82f6';
   }).attr('stroke','#fff').attr('stroke-width',1.5);
 
-  node.append('text').attr('dy',d=>Math.sqrt((d.total_degree||0)+1)*3+12).attr('text-anchor','middle').attr('font-size','10px').attr('fill','var(--text2)').text(d=>d.label||d.id);
+  node.append('text').attr('dy',d=>_graphNodeLabelDy(d,'inline')).attr('text-anchor','middle').attr('font-size','10px').attr('fill','var(--text2)').text(d=>d.label||d.id);
+
+  _bindGraphHoverElements(hoverIndex, node, link);
+
+  node
+    .on('mouseenter',(ev,d)=>{
+      _applyNeighborHover(hoverIndex, d.id, container);
+    })
+    .on('mouseleave',()=>{
+      _clearNeighborHover(hoverIndex, container);
+    });
 
   node.on('click',(ev,d)=>{
     ev.stopPropagation();
@@ -6732,25 +8074,18 @@ function renderInlineGraph(graphInfo) {
       in_degree: d.in_degree || 0, out_degree: d.out_degree || 0,
       neighbors: nb, attrs: d.attrs || null, nbEdges,
     }, ev.clientX, ev.clientY);
-    // 高亮邻居节点，降低其他节点透明度
-    node.classed('highlighted',n=>n.id===d.id||nb.includes(n.id))
-      .style('opacity',n=>n.id===d.id||nb.includes(n.id)?1:0.2);
-    link.classed('highlighted',e=>e.source.id===d.id||e.target.id===d.id)
-      .style('opacity',e=>e.source.id===d.id||e.target.id===d.id?1:0.15);
   });
   
-  // 点击空白处取消高亮
+  // 点击空白处重置信息区
   svg.on('click',()=>{
-    node.classed('highlighted',false).style('opacity',1);
-    link.classed('highlighted',false).style('opacity',1);
+    _clearNeighborHover(hoverIndex, container);
     const info=document.getElementById(`ig-info-${gid}`);
     if(info)info.innerHTML='点击节点查看详情';
   });
   
-  // 双击打开侧边栏全图
-  container.addEventListener('dblclick', () => {
-    openGraphSidebarFull(gid);
-  });
+  if (!gid.endsWith('-workspace')) {
+    container.addEventListener('dblclick', () => openGraphSidebarFull(gid));
+  }
 
   svg.call(d3.zoom().extent([[0,0],[width,height]]).scaleExtent([0.1,4]).on('zoom',ev=>g.attr('transform',ev.transform)));
 
@@ -6762,12 +8097,10 @@ function renderInlineGraph(graphInfo) {
 }
 
 function setInlineLayout(gid, layout) {
-  // Find graphInfo in messages
-  for (const m of state.messages) {
-    if (!m.graphs) continue;
-    for (const g of m.graphs) {
-      if (g.id === gid) { g._layout = layout; renderInlineGraph(g); break; }
-    }
+  const graphInfo = _findGraphInfo(gid);
+  if (graphInfo) {
+    graphInfo._layout = layout;
+    renderInlineGraph(graphInfo);
   }
   // Update button states
   document.querySelectorAll(`.ig-ctrl-btn[data-graph-id="${gid}"]`).forEach(btn => {
@@ -6786,13 +8119,15 @@ function _edgeKey(e) {
   return `${e.source||e.src}→${e.target||e.dst}`;
 }
 
-// 统一查找 graphInfo：先查 messages，再查 sidebar
+// 统一查找 graphInfo：先查消息，再查当前工作区副本
 function _findGraphInfo(gid) {
   for (const m of state.messages) {
     if (!m.graphs) continue;
     for (const g of m.graphs) { if (g.id === gid) return g; }
   }
-  if (state.graphSidebarGraphInfo && state.graphSidebarGraphInfo.id === gid) return state.graphSidebarGraphInfo;
+  if (state.artifactWorkspaceGraphInfo && state.artifactWorkspaceGraphInfo.id === gid) {
+    return state.artifactWorkspaceGraphInfo;
+  }
   return null;
 }
 
@@ -6865,296 +8200,13 @@ function applyInlineHighlights(gid) {
   });
 }
 
-// 双击打开侧边栏全图
+// 兼容旧调用点：统一打开 Artifact 工作区。
 function openGraphSidebarFull(gid) {
-  // 找到该图在 _allSidebarGraphs() 中的下标，切换到对应 tab
-  const all = _allSidebarGraphs();
-  const idx = all.findIndex(g => g.id === gid);
-  state.graphSidebarOpen = true;
-  document.querySelector('.body-layout')?.classList.add('has-graph-sidebar');
-  syncLayoutVars();
-  initResizableLayout();
-  const sidebar = document.getElementById('graph-sidebar');
-  const toggleBtn = document.getElementById('graph-sidebar-toggle');
-  if (sidebar) sidebar.classList.remove('hidden');
-  if (toggleBtn) toggleBtn.classList.add('active');
-  switchSidebarTab(idx >= 0 ? idx : all.length - 1);
-}
-
-// 图展开到侧边栏
-function expandInlineGraph(gid) {
-  // Find graphInfo
-  let graphInfo = null;
-  for (const m of state.messages) {
-    if (!m.graphs) continue;
-    for (const g of m.graphs) {
-      if (g.id === gid) { graphInfo = g; break; }
-    }
-    if (graphInfo) break;
-  }
-  if (!graphInfo) return;
-  
-  // Close existing panel first
-  closeExpandModal();
-  
-  // Create right sidebar panel
-  const panel = document.createElement('div');
-  panel.id = 'expand-panel';
-  panel.style.cssText = 'position:fixed;right:0;top:0;bottom:0;width:50%;min-width:500px;max-width:900px;background:var(--bg1);border-left:1px solid var(--border);z-index:9999;display:flex;flex-direction:column;box-shadow:-4px 0 24px rgba(0,0,0,0.15)';
-  
-  const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0';
-  header.innerHTML = `<span style="font-weight:600;color:var(--text)">📊 全图 · ${graphInfo.num_nodes || graphInfo.nodes.length} 节点 · ${graphInfo.num_edges || graphInfo.edges.length} 边${graphInfo.directed ? ' · 有向' : ''}</span><button id="expand-close" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px">×</button>`;
-  
-  const controls = document.createElement('div');
-  controls.style.cssText = 'display:flex;gap:6px;padding:8px 12px;background:var(--bg1);border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap;align-items:center';
-  controls.innerHTML = `
-    <button class="ig-ctrl-btn active" data-layout="force" onclick="setExpandLayout(this,'force')">力导向</button>
-    <button class="ig-ctrl-btn" data-layout="circle" onclick="setExpandLayout(this,'circle')">环形</button>
-    <span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>
-    <button class="ig-ctrl-btn" onclick="resetExpandView()">重置</button>
-    <button class="ig-ctrl-btn" onclick="zoomInExpand()">+</button>
-    <button class="ig-ctrl-btn" onclick="zoomOutExpand()">-</button>
-  `;
-  
-  // Highlight buttons
-  let hlBtnsHtml = '';
-  if (graphInfo.highlights && graphInfo.highlights.length) {
-    const typeIcons = { node: '◉', path: '⟶', subgraph: '◭', community: '◎' };
-    for (const hl of graphInfo.highlights) {
-      const icon = typeIcons[hl.type] || '●';
-      const hlColor = hl.color || '';
-      const colorAttr = hlColor ? `data-hl-color="${esc(hlColor)}" style="--hl-color:${esc(hlColor)}"` : '';
-      const cls = `ig-ctrl-btn hl-${hl.type}${graphInfo.activeHighlights?.[hl.id] ? ' active' : ''}`;
-      hlBtnsHtml += `<button class="${cls}" data-hl-id="${esc(hl.id)}" ${colorAttr} onclick="toggleExpandHighlight('${esc(hl.id)}')">${icon} ${esc(hl.label || hl.type)}</button>`;
-    }
-    hlBtnsHtml += `<button class="ig-ctrl-btn" onclick="clearExpandHighlights()">✖ 清除</button>`;
-  }
-  
-  if (hlBtnsHtml) {
-    const hlBar = document.createElement('div');
-    hlBar.style.cssText = 'display:flex;gap:6px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap;align-items:center';
-    hlBar.innerHTML = hlBtnsHtml;
-    panel.appendChild(header);
-    panel.appendChild(controls);
-    panel.appendChild(hlBar);
-  } else {
-    panel.appendChild(header);
-    panel.appendChild(controls);
-  }
-  
-  const canvas = document.createElement('div');
-  canvas.style.cssText = 'flex:1;position:relative;overflow:hidden;background:var(--bg)';
-  canvas.id = 'expand-canvas';
-  
-  panel.appendChild(canvas);
-  document.body.appendChild(panel);
-  
-  // Render graph
-  setTimeout(() => {
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    const svg = d3.select('#expand-canvas').append('svg').attr('width', w).attr('height', h).style('display','block');
-    
-    const defs = svg.append('defs');
-    defs.append('marker').attr('id','expand-arrow').attr('viewBox','0 -5 10 10').attr('refX',20).attr('refY',0).attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto').append('path').attr('d','M0,-5L10,0L0,5').attr('fill','var(--text3)');
-    
-    const allNodesEx = graphInfo.nodes.map(n => ({...n, id: n.id || n.label}));
-    const allEdgesEx = graphInfo.edges.map(e => ({src: e.src||e.source, dst: e.dst||e.target, source: e.src||e.source, target: e.dst||e.target}));
-    const sampledEx = _sampleGraphForRender(allNodesEx, allEdgesEx, _GRAPH_RENDER_LIMIT);
-    if (sampledEx.truncated) {
-      const notice = document.createElement('div');
-      notice.style.cssText = 'padding:6px 16px;font-size:0.7rem;color:#f59e0b;background:rgba(245,158,11,0.08);border-bottom:1px solid var(--border);flex-shrink:0;font-family:var(--mono)';
-      notice.textContent = `图共 ${graphInfo.nodes.length} 节点，当前展示度数最高的 ${sampledEx.renderedCount} 个节点。可向 Agent 提问查询局部子图。`;
-      canvas.before(notice);
-    }
-    const nodesCopy = sampledEx.nodes.map(n => ({...n}));
-    const edgesCopy = sampledEx.edges.map(e => ({source: e.src || e.source, target: e.dst || e.target}));
-    const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
-    
-    const g = svg.append('g');
-    const link = g.selectAll('line').data(edgesCopy).join('line').attr('class','graph-link').attr('stroke','var(--border2)').attr('stroke-width',1.5).attr('marker-end', graphInfo.directed ? 'url(#expand-arrow)' : null);
-    const node = g.selectAll('g').data(nodesCopy).join('g').attr('class','graph-node').style('cursor','pointer').call(d3.drag().on('start',e=>{if(!sim.alphaTarget(0.3).restart())sim.alphaTarget(0.3).restart();e.subject.fx=e.subject.x;e.subject.fy=e.subject.y;}).on('drag',e=>{e.subject.fx=e.x;e.subject.fy=e.y;}).on('end',e=>{if(!e.active)sim.alphaTarget(0);e.subject.fx=null;e.subject.fy=null;}));
-    
-    node.append('circle').attr('r',d=>Math.sqrt((d.total_degree||0)+1)*4+7).attr('fill',d=>{
-      if(graphInfo.communities?.node_community){const cid=graphInfo.communities.node_community[d.id]||0;return colorScale(cid);}
-      return 'var(--accent)';
-    }).attr('stroke','var(--bg1)').attr('stroke-width',2);
-    node.append('text').attr('dy',d=>Math.sqrt((d.total_degree||0)+1)*4+14).attr('text-anchor','middle').attr('font-size','12px').attr('fill','var(--text)').text(d=>d.label||d.id);
-    
-    node.on('click',(ev,d)=>{
-      ev.stopPropagation();
-      const nb=edgesCopy.filter(e=>e.source.id===d.id||e.target.id===d.id).map(e=>e.source.id===d.id?e.target.id:e.source.id);
-      header.innerHTML = `<span style="font-weight:600;color:var(--text)">📊 <strong>${d.label||d.id}</strong> · 入度:${d.in_degree||0} · 出度:${d.out_degree||0} · 度:${d.total_degree||0} · 邻居:[${nb.slice(0,12).join(',')}${nb.length>12?'...':''}]</span><button id="expand-close" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px">×</button>`;
-      document.getElementById('expand-close').onclick = closeExpandModal;
-      // Show floating node card
-      showNodeCard({
-        id: d.id, label: d.label || d.id,
-        in_degree: d.in_degree || 0, out_degree: d.out_degree || 0,
-        neighbors: nb, attrs: d.attrs || null,
-      }, ev.clientX, ev.clientY);
-      // 高亮邻居节点和边，降低其他元素透明度
-      node.classed('highlighted',n=>n.id===d.id||nb.includes(n.id))
-        .style('opacity',n=>n.id===d.id||nb.includes(n.id)?1:0.2);
-      link.classed('highlighted',e=>e.source.id===d.id||e.target.id===d.id)
-        .style('opacity',e=>e.source.id===d.id||e.target.id===d.id?1:0.15);
-    });
-    
-    // 点击空白处取消高亮
-    svg.on('click',()=>{
-      node.classed('highlighted',false).style('opacity',1);
-      link.classed('highlighted',false).style('opacity',1);
-      header.innerHTML = `<span style="font-weight:600;color:var(--text)">📊 全图 · ${graphInfo.num_nodes || graphInfo.nodes.length} 节点 · ${graphInfo.num_edges || graphInfo.edges.length} 边${graphInfo.directed ? ' · 有向' : ''}</span><button id="expand-close" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px">×</button>`;
-      document.getElementById('expand-close').onclick = closeExpandModal;
-    });
-    
-    // Zoom
-    const zoom = d3.zoom().scaleExtent([0.1,10]).on('zoom',ev=>g.attr('transform',ev.transform));
-    svg.call(zoom);
-    window._expandZoom = zoom;
-    window._expandGid = gid;
-    window._expandGraphInfo = graphInfo;
-    window._expandNodes = nodesCopy;
-    window._expandEdges = edgesCopy;
-    
-    const sim = d3.forceSimulation(nodesCopy).force('link',d3.forceLink(edgesCopy).id(d=>d.id).distance(120)).force('charge',d3.forceManyBody().strength(-300)).force('center',d3.forceCenter(w/2,h/2)).force('collision',d3.forceCollide().radius(30));
-    sim.on('tick',()=>{link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);node.attr('transform',d=>`translate(${d.x},${d.y})`);});
-    window._expandSim = sim;
-    window._expandSvg = svg;
-    
-    // Apply highlights
-    if (graphInfo.highlights) {
-      applyExpandHighlights();
-    }
-  }, 50);
-  
-  document.getElementById('expand-close').onclick = closeExpandModal;
-}
-
-function closeExpandModal() {
-  const panel = document.getElementById('expand-panel');
-  if (panel) panel.remove();
-  window._expandSim = null;
-  window._expandSvg = null;
-  window._expandZoom = null;
-  window._expandGid = null;
-  window._expandGraphInfo = null;
-  window._expandNodes = null;
-  window._expandEdges = null;
-}
-
-function setExpandLayout(btn, layout) {
-  document.querySelectorAll('#expand-panel .ig-ctrl-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  if (!window._expandSvg || !window._expandSim) return;
-  const sim = window._expandSim;
-  const nodes = sim.nodes();
-  if (layout === 'circle') {
-    const svg = window._expandSvg;
-    const w = parseFloat(svg.attr('width'));
-    const h = parseFloat(svg.attr('height'));
-    const step = (2*Math.PI)/nodes.length;
-    nodes.forEach((n,i) => { n.x = w/2+(w/3)*Math.cos(i*step-Math.PI/2); n.y = h/2+(h/3)*Math.sin(i*step-Math.PI/2); });
-    sim.alpha(0.3).restart();
-  }
-}
-
-function resetExpandView() {
-  if (window._expandSvg && window._expandZoom) {
-    window._expandSvg.transition().duration(600).call(window._expandZoom.transform, d3.zoomIdentity);
-  }
-}
-
-function zoomInExpand() {
-  if (window._expandSvg && window._expandZoom) {
-    window._expandSvg.transition().duration(300).call(window._expandZoom.scaleBy, 1.4);
-  }
-}
-
-function zoomOutExpand() {
-  if (window._expandSvg && window._expandZoom) {
-    window._expandSvg.transition().duration(300).call(window._expandZoom.scaleBy, 0.7);
-  }
-}
-
-function toggleExpandHighlight(hlId) {
-  const graphInfo = window._expandGraphInfo;
-  if (!graphInfo) return;
-  if (!graphInfo.activeHighlights) graphInfo.activeHighlights = {};
-  graphInfo.activeHighlights[hlId] = !graphInfo.activeHighlights[hlId];
-  
-  // Update button state
-  const btn = document.querySelector(`#expand-panel button[data-hl-id="${hlId}"]`);
-  if (btn) btn.classList.toggle('active', graphInfo.activeHighlights[hlId]);
-  
-  applyExpandHighlights();
-}
-
-function clearExpandHighlights() {
-  const graphInfo = window._expandGraphInfo;
-  if (!graphInfo) return;
-  graphInfo.activeHighlights = {};
-  
-  // Update buttons
-  document.querySelectorAll('#expand-panel .hl-node, #expand-panel .hl-path, #expand-panel .hl-subgraph, #expand-panel .hl-community').forEach(b => b.classList.remove('active'));
-  
-  applyExpandHighlights();
-}
-
-function applyExpandHighlights() {
-  const graphInfo = window._expandGraphInfo;
-  const svg = window._expandSvg;
-  const nodesCopy = window._expandNodes;
-  const edgesCopy = window._expandEdges;
-  if (!graphInfo || !svg || !nodesCopy) return;
-  if (!graphInfo.highlights) return;
-  const hlNodes={}, hlEdges={};
-  for (const hl of graphInfo.highlights) {
-    if (!graphInfo.activeHighlights?.[hl.id]) continue;
-    const type=hl.type||'node', color=hl.color||'';
-    if(hl.nodes) for(const nid of hl.nodes){
-      if(!hlNodes[nid])hlNodes[nid]={types:new Set(),color:''};
-      hlNodes[nid].types.add(type);
-      if(color)hlNodes[nid].color=color;
-    }
-    if(hl.edges) for(const e of hl.edges){
-      const k=_edgeKey(e);
-      if(!hlEdges[k])hlEdges[k]={types:new Set(),color:''};
-      hlEdges[k].types.add(type);
-      if(color)hlEdges[k].color=color;
-      const kr=Array.isArray(e)?`${e[1]}→${e[0]}`:`${e.target||e.dst}→${e.source||e.src}`;
-      if(!hlEdges[kr])hlEdges[kr]={types:new Set(),color:''};
-      hlEdges[kr].types.add(type);
-      if(color)hlEdges[kr].color=color;
-    }
-    if(type==='path'&&hl.nodes&&hl.nodes.length>1) for(let i=0;i<hl.nodes.length-1;i++){
-      const k=`${hl.nodes[i]}→${hl.nodes[i+1]}`;
-      const kr=`${hl.nodes[i+1]}→${hl.nodes[i]}`;
-      if(!hlEdges[k])hlEdges[k]={types:new Set(),color:''};
-      if(!hlEdges[kr])hlEdges[kr]={types:new Set(),color:''};
-      hlEdges[k].types.add(type); hlEdges[kr].types.add(type);
-      if(color){hlEdges[k].color=color;hlEdges[kr].color=color;}
-    }
-  }
-  svg.selectAll('.graph-node').classed('hl-path hl-node hl-subgraph hl-community highlighted',false).attr('data-hl-color',null).style('--hl-color',null);
-  svg.selectAll('.graph-link').classed('hl-path hl-subgraph hl-community highlighted',false).attr('data-hl-color',null).style('--hl-color',null);
-  svg.selectAll('.graph-node').each(function(d){
-    const info=hlNodes[d.id];
-    if(info&&info.types.size){
-      const el=d3.select(this);
-      for(const tp of info.types)el.classed(`hl-${tp}`,true);
-      if(info.color)el.attr('data-hl-color',info.color).style('--hl-color',info.color);
-    }
-  });
-  svg.selectAll('.graph-link').each(function(d){
-    const k=`${d.source.id||d.source}→${d.target.id||d.target}`;
-    const info=hlEdges[k];
-    if(info&&info.types.size){
-      const el=d3.select(this);
-      for(const tp of info.types)el.classed(`hl-${tp}`,true);
-      if(info.color)el.attr('data-hl-color',info.color).style('--hl-color',info.color);
-    }
-  });
+  const workspaceGraph = state.artifactWorkspaceGraphInfo;
+  const sourceId = workspaceGraph?.id === gid && state.activeArtifact?.kind === 'graph'
+    ? state.activeArtifact.id
+    : gid;
+  return openArtifactWorkspace('graph', sourceId, document.activeElement);
 }
 
 function clearInlineHighlights(gid) {
