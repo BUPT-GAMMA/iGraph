@@ -9,6 +9,7 @@ openai
 tiktoken
 numpy
 networkx
+nebula3-python==3.8.3
 
 # GraphML (optional but required for train/infer, CUDA build)
 # If your NVIDIA driver/CUDA runtime is not compatible, change cu126 to cu124/cu121.

@@ -61,14 +61,16 @@ GRAPH_TOOLS: List[dict] = [
             "- HIV/PCBA 等多图 .pt 文件 → 自动路由到 load_graph_classification_dataset 异步加载；\n"
             "- 边列表（每行 `src dst [weight]`，空格/Tab/逗号分隔）→ 直接解析；\n"
             "- 三元组（每行 `source relation target`）→ 直接解析；\n"
-            "- 自然语言文本（散文、文章、文档）→ LLM 预检提取 extraction_goal 后提交异步 text2graph 作业，返回 job_id，需用 job_status/job_result 轮询。\n\n"
+            "- 自然语言文本（散文、文章、文档）→ LLM 预检提取 extraction_goal 后提交异步 text2graph 作业；\n"
+            "- GRAPH_STORAGE_BACKEND=nebula 时，NPZ/PT/JSON 解析及大图 Importer 导入也作为后台作业执行。\n\n"
             "格式由 LLM 预检（FileFormatPreCheckSubAgent）自动判断，无需手动指定；LLM 不可用时降级为启发式检测。\n\n"
             "参数:\n"
             "- filename: 会话中已注册的上传文件名。\n"
             "- append(可选, 默认 false): false 覆盖当前图；true 追加到当前图。\n\n"
             "返回:\n"
-            "- 同步格式（binary/edge_list/triple）：加载状态、检测格式、图版本；\n"
-            "- 异步格式（freetext/graph_classification_dataset）：async=true、job_id、status='queued'；\n"
+            "- local 模式的 binary/edge_list/triple：加载状态、检测格式、图版本；\n"
+            "- freetext、graph_classification_dataset 或 nebula 模式的 binary："
+            "async=true、job_id、status='queued'；Agent 会在后端自动监控，直接 API 调用方可低频使用 get_job_status/get_job_result 查询，模型无需反复调用；\n"
             "- 图规模/结构详情请调用 `get_graph_info`。"
         ),
         "inputSchema": {
@@ -241,6 +243,31 @@ GRAPH_TOOLS: List[dict] = [
         "category": "compute",
     },
     {
+        "name": "get_neighbors",
+        "description": (
+            "查询指定节点的一跳邻居。Nebula 主存储模式使用原生 GO 查询，"
+            "本地模式读取当前 GraphData。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node_name": {"type": "string", "description": "节点名称或 ID"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "返回上限，服务端限制为 1 到 200",
+                },
+            },
+            "required": ["node_name"],
+        },
+        "category": "compute",
+    },
+    {
         "name": "search_node",
         "description": (
             "根据节点名称、文本内容、属性约束或自然语言描述搜索图中的节点，返回可用于其他工具的精确 node_name。"
@@ -359,6 +386,17 @@ GRAPH_TOOLS: List[dict] = [
                     "description": "仅 algorithm=yen_k_shortest 时生效，返回的候选路径数",
                     "default": 3,
                 },
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                    "description": "Nebula 主存储且 use_weight=false 时的遍历方向。",
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Nebula 原生非加权查询的最大跳数，限制为 1 到 20。",
+                },
             },
             "required": ["source", "target"],
         },
@@ -379,6 +417,10 @@ GRAPH_TOOLS: List[dict] = [
             "properties": {
                 "source": {"type": "string", "description": "起点节点"},
                 "target": {"type": "string", "description": "终点节点"},
+                "direction": {"type": "string", "enum": ["out", "in", "both"], "default": "out"},
+                "max_steps": {"type": "integer", "default": 10, "description": "Nebula 模式物化的最大跳数，限制为 1 到 20。"},
+                "max_nodes": {"type": "integer", "description": "Nebula 子图物化节点上限。"},
+                "max_edges": {"type": "integer", "description": "Nebula 子图物化边上限。"},
             },
             "required": ["source", "target"],
         },
@@ -673,9 +715,13 @@ GRAPH_TOOLS: List[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "可选；Nebula 主存储下指定节点时直接查询该节点入度/出度，不物化整图。",
+                },
                 "limit": {
                     "type": ["integer", "string"],
-                    "description": "返回的 top/low 度节点数上限，默认 20，最大 200；传 \"all\" 返回全部节点。",
+                    "description": "返回的 top/low 度节点数上限，默认 20，最大 200；传 'all' 返回全部节点。",
                     "default": 20,
                 },
             },
@@ -726,7 +772,10 @@ GRAPH_TOOLS: List[dict] = [
                     "type": "string",
                     "description": "新图版本描述；create_version=true 时生效。",
                 },
-                "limit": {"type": ["integer", "string"], "description": "返回的节点/边预览条数上限，默认 20，最大 200；传 \"all\" 返回全部。", "default": 20},
+                "direction": {"type": "string", "enum": ["out", "in", "both"], "default": "out", "description": "ego_graph 在 Nebula 中的遍历方向。"},
+                "max_nodes": {"type": "integer", "description": "Nebula 子图物化节点上限。"},
+                "max_edges": {"type": "integer", "description": "Nebula 子图物化边上限。"},
+                "limit": {"type": ["integer", "string"], "description": "返回的节点/边预览条数上限，默认 20，最大 200；传 'all' 返回全部。", "default": 20},
             },
             "required": ["method"],
         },
@@ -796,7 +845,11 @@ GRAPH_TOOLS: List[dict] = [
                 "source": {"type": "string", "description": "起点节点（all_simple_paths 和 has_path 必填）"},
                 "target": {"type": "string", "description": "终点节点（all_simple_paths 和 has_path 必填）"},
                 "cutoff": {"type": "integer", "default": 5, "description": "仅 all_simple_paths 生效，路径最大长度"},
-                "limit": {"type": ["integer", "string"], "description": "all_simple_paths 返回路径数上限，默认 10，最大 200；传 \"all\" 返回全部路径（慎用，可能指数级）。", "default": 10},
+                "direction": {"type": "string", "enum": ["out", "in", "both"], "default": "out"},
+                "max_steps": {"type": "integer", "default": 10, "description": "Nebula 模式物化的最大跳数，限制为 1 到 20。"},
+                "max_nodes": {"type": "integer", "description": "Nebula 子图物化节点上限。"},
+                "max_edges": {"type": "integer", "description": "Nebula 子图物化边上限。"},
+                "limit": {"type": ["integer", "string"], "description": "all_simple_paths 返回路径数上限，默认 10，最大 200；传 'all' 返回全部路径（慎用，可能指数级）。", "default": 10},
             },
             "required": ["method"],
         },
@@ -868,7 +921,10 @@ GRAPH_TOOLS: List[dict] = [
                     "type": "string",
                     "description": "descendants 和 ancestors 必填，transitive_closure 不需要",
                 },
-                "limit": {"type": ["integer", "string"], "description": "返回节点/边数上限，默认 20，最大 200；传 \"all\" 返回全部（transitive_closure 慎用）。", "default": 20},
+                "max_steps": {"type": "integer", "default": 10, "description": "descendants/ancestors 在 Nebula 中遍历的最大跳数，限制为 1 到 20。"},
+                "max_nodes": {"type": "integer", "description": "Nebula 子图物化节点上限。"},
+                "max_edges": {"type": "integer", "description": "Nebula 子图物化边上限。"},
+                "limit": {"type": ["integer", "string"], "description": "返回节点/边数上限，默认 20，最大 200；传 'all' 返回全部（transitive_closure 慎用）。", "default": 20},
             },
             "required": ["method"],
         },
@@ -1150,6 +1206,85 @@ GRAPH_TOOLS: List[dict] = [
             "required": [],
         },
         "category": "data",
+    },
+    {
+        "name": "nebula_status",
+        "description": (
+            "检查 NebulaGraph 配置、连接、Schema 以及当前会话图的同步状态。"
+            "该工具不会修改图数据。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "category": "data",
+    },
+    {
+        "name": "nebula_sync_graph",
+        "description": (
+            "本地存储模式下，将当前 GraphData 显式同步到 NebulaGraph 并返回异步 job_id。"
+            "GRAPH_STORAGE_BACKEND=nebula 时当前图已经原生存储在 NebulaGraph，该工具直接返回 already_primary=true。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "category": "data",
+    },
+    {
+        "name": "nebula_get_node_info",
+        "description": "使用 NebulaGraph FETCH PROP 原生查询当前已同步图中的节点属性。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node_name": {"type": "string", "description": "当前图中的节点名称"},
+            },
+            "required": ["node_name"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "nebula_get_neighbors",
+        "description": "使用 NebulaGraph GO 原生查询当前已同步图中的一跳邻居。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node_name": {"type": "string", "description": "当前图中的节点名称"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                    "description": "出边、入边或双向遍历",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "返回上限，服务端限制为 1 到 200",
+                },
+            },
+            "required": ["node_name"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "nebula_shortest_path",
+        "description": (
+            "使用 NebulaGraph FIND SHORTEST PATH 查询按跳数计算的最短路径。"
+            "该工具不计算加权最短路径；加权场景继续使用现有 shortest_path 工具。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "起点节点名称"},
+                "target": {"type": "string", "description": "终点节点名称"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "最大跳数，服务端限制为 1 到 20",
+                },
+            },
+            "required": ["source", "target"],
+        },
+        "category": "compute",
     },
 ]
 
