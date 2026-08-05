@@ -109,6 +109,17 @@ def edge_index_tensor(gd: GraphData) -> torch.Tensor:
     return torch.as_tensor(gd.edge_index, dtype=torch.long)
 
 
+def message_passing_edge_index(gd: GraphData) -> torch.Tensor:
+    """Return an edge_index tensor suitable for GNN message passing.
+
+    Semantic undirected graphs are converted to a bidirectional processed copy
+    before exporting the tensor. The raw graph remains untouched.
+    """
+    if gd.semantic_type == "undirected":
+        return torch.as_tensor(gd.to_undirected().edge_index, dtype=torch.long)
+    return torch.as_tensor(gd.edge_index, dtype=torch.long)
+
+
 def base_node_features(gd: GraphData) -> torch.Tensor:
     if gd.node_feat is not None:
         x = np.asarray(gd.node_feat, dtype=np.float32)
@@ -119,13 +130,10 @@ def base_node_features(gd: GraphData) -> torch.Tensor:
         return torch.as_tensor(x, dtype=torch.float32)
 
     n = gd.num_nodes
-    src, dst = gd.edge_index
-    in_deg = np.zeros(n, dtype=np.float32)
-    out_deg = np.zeros(n, dtype=np.float32)
-    for s, d in zip(src, dst):
-        out_deg[int(s)] += 1.0
-        in_deg[int(d)] += 1.0
-    total = in_deg + out_deg
+    degrees = gd._degree_data()
+    in_deg = np.asarray(degrees["in_degree"], dtype=np.float32)
+    out_deg = np.asarray(degrees["out_degree"], dtype=np.float32)
+    total = np.asarray(degrees["total_degree"], dtype=np.float32)
     x = np.stack([in_deg, out_deg, total, np.ones(n, dtype=np.float32)], axis=1)
     maxv = np.maximum(x.max(axis=0, keepdims=True), 1.0)
     return torch.as_tensor(x / maxv, dtype=torch.float32)
@@ -136,6 +144,7 @@ __all__ = [
     "GRAPH_CLASSIFICATION_MODELS",
     "node_names",
     "edge_index_tensor",
+    "message_passing_edge_index",
     "base_node_features",
     "NodeClassificationTask",
     "NodeClassificationBatch",

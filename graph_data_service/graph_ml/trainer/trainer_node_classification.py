@@ -19,7 +19,7 @@ from ..models import build_backbone, parse_gnn_options
 from ..schemas import TrainRequest
 from ..tasks import (
     NodeClassificationTask,
-    edge_index_tensor,
+    message_passing_edge_index,
     node_label_class_mapping,
     node_names,
 )
@@ -41,7 +41,7 @@ class NodeClassificationTrainer:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> Dict[str, Any]:
         x = x.to(device)
-        eidx = edge_index_tensor(gd).to(device)
+        eidx = message_passing_edge_index(gd).to(device)
 
         task = NodeClassificationTask()
         batch = task.prepare(gd, req)

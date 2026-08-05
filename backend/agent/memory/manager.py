@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -63,7 +64,7 @@ class MemoryManager:
         return block
 
     def refresh_snapshot(self) -> tuple[bool, str]:
-        """Rebuild the built-in provider's snapshot from disk.
+        """Rebuild all provider snapshots from disk.
 
         Returns ``(changed, new_block)``: ``changed=False`` lets callers
         skip prompt rebuilds and keep prefix-cache hits when no new
@@ -71,8 +72,25 @@ class MemoryManager:
         """
         engine = self._builtin.engine
         if engine is None:
-            return False, ""
-        return engine.refresh_snapshot()
+            builtin_changed, builtin_block = False, ""
+        else:
+            builtin_changed, builtin_block = engine.refresh_snapshot()
+
+        extra_changed, extra_block = False, ""
+        if self._extra is not None and self._extra.is_available():
+            try:
+                refresh = getattr(self._extra, "refresh_snapshot", None)
+                if callable(refresh):
+                    extra_changed, extra_block = refresh()
+                else:
+                    extra_block = self._extra.system_prompt_block()
+            except Exception:
+                _LOG.debug("extra provider refresh_snapshot failed", exc_info=True)
+
+        block = builtin_block
+        if extra_block:
+            block = block + "\n" + extra_block if block else extra_block
+        return bool(builtin_changed or extra_changed), block
 
     # ── Tool dispatch ────────────────────────────────────────────────
 
@@ -88,6 +106,31 @@ class MemoryManager:
 
     def handle_tool_call(self, name: str, args: dict) -> str | None:
         """Route a virtual-tool call to the appropriate provider."""
+        from backend.agent.memory.tools import VIRTUAL_MEMORY_TOOL_SPECS
+        from backend.agent.memory.file_provider import VIRTUAL_FILE_MEMORY_TOOL_SPECS
+
+        # Collect all valid virtual memory tool names
+        valid_memory_names = {
+            str(spec.get("name") or "") for spec in (
+                VIRTUAL_MEMORY_TOOL_SPECS + VIRTUAL_FILE_MEMORY_TOOL_SPECS
+            )
+        }
+
+        # Only route to memory providers if the tool name is a valid memory tool
+        if name not in valid_memory_names:
+            return None
+
+        if self._extra is not None and self._extra.is_available():
+            try:
+                extra_names = {
+                    str(spec.get("name") or "")
+                    for spec in self._extra.get_tool_schemas()
+                }
+                if name in extra_names:
+                    return self._extra.handle_tool_call(name, args)
+            except Exception:
+                _LOG.debug("extra provider handle_tool_call failed", exc_info=True)
+
         result = self._builtin.handle_tool_call(name, args)
         if result and not result.startswith("错误：未知工具"):
             return result
@@ -110,7 +153,9 @@ class MemoryManager:
         await self._builtin.engine.maybe_update_from_turn(**kwargs)
         if self._extra is not None and self._extra.is_available():
             try:
-                self._extra.sync_turn(kwargs)
+                result = self._extra.sync_turn(kwargs)
+                if inspect.isawaitable(result):
+                    await result
             except Exception:
                 _LOG.debug("extra provider sync_turn failed", exc_info=True)
 

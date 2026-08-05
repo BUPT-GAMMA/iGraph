@@ -26,7 +26,7 @@ def collect_positive_edges(gd: GraphData, req: TrainRequest) -> List[Tuple[int, 
             if gd.has_node_name(u_name) and gd.has_node_name(v_name):
                 out.append((gd.name_to_id(u_name), gd.name_to_id(v_name)))
         return out
-    return [(int(s), int(d)) for s, d in gd.all_edges()]
+    return [(int(s), int(d)) for s, d in gd.logical_edges()]
 
 
 def sample_negative_edges(
@@ -121,12 +121,12 @@ class LinkPredictionTask:
         train_pos = pos[:n_train]
         val_pos = pos[n_train: n_train + n_val]
 
-        existing = set((int(u), int(v)) for u, v in gd.all_edges())
+        existing = set((int(u), int(v)) for u, v in gd.logical_edges())
         val_neg = sample_negative_edges(
             num_samples=max(1, len(val_pos)),
             existing_edges=existing,
             num_nodes=gd.num_nodes,
-            directed=gd.directed,
+            directed=gd.semantic_type != "undirected",
             seed=req.train_config.seed + 11,
         )
         def _to_tensor(arr: np.ndarray) -> torch.Tensor:

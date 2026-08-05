@@ -83,11 +83,14 @@ class GraphDataJsonLoadTest(unittest.TestCase):
         old_cwd = os.getcwd()
         try:
             with tempfile.TemporaryDirectory() as td:
-                os.chdir(td)
-                session = GraphSession(session_id="s-relative-upload")
-                n, e = session.load_graph_from_upload_path(rel_path, append=False)
-                self.assertEqual(n, 3)
-                self.assertEqual(e, 2)
+                try:
+                    os.chdir(td)
+                    session = GraphSession(session_id="s-relative-upload")
+                    n, e = session.load_graph_from_upload_path(rel_path, append=False)
+                    self.assertEqual(n, 3)
+                    self.assertEqual(e, 2)
+                finally:
+                    os.chdir(old_cwd)
         finally:
             os.chdir(old_cwd)
             if os.path.exists(abs_path):

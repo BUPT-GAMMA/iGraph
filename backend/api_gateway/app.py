@@ -28,6 +28,7 @@ from backend.agent.model_registry import DEFAULT_MODEL, SUPPORTED_MODELS, normal
 from backend.agent.memory.memory_engine import MemoryEngine
 from backend.agent.memory.manager import MemoryManager
 from backend.agent.memory.builtin_provider import BuiltinMemoryProvider
+from backend.agent.memory.file_provider import FileMemoryProvider
 from backend.agent.memory.service import MemoryService
 from backend.agent.skills.paths import skill_events_path
 from backend.logging.sft_exporter import export_sft_records
@@ -501,7 +502,10 @@ class ApiGatewayServer:
             engine = self._get_user_memory_engine(user_id)
             if engine is None:
                 return None
-            self._user_memory_managers[user_id] = MemoryManager(BuiltinMemoryProvider(engine))
+            self._user_memory_managers[user_id] = MemoryManager(
+                BuiltinMemoryProvider(engine),
+                extra=FileMemoryProvider(user_id=user_id),
+            )
         return self._user_memory_managers.get(user_id)
 
     def _get_user_memory_service(self, user_id: str) -> Optional[MemoryService]:
@@ -1354,8 +1358,13 @@ class ApiGatewayServer:
                 )
                 if result.get("success"):
                     agent._has_graph = True
-                    agent._graph_node_count = result.get("num_nodes", 0)
-                    agent._graph_edge_count = result.get("num_edges", 0)
+                    agent._graph_node_count = int(result.get("num_nodes") or 0)
+                    agent._graph_edge_count = int(result.get("num_edge_entries") or result.get("num_edges") or 0)
+                    agent._graph_unique_edge_count = int(result.get("num_unique_edges") or 0)
+                    semantic_type = str(result.get("semantic_type") or "").strip().lower()
+                    agent._graph_semantic_type = semantic_type or ("directed" if bool(result.get("directed")) else "unknown")
+                    agent._graph_storage_type = str(result.get("storage_type") or "mixed")
+                    agent._graph_is_directed = agent._graph_semantic_type == "directed"
                     agent.logger.set_graph_flag(True)
                     label = req.name or req.dataset_id
                     self._inject_synthetic_turn(
@@ -1378,7 +1387,10 @@ class ApiGatewayServer:
                     agent._has_graph = False
                     agent._graph_node_count = 0
                     agent._graph_edge_count = 0
+                    agent._graph_unique_edge_count = 0
                     agent._graph_is_directed = False
+                    agent._graph_semantic_type = "unknown"
+                    agent._graph_storage_type = "mixed"
                     agent._graph_has_weights = False
                     agent.logger.set_graph_flag(False)
                 return result

@@ -716,8 +716,7 @@ class GraphDataService:
             "success": True,
             "session_id": session_id,
             "graph_version": session.graph_version,
-            "num_nodes": gd.num_nodes if gd is not None else 0,
-            "num_edges": gd.num_edges if gd is not None else 0,
+            **self._graph_counts_payload(gd),
             "message": "图已回滚到上一版本。",
         }
 
@@ -731,7 +730,7 @@ class GraphDataService:
                 "graph_version": session.graph_version,
                 "error": "尚未加载任何图数据。",
             }
-        if not gd.directed:
+        if gd.semantic_type == "undirected" and gd.storage_type == "bidirectional" and not gd.has_duplicate_entries:
             return {
                 "success": False,
                 "session_id": session_id,
@@ -746,8 +745,7 @@ class GraphDataService:
             "session_id": session_id,
             "graph_version": session.graph_version,
             "message": "图已转换为无向图。如需查看结构摘要，请调用 get_graph_info。",
-            "num_nodes": new_gd.num_nodes,
-            "num_edges": new_gd.num_edges,
+            **self._graph_counts_payload(new_gd),
         }
 
     def do_list_datasets(self, user_id: str = "") -> dict:
@@ -784,8 +782,7 @@ class GraphDataService:
             "dataset_id": dataset_id,
             "dataset_version": actual_version,
             "graph_version": session.graph_version,
-            "num_nodes": graph.num_nodes,
-            "num_edges": graph.num_edges,
+            **self._graph_counts_payload(graph),
         }
 
     def do_load_graph_classification_graph(
@@ -828,6 +825,15 @@ class GraphDataService:
         graph_info_payload = {
             "num_nodes": graph.num_nodes,
             "num_edges": graph.num_edges,
+            "num_edge_entries": graph.num_edge_entries,
+            "num_unique_edges": graph.num_unique_edges,
+            "num_unique_directed_edges": graph.num_unique_directed_edges,
+            "num_unique_undirected_edges": graph.num_unique_undirected_edges,
+            "semantic_type": graph.semantic_type,
+            "storage_type": graph.storage_type,
+            "is_symmetric": graph.is_symmetric,
+            "has_self_loops": graph.has_self_loops,
+            "has_duplicate_entries": graph.has_duplicate_entries,
             "directed": graph.directed,
             "has_node_names": graph.has_node_names,
             "has_edge_weight": graph.has_edge_weight,
@@ -861,6 +867,15 @@ class GraphDataService:
             "graph_version": session.graph_version,
             "num_nodes": graph.num_nodes,
             "num_edges": graph.num_edges,
+            "num_edge_entries": graph.num_edge_entries,
+            "num_unique_edges": graph.num_unique_edges,
+            "num_unique_directed_edges": graph.num_unique_directed_edges,
+            "num_unique_undirected_edges": graph.num_unique_undirected_edges,
+            "semantic_type": graph.semantic_type,
+            "storage_type": graph.storage_type,
+            "is_symmetric": graph.is_symmetric,
+            "has_self_loops": graph.has_self_loops,
+            "has_duplicate_entries": graph.has_duplicate_entries,
             "directed": graph.directed,
             "has_node_names": graph.has_node_names,
             "has_edge_weight": graph.has_edge_weight,
@@ -915,8 +930,7 @@ class GraphDataService:
             "session_id": session_id,
             "graph_version": session.graph_version,
             "loaded_version": int(graph_version),
-            "num_nodes": loaded.get("num_nodes", loaded.get("node_count", 0)),
-            "num_edges": loaded.get("num_edges", loaded.get("edge_count", 0)),
+            **self._graph_counts_payload(session.get_graph()),
             "description": loaded.get("description", ""),
             "message": f"已切换到图版本 {graph_version}。",
         }
@@ -1008,9 +1022,7 @@ class GraphDataService:
             "graph_version": session.graph_version,
             "nodes": graph.num_nodes,
             "edges": graph.num_edges,
-            "num_nodes": graph.num_nodes,
-            "num_edges": graph.num_edges,
-            "directed": graph.directed,
+            **self._graph_counts_payload(graph),
             "raw_triples": len(triples),
             "valid_triples": valid_count,
             "materialized_edges": graph.num_edges,
@@ -1135,9 +1147,7 @@ class GraphDataService:
             "graph_version": session.graph_version,
             "nodes": graph.num_nodes,
             "edges": graph.num_edges,
-            "num_nodes": graph.num_nodes,
-            "num_edges": graph.num_edges,
-            "directed": graph.directed,
+            **self._graph_counts_payload(graph),
             "chunks_processed": extraction.chunk_count,
             "raw_triples": extraction.raw_triple_count,
             "deduped_triples": extraction.deduped_triple_count,
@@ -1328,6 +1338,15 @@ class GraphDataService:
         graph_info_payload = {
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
+            "num_edge_entries": summary.num_edge_entries,
+            "num_unique_edges": summary.num_unique_edges,
+            "num_unique_directed_edges": summary.num_unique_directed_edges,
+            "num_unique_undirected_edges": summary.num_unique_undirected_edges,
+            "semantic_type": summary.semantic_type,
+            "storage_type": summary.storage_type,
+            "is_symmetric": summary.is_symmetric,
+            "has_self_loops": summary.has_self_loops,
+            "has_duplicate_entries": summary.has_duplicate_entries,
             "directed": summary.directed,
             "has_node_names": summary.has_node_names,
             "has_edge_weight": summary.has_edge_weight,
@@ -1360,6 +1379,15 @@ class GraphDataService:
             "graph_version": summary.graph_version,
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
+            "num_edge_entries": summary.num_edge_entries,
+            "num_unique_edges": summary.num_unique_edges,
+            "num_unique_directed_edges": summary.num_unique_directed_edges,
+            "num_unique_undirected_edges": summary.num_unique_undirected_edges,
+            "semantic_type": summary.semantic_type,
+            "storage_type": summary.storage_type,
+            "is_symmetric": summary.is_symmetric,
+            "has_self_loops": summary.has_self_loops,
+            "has_duplicate_entries": summary.has_duplicate_entries,
             "directed": summary.directed,
             "has_node_names": summary.has_node_names,
             "has_edge_weight": summary.has_edge_weight,
@@ -1382,6 +1410,38 @@ class GraphDataService:
         if isinstance(value, float) and not np.isfinite(value):
             return None
         return value
+
+    @staticmethod
+    def _graph_counts_payload(graph: GraphData | None) -> Dict[str, Any]:
+        if graph is None:
+            return {
+                "num_nodes": 0,
+                "num_edges": 0,
+                "num_edge_entries": 0,
+                "num_unique_edges": 0,
+                "num_unique_directed_edges": 0,
+                "num_unique_undirected_edges": 0,
+                "semantic_type": "unknown",
+                "storage_type": "mixed",
+                "is_symmetric": False,
+                "has_self_loops": False,
+                "has_duplicate_entries": False,
+                "directed": False,
+            }
+        return {
+            "num_nodes": graph.num_nodes,
+            "num_edges": graph.num_edges,
+            "num_edge_entries": graph.num_edge_entries,
+            "num_unique_edges": graph.num_unique_edges,
+            "num_unique_directed_edges": graph.num_unique_directed_edges,
+            "num_unique_undirected_edges": graph.num_unique_undirected_edges,
+            "semantic_type": graph.semantic_type,
+            "storage_type": graph.storage_type,
+            "is_symmetric": graph.is_symmetric,
+            "has_self_loops": graph.has_self_loops,
+            "has_duplicate_entries": graph.has_duplicate_entries,
+            "directed": graph.directed,
+        }
 
     @staticmethod
     def _graph_preview(gd, node_limit: int = 10, edge_limit: int = 30) -> Dict[str, Any]:
