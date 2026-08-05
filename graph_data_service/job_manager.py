@@ -60,9 +60,13 @@ class JobManager:
                 else:
                     result = await asyncio.to_thread(fn, *args, **kwargs)
                 job.result = result
-                job.progress = 1.0
-                job.status = "done"
-                job.message = "completed"
+                if isinstance(result, dict) and result.get("success") is False:
+                    job.status = "failed"
+                    job.message = str(result.get("error") or "job failed")
+                else:
+                    job.progress = 1.0
+                    job.status = "done"
+                    job.message = "completed"
             except asyncio.CancelledError:
                 job.status = "cancelled"
                 job.message = "cancelled"

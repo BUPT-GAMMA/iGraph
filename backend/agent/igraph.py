@@ -12,6 +12,7 @@ iGraph — 图分析 Agent 核心
   {"type": "token",          "content": str}
   {"type": "tool_call",      "tool": str, "args": dict, "call_id": str}
   {"type": "tool_result",    "tool": str, "call_id": str}
+  {"type": "analysis_report","call_id": str, "data": {"report": dict}}
   {"type": "done",           "has_graph": bool}
   {"type": "error",          "error": str}
 """
@@ -63,7 +64,18 @@ _MAX_STEPS = 16
 _MAX_PROTOCOL_RETRIES = 2
 _DEFAULT_CONTEXT_TOKEN_LIMIT = 192_000
 _DEFAULT_PRESERVE_RECENT_USER_TURNS = 3
-_HIDDEN_TOOLS = {"register_session", "delete_graph_session", "set_session_config", "discard_graph_version"}
+_HIDDEN_TOOLS = {
+    "register_session",
+    "delete_graph_session",
+    "set_session_config",
+    "discard_graph_version",
+    # Backend-specific aliases remain available over MCP/HTTP for diagnostics,
+    # but the Agent uses the unified tools to avoid duplicate native + wrapper
+    # calls for the same graph query.
+    "nebula_get_node_info",
+    "nebula_get_neighbors",
+    "nebula_shortest_path",
+}
 # Hard-coded baseline of tools that always require user confirmation. The
 # effective set is the union of this baseline with any tool declared by a
 # SKILL.md whose frontmatter says ``risk_level: high`` — see
@@ -74,6 +86,19 @@ _HIGH_RISK_TOOLS_BASE = frozenset({"train", "infer", "clear_graph"})
 # serially within a tool_call batch so their continuation semantics are
 # preserved. Agent computes the dynamic counterpart at call time.
 _FEEDBACK_ONLY_TOOLS = frozenset({"request_user_feedback"})
+_GRAPH_MUTATION_TOOLS = frozenset({
+    "load_graph",
+    "load_graph_from_upload",
+    "load_graph_from_text",
+    "load_graph_from_triples",
+    "load_dataset",
+    "load_graph_version",
+    "discard_graph_version",
+    "clear_graph",
+    "undo_graph",
+    "to_undirected",
+    "subgraph_extraction",
+})
 _CORE_TOOL_NAMES_TEXT = ", ".join(sorted(CORE_TOOL_NAMES))
 _COMPACT_JSON = {"ensure_ascii": False, "separators": (",", ":")}
 _VIRTUAL_TOOL_SPECS: List[dict] = [
@@ -231,6 +256,7 @@ class IGraph:
             set_paused_plan_state=self._set_paused_plan_state,
             register_tools=self._register_skill_tools,
             should_run_batch_serially=self._should_run_batch_serially,
+            prepare_tool_result=self._prepare_tool_result_for_observation,
             run_tool_calls_parallel=lambda tcs, step_id: self._run_tool_calls_parallel(
                 tcs, step_id=step_id
             ),
@@ -260,6 +286,8 @@ class IGraph:
         self._tool_map: Dict[str, dict] = {}
         self._tool_selector: Optional[LLMToolSelector] = None
         self._expanded_tool_names: set[str] = set()
+        self._visible_graphs_for_turn: List[dict] = []
+        self._visible_reports_for_turn: List[dict] = []
         self._turn_selected_tool_names: set[str] = set()
         self._skill_registry = self._build_skill_registry()
         self._query_analyzer = QueryAnalyzer(provider_gateway=self._provider_gateway)
@@ -1009,10 +1037,11 @@ class IGraph:
         self,
         job_id: str,
         *,
+        tool_name: str,
         progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict:
-        first_progress_seen = False
-        poll_interval = 1.0
+        is_upload = tool_name == "load_graph_from_upload"
+        poll_interval = 5.0 if is_upload else 1.0
         last_delivered_kind = ""
         while True:
             try:
@@ -1020,16 +1049,20 @@ class IGraph:
                     await self._mcp_client.call_tool("get_job_status", {"job_id": job_id})
                 )
             except Exception as exc:
-                return {"success": False, "error": f"轮询 text2graph 作业失败: {exc}", "job_id": job_id}
+                return {"success": False, "error": f"轮询后台图任务失败: {exc}", "job_id": job_id}
 
             job = status_payload.get("job") if isinstance(status_payload, dict) else None
             if not isinstance(job, dict):
-                return {"success": False, "error": f"text2graph 作业不存在: {job_id}", "job_id": job_id}
+                return {"success": False, "error": f"后台图任务不存在: {job_id}", "job_id": job_id}
 
             pending_updates = status_payload.get("progress_updates") or []
-            if pending_updates and not first_progress_seen:
-                first_progress_seen = True
-                poll_interval = 0.5
+            if pending_updates:
+                poll_interval = 5.0 if is_upload else 0.5
+            elif is_upload:
+                # Binary uploads can spend minutes parsing or importing a large
+                # graph. Poll less often while progress is unchanged so status
+                # checks do not compete with the CPU-bound worker.
+                poll_interval = min(30.0, poll_interval * 2.0)
             for update in pending_updates:
                 if progress_callback is not None and isinstance(update, dict):
                     progress_callback(update)
@@ -1070,7 +1103,11 @@ class IGraph:
         job_id = str(initial.get("job_id") or "").strip() if isinstance(initial, dict) else ""
         if not job_id:
             return initial if isinstance(initial, dict) else {"success": False, "error": str(initial)}
-        return await self._poll_text2graph_job(job_id, progress_callback=progress_callback)
+        return await self._poll_text2graph_job(
+            job_id,
+            tool_name=tool_name,
+            progress_callback=progress_callback,
+        )
 
     @staticmethod
     def _as_bool(value: Any, default: bool = False) -> bool:
@@ -1197,7 +1234,11 @@ class IGraph:
         feedback_triggering = self._feedback_triggering_tool_names()
         for tc in tool_calls:
             name = str(tc.get("name") or "")
-            if name in feedback_triggering or name in virtual_names:
+            if (
+                name in feedback_triggering
+                or name in virtual_names
+                or name in _GRAPH_MUTATION_TOOLS
+            ):
                 return True
         return False
 
@@ -1274,12 +1315,19 @@ class IGraph:
                     )
                 elif kind == "result":
                     self.logger.log_tool_result(tc["name"], payload)
+                    extra_events, context_result = self._prepare_tool_result_for_observation(
+                        tc["name"],
+                        payload,
+                        str(call_id or ""),
+                    )
+                    for extra_event in extra_events:
+                        yield extra_event
                     results_by_call_id[str(call_id or "")] = {
                         "call_id": call_id,
                         "server": tc.get("server", "graph"),
                         "name": tc["name"],
                         "arguments": tc.get("arguments", {}),
-                        "result": payload,
+                        "result": context_result,
                     }
                     yield {"type": "tool_result", "tool": tc["name"], "call_id": call_id}
                 elif kind is DONE:
@@ -1770,7 +1818,18 @@ class IGraph:
             viz_data["communities"] = payload["community"]
         if "communities" in payload:
             viz_data["communities"] = payload["communities"]
-        for key in ("directed", "num_nodes", "num_edges", "num_edge_entries", "num_unique_edges", "semantic_type", "storage_type"):
+        for key in (
+            "directed",
+            "num_nodes",
+            "num_edges",
+            "num_edge_entries",
+            "num_unique_edges",
+            "semantic_type",
+            "storage_type",
+            "truncated",
+            "total_nodes",
+            "truncated_to",
+        ):
             if key in payload:
                 viz_data[key] = payload[key]
 
@@ -1819,6 +1878,174 @@ class IGraph:
                 viz_data["highlights"] = flat
 
         return {"type": "graph_visualize", "data": viz_data}
+
+    @staticmethod
+    def _safe_graph_id(call_id: str = "") -> str:
+        raw = str(call_id or "").strip()
+        safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in raw)
+        return f"ig-{safe}" if safe else f"ig-{uuid.uuid4().hex[:10]}"
+
+    @classmethod
+    def _visible_graph_payload_from_event(
+        cls,
+        viz_event: Optional[dict],
+        *,
+        call_id: str = "",
+    ) -> Optional[dict]:
+        if not isinstance(viz_event, dict) or viz_event.get("type") != "graph_visualize":
+            return None
+        data = viz_event.get("data")
+        if not isinstance(data, dict):
+            return None
+        nodes = data.get("nodes")
+        links = data.get("links", data.get("edges"))
+        if not isinstance(nodes, list) or not isinstance(links, list):
+            return None
+
+        edges: List[dict] = []
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            src = link.get("source", link.get("src"))
+            dst = link.get("target", link.get("dst"))
+            if src is None or dst is None:
+                continue
+            edge = {"src": src, "dst": dst, "source": src, "target": dst}
+            if "weight" in link:
+                edge["weight"] = link.get("weight")
+            edges.append(edge)
+
+        graph: dict[str, Any] = {
+            "id": cls._safe_graph_id(call_id),
+            "nodes": cls._clone_data(nodes),
+            "edges": edges,
+            "directed": bool(data.get("directed", True)),
+            "num_nodes": int(data.get("num_nodes", len(nodes)) or 0),
+            "num_edges": int(data.get("num_edges", len(edges)) or 0),
+            "activeHighlights": {},
+        }
+        if isinstance(data.get("highlights"), list):
+            graph["highlights"] = cls._clone_data(data["highlights"])
+        communities = data.get("communities")
+        if communities is not None:
+            graph["communities"] = cls._clone_data(communities)
+        for key in ("truncated", "total_nodes", "truncated_to"):
+            if key in data:
+                graph[key] = cls._clone_data(data[key])
+        return graph
+
+    def _remember_visible_graph(self, graph: Optional[dict]) -> None:
+        if not isinstance(graph, dict):
+            return
+        if not isinstance(self._visible_graphs_for_turn, list):
+            self._visible_graphs_for_turn = []
+        graph_id = str(graph.get("id") or "")
+        if graph_id and any(str(g.get("id") or "") == graph_id for g in self._visible_graphs_for_turn):
+            return
+        self._visible_graphs_for_turn.append(self._clone_data(graph))
+
+    @staticmethod
+    def _build_report_event(result_str: str, call_id: str = "") -> Optional[dict]:
+        try:
+            payload = json.loads(result_str)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            return None
+        report = payload.get("report")
+        if not isinstance(report, dict) or report.get("version") != "analysis_report.v1":
+            return None
+        return {
+            "type": "analysis_report",
+            "call_id": str(call_id or ""),
+            "data": {"report": copy.deepcopy(report)},
+        }
+
+    def _remember_visible_report(self, report: Optional[dict]) -> None:
+        if not isinstance(report, dict):
+            return
+        if not isinstance(self._visible_reports_for_turn, list):
+            self._visible_reports_for_turn = []
+        report_id = str(report.get("id") or "").strip()
+        if report_id and any(
+            str(item.get("id") or "").strip() == report_id
+            for item in self._visible_reports_for_turn
+            if isinstance(item, dict)
+        ):
+            return
+        self._visible_reports_for_turn.append(self._clone_data(report))
+
+    def _prepare_tool_result_for_observation(
+        self,
+        tool_name: str,
+        result_str: str,
+        call_id: str = "",
+    ) -> tuple[List[dict], str]:
+        if tool_name == "create_analysis_report":
+            try:
+                report_event = self._build_report_event(result_str, call_id=call_id)
+                if report_event is None:
+                    return [], result_str
+                self._remember_visible_report(report_event["data"]["report"])
+                return [report_event], self._summarize_report_result(result_str)
+            except Exception:
+                return [], result_str
+
+        if tool_name != "visualize_subgraph":
+            return [], result_str
+
+        events: List[dict] = []
+        try:
+            viz_event = self._build_visualize_event(result_str)
+            if viz_event is not None:
+                graph_payload = self._visible_graph_payload_from_event(
+                    viz_event,
+                    call_id=call_id,
+                )
+                self._remember_visible_graph(graph_payload)
+                events.append(viz_event)
+        except Exception:
+            events = []
+        return events, self._summarize_visualize_result(result_str)
+
+    @staticmethod
+    def _summarize_report_result(result_str: str) -> str:
+        try:
+            payload = json.loads(result_str)
+        except (json.JSONDecodeError, TypeError):
+            return result_str
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            return result_str
+        report = payload.get("report")
+        if not isinstance(report, dict) or report.get("version") != "analysis_report.v1":
+            return result_str
+
+        sections = report.get("sections")
+        sections = sections if isinstance(sections, list) else []
+        metric_count = 0
+        chart_count = 0
+        table_count = 0
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            metrics = section.get("metrics")
+            charts = section.get("charts")
+            tables = section.get("tables")
+            metric_count += len(metrics) if isinstance(metrics, list) else 0
+            chart_count += len(charts) if isinstance(charts, list) else 0
+            table_count += len(tables) if isinstance(tables, list) else 0
+
+        title = str(report.get("title") or "图分析报告").strip()
+        intent = str(report.get("intent") or "analysis").strip()
+        summary = str(report.get("summary") or "").strip()
+        result = (
+            f"图分析报告已生成：标题「{title}」，意图 {intent}，"
+            f"包含 {len(sections)} 个章节、{metric_count} 个指标、"
+            f"{chart_count} 个图表和 {table_count} 个表格。"
+        )
+        if summary:
+            result += f" 摘要：{summary}"
+        return result + " 完整报告已作为 artifact 发送到前端，无需在回答中重复完整数据。"
 
     @staticmethod
     def _summarize_visualize_result(result_str: str) -> str:
@@ -2364,14 +2591,13 @@ class IGraph:
                         )
                         return
                     self.logger.log_tool_result(tc["name"], result_str)
-                    # 可视化工具：先推 SSE 事件，再用摘要写入上下文，避免大图撑爆 token
-                    if tc["name"] == "visualize_subgraph":
-                        viz_event = self._build_visualize_event(result_str)
-                        if viz_event is not None:
-                            yield viz_event
-                        context_result = self._summarize_visualize_result(result_str)
-                    else:
-                        context_result = result_str
+                    extra_events, context_result = self._prepare_tool_result_for_observation(
+                        tc["name"],
+                        result_str,
+                        str(call_id or ""),
+                    )
+                    for extra_event in extra_events:
+                        yield extra_event
                     batch_observations.append(
                         {
                             "call_id": call_id,
@@ -2594,14 +2820,13 @@ class IGraph:
                             }
                             return
                         self.logger.log_tool_result(tc["name"], result_str)
-                        # 可视化工具：先推 SSE 事件，再用摘要写入上下文，避免大图撑爆 token
-                        if tc["name"] == "visualize_subgraph":
-                            viz_event = self._build_visualize_event(result_str)
-                            if viz_event is not None:
-                                yield viz_event
-                            context_result = self._summarize_visualize_result(result_str)
-                        else:
-                            context_result = result_str
+                        extra_events, context_result = self._prepare_tool_result_for_observation(
+                            tc["name"],
+                            result_str,
+                            str(call_id or ""),
+                        )
+                        for extra_event in extra_events:
+                            yield extra_event
                         batch_obs.append({
                             "call_id": call_id,
                             "server": tc.get("server", "graph"),
@@ -2781,6 +3006,8 @@ class IGraph:
         comment: str = "",
     ):
         await self._ensure_connected()
+        self._visible_graphs_for_turn = []
+        self._visible_reports_for_turn = []
 
         request = self._pending_feedback
         if request is None:
@@ -2938,6 +3165,13 @@ class IGraph:
                     return
 
                 self.logger.log_tool_result(tool_name, result_str)
+                extra_events, context_result = self._prepare_tool_result_for_observation(
+                    tool_name,
+                    result_str,
+                    call_id,
+                )
+                for extra_event in extra_events:
+                    yield extra_event
                 yield {
                     "type": "solve_tool_result",
                     "step_id": plan_step.step_id,
@@ -2949,7 +3183,7 @@ class IGraph:
                     "server": pending_tool_call.get("server", "graph"),
                     "name": tool_name,
                     "arguments": resumed_args,
-                    "result": result_str,
+                    "result": context_result,
                 }
                 for obs_msg in self.context_manager.build_tool_observation([obs]):
                     step_messages.append(obs_msg)
@@ -3006,13 +3240,20 @@ class IGraph:
                     yield {"type": "error", "error": str(e)}
                     return
                 self.logger.log_tool_result(tool_name, result_str)
+                extra_events, context_result = self._prepare_tool_result_for_observation(
+                    tool_name,
+                    result_str,
+                    call_id,
+                )
+                for extra_event in extra_events:
+                    yield extra_event
                 yield {"type": "tool_result", "tool": tool_name, "call_id": call_id}
                 obs = {
                     "call_id": call_id,
                     "server": "graph",
                     "name": tool_name,
                     "arguments": resumed_args,
-                    "result": result_str,
+                    "result": context_result,
                 }
                 for obs_msg in self.context_manager.build_tool_observation([obs]):
                     self.context_manager.messages.append(obs_msg)
@@ -3039,6 +3280,8 @@ class IGraph:
             solver_steps=self._build_visible_solver_steps(completed_plan),
             progress_items=list(run_state.get("progress_items", [])),
             feedback_request=resolved_feedback_request if isinstance(resolved_feedback_request, dict) else None,
+            graphs=list(self._visible_graphs_for_turn),
+            reports=list(self._visible_reports_for_turn),
         )
         self.context_manager.update_messages(self.context_manager.messages)
         yield {
@@ -3073,6 +3316,8 @@ class IGraph:
     async def _chat_stream_impl(self, user_input: str):
         """实际执行聊天循环。"""
         await self._ensure_connected()
+        self._visible_graphs_for_turn = []
+        self._visible_reports_for_turn = []
 
         # Mark new user turn so selected tools and selector cache reset together.
         self._turn_selected_tool_names.clear()
@@ -3218,6 +3463,8 @@ class IGraph:
                 solver_steps=self._build_visible_solver_steps(completed_plan),
                 feedback_request=self.pending_feedback(),
                 progress_items=list(run_state.get("progress_items", [])),
+                graphs=list(self._visible_graphs_for_turn),
+                reports=list(self._visible_reports_for_turn),
             )
 
             turn_messages_for_memory = [

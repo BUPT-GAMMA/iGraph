@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import numpy as np
@@ -462,15 +463,27 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
     raw_num_nodes = _field("num_nodes")
     x_val = _field("x")
     x_array = _to_numpy(x_val)
-    if isinstance(raw_num_nodes, (int, np.integer)) and not isinstance(raw_num_nodes, bool):
+    y_val = _field("y")
+    y_array = _to_numpy(y_val)
+    edge_value = _field("edge_index")
+    edge_array = _to_numpy(edge_value)
+    if isinstance(raw_num_nodes, torch.Tensor) and raw_num_nodes.numel() == 1:
+        num_nodes = int(raw_num_nodes.item())
+        if num_nodes < 0:
+            raise ValueError(f".pt 文件中的 num_nodes 不能为负数: {path}")
+    elif isinstance(raw_num_nodes, (int, np.integer)) and not isinstance(raw_num_nodes, bool):
         num_nodes = int(raw_num_nodes)
         if num_nodes < 0:
             raise ValueError(f".pt 文件中的 num_nodes 不能为负数: {path}")
     elif x_array is not None and x_array.ndim >= 1:
         num_nodes = int(x_array.shape[0])
+    elif y_array is not None and y_array.ndim >= 1:
+        num_nodes = int(y_array.shape[0])
+    elif edge_array is not None and edge_array.size:
+        num_nodes = int(edge_array.max()) + 1
     else:
         raise ValueError(
-            f"无法从 .pt 单图文件确定节点数（需要 num_nodes 或数组形式的 x）: {path}"
+            f"无法从 .pt 单图文件确定节点数（需要 num_nodes、x、y 或 edge_index）: {path}"
         )
 
     # ── node name maps ──────────────────────────────────────────────
@@ -500,9 +513,7 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
         id2node = {node_id: node_name for node_name, node_id in node2id.items()}
 
     # ── edge_index ───────────────────────────────────────────────────
-    edge_value = _field("edge_index")
     if edge_value is not None:
-        edge_array = _to_numpy(edge_value)
         if edge_array is None:
             raise ValueError(f".pt 文件中的 edge_index 必须是 Tensor 或数组: {path}")
         if edge_array.ndim != 2:
@@ -540,9 +551,7 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
 
     # ── node_label ───────────────────────────────────────────────────
     node_label: Optional[np.ndarray] = None
-    y_val = _field("y")
     if y_val is not None:
-        y_array = _to_numpy(y_val)
         if y_array is None or y_array.ndim == 0:
             raise ValueError(f".pt 文件中的 y 必须是节点标签数组: {path}")
         if y_array.shape[0] != num_nodes:
@@ -552,6 +561,27 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
                 "load_graph_classification_dataset。"
             )
         node_label = _as_label_array(y_array)
+
+    # ── node_type / edge_type ────────────────────────────────────────
+    node_type: Optional[np.ndarray] = None
+    node_type_value = _field("node_type")
+    if node_type_value is not None:
+        node_type_array = _to_numpy(node_type_value)
+        if node_type_array is None:
+            raise ValueError(f".pt 文件中的 node_type 必须是 Tensor 或数组: {path}")
+        node_type = np.asarray(node_type_array).reshape(-1)
+        if node_type.shape[0] != num_nodes:
+            raise ValueError(f".pt 文件中的 node_type 与 num_nodes 不一致: {path}")
+
+    edge_type: Optional[np.ndarray] = None
+    edge_type_value = _field("edge_type")
+    if edge_type_value is not None:
+        edge_type_array = _to_numpy(edge_type_value)
+        if edge_type_array is None:
+            raise ValueError(f".pt 文件中的 edge_type 必须是 Tensor 或数组: {path}")
+        edge_type = np.asarray(edge_type_array).reshape(-1)
+        if edge_type.shape[0] != edge_index.shape[1]:
+            raise ValueError(f".pt 文件中的 edge_type 与边数不一致: {path}")
 
     # ── node_text ────────────────────────────────────────────────────
     node_text: Optional[List[str]] = None
@@ -588,6 +618,14 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
             ea_array = _to_numpy(ea)
             if ea_array is not None:
                 edge_feat = ea_array.astype(np.float32)
+
+    if _field("edge_timestamp") is not None:
+        warnings.warn(
+            "PT 文件包含 edge_timestamp，但当前 GraphData 尚无对应字段；"
+            "图结构可正常加载，该字段暂未导入。",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     # ── label_names ──────────────────────────────────────────────────
     label_names: Optional[List[str]] = None
@@ -649,7 +687,13 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
         return None
 
     train_mask = _extract_mask("train_mask", "train_masks")
-    val_mask = _extract_mask("val_mask", "valid_mask", "val_masks", "valid_masks")
+    val_mask = _extract_mask(
+        "val_mask",
+        "valid_mask",
+        "validation_mask",
+        "val_masks",
+        "valid_masks",
+    )
     test_mask = _extract_mask("test_mask", "test_masks")
 
     # ── name ─────────────────────────────────────────────────────────
@@ -675,7 +719,12 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
 
     semantic_type = _field("semantic_type")
     storage_type = _field("storage_type")
-    name = os.path.splitext(os.path.basename(path))[0]
+    raw_name = _field("name")
+    name = (
+        str(raw_name)
+        if isinstance(raw_name, str) and raw_name
+        else os.path.splitext(os.path.basename(path))[0]
+    )
 
     # PyG Data.is_directed() is structural, so only explicit stored flags set
     # semantics here. Symmetric storage without metadata remains unknown.
@@ -701,6 +750,8 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
         transform_log=transform_log,
         name=name,
         node_label=node_label,
+        node_type=node_type,
+        edge_type=edge_type,
         node_text=node_text,
         edge_text=edge_text,
         label_names=label_names,

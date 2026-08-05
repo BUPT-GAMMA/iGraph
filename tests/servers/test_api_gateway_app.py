@@ -86,8 +86,40 @@ class _FakeAgent:
         return {"current_tokens": 0, "token_limit": 1024, "percent": 0.0, "status": "ok"}
 
 
+class _ReportFakeAgent(_FakeAgent):
+    async def chat_stream(self, message: str):
+        yield {
+            "type": "analysis_report",
+            "call_id": "report-call",
+            "data": {
+                "report": {
+                    "version": "analysis_report.v1",
+                    "id": "rpt-gateway-test",
+                    "intent": "analysis",
+                    "title": "Gateway 报告",
+                    "sections": [],
+                }
+            },
+        }
+        yield {"type": "token", "content": f"echo:{message}"}
+
+
 class ApiGatewayAppTest(unittest.TestCase):
     def setUp(self) -> None:
+        self._admin_model_patch = patch.object(
+            gateway_app,
+            "_DEFAULT_ADMIN_MODEL",
+            gateway_app.DEFAULT_MODEL,
+        )
+        self._user_model_patch = patch.object(
+            gateway_app,
+            "_DEFAULT_NON_ADMIN_MODEL",
+            "qwen3.6-plus",
+        )
+        self._admin_model_patch.start()
+        self._user_model_patch.start()
+        self.addCleanup(self._admin_model_patch.stop)
+        self.addCleanup(self._user_model_patch.stop)
         self.server = create_server(
             config=_test_config(),
             manage_subprocesses=False,
@@ -166,6 +198,31 @@ class ApiGatewayAppTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertIn("无权使用模型", resp.json()["detail"])
+
+    def test_chat_stream_passes_analysis_report_event_through(self) -> None:
+        server = create_server(
+            config=_test_config(),
+            manage_subprocesses=False,
+            logger=_FakeLogger(),
+            agent_factory=_ReportFakeAgent,
+        )
+        client = TestClient(server.app)
+        created = client.post(
+            "/api/sessions",
+            json={"model": "gpt-5-2"},
+            headers=ADMIN_HEADERS,
+        )
+        sid = created.json()["session_id"]
+
+        response = client.post(
+            f"/api/sessions/{sid}/chat/stream",
+            json={"message": "report"},
+            headers=ADMIN_HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"type": "analysis_report"', response.text)
+        self.assertIn('"id": "rpt-gateway-test"', response.text)
 
 
 class ApiGatewayGraphDataRetryTest(unittest.IsolatedAsyncioTestCase):
