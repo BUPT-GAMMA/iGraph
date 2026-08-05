@@ -42,7 +42,8 @@ from backend.agent.model_registry import (
 )
 from backend.agent.memory.manager import MemoryManager
 from backend.agent.memory.scope import DEFAULT_SCOPE
-from backend.agent.memory.tools import VIRTUAL_MEMORY_TOOL_SPECS, handle_memory_tool_call
+from backend.agent.memory.tools import VIRTUAL_MEMORY_TOOL_SPECS
+from backend.agent.memory.file_provider import VIRTUAL_FILE_MEMORY_TOOL_SPECS
 from backend.agent.sub_agents.planner import AnalysisPlan, Planner
 from backend.agent.sub_agents.plan_solver import PlanSolver
 from backend.agent.sub_agents.context_compressor import ContextCompressor
@@ -78,6 +79,7 @@ _COMPACT_JSON = {"ensure_ascii": False, "separators": (",", ":")}
 _VIRTUAL_TOOL_SPECS: List[dict] = [
     *VIRTUAL_SKILL_TOOL_SPECS,
     *VIRTUAL_MEMORY_TOOL_SPECS,
+    *VIRTUAL_FILE_MEMORY_TOOL_SPECS,
     {
         "server": "igraph",
         "name": "tool_select",
@@ -273,7 +275,10 @@ class IGraph:
         self._has_graph: bool = bool(restored_has_graph)
         self._graph_node_count: int = 0
         self._graph_edge_count: int = 0
+        self._graph_unique_edge_count: int = 0
         self._graph_is_directed: bool = False
+        self._graph_semantic_type: str = "unknown"
+        self._graph_storage_type: str = "mixed"
         self._graph_has_weights: bool = False
         self._pending_feedback: Optional[dict[str, Any]] = None
         self._paused_plan_state: Optional[dict[str, Any]] = None
@@ -458,11 +463,16 @@ class IGraph:
                 if isinstance(payload, dict) and payload.get("success"):
                     self._has_graph = True
                     self._graph_node_count = int(payload.get("num_nodes") or 0)
-                    self._graph_edge_count = int(payload.get("num_edges") or 0)
+                    self._graph_edge_count = int(payload.get("num_edge_entries") or payload.get("num_edges") or 0)
+                    self._graph_unique_edge_count = int(payload.get("num_unique_edges") or 0)
+                    semantic_type = str(payload.get("semantic_type") or "").strip().lower()
+                    self._graph_semantic_type = semantic_type or ("directed" if bool(payload.get("directed")) else "unknown")
+                    self._graph_storage_type = str(payload.get("storage_type") or "mixed")
+                    self._graph_is_directed = self._graph_semantic_type == "directed"
                     self.logger.set_graph_meta(
                         has_graph=True,
                         node_count=payload.get("num_nodes"),
-                        edge_count=payload.get("num_edges"),
+                        edge_count=payload.get("num_edge_entries", payload.get("num_edges")),
                         graph_version=payload.get("graph_version"),
                     )
             except Exception:
@@ -736,15 +746,19 @@ class IGraph:
                 payload = json.loads(result_str)
                 if payload.get("success"):
                     self._has_graph = True
-                    self._graph_node_count = payload.get("num_nodes") or 0
-                    self._graph_edge_count = payload.get("num_edges") or 0
-                    self._graph_is_directed = bool(payload.get("directed"))
+                    self._graph_node_count = int(payload.get("num_nodes") or 0)
+                    self._graph_edge_count = int(payload.get("num_edge_entries") or payload.get("num_edges") or 0)
+                    self._graph_unique_edge_count = int(payload.get("num_unique_edges") or 0)
+                    semantic_type = str(payload.get("semantic_type") or "").strip().lower()
+                    self._graph_semantic_type = semantic_type or ("directed" if bool(payload.get("directed")) else "unknown")
+                    self._graph_storage_type = str(payload.get("storage_type") or "mixed")
+                    self._graph_is_directed = self._graph_semantic_type == "directed"
                     self._graph_has_weights = bool(payload.get("has_edge_weight"))
                     self.logger.set_graph_meta(
                         has_graph=True,
                         node_count=payload.get("num_nodes"),
-                        edge_count=payload.get("num_edges"),
-                        is_directed=payload.get("directed"),
+                        edge_count=payload.get("num_edge_entries", payload.get("num_edges")),
+                        is_directed=self._graph_is_directed,
                         has_weights=payload.get("has_edge_weight"),
                         graph_version=payload.get("graph_version"),
                     )
@@ -754,7 +768,10 @@ class IGraph:
             self._has_graph = False
             self._graph_node_count = 0
             self._graph_edge_count = 0
+            self._graph_unique_edge_count = 0
             self._graph_is_directed = False
+            self._graph_semantic_type = "unknown"
+            self._graph_storage_type = "mixed"
             self._graph_has_weights = False
             self.logger.set_graph_meta(has_graph=False, node_count=0, edge_count=0)
         elif name == "get_graph_info":
@@ -762,15 +779,19 @@ class IGraph:
                 payload = json.loads(result_str)
                 if payload.get("loaded"):
                     self._has_graph = True
-                    self._graph_node_count = payload.get("num_nodes") or 0
-                    self._graph_edge_count = payload.get("num_edges") or 0
-                    self._graph_is_directed = bool(payload.get("directed"))
+                    self._graph_node_count = int(payload.get("num_nodes") or 0)
+                    self._graph_edge_count = int(payload.get("num_edge_entries") or payload.get("num_edges") or 0)
+                    self._graph_unique_edge_count = int(payload.get("num_unique_edges") or 0)
+                    semantic_type = str(payload.get("semantic_type") or "").strip().lower()
+                    self._graph_semantic_type = semantic_type or ("directed" if bool(payload.get("directed")) else "unknown")
+                    self._graph_storage_type = str(payload.get("storage_type") or "mixed")
+                    self._graph_is_directed = self._graph_semantic_type == "directed"
                     self._graph_has_weights = bool(payload.get("graph_info", {}).get("has_edge_weight"))
                     self.logger.set_graph_meta(
                         has_graph=True,
                         node_count=payload.get("num_nodes"),
-                        edge_count=payload.get("num_edges"),
-                        is_directed=payload.get("directed"),
+                        edge_count=payload.get("num_edge_entries", payload.get("num_edges")),
+                        is_directed=self._graph_is_directed,
                         has_weights=payload.get("graph_info", {}).get("has_edge_weight"),
                         graph_version=payload.get("graph_version"),
                     )
@@ -1527,8 +1548,10 @@ class IGraph:
             return skill_result
 
         if self._memory_manager is not None:
-            engine = self._memory_manager.engine
-            mem_result = handle_memory_tool_call(name, args if isinstance(args, dict) else {}, engine)
+            mem_result = self._memory_manager.handle_tool_call(
+                name,
+                args if isinstance(args, dict) else {},
+            )
             if mem_result is not None:
                 return mem_result
 
@@ -1747,7 +1770,7 @@ class IGraph:
             viz_data["communities"] = payload["community"]
         if "communities" in payload:
             viz_data["communities"] = payload["communities"]
-        for key in ("directed", "num_nodes", "num_edges"):
+        for key in ("directed", "num_nodes", "num_edges", "num_edge_entries", "num_unique_edges", "semantic_type", "storage_type"):
             if key in payload:
                 viz_data[key] = payload[key]
 
@@ -1813,7 +1836,7 @@ class IGraph:
             return result_str
 
         num_nodes = payload.get("num_nodes", len(payload.get("nodes", [])))
-        num_edges = payload.get("num_edges", len(payload.get("edges", [])))
+        num_edges = payload.get("num_edge_entries", payload.get("num_edges", len(payload.get("edges", []))))
         directed  = payload.get("directed", True)
 
         truncated = payload.get("truncated", False)
@@ -1924,7 +1947,10 @@ class IGraph:
             return "graph_loaded=false"
         return (
             f"graph_loaded=true, nodes={self._graph_node_count}, "
-            f"edges={self._graph_edge_count}, "
+            f"edge_entries={self._graph_edge_count}, "
+            f"unique_edges={self._graph_unique_edge_count}, "
+            f"semantic_type={self._graph_semantic_type}, "
+            f"storage_type={self._graph_storage_type}, "
             f"directed={self._graph_is_directed}, "
             f"weighted={self._graph_has_weights}"
         )
@@ -1934,6 +1960,12 @@ class IGraph:
             "has_graph": self._has_graph,
             "node_count": self._graph_node_count,
             "edge_count": self._graph_edge_count,
+            "edge_entry_count": self._graph_edge_count,
+            "unique_edge_count": self._graph_unique_edge_count,
+            "num_edge_entries": self._graph_edge_count,
+            "num_unique_edges": self._graph_unique_edge_count,
+            "semantic_type": self._graph_semantic_type,
+            "storage_type": self._graph_storage_type,
             "is_directed": self._graph_is_directed,
             "has_weights": self._graph_has_weights,
         }

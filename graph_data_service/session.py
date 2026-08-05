@@ -29,6 +29,15 @@ class GraphSessionSummary:
     graph_version: int
     num_nodes: int = 0
     num_edges: int = 0
+    num_edge_entries: int = 0
+    num_unique_edges: int = 0
+    num_unique_directed_edges: int = 0
+    num_unique_undirected_edges: int = 0
+    semantic_type: str = "unknown"
+    storage_type: str = "mixed"
+    is_symmetric: bool = False
+    has_self_loops: bool = False
+    has_duplicate_entries: bool = False
     directed: bool = True
     has_node_names: bool = False
     has_edge_weight: bool = False
@@ -312,6 +321,15 @@ class GraphSession:
             graph_version=self.graph_version,
             num_nodes=self._graph.num_nodes,
             num_edges=self._graph.num_edges,
+            num_edge_entries=self._graph.num_edge_entries,
+            num_unique_edges=self._graph.num_unique_edges,
+            num_unique_directed_edges=self._graph.num_unique_directed_edges,
+            num_unique_undirected_edges=self._graph.num_unique_undirected_edges,
+            semantic_type=self._graph.semantic_type,
+            storage_type=self._graph.storage_type,
+            is_symmetric=self._graph.is_symmetric,
+            has_self_loops=self._graph.has_self_loops,
+            has_duplicate_entries=self._graph.has_duplicate_entries,
             directed=self._graph.directed,
             has_node_names=self._graph.has_node_names,
             has_edge_weight=self._graph.has_edge_weight,
@@ -419,6 +437,15 @@ class GraphSession:
             "loaded": graph is not None,
             "node_count": graph.num_nodes if graph is not None else 0,
             "edge_count": graph.num_edges if graph is not None else 0,
+            "edge_entry_count": graph.num_edge_entries if graph is not None else 0,
+            "unique_edge_count": graph.num_unique_edges if graph is not None else 0,
+            "num_unique_directed_edges": graph.num_unique_directed_edges if graph is not None else 0,
+            "num_unique_undirected_edges": graph.num_unique_undirected_edges if graph is not None else 0,
+            "semantic_type": graph.semantic_type if graph is not None else "unknown",
+            "storage_type": graph.storage_type if graph is not None else "mixed",
+            "is_symmetric": graph.is_symmetric if graph is not None else False,
+            "has_self_loops": graph.has_self_loops if graph is not None else False,
+            "has_duplicate_entries": graph.has_duplicate_entries if graph is not None else False,
             "is_directed": graph.directed if graph is not None else True,
             "has_weights": graph.has_edge_weight if graph is not None else False,
             "snapshot": str(snapshot_path) if snapshot_path is not None else "",
@@ -547,6 +574,15 @@ class GraphSession:
                     "loaded": True,
                     "node_count": gd.num_nodes,
                     "edge_count": gd.num_edges,
+                    "edge_entry_count": gd.num_edge_entries,
+                    "unique_edge_count": gd.num_unique_edges,
+                    "num_unique_directed_edges": gd.num_unique_directed_edges,
+                    "num_unique_undirected_edges": gd.num_unique_undirected_edges,
+                    "semantic_type": gd.semantic_type,
+                    "storage_type": gd.storage_type,
+                    "is_symmetric": gd.is_symmetric,
+                    "has_self_loops": gd.has_self_loops,
+                    "has_duplicate_entries": gd.has_duplicate_entries,
                     "is_directed": gd.directed,
                     "has_weights": gd.has_edge_weight,
                     "snapshot": str(path),
@@ -583,6 +619,15 @@ class GraphSession:
             "current": True,
             "num_nodes": self._graph.num_nodes,
             "num_edges": self._graph.num_edges,
+            "num_edge_entries": self._graph.num_edge_entries,
+            "num_unique_edges": self._graph.num_unique_edges,
+            "num_unique_directed_edges": self._graph.num_unique_directed_edges,
+            "num_unique_undirected_edges": self._graph.num_unique_undirected_edges,
+            "semantic_type": self._graph.semantic_type,
+            "storage_type": self._graph.storage_type,
+            "is_symmetric": self._graph.is_symmetric,
+            "has_self_loops": self._graph.has_self_loops,
+            "has_duplicate_entries": self._graph.has_duplicate_entries,
         }
 
     def discard_version(
@@ -642,6 +687,15 @@ class GraphSession:
             "graph_version": fallback_version,
             "num_nodes": self._graph.num_nodes if self._graph is not None else 0,
             "num_edges": self._graph.num_edges if self._graph is not None else 0,
+            "num_edge_entries": self._graph.num_edge_entries if self._graph is not None else 0,
+            "num_unique_edges": self._graph.num_unique_edges if self._graph is not None else 0,
+            "num_unique_directed_edges": self._graph.num_unique_directed_edges if self._graph is not None else 0,
+            "num_unique_undirected_edges": self._graph.num_unique_undirected_edges if self._graph is not None else 0,
+            "semantic_type": self._graph.semantic_type if self._graph is not None else "unknown",
+            "storage_type": self._graph.storage_type if self._graph is not None else "mixed",
+            "is_symmetric": self._graph.is_symmetric if self._graph is not None else False,
+            "has_self_loops": self._graph.has_self_loops if self._graph is not None else False,
+            "has_duplicate_entries": self._graph.has_duplicate_entries if self._graph is not None else False,
         }
 
     def bind_dataset(self, dataset_id: str, version: str) -> None:
@@ -734,6 +788,15 @@ class GraphSession:
             "graph_version": self.graph_version,
             "node_count": graph.num_nodes if graph is not None else 0,
             "edge_count": graph.num_edges if graph is not None else 0,
+            "edge_entry_count": graph.num_edge_entries if graph is not None else 0,
+            "unique_edge_count": graph.num_unique_edges if graph is not None else 0,
+            "num_unique_directed_edges": graph.num_unique_directed_edges if graph is not None else 0,
+            "num_unique_undirected_edges": graph.num_unique_undirected_edges if graph is not None else 0,
+            "semantic_type": graph.semantic_type if graph is not None else "unknown",
+            "storage_type": graph.storage_type if graph is not None else "mixed",
+            "is_symmetric": graph.is_symmetric if graph is not None else False,
+            "has_self_loops": graph.has_self_loops if graph is not None else False,
+            "has_duplicate_entries": graph.has_duplicate_entries if graph is not None else False,
             "is_directed": graph.directed if graph is not None else True,
             "has_weights": graph.has_edge_weight if graph is not None else False,
             "uploads": {

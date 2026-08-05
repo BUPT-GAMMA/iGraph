@@ -18,7 +18,7 @@ from graph_data_service.graph_data import GraphData
 from ..artifact_store import ArtifactStore
 from ..models import build_backbone, parse_gnn_options
 from ..schemas import TrainRequest
-from ..tasks import PreTrainTask, edge_index_tensor, node_names
+from ..tasks import PreTrainTask, message_passing_edge_index, node_names
 
 
 class PreTrainTrainer:
@@ -40,7 +40,7 @@ class PreTrainTrainer:
         ml_log = get_service_logger(session_id, "graph_ml")
 
         if method == "node2vec":
-            eidx = edge_index_tensor(gd)
+            eidx = message_passing_edge_index(gd)
             emb, metrics = self._train_node2vec(
                 session_id,
                 gd,
@@ -80,7 +80,7 @@ class PreTrainTrainer:
             raise ValueError(f"pretrain method={method} 需要 model")
 
         x = x.to(device)
-        eidx = edge_index_tensor(gd).to(device)
+        eidx = message_passing_edge_index(gd).to(device)
 
         hidden = int(req.algo_config.get("hidden_dim", 64))
         emb_dim = int(req.algo_config.get("embedding_dim", hidden))

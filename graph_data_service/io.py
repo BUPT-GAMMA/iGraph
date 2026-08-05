@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import numpy as np
 
+from graph_data_service.graph_structure import resolve_semantic_type
+
 if TYPE_CHECKING:
     from graph_data_service.graph_data import GraphData
 
@@ -24,11 +26,20 @@ def save_graph_data(graph: "GraphData", path: str) -> None:
     data: Dict[str, Any] = {
         "_num_nodes": np.array(graph.num_nodes),
         "_directed": np.array(graph.directed),
+        "_semantic_type": np.array(graph.semantic_type),
+        "_storage_type": np.array(graph.storage_type),
         "_name": np.array(graph.name),
         "edge_index": graph.edge_index,
     }
     if graph.graph_desc is not None:
         data["_graph_desc"] = np.array(graph.graph_desc)
+    if graph.graph_metadata:
+        data["_graph_metadata_json"] = np.array(
+            json.dumps(graph.graph_metadata, ensure_ascii=False),
+            dtype=object,
+        )
+    if graph.transform_log:
+        data["_transform_log"] = np.array(graph.transform_log, dtype=object)
 
     id2node = graph.id2node
     if id2node:
@@ -93,8 +104,19 @@ def load_graph_data(path: str, graph_cls: type["GraphData"]) -> "GraphData":
 
     num_nodes = int(raw["_num_nodes"])
     directed = bool(raw["_directed"])
+    semantic_type = str(raw["_semantic_type"]) if "_semantic_type" in raw else None
+    storage_type = str(raw["_storage_type"]) if "_storage_type" in raw else None
     name = str(raw["_name"]) if "_name" in raw else ""
     graph_desc = str(raw["_graph_desc"]) if "_graph_desc" in raw else None
+    graph_metadata: Optional[Dict[str, Any]] = None
+    if "_graph_metadata_json" in raw:
+        try:
+            payload = json.loads(str(raw["_graph_metadata_json"]))
+            if isinstance(payload, dict):
+                graph_metadata = payload
+        except Exception:
+            graph_metadata = None
+    transform_log = raw["_transform_log"].tolist() if "_transform_log" in raw else None
 
     id2node: Optional[Dict[int, str]] = None
     node2id: Optional[Dict[str, int]] = None
@@ -138,6 +160,10 @@ def load_graph_data(path: str, graph_cls: type["GraphData"]) -> "GraphData":
         edge_label=raw["edge_label"] if "edge_label" in raw else None,
         edge_type=raw["edge_type"].tolist() if "edge_type" in raw else None,
         graph_label=graph_label,
+        semantic_type=semantic_type,
+        storage_type=storage_type,
+        graph_metadata=graph_metadata,
+        transform_log=transform_log,
         node_text=node_text,
         edge_text=edge_text,
         label_names=label_names,
@@ -175,11 +201,17 @@ def save_graph_data_json(graph: "GraphData", path: str) -> None:
         "schema": "graph_data.v1",
         "num_nodes": int(graph.num_nodes),
         "directed": bool(graph.directed),
+        "semantic_type": graph.semantic_type,
+        "storage_type": graph.storage_type,
         "name": graph.name,
         "edge_index": graph.edge_index.tolist(),
     }
     if graph.graph_desc is not None:
         doc["graph_desc"] = graph.graph_desc
+    if graph.graph_metadata:
+        doc["graph_metadata"] = graph.graph_metadata
+    if graph.transform_log:
+        doc["transform_log"] = list(graph.transform_log)
     if graph.id2node:
         doc["id2node"] = {str(k): str(v) for k, v in graph.id2node.items()}
     if graph.edge_names is not None:
@@ -272,6 +304,12 @@ def load_graph_data_json(path: str, graph_cls: type["GraphData"]) -> "GraphData"
     node_text = _as_str_list(doc.get("node_text"))
     edge_text = _as_str_list(doc.get("edge_text"))
     label_names = _as_str_list(doc.get("label_names"))
+    graph_metadata = doc.get("graph_metadata")
+    if not isinstance(graph_metadata, dict):
+        graph_metadata = None
+    transform_log = doc.get("transform_log")
+    if not isinstance(transform_log, list):
+        transform_log = None
     train_mask = (
         np.asarray(doc["train_mask"], dtype=bool)
         if doc.get("train_mask") is not None
@@ -299,6 +337,10 @@ def load_graph_data_json(path: str, graph_cls: type["GraphData"]) -> "GraphData"
         edge_feat=edge_feat,
         graph_desc=graph_desc,
         directed=directed,
+        semantic_type=doc.get("semantic_type"),
+        storage_type=doc.get("storage_type"),
+        graph_metadata=graph_metadata,
+        transform_log=transform_log,
         name=name,
         node_label=node_label,
         node_type=node_type,
@@ -611,18 +653,39 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
     test_mask = _extract_mask("test_mask", "test_masks")
 
     # ── name ─────────────────────────────────────────────────────────
+    graph_metadata: Optional[Dict[str, Any]] = None
+    raw_graph_metadata = _field("graph_metadata")
+    if isinstance(raw_graph_metadata, dict):
+        graph_metadata = dict(raw_graph_metadata)
+    else:
+        raw_graph_metadata_json = _field("_graph_metadata_json")
+        if raw_graph_metadata_json is not None:
+            try:
+                parsed_graph_metadata = json.loads(str(raw_graph_metadata_json))
+                if isinstance(parsed_graph_metadata, dict):
+                    graph_metadata = parsed_graph_metadata
+            except Exception:
+                graph_metadata = None
+
+    transform_log = _field("transform_log")
+    if isinstance(transform_log, np.ndarray):
+        transform_log = transform_log.tolist()
+    if not isinstance(transform_log, list):
+        transform_log = None
+
+    semantic_type = _field("semantic_type")
+    storage_type = _field("storage_type")
     name = os.path.splitext(os.path.basename(path))[0]
 
+    # PyG Data.is_directed() is structural, so only explicit stored flags set
+    # semantics here. Symmetric storage without metadata remains unknown.
     directed = True
-    is_directed = _field("is_directed")
-    if callable(is_directed):
-        directed = bool(is_directed())
-    elif is_directed is not None:
-        directed = bool(is_directed)
-    else:
-        raw_directed = _field("directed")
-        if raw_directed is not None:
-            directed = bool(raw_directed)
+    raw_directed = _field("directed", missing)
+    raw_is_directed = _field("is_directed", missing)
+    if raw_directed is not missing and not callable(raw_directed):
+        directed = bool(raw_directed)
+    elif raw_is_directed is not missing and not callable(raw_is_directed):
+        directed = bool(raw_is_directed)
 
     return graph_cls(
         num_nodes=num_nodes,
@@ -632,6 +695,10 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
         node_feat=node_feat,
         edge_feat=edge_feat,
         directed=directed,
+        semantic_type=semantic_type,
+        storage_type=storage_type,
+        graph_metadata=graph_metadata,
+        transform_log=transform_log,
         name=name,
         node_label=node_label,
         node_text=node_text,

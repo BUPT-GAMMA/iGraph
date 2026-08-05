@@ -13,7 +13,7 @@ from graph_data_service.graph_data import GraphData
 from ..artifact_store import ArtifactRef, ArtifactStore
 from ..models import build_backbone, parse_gnn_options
 from ..schemas import InferRequest
-from ..tasks import LinkPredictionTask, binary_auc, edge_index_tensor, node_names, sample_negative_edges
+from ..tasks import LinkPredictionTask, binary_auc, message_passing_edge_index, node_names, sample_negative_edges
 
 
 class LinkPredictionInfer:
@@ -31,7 +31,7 @@ class LinkPredictionInfer:
         device: torch.device,
     ) -> Dict[str, Any]:
         x = x.to(device)
-        eidx = edge_index_tensor(gd).to(device)
+        eidx = message_passing_edge_index(gd).to(device)
 
         cfg = meta.get("model_config", {}) or {}
         emb_dim = int(cfg.get("embedding_dim", 64))
@@ -182,14 +182,15 @@ class LinkPredictionInfer:
         candidates: List[Tuple[int, int]] = []
         seen = 0
         sampled = False
+        treat_as_undirected = gd.semantic_type == "undirected"
         for u in range(gd.num_nodes):
-            v_range = range(gd.num_nodes) if gd.directed else range(u + 1, gd.num_nodes)
+            v_range = range(gd.num_nodes) if not treat_as_undirected else range(u + 1, gd.num_nodes)
             for v in v_range:
                 if u == v:
                     continue
                 if gd.has_edge(u, v):
                     continue
-                if not gd.directed and gd.has_edge(v, u):
+                if treat_as_undirected and gd.has_edge(v, u):
                     continue
                 seen += 1
                 pair = (u, v)
@@ -210,7 +211,7 @@ class LinkPredictionInfer:
         *,
         seed: int,
     ) -> Dict[str, Any]:
-        pos_edges = [(int(u), int(v)) for u, v in gd.all_edges()]
+        pos_edges = [(int(u), int(v)) for u, v in gd.logical_edges()]
         if not pos_edges:
             return {"available": False, "reason": "current_graph_has_no_positive_edges"}
         existing = set(pos_edges)
@@ -218,7 +219,7 @@ class LinkPredictionInfer:
             num_samples=len(pos_edges),
             existing_edges=existing,
             num_nodes=gd.num_nodes,
-            directed=gd.directed,
+            directed=gd.semantic_type != "undirected",
             seed=seed + 17,
         )
         if not neg_edges:

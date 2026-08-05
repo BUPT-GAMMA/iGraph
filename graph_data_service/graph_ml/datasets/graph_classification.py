@@ -81,6 +81,8 @@ class GraphClassificationDatasetBundle:
             "has_missing_labels": bool(self.metadata.get("has_missing_labels", False)),
             "missing_label_rate": float(self.metadata.get("missing_label_rate", 0.0)),
             "num_edgeless_graphs": int(self.metadata.get("num_edgeless_graphs", 0)),
+            "semantic_type": str(self.metadata.get("semantic_type") or "unknown"),
+            "storage_type": str(self.metadata.get("storage_type") or "unknown"),
         }
 
 
@@ -133,6 +135,13 @@ def graph_classification_sample_to_graph_data(
     )
     id2node = {node_id: f"n{node_id}" for node_id in range(num_nodes)}
     node2id = {name: node_id for node_id, name in id2node.items()}
+    graph_metadata = dict(bundle.metadata or {})
+    graph_metadata.setdefault("dataset_id", bundle.dataset_id)
+    graph_metadata.setdefault("dataset_name", bundle.name)
+    graph_metadata.setdefault("source_filename", bundle.source_filename)
+    semantic_type = _bundle_semantic_type(bundle)
+    if semantic_type != "unknown":
+        graph_metadata.setdefault("semantic_type", semantic_type)
 
     return GraphData(
         num_nodes=num_nodes,
@@ -143,7 +152,8 @@ def graph_classification_sample_to_graph_data(
         node_feat=node_type_ids.reshape(-1, 1).astype(np.float32),
         edge_feat=edge_type_ids.reshape(-1, 1).astype(np.float32),
         graph_desc=graph_desc,
-        directed=_is_pyg_graph_directed(sample),
+        directed=semantic_type != "undirected",
+        graph_metadata=graph_metadata,
         name=f"{bundle.name}_graph_{graph_index}",
         node_type=node_types,
         edge_type=edge_types,
@@ -197,14 +207,15 @@ def _json_safe_label(label: int | float | np.ndarray) -> Any:
     return label
 
 
-def _is_pyg_graph_directed(graph: Data) -> bool:
-    is_directed = getattr(graph, "is_directed", None)
-    if callable(is_directed):
-        try:
-            return bool(is_directed())
-        except Exception:
-            return True
-    return True
+def _bundle_semantic_type(bundle: GraphClassificationDatasetBundle) -> str:
+    explicit = str((bundle.metadata or {}).get("semantic_type") or "").strip().lower()
+    if explicit in {"directed", "undirected", "unknown"}:
+        return explicit
+    name = str(bundle.name or "").strip().lower()
+    source = str(bundle.source_filename or "").strip().lower()
+    if name in {"hiv", "pcba"} or "hiv" in source or "pcba" in source:
+        return "undirected"
+    return "unknown"
 
 
 def load_graph_classification_dataset(
@@ -493,6 +504,7 @@ def _validate_and_normalize_payload(
         source_filename=source_filename,
         num_tasks=num_tasks,
     )
+    semantic_type = "undirected" if dataset_name in {"hiv", "pcba"} else "unknown"
 
     metadata = {
         "prompt_split_summary": prompt_split_summary,
@@ -509,6 +521,9 @@ def _validate_and_normalize_payload(
             num_missing_labels / num_total_labels if num_total_labels else 0.0
         ),
         "num_edgeless_graphs": num_edgeless_graphs,
+        "semantic_type": semantic_type,
+        "storage_type": "bidirectional" if semantic_type == "undirected" else "unknown",
+        "semantic_source": "dataset_profile" if semantic_type != "unknown" else "unknown",
         "uses_edge_features": False,
     }
     bundle = GraphClassificationDatasetBundle(

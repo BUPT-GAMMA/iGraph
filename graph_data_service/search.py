@@ -205,6 +205,9 @@ class EntitySearchIndex:
         label = self._jsonable_label(gd.get_node_label_by_id(node_id)) if gd.has_node_label else None
         in_degree = gd.in_degree(node_id)
         out_degree = gd.out_degree(node_id)
+        degree = gd.degree(node_id)
+        total_degree = gd.total_degree(node_id)
+        num_neighbors = gd.num_neighbors(node_id)
         neighbors = [self._node_name(nid) for nid in gd.neighbors(node_id)[:5]]
         node_text = gd.node_text[node_id] if gd.has_node_text and gd.node_text else None
         if node_text:
@@ -221,7 +224,11 @@ class EntitySearchIndex:
             "label": label,
             "in_degree": in_degree,
             "out_degree": out_degree,
-            "total_degree": in_degree + out_degree,
+            "degree": degree,
+            "num_neighbors": num_neighbors,
+            "total_degree": total_degree,
+            "semantic_type": gd.semantic_type,
+            "storage_type": gd.storage_type,
             "neighbors_preview": neighbors,
             "document": document,
         }
@@ -432,9 +439,13 @@ class EntitySearchIndex:
             "score": round(float(score), 4),
             "node_type": doc.get("node_type"),
             "label": doc.get("label"),
+            "degree": doc["degree"],
+            "num_neighbors": doc["num_neighbors"],
             "in_degree": doc["in_degree"],
             "out_degree": doc["out_degree"],
             "total_degree": doc["total_degree"],
+            "semantic_type": doc.get("semantic_type"),
+            "storage_type": doc.get("storage_type"),
             "neighbors_preview": doc.get("neighbors_preview", []),
             "evidence": evidence,
             "text_preview": self._truncate(str(doc.get("document") or ""), _PREVIEW_CHARS),
@@ -534,6 +545,8 @@ class EntitySearchIndex:
         allowed = {
             "score",
             "node_id",
+            "degree",
+            "num_neighbors",
             "in_degree",
             "out_degree",
             "total_degree",

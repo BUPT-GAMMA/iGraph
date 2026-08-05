@@ -21,7 +21,7 @@ from ..tasks import (
     LinkPredictionTask,
     best_threshold,
     binary_auc,
-    edge_index_tensor,
+    message_passing_edge_index,
     node_names,
 )
 
@@ -42,7 +42,7 @@ class LinkPredictionTrainer:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> Dict[str, Any]:
         x = x.to(device)
-        eidx = edge_index_tensor(gd).to(device)
+        eidx = message_passing_edge_index(gd).to(device)
 
         task = LinkPredictionTask()
         batch = task.prepare(gd, req)

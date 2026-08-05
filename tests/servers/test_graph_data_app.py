@@ -9,20 +9,36 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
-import torch
 
-from fastapi.testclient import TestClient
+try:
+    import torch
+except ImportError:  # pragma: no cover - optional in minimal environments
+    torch = None
 
-from backend.logging.logger import close_service_loggers
-from graph_data_service.app import (
-    GraphDataService,
-    _graph_classification_profile_hint,
-    create_app,
-)
+try:
+    from fastapi.testclient import TestClient
+    from backend.logging.logger import close_service_loggers
+    from graph_data_service.app import (
+        GraphDataService,
+        _graph_classification_profile_hint,
+        create_app,
+    )
+except ImportError:  # pragma: no cover - optional in minimal environments
+    TestClient = None
+    close_service_loggers = None
+    GraphDataService = None
+    _graph_classification_profile_hint = None
+    create_app = None
+
 from graph_data_service.graph_data import GraphData
-from tests.fixtures.graph_classification import make_graph_classification_payload
+
+try:
+    from tests.fixtures.graph_classification import make_graph_classification_payload
+except ImportError:  # pragma: no cover - optional in minimal environments
+    make_graph_classification_payload = None
 
 
+@unittest.skipUnless(torch is not None and TestClient is not None and GraphDataService is not None, "requires torch and fastapi")
 class GraphDataAppTest(unittest.TestCase):
     def setUp(self) -> None:
         async def fake_text_graph_llm(prompt: str) -> str:
@@ -126,7 +142,12 @@ class GraphDataAppTest(unittest.TestCase):
         self.assertEqual(info.status_code, 200)
         body = info.json()
         self.assertTrue(body["loaded"])
+        self.assertEqual(body["num_edge_entries"], 3)
+        self.assertEqual(body["num_unique_edges"], 3)
+        self.assertEqual(body["semantic_type"], "directed")
         self.assertEqual(body["graph_info"]["node_feat_dim"], 2)
+        self.assertEqual(body["graph_info"]["num_edge_entries"], 3)
+        self.assertEqual(body["graph_info"]["num_unique_edges"], 3)
         self.assertEqual(body["graph_info"]["node_label_stats"]["visible"], 3)
         self.assertEqual(body["graph_info"]["node_label_stats"]["missing"], 1)
         self.assertIn("male", body["graph_info"]["node_label_values"])

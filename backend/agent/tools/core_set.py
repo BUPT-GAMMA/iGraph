@@ -12,5 +12,9 @@ CORE_TOOL_NAMES: set[str] = {
     "memory_delete",
     "memory_write",
     "memory_update",
+    "file_memory_read",
+    "file_memory_write",
+    "file_memory_update",
+    "file_memory_delete",
     "visualize_subgraph",
 }

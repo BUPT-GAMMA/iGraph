@@ -26,6 +26,15 @@ class DatasetMeta:
     created_at: str
     updated_at: str
     versions: list[str]
+    edge_entry_count: int = 0
+    unique_edge_count: int = 0
+    num_unique_directed_edges: int = 0
+    num_unique_undirected_edges: int = 0
+    semantic_type: str = "unknown"
+    storage_type: str = "mixed"
+    is_symmetric: bool = False
+    has_self_loops: bool = False
+    has_duplicate_entries: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -74,6 +83,15 @@ class DatasetRegistry:
             created_at=now,
             updated_at=now,
             versions=[version],
+            edge_entry_count=graph_data.num_edge_entries,
+            unique_edge_count=graph_data.num_unique_edges,
+            num_unique_directed_edges=graph_data.num_unique_directed_edges,
+            num_unique_undirected_edges=graph_data.num_unique_undirected_edges,
+            semantic_type=graph_data.semantic_type,
+            storage_type=graph_data.storage_type,
+            is_symmetric=graph_data.is_symmetric,
+            has_self_loops=graph_data.has_self_loops,
+            has_duplicate_entries=graph_data.has_duplicate_entries,
         )
         self._save_meta(meta)
         return meta
@@ -119,6 +137,15 @@ class DatasetRegistry:
         meta.node_count = graph_data.num_nodes
         meta.edge_count = graph_data.num_edges
         meta.is_directed = graph_data.directed
+        meta.edge_entry_count = graph_data.num_edge_entries
+        meta.unique_edge_count = graph_data.num_unique_edges
+        meta.num_unique_directed_edges = graph_data.num_unique_directed_edges
+        meta.num_unique_undirected_edges = graph_data.num_unique_undirected_edges
+        meta.semantic_type = graph_data.semantic_type
+        meta.storage_type = graph_data.storage_type
+        meta.is_symmetric = graph_data.is_symmetric
+        meta.has_self_loops = graph_data.has_self_loops
+        meta.has_duplicate_entries = graph_data.has_duplicate_entries
         meta.updated_at = _now_iso()
         self._save_meta(meta)
         return meta

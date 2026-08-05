@@ -9,6 +9,10 @@ import sys
 import uuid
 
 from backend.agent.igraph import IGraph
+from backend.agent.memory.builtin_provider import BuiltinMemoryProvider
+from backend.agent.memory.file_provider import FileMemoryProvider
+from backend.agent.memory.manager import MemoryManager
+from backend.agent.memory.memory_engine import MemoryEngine
 from backend.logging.logger import Logger
 from backend.runtime.dotenv_compat import load_dotenv_compat
 from backend.runtime.proxy_compat import setup_no_proxy
@@ -98,10 +102,21 @@ def main():
         session_logger = logger.create_session_logger(
             session_id, provider="transparent_openai_sdk", model=model
         )
+        memory_engine = MemoryEngine(
+            logger.LOGS_DIR,
+            getattr(logger, "store", None),
+            user_id="default_user",
+        )
+        memory_manager = MemoryManager(
+            BuiltinMemoryProvider(memory_engine),
+            extra=FileMemoryProvider(user_id="default_user"),
+        )
         agent = IGraph(
             session_logger=session_logger,
             model=model,
             mcp_url=mcp_url,
+            memory_manager=memory_manager,
+            user_id="default_user",
         )
         print(f"✅ Agent 就绪  |  会话 ID: {agent.session_id}")
     except Exception as e:

@@ -25,7 +25,7 @@ class GraphDataPtLoadTest(unittest.TestCase):
             torch.save(payload, path)
             return GraphData.load(path)
 
-    def test_pyg_single_graph_remains_compatible_and_preserves_direction(self) -> None:
+    def test_pyg_single_graph_without_explicit_semantics_is_conservative(self) -> None:
         payload = Data(
             x=torch.tensor([[1.0], [2.0], [3.0]]),
             edge_index=torch.tensor([[0, 1], [1, 0]], dtype=torch.long),
@@ -37,9 +37,31 @@ class GraphDataPtLoadTest(unittest.TestCase):
 
         self.assertEqual(graph.num_nodes, 3)
         self.assertEqual(graph.num_edges, 2)
-        self.assertFalse(graph.directed)
+        self.assertEqual(graph.semantic_type, "unknown")
+        self.assertEqual(graph.storage_type, "bidirectional")
+        self.assertEqual(graph.num_unique_edges, 2)
+        self.assertEqual(graph.num_unique_undirected_edges, 1)
         np.testing.assert_array_equal(graph.node_label, np.asarray([0, 1, 0]))
         np.testing.assert_allclose(graph.node_feat, np.asarray([[1.0], [2.0], [3.0]]))
+
+    def test_pyg_single_graph_with_explicit_semantic_metadata_preserves_undirected_counts(self) -> None:
+        payload = Data(
+            x=torch.tensor([[1.0], [2.0], [3.0]]),
+            edge_index=torch.tensor([[0, 1], [1, 0]], dtype=torch.long),
+            y=torch.tensor([0, 1, 0], dtype=torch.long),
+            num_nodes=3,
+            semantic_type="undirected",
+            graph_metadata={"semantic_type": "undirected", "storage_type": "bidirectional"},
+        )
+
+        graph = self._save_and_load(payload)
+
+        self.assertEqual(graph.semantic_type, "undirected")
+        self.assertEqual(graph.storage_type, "bidirectional")
+        self.assertEqual(graph.num_edge_entries, 2)
+        self.assertEqual(graph.num_unique_edges, 1)
+        self.assertEqual(graph.degree(0), 1)
+        self.assertEqual(graph.degree(1), 1)
 
     def test_single_graph_dict_aliases_node_map_and_e_by_two_edges(self) -> None:
         payload = {
