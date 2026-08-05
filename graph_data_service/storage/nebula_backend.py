@@ -7,15 +7,20 @@ small, session-scoped set of native graph queries.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import math
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
@@ -31,6 +36,7 @@ ENTITY_TAG = "igraph_entity"
 RELATION_EDGE = "igraph_relation"
 ENTITY_GRAPH_INDEX = "idx_igraph_entity_graph_key"
 RELATION_GRAPH_INDEX = "idx_igraph_relation_graph_key"
+_IMPORTER_NULL = "__IGRAPH_NULL_7f8f6c9b__"
 
 _GRAPH_FIELD_TYPES = {
     "scope_key": "string",
@@ -135,6 +141,15 @@ class NebulaConfig:
     max_retries: int = 3
     partition_num: int = 10
     replica_factor: int = 1
+    import_method: str = "auto"
+    importer_threshold: int = 100_000
+    importer_image: str = "docker.io/vesoft/nebula-importer:v4"
+    importer_binary: str = ""
+    importer_staging_dir: str = "data/nebula_importer"
+    importer_batch_size: int = 1000
+    importer_reader_concurrency: int = 4
+    importer_concurrency: int = 16
+    importer_timeout_seconds: int = 21_600
     config_error: str = ""
 
     @classmethod
@@ -158,6 +173,23 @@ class NebulaConfig:
             max_retries=_env_int("NEBULA_MAX_RETRIES", 3),
             partition_num=10,
             replica_factor=1,
+            import_method=os.getenv("NEBULA_IMPORT_METHOD", "auto").strip().lower(),
+            importer_threshold=_env_int("NEBULA_IMPORTER_THRESHOLD", 100_000),
+            importer_image=os.getenv(
+                "NEBULA_IMPORTER_IMAGE", "docker.io/vesoft/nebula-importer:v4"
+            ).strip(),
+            importer_binary=os.getenv("NEBULA_IMPORTER_BINARY", "").strip(),
+            importer_staging_dir=os.getenv(
+                "NEBULA_IMPORTER_STAGING_DIR", "data/nebula_importer"
+            ).strip(),
+            importer_batch_size=_env_int("NEBULA_IMPORTER_BATCH_SIZE", 1000),
+            importer_reader_concurrency=_env_int(
+                "NEBULA_IMPORTER_READER_CONCURRENCY", 4
+            ),
+            importer_concurrency=_env_int("NEBULA_IMPORTER_CONCURRENCY", 16),
+            importer_timeout_seconds=_env_int(
+                "NEBULA_IMPORTER_TIMEOUT_SECONDS", 21_600
+            ),
             config_error=config_error,
         )
 
@@ -178,6 +210,18 @@ class NebulaConfig:
         if self.replica_factor % 2 == 0:
             raise NebulaRepositoryError(
                 "NEBULA_UNAVAILABLE", "NebulaGraph replica_factor 必须为奇数"
+            )
+        if self.import_method not in {"auto", "client", "importer"}:
+            raise NebulaRepositoryError(
+                "NEBULA_UNAVAILABLE",
+                "NEBULA_IMPORT_METHOD 必须为 auto、client 或 importer",
+            )
+        if self.import_method != "client" and not (
+            self.importer_binary or self.importer_image
+        ):
+            raise NebulaRepositoryError(
+                "NEBULA_UNAVAILABLE",
+                "Importer 模式需要配置 NEBULA_IMPORTER_BINARY 或 NEBULA_IMPORTER_IMAGE",
             )
 
 
@@ -624,6 +668,17 @@ class NebulaGraphRepository:
             "space": self.config.space,
             "pool_size": self.config.pool_size,
             "batch_size": self.config.batch_size,
+            "import_method": self.config.import_method,
+            "importer_threshold": self.config.importer_threshold,
+            "importer_runtime": (
+                "binary" if self.config.importer_binary else "docker"
+            ),
+            "importer_image": (
+                "" if self.config.importer_binary else self.config.importer_image
+            ),
+            "importer_batch_size": self.config.importer_batch_size,
+            "importer_reader_concurrency": self.config.importer_reader_concurrency,
+            "importer_concurrency": self.config.importer_concurrency,
             "schema_wait_seconds": self.config.schema_wait_seconds,
             "max_retries": self.config.max_retries,
             "connected": False,
@@ -697,9 +752,104 @@ class NebulaGraphRepository:
             "properties(vertex).node_count AS node_count, "
             "properties(vertex).edge_count AS edge_count, "
             "properties(vertex).directed AS directed, "
+            "properties(vertex).graph_name AS graph_name, "
+            "properties(vertex).graph_desc AS graph_desc, "
+            "properties(vertex).graph_label_json AS graph_label_json, "
             "properties(vertex).synced_at AS synced_at"
         )
         return rows[0] if rows else None
+
+    def active_metadata(self, user_id: str, session_id: str) -> Optional[dict[str, Any]]:
+        """Return active graph metadata for a tenant-scoped session."""
+        self.ensure_schema()
+        return self._active_metadata(scope_key(user_id, session_id))
+
+    def graph_metadata(self, graph_key: str) -> Optional[dict[str, Any]]:
+        self.ensure_schema()
+        rows = self._query_rows(
+            f"FETCH PROP ON {GRAPH_TAG} {_ngql_literal(graph_key)} "
+            "YIELD properties(vertex).scope_key AS scope_key, "
+            "properties(vertex).graph_key AS graph_key, "
+            "properties(vertex).graph_version AS graph_version, "
+            "properties(vertex).node_count AS node_count, "
+            "properties(vertex).edge_count AS edge_count, "
+            "properties(vertex).directed AS directed, "
+            "properties(vertex).graph_name AS graph_name, "
+            "properties(vertex).graph_desc AS graph_desc, "
+            "properties(vertex).graph_label_json AS graph_label_json, "
+            "properties(vertex).synced_at AS synced_at"
+        )
+        return rows[0] if rows else None
+
+    def version_metadata(
+        self, user_id: str, session_id: str, graph_version: int
+    ) -> Optional[dict[str, Any]]:
+        key = graph_key_for(scope_key(user_id, session_id), graph_version)
+        return self.graph_metadata(key)
+
+
+    def activate_graph_key(
+        self,
+        user_id: str,
+        session_id: str,
+        graph_key: str,
+        *,
+        graph_version_override: Optional[int] = None,
+    ) -> dict[str, Any]:
+        meta = self.graph_metadata(graph_key)
+        if meta is None:
+            raise NebulaRepositoryError(
+                "QUERY_FAILED", f"NebulaGraph 图引用 {graph_key} 不存在"
+            )
+        scope = scope_key(user_id, session_id)
+        active_version = (
+            int(graph_version_override)
+            if graph_version_override is not None
+            else int(_row_get(meta, "graph_version", 0) or 0)
+        )
+        values = (
+            scope,
+            graph_key,
+            str(user_id or "_anonymous"),
+            session_id,
+            active_version,
+            int(_row_get(meta, "node_count", 0) or 0),
+            int(_row_get(meta, "edge_count", 0) or 0),
+            bool(_row_get(meta, "directed", True)),
+            _row_get(meta, "graph_name"),
+            _row_get(meta, "graph_desc"),
+            _row_get(meta, "graph_label_json"),
+            _row_get(meta, "synced_at") or datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
+        self._execute(
+            f"INSERT VERTEX {GRAPH_TAG}(scope_key,graph_key,user_id,session_id,graph_version,"
+            "node_count,edge_count,directed,graph_name,graph_desc,graph_label_json,synced_at) "
+            f"VALUES {_ngql_literal(scope)}:({','.join(_ngql_literal(v) for v in values)})"
+        )
+        activated = dict(meta)
+        activated["graph_version"] = active_version
+        return activated
+
+    def activate_version(
+        self, user_id: str, session_id: str, graph_version: int
+    ) -> dict[str, Any]:
+        key = graph_key_for(scope_key(user_id, session_id), graph_version)
+        return self.activate_graph_key(user_id, session_id, key)
+
+    def clear_active(self, user_id: str, session_id: str) -> None:
+        self.ensure_schema()
+        self._execute(f"DELETE VERTEX {_ngql_literal(scope_key(user_id, session_id))}")
+
+    def delete_graph_key(self, graph_key: str) -> int:
+        """Delete one immutable graph version by its server-issued key."""
+        self.ensure_schema()
+        return self._delete_graph_key(graph_key)
+
+    def delete_version(self, user_id: str, session_id: str, graph_version: int) -> int:
+        self.ensure_schema()
+        return self._delete_graph_key(
+            graph_key_for(scope_key(user_id, session_id), graph_version)
+        )
 
     def session_status(self, user_id: str, session_id: str, graph_version: int) -> dict[str, Any]:
         base = self.status()
@@ -765,10 +915,383 @@ class NebulaGraphRepository:
             return None
         return value if math.isfinite(value) else None
 
+    def _should_use_importer(self, graph: GraphData) -> bool:
+        if self.config.import_method == "client":
+            return False
+        if self.config.import_method == "importer":
+            return True
+        return (graph.num_nodes + graph.num_edges) >= self.config.importer_threshold
+
+    @staticmethod
+    def _importer_cell(value: Any) -> Any:
+        value = _jsonable(value)
+        if value is None:
+            return _IMPORTER_NULL
+        if isinstance(value, float) and not math.isfinite(value):
+            return _IMPORTER_NULL
+        return value
+
+    @staticmethod
+    def _importer_props(
+        rows: list[tuple[str, str, int, bool]],
+    ) -> list[dict[str, Any]]:
+        props: list[dict[str, Any]] = []
+        for name, type_name, index, nullable in rows:
+            prop: dict[str, Any] = {
+                "name": name,
+                "type": type_name,
+                "index": index,
+            }
+            if nullable:
+                prop.update({"nullable": True, "nullValue": _IMPORTER_NULL})
+            props.append(prop)
+        return props
+
+    def _write_importer_files(
+        self,
+        graph: GraphData,
+        graph_key: str,
+        *,
+        containerized: bool,
+        progress_callback=None,
+    ) -> tuple[Path, Path]:
+        staging_root = Path(self.config.importer_staging_dir).expanduser().resolve()
+        staging_root.mkdir(parents=True, exist_ok=True)
+        job_dir = Path(
+            tempfile.mkdtemp(prefix=f"{graph_key[:12]}-", dir=str(staging_root))
+        )
+        os.chmod(job_dir, 0o700)
+        nodes_path = job_dir / "nodes.csv"
+        edges_path = job_dir / "edges.csv"
+        config_path = job_dir / "importer.yaml"
+
+        def report(done: int, total: int, low: float, high: float, message: str) -> None:
+            if not progress_callback:
+                return
+            stride = max(1, total // 100)
+            if done == total or done % stride == 0:
+                ratio = 1.0 if total == 0 else done / total
+                progress_callback(
+                    {
+                        "progress": low + (high - low) * ratio,
+                        "message": message.format(done=done, total=total),
+                    }
+                )
+
+        # GraphData.id2node intentionally returns a defensive copy. Reading it
+        # inside the per-node loop copies the complete mapping N times and turns
+        # CSV generation into O(N^2) work for large graphs. Snapshot all graph
+        # properties once so this export remains linear in nodes plus edges.
+        id2node = graph.id2node
+        node_type = graph.node_type
+        node_label = graph.node_label
+        node_text = graph.node_text
+        edge_weight = graph.edge_weight
+        edge_names = graph.edge_names
+        edge_type = graph.edge_type
+        edge_label = graph.edge_label
+        edge_text = graph.edge_text
+
+        try:
+            with nodes_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle, lineterminator="\n")
+                for node_id in range(graph.num_nodes):
+                    writer.writerow(
+                        [
+                            node_vid(graph_key, node_id),
+                            graph_key,
+                            node_id,
+                            id2node.get(node_id, str(node_id)),
+                            _string_entry(node_type, node_id, "entity") or "entity",
+                            self._importer_cell(
+                                _json_text(_array_entry(node_label, node_id))
+                            ),
+                            self._importer_cell(
+                                _string_entry(node_text, node_id, "") or None
+                            ),
+                        ]
+                    )
+                    report(
+                        node_id + 1,
+                        graph.num_nodes,
+                        0.06,
+                        0.12,
+                        "正在生成节点 CSV：{done}/{total}",
+                    )
+
+            src_arr, dst_arr = graph.edge_index
+            with edges_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle, lineterminator="\n")
+                for edge_id in range(graph.num_edges):
+                    src = int(src_arr[edge_id])
+                    dst = int(dst_arr[edge_id])
+                    weight = (
+                        float(edge_weight[edge_id])
+                        if edge_weight is not None
+                        else 1.0
+                    )
+                    writer.writerow(
+                        [
+                            node_vid(graph_key, src),
+                            node_vid(graph_key, dst),
+                            edge_id,
+                            graph_key,
+                            edge_id,
+                            self._importer_cell(
+                                _string_entry(edge_names, edge_id, "") or None
+                            ),
+                            _string_entry(
+                                edge_type, edge_id, "related_to"
+                            )
+                            or "related_to",
+                            self._importer_cell(
+                                _json_text(_array_entry(edge_label, edge_id))
+                            ),
+                            self._importer_cell(weight),
+                            self._importer_cell(
+                                _string_entry(edge_text, edge_id, "") or None
+                            ),
+                            self._importer_cell(
+                                self._edge_confidence(graph, edge_id)
+                            ),
+                        ]
+                    )
+                    report(
+                        edge_id + 1,
+                        graph.num_edges,
+                        0.12,
+                        0.20,
+                        "正在生成边 CSV：{done}/{total}",
+                    )
+
+            source_root = Path("/igraph-import") if containerized else job_dir
+            importer_config = {
+                "client": {
+                    "version": "v3",
+                    "address": ",".join(
+                        f"{host}:{port}" for host, port in self.config.hosts
+                    ),
+                    "user": self.config.user,
+                    "password": self.config.password,
+                    "concurrencyPerAddress": min(
+                        self.config.importer_concurrency, 32
+                    ),
+                    "retry": self.config.max_retries,
+                    "retryInitialInterval": "1s",
+                },
+                "manager": {
+                    "spaceName": self.config.space,
+                    "batch": self.config.importer_batch_size,
+                    "readerConcurrency": self.config.importer_reader_concurrency,
+                    "importerConcurrency": self.config.importer_concurrency,
+                    "statsInterval": "5s",
+                },
+                "log": {"level": "INFO", "console": True},
+                "sources": [
+                    {
+                        "path": str(source_root / nodes_path.name),
+                        "batch": self.config.importer_batch_size,
+                        "csv": {
+                            "delimiter": ",",
+                            "withHeader": False,
+                            "lazyQuotes": False,
+                        },
+                        "tags": [
+                            {
+                                "name": ENTITY_TAG,
+                                "id": {"type": "STRING", "index": 0},
+                                "ignoreExistedIndex": False,
+                                "props": self._importer_props(
+                                    [
+                                        ("graph_key", "STRING", 1, False),
+                                        ("local_node_id", "INT", 2, False),
+                                        ("node_name", "STRING", 3, False),
+                                        ("node_type", "STRING", 4, False),
+                                        ("node_label_json", "STRING", 5, True),
+                                        ("node_text", "STRING", 6, True),
+                                    ]
+                                ),
+                            }
+                        ],
+                    },
+                    {
+                        "path": str(source_root / edges_path.name),
+                        "batch": self.config.importer_batch_size,
+                        "csv": {
+                            "delimiter": ",",
+                            "withHeader": False,
+                            "lazyQuotes": False,
+                        },
+                        "edges": [
+                            {
+                                "name": RELATION_EDGE,
+                                "src": {"id": {"type": "STRING", "index": 0}},
+                                "dst": {"id": {"type": "STRING", "index": 1}},
+                                "rank": {"index": 2},
+                                "ignoreExistedIndex": False,
+                                "props": self._importer_props(
+                                    [
+                                        ("graph_key", "STRING", 3, False),
+                                        ("local_edge_id", "INT", 4, False),
+                                        ("edge_name", "STRING", 5, True),
+                                        ("edge_type", "STRING", 6, False),
+                                        ("edge_label_json", "STRING", 7, True),
+                                        ("weight", "DOUBLE", 8, True),
+                                        ("edge_text", "STRING", 9, True),
+                                        ("confidence", "DOUBLE", 10, True),
+                                    ]
+                                ),
+                            }
+                        ],
+                    },
+                ],
+            }
+            config_path.write_text(
+                json.dumps(importer_config, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.chmod(config_path, 0o600)
+            return job_dir, config_path
+        except Exception:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
+
+    def _importer_command(self, job_dir: Path, config_path: Path) -> list[str]:
+        if self.config.importer_binary:
+            executable = shutil.which(self.config.importer_binary)
+            if executable is None:
+                candidate = Path(self.config.importer_binary).expanduser()
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    executable = str(candidate.resolve())
+            if executable is None:
+                raise NebulaRepositoryError(
+                    "NEBULA_UNAVAILABLE",
+                    "找不到 NEBULA_IMPORTER_BINARY 指定的可执行文件",
+                )
+            return [executable, "--config", str(config_path)]
+
+        docker = shutil.which("docker")
+        if docker is None:
+            raise NebulaRepositoryError(
+                "NEBULA_UNAVAILABLE",
+                "大图导入需要 Docker 或 NEBULA_IMPORTER_BINARY，但当前找不到 docker",
+            )
+        return [
+            docker,
+            "run",
+            "--rm",
+            "--network=host",
+            "-v",
+            f"{job_dir}:/igraph-import:ro",
+            self.config.importer_image,
+            "--config",
+            "/igraph-import/importer.yaml",
+        ]
+
+    def _run_importer(
+        self,
+        graph: GraphData,
+        graph_key: str,
+        *,
+        progress_callback=None,
+    ) -> None:
+        containerized = not bool(self.config.importer_binary)
+        job_dir, config_path = self._write_importer_files(
+            graph,
+            graph_key,
+            containerized=containerized,
+            progress_callback=progress_callback,
+        )
+        try:
+            command = self._importer_command(job_dir, config_path)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "progress": 0.20,
+                        "message": "CSV 已生成，正在启动 NebulaGraph Importer",
+                    }
+                )
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(job_dir),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                )
+            except OSError as exc:
+                raise NebulaRepositoryError(
+                    "NEBULA_UNAVAILABLE", f"启动 NebulaGraph Importer 失败: {exc}"
+                ) from exc
+
+            last_lines: list[str] = []
+            last_percent = -1
+            failed_records = 0
+            deadline = time.monotonic() + self.config.importer_timeout_seconds
+            assert process.stdout is not None
+            try:
+                for raw_line in process.stdout:
+                    line = raw_line.strip()
+                    if line:
+                        safe_line = line.replace(self.config.password, "***")
+                        last_lines.append(safe_line)
+                        last_lines = last_lines[-20:]
+                        failed_values = [
+                            int(value)
+                            for value in re.findall(r"Failed:\s*(\d+)", safe_line)
+                        ]
+                        if failed_values:
+                            failed_records = max(failed_records, *failed_values)
+                        matches = re.findall(r"(\d+(?:\.\d+)?)%", safe_line)
+                        if matches and progress_callback:
+                            percent = min(100, max(0, int(float(matches[-1]))))
+                            if percent > last_percent:
+                                last_percent = percent
+                                progress_callback(
+                                    {
+                                        "progress": 0.20 + 0.70 * (percent / 100),
+                                        "message": f"NebulaGraph Importer 导入进度 {percent}%",
+                                    }
+                                )
+                    if time.monotonic() > deadline:
+                        process.terminate()
+                        raise subprocess.TimeoutExpired(
+                            command, self.config.importer_timeout_seconds
+                        )
+                return_code = process.wait(timeout=30)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                process.wait(timeout=10)
+                raise NebulaRepositoryError(
+                    "QUERY_FAILED",
+                    f"NebulaGraph Importer 超过 {self.config.importer_timeout_seconds} 秒未完成",
+                ) from exc
+
+            if return_code != 0 or failed_records:
+                detail = last_lines[-1] if last_lines else "无可用输出"
+                raise NebulaRepositoryError(
+                    "QUERY_FAILED",
+                    "NebulaGraph Importer 导入失败"
+                    f"（exit={return_code}, failed_records={failed_records}）：{detail}",
+                )
+            if progress_callback:
+                progress_callback(
+                    {"progress": 0.90, "message": "NebulaGraph Importer 导入完成"}
+                )
+        finally:
+            shutil.rmtree(job_dir, ignore_errors=True)
+
     def _insert_nodes(self, graph: GraphData, graph_key: str, progress_callback=None) -> None:
         total_batches = max(1, math.ceil(graph.num_nodes / self.config.batch_size))
         batch: list[str] = []
         batch_index = 0
+        id2node = graph.id2node
+        node_type = graph.node_type
+        node_label = graph.node_label
+        node_text = graph.node_text
 
         def flush() -> None:
             nonlocal batch, batch_index
@@ -792,10 +1315,10 @@ class NebulaGraphRepository:
             values = (
                 graph_key,
                 node_id,
-                graph.id2node.get(node_id, str(node_id)),
-                _string_entry(graph.node_type, node_id, "entity") or "entity",
-                _json_text(_array_entry(graph.node_label, node_id)),
-                _string_entry(graph.node_text, node_id, "") or None,
+                id2node.get(node_id, str(node_id)),
+                _string_entry(node_type, node_id, "entity") or "entity",
+                _json_text(_array_entry(node_label, node_id)),
+                _string_entry(node_text, node_id, "") or None,
             )
             batch.append(
                 f"{_ngql_literal(node_vid(graph_key, node_id))}:"
@@ -809,6 +1332,11 @@ class NebulaGraphRepository:
         total_batches = max(1, math.ceil(graph.num_edges / self.config.batch_size))
         batch: list[str] = []
         batch_index = 0
+        edge_weight = graph.edge_weight
+        edge_names = graph.edge_names
+        edge_type = graph.edge_type
+        edge_label = graph.edge_label
+        edge_text = graph.edge_text
 
         def flush() -> None:
             nonlocal batch, batch_index
@@ -833,8 +1361,8 @@ class NebulaGraphRepository:
             src = int(src_arr[edge_id])
             dst = int(dst_arr[edge_id])
             weight = (
-                float(graph.edge_weight[edge_id])
-                if graph.edge_weight is not None
+                float(edge_weight[edge_id])
+                if edge_weight is not None
                 else 1.0
             )
             if not math.isfinite(weight):
@@ -842,11 +1370,11 @@ class NebulaGraphRepository:
             values = (
                 graph_key,
                 edge_id,
-                _string_entry(graph.edge_names, edge_id, "") or None,
-                _string_entry(graph.edge_type, edge_id, "related_to") or "related_to",
-                _json_text(_array_entry(graph.edge_label, edge_id)),
+                _string_entry(edge_names, edge_id, "") or None,
+                _string_entry(edge_type, edge_id, "related_to") or "related_to",
+                _json_text(_array_entry(edge_label, edge_id)),
                 weight,
-                _string_entry(graph.edge_text, edge_id, "") or None,
+                _string_entry(edge_text, edge_id, "") or None,
                 self._edge_confidence(graph, edge_id),
             )
             batch.append(
@@ -882,10 +1410,15 @@ class NebulaGraphRepository:
             _json_text(graph.graph_label),
             datetime.now().astimezone().isoformat(timespec="seconds"),
         )
+        value_text = ','.join(_ngql_literal(v) for v in values)
+        # Keep immutable per-version metadata at graph_key and update the
+        # session-scoped vertex as the active pointer. This makes version
+        # switching O(1) without copying the topology.
         self._execute(
             f"INSERT VERTEX {GRAPH_TAG}(scope_key,graph_key,user_id,session_id,graph_version,"
             "node_count,edge_count,directed,graph_name,graph_desc,graph_label_json,synced_at) "
-            f"VALUES {_ngql_literal(scope)}:({','.join(_ngql_literal(v) for v in values)})"
+            f"VALUES {_ngql_literal(graph_key)}:({value_text}),"
+            f"{_ngql_literal(scope)}:({value_text})"
         )
 
     def _delete_graph_key(self, graph_key: str) -> int:
@@ -898,6 +1431,9 @@ class NebulaGraphRepository:
             self._execute(
                 "DELETE VERTEX " + ",".join(_ngql_literal(vid) for vid in batch) + " WITH EDGE"
             )
+        # Version metadata uses graph_key as its VID. The active scope pointer
+        # is intentionally separate and is only changed by publish/activate.
+        self._execute(f"DELETE VERTEX {_ngql_literal(graph_key)}")
         return len(vids)
 
     def sync_graph(
@@ -908,7 +1444,9 @@ class NebulaGraphRepository:
         session_id: str,
         graph_version: int,
         current_version_getter: Optional[Callable[[], int]] = None,
+        expected_current_version: Optional[int] = None,
         progress_callback=None,
+        retain_previous: bool = False,
     ) -> dict[str, Any]:
         self.ensure_schema()
         if progress_callback:
@@ -929,12 +1467,25 @@ class NebulaGraphRepository:
             warnings.append(
                 f"{non_finite_count} 个 NaN/Inf 属性值已转换为 NebulaGraph NULL"
             )
+        import_method = "importer" if self._should_use_importer(graph) else "client"
         try:
-            self._insert_nodes(graph, staged_key, progress_callback=progress_callback)
-            self._insert_edges(graph, staged_key, progress_callback=progress_callback)
+            if import_method == "importer":
+                self._run_importer(
+                    graph,
+                    staged_key,
+                    progress_callback=progress_callback,
+                )
+            else:
+                self._insert_nodes(graph, staged_key, progress_callback=progress_callback)
+                self._insert_edges(graph, staged_key, progress_callback=progress_callback)
+            expected_version = (
+                int(graph_version)
+                if expected_current_version is None
+                else int(expected_current_version)
+            )
             if current_version_getter is not None and int(
                 current_version_getter()
-            ) != int(graph_version):
+            ) != expected_version:
                 try:
                     self._delete_graph_key(staged_key)
                 except Exception:
@@ -950,15 +1501,19 @@ class NebulaGraphRepository:
                 scope=scope,
                 graph_key=staged_key,
             )
-        except NebulaRepositoryError:
+        except Exception as exc:
             try:
                 if previous_key != staged_key:
                     self._delete_graph_key(staged_key)
             except Exception:
                 pass
-            raise
+            if isinstance(exc, NebulaRepositoryError):
+                raise
+            raise NebulaRepositoryError(
+                "QUERY_FAILED", f"NebulaGraph 图导入失败: {exc}"
+            ) from exc
 
-        if previous_key and previous_key != staged_key:
+        if previous_key and previous_key != staged_key and not retain_previous:
             try:
                 self._delete_graph_key(previous_key)
             except Exception as exc:
@@ -973,6 +1528,7 @@ class NebulaGraphRepository:
             "graph_key": staged_key,
             "node_count": graph.num_nodes,
             "edge_count": graph.num_edges,
+            "import_method": import_method,
             "features_omitted": self._features_omitted(graph),
             "warnings": warnings,
         }
@@ -1027,6 +1583,591 @@ class NebulaGraphRepository:
             return json.loads(str(value))
         except (TypeError, ValueError):
             return value
+
+    def _primary_meta(
+        self,
+        user_id: str,
+        session_id: str,
+        graph_version: Optional[int] = None,
+    ) -> dict[str, Any]:
+        self.ensure_schema()
+        meta = self._active_metadata(scope_key(user_id, session_id))
+        if meta is None:
+            raise NebulaRepositoryError("NOT_SYNCED", "当前会话在 NebulaGraph 中没有活动图")
+        if graph_version is not None:
+            active_version = int(_row_get(meta, "graph_version", 0) or 0)
+            if active_version != int(graph_version):
+                raise NebulaRepositoryError(
+                    "STALE_SYNC",
+                    f"NebulaGraph 图版本为 {active_version}，请求版本为 {graph_version}",
+                )
+        return meta
+
+    def _find_node_record(self, graph_key: str, node_name: str) -> dict[str, Any]:
+        literal_key = _ngql_literal(graph_key)
+        literal_name = _ngql_literal(str(node_name))
+        output = (
+            "YIELD id(vertex) AS vid, "
+            "properties(vertex).local_node_id AS local_node_id, "
+            "properties(vertex).node_name AS node_name, "
+            "properties(vertex).node_type AS node_type, "
+            "properties(vertex).node_label_json AS node_label_json, "
+            "properties(vertex).node_text AS node_text"
+        )
+        rows = self._query_rows(
+            f"LOOKUP ON {ENTITY_TAG} WHERE {ENTITY_TAG}.graph_key == {literal_key} "
+            f"AND {ENTITY_TAG}.node_name == {literal_name} {output} | LIMIT 1"
+        )
+        if not rows:
+            try:
+                local_id = int(str(node_name))
+            except (TypeError, ValueError):
+                local_id = None
+            if local_id is not None:
+                rows = self._query_rows(
+                    f"LOOKUP ON {ENTITY_TAG} WHERE {ENTITY_TAG}.graph_key == {literal_key} "
+                    f"AND {ENTITY_TAG}.local_node_id == {local_id} {output} | LIMIT 1"
+                )
+        if not rows:
+            raise NebulaRepositoryError(
+                "QUERY_FAILED", f"节点 '{node_name}' 不存在于当前 NebulaGraph 图中"
+            )
+        return rows[0]
+
+    def _fetch_node_records(self, vids: Iterable[str]) -> list[dict[str, Any]]:
+        values = [str(vid) for vid in vids if vid]
+        rows: list[dict[str, Any]] = []
+        for batch in _chunks(values, self.config.batch_size):
+            rows.extend(
+                self._query_rows(
+                    f"FETCH PROP ON {ENTITY_TAG} "
+                    + ",".join(_ngql_literal(vid) for vid in batch)
+                    + " YIELD id(vertex) AS vid, "
+                    "properties(vertex).local_node_id AS local_node_id, "
+                    "properties(vertex).node_name AS node_name, "
+                    "properties(vertex).node_type AS node_type, "
+                    "properties(vertex).node_label_json AS node_label_json, "
+                    "properties(vertex).node_text AS node_text"
+                )
+            )
+        return rows
+
+    def _discover_node_vids(
+        self,
+        graph_key: str,
+        *,
+        seed_names: Optional[list[str]] = None,
+        hops: int = 0,
+        direction: str = "both",
+        max_nodes: int = 50_000,
+        allow_truncate: bool = False,
+        expand_to_limit: bool = False,
+    ) -> list[str]:
+        max_nodes = max(1, int(max_nodes))
+        if seed_names:
+            seeds = [self._find_node_record(graph_key, name) for name in seed_names]
+            seed_vids = [str(_row_get(row, "vid")) for row in seeds]
+            if expand_to_limit:
+                # Match the local visualization behaviour: highlighted/path
+                # nodes are BFS seeds, not the complete visualization. Expand
+                # one layer at a time until the display cap is reached.
+                vids = list(dict.fromkeys(seed_vids))
+                if len(vids) >= max_nodes:
+                    if len(vids) > max_nodes and not allow_truncate:
+                        raise NebulaRepositoryError(
+                            "SUBGRAPH_TOO_LARGE",
+                            f"可视化种子节点数超过上限 {max_nodes}",
+                        )
+                    return vids[:max_nodes]
+                seen = set(vids)
+                frontier = list(vids)
+                clause = self._direction_clause(direction)
+                while frontier and len(vids) < max_nodes:
+                    next_frontier: list[str] = []
+                    remaining = max_nodes - len(vids)
+                    for batch in _chunks(frontier, self.config.batch_size):
+                        rows = self._query_rows(
+                            "GO 1 STEP FROM "
+                            + ",".join(_ngql_literal(vid) for vid in batch)
+                            + f" OVER {RELATION_EDGE}{clause} "
+                            "YIELD DISTINCT id($$) AS vid "
+                            f"| LIMIT {max_nodes + 1}"
+                        )
+                        for row in rows:
+                            vid = str(_row_get(row, "vid", "") or "")
+                            if not vid or vid in seen:
+                                continue
+                            seen.add(vid)
+                            vids.append(vid)
+                            next_frontier.append(vid)
+                            if len(vids) >= max_nodes:
+                                break
+                        remaining = max_nodes - len(vids)
+                        if remaining <= 0:
+                            break
+                    frontier = next_frontier
+                return vids
+            if hops <= 0:
+                return list(dict.fromkeys(seed_vids))
+            clause = self._direction_clause(direction)
+            rows = self._query_rows(
+                f"GO 1 TO {max(1, int(hops))} STEPS FROM "
+                + ",".join(_ngql_literal(vid) for vid in seed_vids)
+                + f" OVER {RELATION_EDGE}{clause} "
+                "YIELD DISTINCT id($$) AS vid "
+                f"| LIMIT {max_nodes + 1}"
+            )
+            vids = list(dict.fromkeys(seed_vids + [str(_row_get(row, "vid")) for row in rows]))
+        else:
+            rows = self._query_rows(
+                f"LOOKUP ON {ENTITY_TAG} WHERE {ENTITY_TAG}.graph_key == {_ngql_literal(graph_key)} "
+                f"YIELD id(vertex) AS vid | LIMIT {max_nodes + 1}"
+            )
+            vids = [str(_row_get(row, "vid")) for row in rows]
+        if len(vids) > max_nodes:
+            if allow_truncate:
+                return vids[:max_nodes]
+            raise NebulaRepositoryError(
+                "SUBGRAPH_TOO_LARGE",
+                f"待物化子图节点数超过上限 {max_nodes}，请缩小 hops 或指定节点/类型范围",
+            )
+        return vids
+
+    def _fetch_internal_edges(
+        self,
+        graph_key: str,
+        node_vids: list[str],
+        *,
+        max_edges: int = 200_000,
+    ) -> list[dict[str, Any]]:
+        allowed = set(node_vids)
+        seen: set[tuple[str, str, int]] = set()
+        rows: list[dict[str, Any]] = []
+        for batch in _chunks(node_vids, self.config.batch_size):
+            query_rows = self._query_rows(
+                "GO FROM " + ",".join(_ngql_literal(vid) for vid in batch)
+                + f" OVER {RELATION_EDGE} BIDIRECT "
+                "YIELD src(edge) AS src_vid, dst(edge) AS dst_vid, rank(edge) AS edge_rank, "
+                f"{RELATION_EDGE}.local_edge_id AS local_edge_id, "
+                f"{RELATION_EDGE}.edge_name AS edge_name, "
+                f"{RELATION_EDGE}.edge_type AS edge_type, "
+                f"{RELATION_EDGE}.edge_label_json AS edge_label_json, "
+                f"{RELATION_EDGE}.weight AS weight, "
+                f"{RELATION_EDGE}.edge_text AS edge_text, "
+                f"{RELATION_EDGE}.confidence AS confidence"
+            )
+            for row in query_rows:
+                src = str(_row_get(row, "src_vid", ""))
+                dst = str(_row_get(row, "dst_vid", ""))
+                rank = int(_row_get(row, "edge_rank", 0) or 0)
+                if src not in allowed or dst not in allowed:
+                    continue
+                key = (src, dst, rank)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row)
+                if len(rows) > int(max_edges):
+                    raise NebulaRepositoryError(
+                        "SUBGRAPH_TOO_LARGE",
+                        f"待物化子图边数超过上限 {max_edges}，请缩小查询范围",
+                    )
+        return rows
+
+    @staticmethod
+    def _optional_object_array(values: list[Any]) -> Optional[np.ndarray]:
+        return np.asarray(values, dtype=object) if any(value is not None for value in values) else None
+
+    def visualization_seed_name_primary(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        graph_version: Optional[int] = None,
+    ) -> Optional[str]:
+        """Choose a node incident to an edge for a connected visualization."""
+        meta = self._primary_meta(user_id, session_id, graph_version)
+        graph_key = str(_row_get(meta, "graph_key", ""))
+        rows = self._query_rows(
+            f"LOOKUP ON {RELATION_EDGE} WHERE "
+            f"{RELATION_EDGE}.graph_key == {_ngql_literal(graph_key)} "
+            "YIELD src(edge) AS vid | LIMIT 1"
+        )
+        if not rows:
+            rows = self._query_rows(
+                f"LOOKUP ON {ENTITY_TAG} WHERE "
+                f"{ENTITY_TAG}.graph_key == {_ngql_literal(graph_key)} "
+                "YIELD id(vertex) AS vid | LIMIT 1"
+            )
+        if not rows:
+            return None
+        vid = str(_row_get(rows[0], "vid", "") or "")
+        if not vid:
+            return None
+        node_rows = self._fetch_node_records([vid])
+        if not node_rows:
+            return None
+        return str(
+            _row_get(
+                node_rows[0],
+                "node_name",
+                _row_get(node_rows[0], "local_node_id", vid),
+            )
+        )
+
+    def materialize_subgraph(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        graph_version: Optional[int] = None,
+        seed_names: Optional[list[str]] = None,
+        hops: int = 0,
+        direction: str = "both",
+        max_nodes: int = 50_000,
+        max_edges: int = 200_000,
+        allow_truncate: bool = False,
+        expand_to_limit: bool = False,
+    ) -> GraphData:
+        """Materialise a bounded Nebula topology as a local GraphData."""
+        meta = self._primary_meta(user_id, session_id, graph_version)
+        graph_key = str(_row_get(meta, "graph_key", ""))
+        vids = self._discover_node_vids(
+            graph_key,
+            seed_names=seed_names,
+            hops=hops,
+            direction=direction,
+            max_nodes=max_nodes,
+            allow_truncate=allow_truncate,
+            expand_to_limit=expand_to_limit,
+        )
+        node_rows = self._fetch_node_records(vids)
+        by_vid = {str(_row_get(row, "vid")): row for row in node_rows}
+        ordered_vids = [vid for vid in vids if vid in by_vid]
+        local_by_vid = {vid: index for index, vid in enumerate(ordered_vids)}
+        id2node = {
+            index: str(_row_get(by_vid[vid], "node_name", _row_get(by_vid[vid], "local_node_id", index)))
+            for index, vid in enumerate(ordered_vids)
+        }
+        node2id = {name: index for index, name in id2node.items()}
+        node_types = [str(_row_get(by_vid[vid], "node_type", "entity") or "entity") for vid in ordered_vids]
+        node_labels = [self._decode_json_field(_row_get(by_vid[vid], "node_label_json")) for vid in ordered_vids]
+        node_texts = [str(_row_get(by_vid[vid], "node_text", "") or "") for vid in ordered_vids]
+
+        edge_rows = self._fetch_internal_edges(graph_key, ordered_vids, max_edges=max_edges)
+        pairs: list[tuple[int, int]] = []
+        weights: list[float] = []
+        edge_names: list[str] = []
+        edge_types: list[str] = []
+        edge_labels: list[Any] = []
+        edge_texts: list[str] = []
+        confidences: list[Optional[float]] = []
+        for row in edge_rows:
+            src = str(_row_get(row, "src_vid", ""))
+            dst = str(_row_get(row, "dst_vid", ""))
+            if src not in local_by_vid or dst not in local_by_vid:
+                continue
+            pairs.append((local_by_vid[src], local_by_vid[dst]))
+            raw_weight = _row_get(row, "weight", 1.0)
+            try:
+                weights.append(float(raw_weight) if raw_weight is not None else 1.0)
+            except (TypeError, ValueError):
+                weights.append(1.0)
+            edge_names.append(str(_row_get(row, "edge_name", "") or ""))
+            edge_types.append(str(_row_get(row, "edge_type", "related_to") or "related_to"))
+            edge_labels.append(self._decode_json_field(_row_get(row, "edge_label_json")))
+            edge_texts.append(str(_row_get(row, "edge_text", "") or ""))
+            confidence = _row_get(row, "confidence")
+            try:
+                confidences.append(float(confidence) if confidence is not None else None)
+            except (TypeError, ValueError):
+                confidences.append(None)
+
+        edge_index = (
+            np.asarray(pairs, dtype=np.int64).T
+            if pairs else np.empty((2, 0), dtype=np.int64)
+        )
+        confidence_array = None
+        if any(value is not None for value in confidences):
+            confidence_array = np.asarray(
+                [np.nan if value is None else value for value in confidences],
+                dtype=np.float32,
+            )[:, None]
+        return GraphData(
+            num_nodes=len(ordered_vids),
+            edge_index=edge_index,
+            id2node=id2node or None,
+            node2id=node2id or None,
+            edge_names=edge_names or None,
+            edge_weight=np.asarray(weights, dtype=np.float32) if weights else None,
+            edge_feat=confidence_array,
+            graph_desc=str(_row_get(meta, "graph_desc", "") or "") or None,
+            directed=bool(_row_get(meta, "directed", True)),
+            name=str(_row_get(meta, "graph_name", "") or ""),
+            node_label=self._optional_object_array(node_labels),
+            node_type=np.asarray(node_types, dtype=object) if node_types else None,
+            edge_label=self._optional_object_array(edge_labels),
+            edge_type=np.asarray(edge_types, dtype=object) if edge_types else None,
+            graph_label=self._decode_json_field(_row_get(meta, "graph_label_json")),
+            node_text=node_texts or None,
+            edge_text=edge_texts or None,
+        )
+
+    def graph_info_primary(
+        self, *, user_id: str, session_id: str, graph_version: Optional[int] = None
+    ) -> dict[str, Any]:
+        meta = self._primary_meta(user_id, session_id, graph_version)
+        graph_key = str(_row_get(meta, "graph_key", ""))
+        preview_rows = self._query_rows(
+            f"LOOKUP ON {ENTITY_TAG} WHERE {ENTITY_TAG}.graph_key == {_ngql_literal(graph_key)} "
+            "YIELD properties(vertex).node_name AS node_name | LIMIT 10"
+        )
+        preview_names = [str(_row_get(row, "node_name")) for row in preview_rows]
+        preview = self.materialize_subgraph(
+            user_id=user_id,
+            session_id=session_id,
+            graph_version=int(_row_get(meta, "graph_version", 0)),
+            seed_names=preview_names,
+            hops=0,
+            max_nodes=10,
+            max_edges=30,
+        )
+        src, dst = preview.edge_index
+        edges = [
+            {
+                "src": preview.id2node.get(int(src[i]), str(int(src[i]))),
+                "dst": preview.id2node.get(int(dst[i]), str(int(dst[i]))),
+                "weight": float(preview.edge_weight[i]) if preview.edge_weight is not None else 1.0,
+            }
+            for i in range(preview.num_edges)
+        ]
+        return {
+            "loaded": True,
+            "backend": "nebula",
+            "session_id": session_id,
+            "graph_version": int(_row_get(meta, "graph_version", 0)),
+            "num_nodes": int(_row_get(meta, "node_count", 0) or 0),
+            "num_edges": int(_row_get(meta, "edge_count", 0) or 0),
+            "directed": bool(_row_get(meta, "directed", True)),
+            "has_node_names": True,
+            "has_edge_weight": True,
+            "nodes": [preview.id2node[i] for i in range(preview.num_nodes)],
+            "edges": edges,
+            "preview": {
+                "sample_node_count": preview.num_nodes,
+                "sample_edge_count": preview.num_edges,
+                "node_truncated": int(_row_get(meta, "node_count", 0) or 0) > preview.num_nodes,
+                "edge_truncated": int(_row_get(meta, "edge_count", 0) or 0) > preview.num_edges,
+                "sample_strategy": "nebula_graph_key_limit",
+            },
+            "graph_info": {
+                "num_nodes": int(_row_get(meta, "node_count", 0) or 0),
+                "num_edges": int(_row_get(meta, "edge_count", 0) or 0),
+                "directed": bool(_row_get(meta, "directed", True)),
+                "has_node_names": True,
+                "has_edge_weight": True,
+                "has_node_feat": False,
+                "has_edge_feat": False,
+                "features_omitted": ["node_feat", "multi_dimensional_edge_feat", "split_masks"],
+            },
+            "graph_ml_readiness": {
+                "backend": "nebula",
+                "requires_materialization": True,
+            },
+        }
+
+    def get_neighbors_primary(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        node_name: str,
+        graph_version: Optional[int] = None,
+        direction: str = "out",
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        meta = self._primary_meta(user_id, session_id, graph_version)
+        graph_key = str(_row_get(meta, "graph_key", ""))
+        node = self._find_node_record(graph_key, node_name)
+        vid = str(_row_get(node, "vid"))
+        limit = max(1, min(int(limit), 200))
+        clause = self._direction_clause(direction)
+        rows = self._query_rows(
+            f"GO FROM {_ngql_literal(vid)} OVER {RELATION_EDGE}{clause} "
+            "YIELD id($$) AS neighbor_vid, properties($$).local_node_id AS local_node_id, "
+            "properties($$).node_name AS node_name, properties($$).node_type AS node_type, "
+            f"{RELATION_EDGE}.edge_type AS edge_type, "
+            f"{RELATION_EDGE}.edge_label_json AS edge_label_json, "
+            f"{RELATION_EDGE}.weight AS weight, {RELATION_EDGE}.edge_text AS edge_text "
+            f"| LIMIT {limit}"
+        )
+        return {
+            "success": True,
+            "backend": "nebula",
+            "session_id": session_id,
+            "graph_version": int(_row_get(meta, "graph_version", 0)),
+            "node_name": str(_row_get(node, "node_name", node_name)),
+            "direction": direction,
+            "neighbors": [
+                {
+                    "vid": _row_get(row, "neighbor_vid"),
+                    "local_node_id": _row_get(row, "local_node_id"),
+                    "node_name": _row_get(row, "node_name"),
+                    "node_type": _row_get(row, "node_type"),
+                    "edge_type": _row_get(row, "edge_type"),
+                    "edge_label": self._decode_json_field(_row_get(row, "edge_label_json")),
+                    "weight": _row_get(row, "weight"),
+                    "edge_text": _row_get(row, "edge_text"),
+                }
+                for row in rows
+            ],
+            "count": len(rows),
+            "limit": limit,
+        }
+
+    def get_node_info_primary(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        node_name: str,
+        graph_version: Optional[int] = None,
+    ) -> dict[str, Any]:
+        meta = self._primary_meta(user_id, session_id, graph_version)
+        graph_key = str(_row_get(meta, "graph_key", ""))
+        node = self._find_node_record(graph_key, node_name)
+        out_rows = self.get_neighbors_primary(
+            user_id=user_id, session_id=session_id, node_name=node_name,
+            graph_version=graph_version, direction="out", limit=200,
+        )["neighbors"]
+        in_rows = self.get_neighbors_primary(
+            user_id=user_id, session_id=session_id, node_name=node_name,
+            graph_version=graph_version, direction="in", limit=200,
+        )["neighbors"]
+        return {
+            "success": True,
+            "backend": "nebula",
+            "session_id": session_id,
+            "graph_version": int(_row_get(meta, "graph_version", 0)),
+            "node_name": str(_row_get(node, "node_name", node_name)),
+            "node_id": int(_row_get(node, "local_node_id", 0) or 0),
+            "node_type": _row_get(node, "node_type", "entity"),
+            "node_label": self._decode_json_field(_row_get(node, "node_label_json")),
+            "text": _row_get(node, "node_text"),
+            "out_degree": len(out_rows),
+            "in_degree": len(in_rows),
+            "degree": len(out_rows) + len(in_rows),
+            "successors": [row.get("node_name") for row in out_rows],
+            "predecessors": [row.get("node_name") for row in in_rows],
+            "degree_truncated": len(out_rows) >= 200 or len(in_rows) >= 200,
+        }
+
+    def get_edge_info_primary(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        src_name: str,
+        dst_name: str,
+        graph_version: Optional[int] = None,
+    ) -> dict[str, Any]:
+        meta = self._primary_meta(user_id, session_id, graph_version)
+        graph_key = str(_row_get(meta, "graph_key", ""))
+        src = self._find_node_record(graph_key, src_name)
+        dst = self._find_node_record(graph_key, dst_name)
+        rows = self._query_rows(
+            f"GO FROM {_ngql_literal(str(_row_get(src, 'vid')))} OVER {RELATION_EDGE} "
+            f"WHERE id($$) == {_ngql_literal(str(_row_get(dst, 'vid')))} "
+            "YIELD id($$) AS dst_vid, rank(edge) AS edge_rank, "
+            f"{RELATION_EDGE}.local_edge_id AS local_edge_id, "
+            f"{RELATION_EDGE}.edge_name AS edge_name, {RELATION_EDGE}.edge_type AS edge_type, "
+            f"{RELATION_EDGE}.edge_label_json AS edge_label_json, "
+            f"{RELATION_EDGE}.weight AS weight, {RELATION_EDGE}.edge_text AS edge_text "
+            "| LIMIT 200"
+        )
+        edges = [
+            {
+                "local_edge_id": _row_get(row, "local_edge_id"),
+                "edge_name": _row_get(row, "edge_name"),
+                "edge_type": _row_get(row, "edge_type"),
+                "edge_label": self._decode_json_field(_row_get(row, "edge_label_json")),
+                "weight": _row_get(row, "weight"),
+                "edge_text": _row_get(row, "edge_text"),
+                "rank": _row_get(row, "edge_rank"),
+            }
+            for row in rows
+        ]
+        return {
+            "success": True,
+            "backend": "nebula",
+            "session_id": session_id,
+            "graph_version": int(_row_get(meta, "graph_version", 0)),
+            "src_name": str(_row_get(src, "node_name", src_name)),
+            "dst_name": str(_row_get(dst, "node_name", dst_name)),
+            "exists": bool(edges),
+            "edges": edges,
+            "edge": edges[0] if edges else None,
+            "count": len(edges),
+        }
+
+    def check_edge_exists_primary(self, **kwargs) -> dict[str, Any]:
+        result = self.get_edge_info_primary(**kwargs)
+        return {
+            "success": True,
+            "backend": "nebula",
+            "session_id": result["session_id"],
+            "graph_version": result["graph_version"],
+            "src_name": result["src_name"],
+            "dst_name": result["dst_name"],
+            "exists": result["exists"],
+            "count": result["count"],
+        }
+
+    def shortest_path_primary(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        source: str,
+        target: str,
+        graph_version: Optional[int] = None,
+        direction: str = "out",
+        max_steps: int = 10,
+    ) -> dict[str, Any]:
+        meta = self._primary_meta(user_id, session_id, graph_version)
+        graph_key = str(_row_get(meta, "graph_key", ""))
+        src = self._find_node_record(graph_key, source)
+        dst = self._find_node_record(graph_key, target)
+        source_vid = str(_row_get(src, "vid"))
+        target_vid = str(_row_get(dst, "vid"))
+        max_steps = max(1, min(int(max_steps), 20))
+        result = self._execute(
+            f"FIND SHORTEST PATH FROM {_ngql_literal(source_vid)} TO {_ngql_literal(target_vid)} "
+            f"OVER {RELATION_EDGE}{self._direction_clause(direction)} UPTO {max_steps} STEPS "
+            "YIELD path AS p | LIMIT 1"
+        )
+        raw_rows = self._result_rows(result)
+        if not raw_rows:
+            return {
+                "success": True, "backend": "nebula", "session_id": session_id,
+                "graph_version": int(_row_get(meta, "graph_version", 0)),
+                "source": source, "target": target, "found": False,
+                "path": [], "hop_count": None, "weighted": False,
+            }
+        raw_path = _row_get(raw_rows[0], "p")
+        vids = self._extract_path_vids(raw_path)
+        names_by_vid = {
+            str(_row_get(row, "vid")): str(_row_get(row, "node_name", _row_get(row, "vid")))
+            for row in self._fetch_node_records(vids)
+        }
+        names = [names_by_vid.get(vid, vid) for vid in vids]
+        return {
+            "success": True, "backend": "nebula", "session_id": session_id,
+            "graph_version": int(_row_get(meta, "graph_version", 0)),
+            "source": source, "target": target, "found": True,
+            "path": names, "hop_count": max(len(names) - 1, 0), "weighted": False,
+            "max_steps": max_steps,
+        }
 
     def get_node_info(
         self,
@@ -1192,7 +2333,7 @@ class NebulaGraphRepository:
         clause = self._direction_clause(direction)
         result = self._execute(
             f"FIND SHORTEST PATH FROM {_ngql_literal(source_vid)} TO {_ngql_literal(target_vid)} "
-            f"OVER {RELATION_EDGE}{clause} UPTO {max_steps} STEPS YIELD path AS path | LIMIT 1"
+            f"OVER {RELATION_EDGE}{clause} UPTO {max_steps} STEPS YIELD path AS p | LIMIT 1"
         )
         raw_rows = self._result_rows(result)
         if not raw_rows:
@@ -1208,18 +2349,19 @@ class NebulaGraphRepository:
                 "hop_count": None,
                 "weighted": False,
             }
-        raw_path: Any = _row_get(raw_rows[0], "path")
+        raw_path: Any = _row_get(raw_rows[0], "p")
         keys_getter = getattr(result, "keys", None)
         values_getter = getattr(result, "row_values", None)
         if callable(keys_getter) and callable(values_getter):
             try:
                 result_keys = [str(_jsonable(key)) for key in keys_getter()]
-                raw_path = values_getter(0)[result_keys.index("path")]
+                raw_path = values_getter(0)[result_keys.index("p")]
             except (IndexError, ValueError, TypeError):
                 pass
         vids = self._extract_path_vids(raw_path)
+        id2node = graph.id2node
         vid_names = {
-            node_vid(graph_key, node_id): graph.id2node.get(node_id, str(node_id))
+            node_vid(graph_key, node_id): id2node.get(node_id, str(node_id))
             for node_id in range(graph.num_nodes)
         }
         names = [vid_names.get(vid, vid) for vid in vids]
