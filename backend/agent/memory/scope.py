@@ -1,22 +1,3 @@
-from __future__ import annotations
+"""Compatibility import for :mod:`agent_runtime.agent.memory.scope`."""
 
-from dataclasses import dataclass
-
-
-@dataclass
-class MemoryScope:
-    """Identifies a memory namespace.
-
-    For now the system only supports ``default_user``, but this dataclass
-    makes future multi-user / multi-project expansion a type-safe no-op.
-    """
-
-    user_id: str = "default_user"
-    workspace_id: str | None = None
-    project_id: str | None = None
-    dataset_id: str | None = None
-    session_id: str | None = None
-    graph_fingerprint: str | None = None
-
-
-DEFAULT_SCOPE = MemoryScope()
+from agent_runtime.agent.memory.scope import *  # noqa: F401,F403

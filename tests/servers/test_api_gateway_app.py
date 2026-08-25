@@ -104,6 +104,73 @@ class _ReportFakeAgent(_FakeAgent):
         yield {"type": "token", "content": f"echo:{message}"}
 
 
+class _StrictRuntime:
+    """Protocol-only Runtime with no IGraph private fields."""
+
+    def __init__(self, **kwargs) -> None:
+        self.session_id = kwargs["session_logger"].session_id
+        self.user_id = kwargs.get("user_id", "")
+        self.provider = "strict-runtime"
+        self.model = kwargs.get("model") or "fake-model"
+        self.reasoning_mode = kwargs.get("reasoning_mode", "direct")
+        self.planning_mode = kwargs.get("planning_mode", "auto")
+        self.last_active = 1.0
+        self._has_public_graph_state = False
+
+    def set_model(self, model: str) -> None:
+        self.model = model
+
+    def set_reasoning_mode(self, mode: str) -> None:
+        self.reasoning_mode = mode
+
+    def set_planning_mode(self, mode: str) -> None:
+        self.planning_mode = mode
+
+    def chat(self, message: str) -> str:
+        return f"strict:{message}"
+
+    async def chat_stream(self, message: str):
+        yield {"type": "token", "content": f"strict:{message}"}
+
+    async def resume_feedback_stream(self, **_kwargs):
+        if False:
+            yield {}
+
+    async def rollback_last_user_turn(self) -> None:
+        return
+
+    def pending_feedback(self):
+        return None
+
+    def context_usage(self) -> dict:
+        return {"current_tokens": 0, "token_limit": 1024, "percent": 0.0, "status": "ok"}
+
+    def has_graph(self) -> bool:
+        return self._has_public_graph_state
+
+    def apply_graph_load_result(self, _result) -> None:
+        self._has_public_graph_state = True
+
+    def clear_graph_state(self) -> None:
+        self._has_public_graph_state = False
+
+    def inject_synthetic_turn(self, _user_text: str, _assistant_text: str) -> None:
+        return
+
+    def log_error(self, _error: str) -> None:
+        return
+
+    def stream_skill_generation(self, _playbook_item, _model=None):
+        async def _empty():
+            if False:
+                yield ""
+
+        return _empty()
+
+    def cleanup(self) -> None:
+        return
+
+
 class ApiGatewayAppTest(unittest.TestCase):
     def setUp(self) -> None:
         self._admin_model_patch = patch.object(
@@ -223,6 +290,35 @@ class ApiGatewayAppTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('"type": "analysis_report"', response.text)
         self.assertIn('"id": "rpt-gateway-test"', response.text)
+
+    def test_backend_accepts_protocol_runtime_without_igraph_internals(self) -> None:
+        server = create_server(
+            config=_test_config(),
+            manage_subprocesses=False,
+            logger=_FakeLogger(),
+            runtime_factory=_StrictRuntime,
+        )
+        client = TestClient(server.app)
+        created = client.post(
+            "/api/sessions",
+            json={"model": "gpt-5-2"},
+            headers=ADMIN_HEADERS,
+        )
+        sid = created.json()["session_id"]
+
+        chatted = client.post(
+            f"/api/sessions/{sid}/chat",
+            json={"message": "hello"},
+            headers=ADMIN_HEADERS,
+        )
+
+        self.assertEqual(chatted.status_code, 200)
+        self.assertEqual(chatted.json()["response"], "strict:hello")
+        runtime = server._get_live_agent(sid, user_id="admin")
+        self.assertIsInstance(runtime, _StrictRuntime)
+        self.assertFalse(hasattr(runtime, "context_manager"))
+        self.assertFalse(hasattr(runtime, "logger"))
+        self.assertFalse(hasattr(runtime, "_provider_gateway"))
 
 
 class ApiGatewayGraphDataRetryTest(unittest.IsolatedAsyncioTestCase):
