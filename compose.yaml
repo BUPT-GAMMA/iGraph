@@ -1,0 +1,112 @@
+name: igraph
+
+services:
+  graph-data:
+    image: ${IGRAPH_GRAPH_DATA_IMAGE:-igraph-graph-data:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/graph-data.Dockerfile
+    env_file:
+      - .env
+    environment:
+      GRAPH_DATA_HOST: 0.0.0.0
+      GRAPH_DATA_PORT: 21111
+      GRAPH_DATA_SERVER_URL: http://graph-data:21111
+      IGRAPH_DATA_ROOT: /data
+      IGRAPH_HOME: /data/home
+      IGRAPH_MEMORY_ROOT: /data/memory
+      IGRAPH_LOGS_DIR: /data/logs
+      GRAPH_DATA_UPLOAD_DIR: /data/graph_data/uploads
+      GRAPH_DATASET_DIR: /data/graph_data/datasets
+      GRAPH_ML_ARTIFACT_ROOT: /data/graph_ml
+    volumes:
+      - igraph-data:/data
+    expose:
+      - "21111"
+    networks:
+      - backplane
+    shm_size: ${GRAPH_DATA_SHM_SIZE:-1gb}
+    restart: unless-stopped
+
+  mcp:
+    image: ${IGRAPH_MCP_IMAGE:-igraph-mcp:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/mcp.Dockerfile
+    env_file:
+      - .env
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 21110
+      GRAPH_DATA_SERVER_URL: http://graph-data:21111
+      IGRAPH_DATA_ROOT: /data
+      IGRAPH_LOGS_DIR: /data/logs
+    volumes:
+      - igraph-data:/data
+    expose:
+      - "21110"
+    depends_on:
+      graph-data:
+        condition: service_healthy
+    networks:
+      - backplane
+    restart: unless-stopped
+
+  application:
+    image: ${IGRAPH_APPLICATION_IMAGE:-igraph-application:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/application.Dockerfile
+    env_file:
+      - .env
+    environment:
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: 21109
+      API_UPLOAD_DIR: /data/uploads
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 21110
+      GRAPH_DATA_HOST: 0.0.0.0
+      GRAPH_DATA_PORT: 21111
+      MCP_SERVER_URL: http://mcp:21110/mcp
+      GRAPH_DATA_SERVER_URL: http://graph-data:21111
+      IGRAPH_DATA_ROOT: /data
+      IGRAPH_HOME: /data/home
+      IGRAPH_MEMORY_ROOT: /data/memory
+      IGRAPH_LOGS_DIR: /data/logs
+    volumes:
+      - igraph-data:/data
+    expose:
+      - "21109"
+    depends_on:
+      mcp:
+        condition: service_healthy
+      graph-data:
+        condition: service_healthy
+    networks:
+      - backplane
+    restart: unless-stopped
+
+  frontend:
+    image: ${IGRAPH_FRONTEND_IMAGE:-igraph-frontend:local}
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      APPLICATION_HOST: application
+      APPLICATION_PORT: 21109
+    ports:
+      - "${FRONTEND_PORT:-21108}:80"
+    depends_on:
+      application:
+        condition: service_healthy
+    networks:
+      - backplane
+    restart: unless-stopped
+
+networks:
+  backplane:
+    name: ${IGRAPH_BACKPLANE_NETWORK:-igraph-backplane}
+
+volumes:
+  igraph-data:
+    name: ${IGRAPH_DATA_VOLUME:-igraph-data}

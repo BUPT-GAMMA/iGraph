@@ -50,3 +50,5 @@
 1. 按 `RUN_AND_TEST.md` 完成依赖安装与 `.env` 配置（注意新增 `LLM_TOOL_PROTOCOL=text`）。（配置图数据库查看`NEBULAGRAPH.md`，以docker形式启动NEBULAGRAPH）
 2. 一体化启动：`python agent_server.py`
 3. 打开 `http://localhost:1109`，创建会话并开始对话。
+
+容器交付可直接执行 `docker compose up --build -d`，再打开 `http://localhost:21108`；Compose 复用原 `.env`，并在容器内覆盖服务地址，不要求改写本地启动配置。
