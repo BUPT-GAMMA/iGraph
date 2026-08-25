@@ -143,6 +143,23 @@ python main.py
 
 CLI 启动本地 supervisor，在控制台直接对话（同步模式）。
 
+### 2.4 Docker Compose 启动
+
+Docker 模式复用同一份 `.env`，无需把其中的本地 `127.0.0.1` 服务 URL 改成容器名；Compose 会仅在容器内部覆盖监听地址与服务 URL。
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+访问：`http://localhost:21108`。停止服务：
+
+```bash
+docker compose stop
+```
+
+默认运行四个容器：Frontend、Application（Backend + Agent Runtime 同进程）、MCP、GraphData。只发布 Frontend 端口；`FRONTEND_PORT` 可覆盖默认的 `21108`。
+
 ---
 
 ## 3. 健康检查

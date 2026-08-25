@@ -1,0 +1,45 @@
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    client_max_body_size 512m;
+
+    location = /health {
+        access_log off;
+        default_type application/json;
+        return 200 '{"status":"ok","service":"frontend"}';
+    }
+
+    location /api/ {
+        proxy_pass http://${APPLICATION_HOST}:${APPLICATION_PORT};
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # 保留原 Application 的 FastAPI 文档入口；业务 API 仍统一走 /api。
+    location = /openapi.json {
+        proxy_pass http://${APPLICATION_HOST}:${APPLICATION_PORT};
+    }
+
+    location = /docs {
+        proxy_pass http://${APPLICATION_HOST}:${APPLICATION_PORT};
+    }
+
+    location = /redoc {
+        proxy_pass http://${APPLICATION_HOST}:${APPLICATION_PORT};
+    }
+
+    location = /favicon.ico {
+        alias /usr/share/nginx/html/figures/igraph_light.png;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

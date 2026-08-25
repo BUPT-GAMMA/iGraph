@@ -19,6 +19,8 @@
 
 GraphML 是 GraphData Server 的**内置子模块**，随 GraphData 自动启动，无需单独进程。
 
+代码边界中，Agent Runtime 是独立 Python 模块；当前部署时它与 API Gateway 位于同一个 Application 进程和镜像，通过进程内 `RuntimeSession` 接口调用，不存在 Runtime HTTP 端口。
+
 默认端口（可通过 `.env` 覆盖）：
 
 - API: `1109`
@@ -56,6 +58,21 @@ python agent_server.py
 - 服务故障隔离
 - GraphData 可独立扩缩容
 - Gateway 可以无状态扩展（会话上下文持久化在日志目录）
+
+### 2.3 模式 C：Compose 多容器交付
+
+```bash
+docker compose up --build -d
+```
+
+Compose 启动以下容器：
+
+1. `graph-data`：原 GraphData 与内置 GraphML；
+2. `mcp`：原 MCP 工具注册与转发；
+3. `application`：Backend + Agent Runtime，同一 Python 进程；
+4. `frontend`：原静态页面及 `/api`、SSE 反向代理。
+
+Compose 复用原 `.env`，容器内服务 URL 由编排配置覆盖。默认只发布 `frontend` 的 `21108` 端口，内部服务不对公网暴露。
 
 ---
 
