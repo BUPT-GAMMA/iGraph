@@ -13,7 +13,7 @@ import time
 import traceback
 import uuid
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Literal, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 import httpx
 import uvicorn
@@ -23,21 +23,30 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from backend.agent.context.token_counter import context_usage as build_context_usage
-from backend.agent.model_registry import DEFAULT_MODEL, SUPPORTED_MODELS, normalize_model_name
-from backend.agent.memory.memory_engine import MemoryEngine
-from backend.agent.memory.manager import MemoryManager
-from backend.agent.memory.builtin_provider import BuiltinMemoryProvider
-from backend.agent.memory.file_provider import FileMemoryProvider
-from backend.agent.memory.service import MemoryService
-from backend.agent.skills.paths import skill_events_path
+from agent_runtime import (
+    RuntimeFactory,
+    RuntimeSession,
+    adapt_legacy_agent,
+    create_runtime,
+    extract_generated_skill_name,
+    stream_skill_generation_from_env,
+)
+from agent_runtime.application_services import (
+    DEFAULT_MODEL,
+    SUPPORTED_MODELS,
+    BuiltinMemoryProvider,
+    FileMemoryProvider,
+    MemoryEngine,
+    MemoryManager,
+    MemoryService,
+    context_usage as build_context_usage,
+    normalize_model_name,
+    skill_events_path,
+)
 from backend.logging.sft_exporter import export_sft_records
 from backend.logging.logger import Logger
 from backend.runtime.dotenv_compat import load_dotenv_compat
 from backend.runtime.process_supervisor import ProcessSupervisor
-
-if TYPE_CHECKING:
-    from backend.agent.igraph import IGraph
 
 load_dotenv_compat()
 
@@ -235,7 +244,7 @@ class ApiGatewayConfig:
         return self.graph_data_base_url
 
 
-AgentFactory = Callable[..., "IGraph"]
+AgentFactory = Callable[..., Any]
 
 
 def _env_float(name: str, default: float) -> float:
@@ -289,13 +298,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _default_agent_factory(**kwargs):
-    # 延迟导入，避免在仅做路由测试时引入 LLM 依赖。
-    from backend.agent.igraph import IGraph
-
-    return IGraph(**kwargs)
-
-
 class ApiGatewayServer:
     """
     API 网关服务。
@@ -312,6 +314,7 @@ class ApiGatewayServer:
         process_supervisor: Optional[ProcessSupervisor] = None,
         logger: Optional[Logger] = None,
         agent_factory: Optional[AgentFactory] = None,
+        runtime_factory: Optional[RuntimeFactory] = None,
     ) -> None:
         if config is None:
             raise ValueError("ApiGatewayConfig 不能为空，请从环境变量构建配置后再启动。")
@@ -338,8 +341,16 @@ class ApiGatewayServer:
             self.config.graph_data_base_url = self._proc_supervisor.effective_graph_data_url
 
         self.logger = logger or Logger()
-        self._agent_factory = agent_factory or _default_agent_factory
-        self._agents: Dict[str, IGraph] = {}
+        if runtime_factory is not None:
+            self._runtime_factory = runtime_factory
+        elif agent_factory is not None:
+            # 保留旧测试和外部注入点；进入 Backend 前统一适配为 RuntimeSession。
+            self._runtime_factory = lambda **kwargs: adapt_legacy_agent(
+                agent_factory(**kwargs)
+            )
+        else:
+            self._runtime_factory = create_runtime
+        self._agents: Dict[str, RuntimeSession] = {}
         self._uploaded_files: Dict[str, Dict[str, dict]] = {}
         self._memory_manager: Optional[MemoryManager] = None
         self._memory_service: Optional[MemoryService] = None
@@ -377,13 +388,13 @@ class ApiGatewayServer:
         text = str(agent_key or "")
         return text.split(":", 1)[0] if ":" in text else ""
 
-    def _get_live_agent(self, session_id: str, user_id: str = "") -> Optional["IGraph"]:
+    def _get_live_agent(self, session_id: str, user_id: str = "") -> Optional[RuntimeSession]:
         return self._agents.get(self._agent_key(user_id, session_id))
 
-    def _set_live_agent(self, agent: "IGraph", user_id: str = "") -> None:
+    def _set_live_agent(self, agent: RuntimeSession, user_id: str = "") -> None:
         self._agents[self._agent_key(user_id, agent.session_id)] = agent
 
-    def _pop_live_agent(self, session_id: str, user_id: str = "") -> Optional["IGraph"]:
+    def _pop_live_agent(self, session_id: str, user_id: str = "") -> Optional[RuntimeSession]:
         return self._agents.pop(self._agent_key(user_id, session_id), None)
 
     def _agent_user_sem(self, user_id: str) -> asyncio.Semaphore:
@@ -392,7 +403,7 @@ class ApiGatewayServer:
             self._agent_user_sems[key] = asyncio.Semaphore(max(1, self._agent_per_user_limit))
         return self._agent_user_sems[key]
 
-    async def _stream_agent_events(self, user_id: str, agent: "IGraph", message: str):
+    async def _stream_agent_events(self, user_id: str, agent: RuntimeSession, message: str):
         user_sem = self._agent_user_sem(user_id)
         async with user_sem:
             async with self._agent_global_sem:
@@ -402,7 +413,7 @@ class ApiGatewayServer:
     async def _stream_feedback_events(
         self,
         user_id: str,
-        agent: "IGraph",
+        agent: RuntimeSession,
         req: FeedbackRespondReq,
     ):
         user_sem = self._agent_user_sem(user_id)
@@ -437,7 +448,7 @@ class ApiGatewayServer:
         provider: str = "transparent_openai_sdk",
         restored_messages: Optional[List[dict]] = None,
         restored_has_graph: bool = False,
-    ) -> "IGraph":
+    ) -> RuntimeSession:
         sid = session_id or str(uuid.uuid4())[:8]
         effective_user = user_id.strip()
         normalized_model = _normalize_model_for_user(model, effective_user)
@@ -461,7 +472,7 @@ class ApiGatewayServer:
             if effective_user
             else self._memory_manager
         )
-        return self._agent_factory(
+        return self._runtime_factory(
             session_logger=session_logger,
             model=normalized_model,
             reasoning_mode=reasoning_mode,
@@ -534,7 +545,7 @@ class ApiGatewayServer:
         if session_user and session_user != user_id:
             raise HTTPException(status_code=403, detail="无权访问此会话")
 
-    def _ensure_agent_model_allowed(self, agent: "IGraph", user_id: str) -> None:
+    def _ensure_agent_model_allowed(self, agent: RuntimeSession, user_id: str) -> None:
         if agent.model in _available_models_for_user(user_id):
             return
         fallback = _default_model_for_user(user_id)
@@ -591,7 +602,7 @@ class ApiGatewayServer:
     def _context_usage_for_session(
         self,
         session_id: str,
-        agent: Optional["IGraph"] = None,
+        agent: Optional[RuntimeSession] = None,
         user_id: str = "",
     ) -> dict:
         if agent is not None and hasattr(agent, "context_usage"):
@@ -636,7 +647,7 @@ class ApiGatewayServer:
             patch["provider"] = provider
         return model, reasoning_mode, provider, patch
 
-    def _restore_agent_if_needed(self, session_id: str, user_id: str = "") -> tuple["IGraph", bool, bool]:
+    def _restore_agent_if_needed(self, session_id: str, user_id: str = "") -> tuple[RuntimeSession, bool, bool]:
         """
         返回 (agent, restored, requires_graph_reload)。
         restored=True 表示本次从磁盘历史恢复了 agent。
@@ -684,20 +695,9 @@ class ApiGatewayServer:
     _IDLE_TIMEOUT_SECONDS: float = 600.0
 
     @staticmethod
-    def _inject_synthetic_turn(agent: "IGraph", user_text: str, assistant_text: str) -> None:
+    def _inject_synthetic_turn(agent: RuntimeSession, user_text: str, assistant_text: str) -> None:
         """向 agent 上下文注入一对伪造的 user/assistant 消息，同时持久化以便 session 恢复。"""
-        user_msg = {"role": "user", "content": user_text}
-        asst_msg = {"role": "assistant", "content": assistant_text}
-        agent.context_manager.messages.append(user_msg)
-        agent.context_manager.messages.append(asst_msg)
-        agent.logger.log_context_message(
-            user_msg, visible=True, display_content=user_text,
-            kind="user_synthetic", include_in_context=True,
-        )
-        agent.logger.log_context_message(
-            asst_msg, visible=True, display_content=assistant_text,
-            kind="assistant_synthetic", include_in_context=True,
-        )
+        agent.inject_synthetic_turn(user_text, assistant_text)
 
     def _evict_idle_agents(self, keep_agent_key: Optional[str] = None, user_id: str = "") -> None:
         """淘汰超时空闲 Agent；若仍超出上限，淘汰最久未活跃的。"""
@@ -1251,7 +1251,7 @@ class ApiGatewayServer:
                     "context_usage": self._context_usage_for_session(session_id, agent, user_id=user_id),
                 }
             except Exception as e:
-                agent.logger.log_error(traceback.format_exc())
+                agent.log_error(traceback.format_exc())
                 traceback.print_exc()
                 return {"success": False, "error": str(e)}
 
@@ -1357,15 +1357,7 @@ class ApiGatewayServer:
                     user_id=user_id,
                 )
                 if result.get("success"):
-                    agent._has_graph = True
-                    agent._graph_node_count = int(result.get("num_nodes") or 0)
-                    agent._graph_edge_count = int(result.get("num_edge_entries") or result.get("num_edges") or 0)
-                    agent._graph_unique_edge_count = int(result.get("num_unique_edges") or 0)
-                    semantic_type = str(result.get("semantic_type") or "").strip().lower()
-                    agent._graph_semantic_type = semantic_type or ("directed" if bool(result.get("directed")) else "unknown")
-                    agent._graph_storage_type = str(result.get("storage_type") or "mixed")
-                    agent._graph_is_directed = agent._graph_semantic_type == "directed"
-                    agent.logger.set_graph_flag(True)
+                    agent.apply_graph_load_result(result)
                     label = req.name or req.dataset_id
                     self._inject_synthetic_turn(
                         agent,
@@ -1384,15 +1376,7 @@ class ApiGatewayServer:
             try:
                 result = await _call_graph_data_tool(self, session_id, "clear_graph", {}, user_id=user_id)
                 if result.get("success"):
-                    agent._has_graph = False
-                    agent._graph_node_count = 0
-                    agent._graph_edge_count = 0
-                    agent._graph_unique_edge_count = 0
-                    agent._graph_is_directed = False
-                    agent._graph_semantic_type = "unknown"
-                    agent._graph_storage_type = "mixed"
-                    agent._graph_has_weights = False
-                    agent.logger.set_graph_flag(False)
+                    agent.clear_graph_state()
                 return result
             except Exception as e:
                 self.logger.error(f"POST /api/sessions/{session_id}/graph/clear 失败: {e}")
@@ -1628,8 +1612,8 @@ class ApiGatewayServer:
         def list_skills(request: Request, source: str = "all"):
             user_id = _get_request_user(request)
             from pathlib import Path as _Path
-            from backend.agent.skills.registry import SkillRegistry
-            from backend.agent.skills.paths import (
+            from agent_runtime.application_services import SkillRegistry
+            from agent_runtime.application_services import (
                 user_skills_dir,
                 per_user_skills_dir, per_user_review_queue_dir,
             )
@@ -1679,8 +1663,8 @@ class ApiGatewayServer:
         def get_skill(name: str, request: Request):
             user_id = _get_request_user(request)
             from pathlib import Path as _Path
-            from backend.agent.skills.registry import SkillRegistry
-            from backend.agent.skills.paths import (
+            from agent_runtime.application_services import SkillRegistry
+            from agent_runtime.application_services import (
                 user_skills_dir,
                 per_user_skills_dir, per_user_review_queue_dir,
             )
@@ -1718,7 +1702,7 @@ class ApiGatewayServer:
         @app.post("/api/skills")
         def create_skill(req: SkillCreateReq, request: Request):
             user_id = _get_request_user(request)
-            from backend.agent.skills.manager import SkillManager
+            from agent_runtime.application_services import SkillManager
             try:
                 result = SkillManager(user_id=user_id).create(
                     name=req.name,
@@ -1736,9 +1720,12 @@ class ApiGatewayServer:
         def update_skill(name: str, req: SkillUpdateReq, request: Request):
             user_id = _get_request_user(request)
             from pathlib import Path as _Path
-            from backend.agent.skills.guard import scan_skill_content
-            from backend.agent.skills.registry import clear_skill_caches
-            from backend.agent.skills.paths import per_user_skills_dir, per_user_review_queue_dir
+            from agent_runtime.application_services import (
+                clear_skill_caches,
+                per_user_review_queue_dir,
+                per_user_skills_dir,
+                scan_skill_content,
+            )
             root = per_user_skills_dir(user_id) if req.source == "user" else per_user_review_queue_dir(user_id)
             skill_dir = root / name
             if not skill_dir.exists():
@@ -1754,9 +1741,13 @@ class ApiGatewayServer:
         def delete_skill(name: str, request: Request, source: str = "user", reason: str = ""):
             user_id = _get_request_user(request)
             import shutil as _shutil
-            from backend.agent.skills.paths import per_user_skills_dir, per_user_review_queue_dir, per_user_skill_events_path
-            from backend.agent.skills.registry import clear_skill_caches
-            from backend.agent.memory.store import append_jsonl
+            from agent_runtime.application_services import (
+                append_jsonl,
+                clear_skill_caches,
+                per_user_review_queue_dir,
+                per_user_skill_events_path,
+                per_user_skills_dir,
+            )
             import time as _time
             if source == "user":
                 skill_dir = per_user_skills_dir(user_id) / name
@@ -1780,7 +1771,7 @@ class ApiGatewayServer:
         @app.post("/api/skills/{name}/approve")
         def approve_skill(name: str, request: Request, req: SkillApproveReq = SkillApproveReq()):
             user_id = _get_request_user(request)
-            from backend.agent.skills.manager import SkillManager
+            from agent_runtime.application_services import SkillManager
             try:
                 result = SkillManager(user_id=user_id).approve(
                     candidate_name=name,
@@ -1796,7 +1787,7 @@ class ApiGatewayServer:
         @app.post("/api/skills/{name}/reject")
         def reject_skill(name: str, request: Request, req: SkillRejectReq = SkillRejectReq()):
             user_id = _get_request_user(request)
-            from backend.agent.skills.manager import SkillManager
+            from agent_runtime.application_services import SkillManager
             try:
                 result = SkillManager(user_id=user_id).reject(
                     candidate_name=name,
@@ -1813,7 +1804,6 @@ class ApiGatewayServer:
         async def generate_skill_from_playbook(req: SkillGenerateReq, request: Request):
             user_id = _get_request_user(request)
             import json as _json
-            from backend.agent.sub_agents.skill_generator import SkillGenerator, extract_name
 
             playbook_item: dict = {}
             svc = self._get_user_memory_service(user_id)
@@ -1831,25 +1821,26 @@ class ApiGatewayServer:
             live_agent = self._get_live_agent(req.session_id, user_id=user_id) if req.session_id else None
             try:
                 if live_agent is not None:
-                    gw = live_agent._provider_gateway
-                    gen = SkillGenerator(
-                        model=req.model or live_agent.model,
-                        api_key=gw.api_key,
-                        base_url=gw.base_url,
+                    token_stream = live_agent.stream_skill_generation(
+                        playbook_item,
+                        req.model or live_agent.model,
                     )
                 else:
-                    gen = SkillGenerator.from_env(req.model or None)
+                    token_stream = stream_skill_generation_from_env(
+                        playbook_item,
+                        req.model or None,
+                    )
             except Exception as e:
                 raise HTTPException(status_code=503, detail=f"无法初始化生成器: {e}")
 
             async def _event_gen():
                 full: list[str] = []
                 try:
-                    async for token in gen.stream(playbook_item):
+                    async for token in token_stream:
                         full.append(token)
                         yield f"data: {_json.dumps({'type': 'token', 'content': token}, ensure_ascii=False)}\n\n"
                     full_content = "".join(full)
-                    final_name = extract_name(full_content) or "generated_skill"
+                    final_name = extract_generated_skill_name(full_content) or "generated_skill"
                     yield f"data: {_json.dumps({'type': 'done', 'suggested_name': final_name, 'full_content': full_content}, ensure_ascii=False)}\n\n"
                 except Exception as e:
                     yield f"data: {_json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
@@ -1863,10 +1854,9 @@ class ApiGatewayServer:
         @app.post("/api/skills/promote-playbook")
         def promote_playbook_to_skill(req: SkillPromoteReq, request: Request):
             user_id = _get_request_user(request)
-            from backend.agent.skills.manager import SkillManager
-            from backend.agent.skills.playbook_reviewer import render_candidate_skill
+            from agent_runtime.application_services import SkillManager, render_candidate_skill
             import json as _json
-            from backend.agent.skills.paths import per_user_review_queue_dir
+            from agent_runtime.application_services import per_user_review_queue_dir
             # Load playbook data if memory service available
             playbook_item: dict = {}
             svc = self._get_user_memory_service(user_id)
@@ -1927,6 +1917,7 @@ def create_server(
     process_supervisor: Optional[ProcessSupervisor] = None,
     logger: Optional[Logger] = None,
     agent_factory: Optional[AgentFactory] = None,
+    runtime_factory: Optional[RuntimeFactory] = None,
 ) -> ApiGatewayServer:
     return ApiGatewayServer(
         config=config,
@@ -1934,6 +1925,7 @@ def create_server(
         process_supervisor=process_supervisor,
         logger=logger,
         agent_factory=agent_factory,
+        runtime_factory=runtime_factory,
     )
 
 
@@ -1944,6 +1936,7 @@ def create_app(
     process_supervisor: Optional[ProcessSupervisor] = None,
     logger: Optional[Logger] = None,
     agent_factory: Optional[AgentFactory] = None,
+    runtime_factory: Optional[RuntimeFactory] = None,
 ) -> FastAPI:
     return create_server(
         config=config,
@@ -1951,4 +1944,5 @@ def create_app(
         process_supervisor=process_supervisor,
         logger=logger,
         agent_factory=agent_factory,
+        runtime_factory=runtime_factory,
     ).app

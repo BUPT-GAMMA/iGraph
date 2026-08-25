@@ -8,7 +8,7 @@ import os
 import sys
 import uuid
 
-from backend.agent.igraph import IGraph
+from agent_runtime import create_runtime
 from backend.agent.memory.builtin_provider import BuiltinMemoryProvider
 from backend.agent.memory.file_provider import FileMemoryProvider
 from backend.agent.memory.manager import MemoryManager
@@ -111,7 +111,7 @@ def main():
             BuiltinMemoryProvider(memory_engine),
             extra=FileMemoryProvider(user_id="default_user"),
         )
-        agent = IGraph(
+        agent = create_runtime(
             session_logger=session_logger,
             model=model,
             mcp_url=mcp_url,

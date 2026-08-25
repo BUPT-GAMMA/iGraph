@@ -14,6 +14,7 @@
 
 ## 重要架构变更
 
+- **进程内 Agent Runtime 边界**：原 `backend/agent/` 实现机械迁移到 `agent_runtime/agent/`，Backend 仅通过 `RuntimeSession` / `RuntimeFactory` 调用；当前仍由透明适配器执行原 `IGraph`，不新增 HTTP 协议或第二套状态，旧 `backend.agent.*` 导入继续兼容。
 - **GraphML 内置于 GraphData**：`graph_ml_service/` 独立项目已合并为 `graph_data_service/graph_ml/` 子模块，无需单独部署，直接访问会话内存中的图数据。
 - **ProtocolDriver 双模式**：通过 `LLM_TOOL_PROTOCOL=text|native` 切换文本协议和原生 Function Calling，前端接口不变。
 - **ContextManager 内置 ProtocolDriver**：`context/` 包统一管理上下文组装与流式驱动，iGraph 通过 `context_manager.stream_turn()` 调用。
