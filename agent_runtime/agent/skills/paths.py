@@ -5,10 +5,15 @@ from pathlib import Path
 import backend.data_paths as _dp
 
 
+def bundled_skills_dir() -> Path:
+    """随 Runtime 发布的只读内置 Skill 资源目录。"""
+    return Path(__file__).resolve().parents[2] / "resources" / "skills"
+
+
 # ── Global (shared across all users) ─────────────────────────────────────────
 
 def user_skills_dir() -> Path:
-    """全局共享技能目录（原 bundled + admin 创建的技能均在此）。"""
+    """全局共享的可写 Skill 目录。"""
     return _dp.global_skills_dir()
 
 

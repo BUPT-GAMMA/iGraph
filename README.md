@@ -1,16 +1,33 @@
-# iGraph 文档导航
+# iGraph
 
-本目录包含当前代码实现对应的完整文档。
+## 项目结构
+
+```text
+agent_runtime/       Agent Runtime 契约、实现与内置 Skill 资源
+backend/             HTTP API、会话、日志和本地进程监管
+graph_data_service/  图数据、算法、存储与 GraphML
+mcp_service/         MCP 工具注册与 GraphData 转发
+frontend/            Web 静态资源及 Nginx 容器配置
+config/              仓库级默认配置
+deploy/              Dockerfile、依赖锁定与外部组件编排
+docs/                当前文档、专题指南及历史计划归档
+tests/               单元、服务与集成测试
+data/ logs/ uploads/ artifacts/  本地运行数据（不纳入版本控制）
+```
+
+## 文档导航
 
 ## 文档列表
 
-- `DESIGN.md`：**主文档**。完整系统设计，涵盖架构总览、所有模块实现细节、数据模型、端到端时序、关键设计决策与取舍、稳定性原则、已知边界。
-- `SKILLS_MEMORY.md`：Skills / Memory / Tools Selector 机制详解，含知识三层模型、Virtual Tools、Frozen Snapshot、存储路径。快速查阅 Skills 或 Memory 设计时的首选。
-- `RUN_AND_TEST.md`：环境准备、`.env` 配置、启动方式、API 联调、测试命令与常见问题。
-- `DEPLOY_SERVERS.md`：单机/拆分部署建议、完整环境变量清单、运维建议。
-- `GRAPH_DATA_JSON_FORMAT.md`：`graph_data.v1` JSON 存储格式与服务交换文档格式。
-- `GRAPH_ML_SERVICE.md`：GraphData 内置 GraphML 子模块说明、训练/推理参数。
+- `docs/DESIGN.md`：**主文档**。完整系统设计，涵盖架构总览、数据模型和关键设计决策。
+- `docs/SKILLS_MEMORY.md`：Skills / Memory / Tools Selector 机制详解。
+- `docs/RUN_AND_TEST.md`：环境准备、启动方式、API 联调和测试命令。
+- `docs/DEPLOY_SERVERS.md`：单机/拆分部署、环境变量和运维建议。
+- `docs/GRAPH_DATA_JSON_FORMAT.md`：`graph_data.v1` JSON 存储格式。
+- `docs/GRAPH_ML_SERVICE.md`：GraphData 内置 GraphML 子模块说明。
 - `docs/NEBULAGRAPH.md`：NebulaGraph 混合/主存储模式、通用工具自动路由、有界 NetworkX 物化与验收方式。
+- `docs/guides/`：面向具体功能的操作指南。
+- `docs/archive/plans/`：已完成迭代的历史计划和审查记录。
 
 ## 重要架构变更
 
@@ -47,7 +64,7 @@
 
 ## 快速开始
 
-1. 按 `RUN_AND_TEST.md` 完成依赖安装与 `.env` 配置（注意新增 `LLM_TOOL_PROTOCOL=text`）。（配置图数据库查看`NEBULAGRAPH.md`，以docker形式启动NEBULAGRAPH）
+1. 按 `docs/RUN_AND_TEST.md` 完成依赖安装与 `.env` 配置；NebulaGraph 配置见 `docs/NEBULAGRAPH.md`。
 2. 一体化启动：`python agent_server.py`
 3. 打开 `http://localhost:1109`，创建会话并开始对话。
 

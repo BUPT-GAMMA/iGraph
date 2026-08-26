@@ -195,6 +195,15 @@ class ApiGatewayAppTest(unittest.TestCase):
         )
         self.client = TestClient(self.server.app)
 
+    def test_frontend_assets_are_served_from_frontend_public(self) -> None:
+        page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("iGraph", page.text)
+
+        favicon = self.client.get("/favicon.ico")
+        self.assertEqual(favicon.status_code, 200)
+        self.assertEqual(favicon.headers["content-type"], "image/png")
+
     def test_create_session_and_chat(self) -> None:
         created = self.client.post(
             "/api/sessions",

@@ -50,7 +50,7 @@ backend/agent/skills/
 
 | 来源 | 路径 | 说明 |
 |------|------|------|
-| `bundled` | `backend/agent/skills/*/SKILL.md` | 随代码发布的内置技能（只读） |
+| `bundled` | `agent_runtime/resources/skills/*/SKILL.md` | 随代码发布的内置技能（只读，启动时初始化到运行数据目录） |
 | `user` | `~/.igraph/skills/user/*/SKILL.md` | 用户自定义技能 |
 | `review_queue` | `~/.igraph/skills/.review_queue/*/SKILL.md` | 等待审批的候选技能（playbook 自动生成） |
 

@@ -6,7 +6,7 @@ iGraph "加载数据集" 功能 - 快速参考卡
 1. 点击"数据集"按钮 → 2. 选择数据集 → 3. 点击"加载" → 4. Agent自动分析
 
 [关键文件位置]
-前端按钮:      index.html 行 2648, 2795, 4045
+前端按钮:      frontend/public/index.html
 后端API:       backend/api_gateway/app.py 行 1008
 数据集服务:    graph_data_service/app.py 行 600
 数据集注册:    graph_data_service/dataset_registry.py 行 34
@@ -199,7 +199,6 @@ mkdir -p datasets/external_dataset/versions
 # 启动应用，数据集自动显示
 
 ================================================================================
-完整文档: /Users/shejunda/Documents/code/iGraph/LOAD_DATASET_GUIDE.md
-实用示例: /tmp/practical_examples.md
-API文档:  /Users/shejunda/Documents/code/iGraph/docs/GRAPH_DATA_JSON_FORMAT.md
+完整文档: docs/guides/datasets/LOAD_DATASET_GUIDE.md
+API文档:  docs/GRAPH_DATA_JSON_FORMAT.md
 ================================================================================

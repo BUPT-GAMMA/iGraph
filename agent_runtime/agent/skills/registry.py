@@ -8,7 +8,11 @@ from typing import Any
 from agent_runtime.agent.skills.guard import scan_skill_content
 from agent_runtime.agent.skills.models import SkillCondition, SkillSpec
 import backend.data_paths as _dp
-from agent_runtime.agent.skills.paths import review_queue_dir, user_skills_dir
+from agent_runtime.agent.skills.paths import (
+    bundled_skills_dir,
+    review_queue_dir,
+    user_skills_dir,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -76,6 +80,11 @@ def _list(value: Any) -> tuple[str, ...]:
 
 def _source_for_path(path: Path) -> str:
     resolved = path.resolve()
+    try:
+        resolved.relative_to(bundled_skills_dir().resolve())
+        return "bundled"
+    except ValueError:
+        pass
     # Global shared user skills
     try:
         resolved.relative_to(user_skills_dir().resolve())
@@ -163,7 +172,7 @@ class SkillRegistry:
     def __init__(self, skill_dirs: list[Path] | None = None, *, include_review_queue: bool = False) -> None:
         dirs = skill_dirs
         if dirs is None:
-            dirs = [user_skills_dir()]
+            dirs = [bundled_skills_dir(), user_skills_dir()]
             if include_review_queue:
                 dirs.append(review_queue_dir())
         self._skill_dirs = dirs

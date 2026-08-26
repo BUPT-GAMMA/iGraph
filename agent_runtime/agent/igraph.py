@@ -319,9 +319,13 @@ class IGraph:
 
     def _build_skill_registry(self) -> SkillRegistry:
         try:
-            from agent_runtime.agent.skills.paths import per_user_skills_dir, user_skills_dir
+            from agent_runtime.agent.skills.paths import (
+                bundled_skills_dir,
+                per_user_skills_dir,
+                user_skills_dir,
+            )
 
-            dirs = [user_skills_dir()]
+            dirs = [bundled_skills_dir(), user_skills_dir()]
             if self.user_id:
                 dirs.append(per_user_skills_dir(self.user_id))
             return SkillRegistry(dirs)

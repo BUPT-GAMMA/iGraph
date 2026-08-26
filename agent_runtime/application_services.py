@@ -16,6 +16,7 @@ from .agent.model_registry import DEFAULT_MODEL, SUPPORTED_MODELS, normalize_mod
 from .agent.skills.guard import scan_skill_content
 from .agent.skills.manager import SkillManager
 from .agent.skills.paths import (
+    bundled_skills_dir,
     per_user_review_queue_dir,
     per_user_skill_events_path,
     per_user_skills_dir,
@@ -36,6 +37,7 @@ __all__ = [
     "SkillManager",
     "SkillRegistry",
     "append_jsonl",
+    "bundled_skills_dir",
     "clear_skill_caches",
     "context_usage",
     "normalize_model_name",
