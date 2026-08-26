@@ -50,10 +50,18 @@ from backend.runtime.process_supervisor import ProcessSupervisor
 
 load_dotenv_compat()
 
-_SUPPORTED_IDS_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "supported_ids.txt",
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
+_configured_supported_ids_file = os.getenv("IGRAPH_SUPPORTED_IDS_FILE", "").strip()
+if _configured_supported_ids_file:
+    _SUPPORTED_IDS_FILE = (
+        _configured_supported_ids_file
+        if os.path.isabs(_configured_supported_ids_file)
+        else os.path.join(_PROJECT_ROOT, _configured_supported_ids_file)
+    )
+else:
+    _SUPPORTED_IDS_FILE = os.path.join(_PROJECT_ROOT, "config", "supported_ids.txt")
 _ADMIN_USER_ID = os.getenv("IGRAPH_ADMIN_USER_ID", "admin").strip() or "admin"
 _RESTRICTED_MODEL_PREFIXES = ("gpt-", "claude-")
 _DEFAULT_ADMIN_MODEL = os.getenv("IGRAPH_DEFAULT_ADMIN_MODEL", DEFAULT_MODEL).strip()
@@ -889,7 +897,8 @@ class ApiGatewayServer:
     def _setup_routes(self) -> None:
         app = self.app
         root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        figures_dir = os.path.join(root_dir, "figures")
+        frontend_dir = os.path.join(root_dir, "frontend", "public")
+        figures_dir = os.path.join(frontend_dir, "figures")
         if os.path.isdir(figures_dir):
             app.mount("/figures", StaticFiles(directory=figures_dir), name="figures")
 
@@ -902,7 +911,7 @@ class ApiGatewayServer:
 
         @app.get("/", response_class=HTMLResponse)
         def serve_frontend():
-            html_path = os.path.join(root_dir, "index.html")
+            html_path = os.path.join(frontend_dir, "index.html")
             with open(html_path, "r", encoding="utf-8") as f:
                 return HTMLResponse(
                     content=f.read(),
@@ -1614,11 +1623,15 @@ class ApiGatewayServer:
             from pathlib import Path as _Path
             from agent_runtime.application_services import SkillRegistry
             from agent_runtime.application_services import (
+                bundled_skills_dir,
+                per_user_review_queue_dir,
+                per_user_skills_dir,
                 user_skills_dir,
-                per_user_skills_dir, per_user_review_queue_dir,
             )
             dirs: list = []
-            if source in ("all", "global", "bundled"):
+            if source in ("all", "bundled"):
+                dirs.append(bundled_skills_dir())
+            if source in ("all", "global"):
                 dirs.append(user_skills_dir())
             if source in ("all", "user"):
                 dirs.append(per_user_skills_dir(user_id))
@@ -1665,12 +1678,18 @@ class ApiGatewayServer:
             from pathlib import Path as _Path
             from agent_runtime.application_services import SkillRegistry
             from agent_runtime.application_services import (
+                bundled_skills_dir,
+                per_user_review_queue_dir,
+                per_user_skills_dir,
                 user_skills_dir,
-                per_user_skills_dir, per_user_review_queue_dir,
             )
             registry = SkillRegistry(
-                [user_skills_dir(), per_user_skills_dir(user_id),
-                 per_user_review_queue_dir(user_id)],
+                [
+                    bundled_skills_dir(),
+                    user_skills_dir(),
+                    per_user_skills_dir(user_id),
+                    per_user_review_queue_dir(user_id),
+                ],
                 include_review_queue=True,
             )
             spec = registry.get(name)

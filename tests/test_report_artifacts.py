@@ -193,7 +193,7 @@ class ReportArtifactFrontendContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.frontend = (
-            Path(__file__).resolve().parents[1] / "index.html"
+            Path(__file__).resolve().parents[1] / "frontend" / "public" / "index.html"
         ).read_text(encoding="utf-8")
 
     def test_frontend_handles_and_renders_report_artifacts(self) -> None:

@@ -1,6 +1,6 @@
 # Codex 实现 Review
 
-> 基于 `plans/plan_final.md` 对 `codex/plan-final-implementation` 分支的代码变更进行逐模块 Review。
+> 基于 `docs/archive/plans/plan_final.md` 对 `codex/plan-final-implementation` 分支的代码变更进行逐模块 Review。
 > 审核日期：2026-04-13
 
 ---

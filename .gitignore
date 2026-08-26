@@ -29,6 +29,7 @@ ENV/
 !.env.example
 
 # Runtime outputs
+/data/
 logs/
 uploads/
 artifacts/
@@ -46,10 +47,6 @@ plan.md
 backend/agent/memory/default_user/*
 !backend/agent/memory/default_user/.gitkeep
 backend/agent/memory/default_user/legacy_backup/
-data/.session_index/
-data/users/
-data/server.log
-data/global/skills/.review_queue/
 
 # Local AI / IDE configuration
 .agents/

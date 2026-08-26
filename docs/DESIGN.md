@@ -2409,7 +2409,7 @@ GraphML 训练和推理都支持 `graph_version` 校验：
 5. **native FC 不适合数据采集**：native 模式工具描述在 API tools 参数中而非 system prompt，对话日志不包含工具 prompt 结构，不适合直接用于 SFT/RL 数据构造。
 6. **TextExtractor 建图**：`TextGraphExtractor` sub-agent（`text_graph_extractor.py`）已集成 LLM 辅助三元组抽取，支持长文本分块、去重与置信度过滤；但 `build_graph_from_text` 直接调用路径与 LLM 辅助路径的选择逻辑仍需完善。
 7. **Neo4j 后端为骨架**：`storage/neo4j_backend.py` 尚未接入 `GraphSession`，图数据仍为内存态。
-8. **Memory 单作用域**：当前 `MemoryScope` 仍硬编码为 `default_user`，多用户/多工作区的作用域隔离是计划中的后续迭代（见 `plans/hermes_skills_memory_plan_opus.md` P3.3）。
+8. **Memory 单作用域**：当前 `MemoryScope` 仍硬编码为 `default_user`，多用户/多工作区的作用域隔离是计划中的后续迭代（见 `docs/archive/plans/hermes_skills_memory_plan_opus.md` P3.3）。
 9. **记忆仅在下次会话生效**：Frozen Snapshot 模式下，本会话写入的记忆下次启动才生效；当前会话内无法反映最新写入。
 10. **LLM Selector 延迟**：每 turn 新增一次小模型调用（约 300-500ms），通过 per-turn 缓存（`set_turn_id()`）控制总量；若延迟不可接受，可改为关键词匹配模式（无 LLM）。
 
@@ -2421,7 +2421,7 @@ GraphML 训练和推理都支持 `graph_version` 校验：
 iGraph/
 ├── main.py                              # CLI 入口
 ├── agent_server.py                      # Web 入口（委托 api_gateway.__main__）
-├── index.html                           # 前端单页应用（含分析计划面板）
+├── frontend/public/index.html           # 前端单页应用（含分析计划面板）
 ├── backend/
 │   ├── agent/
 │   │   ├── igraph.py               # Agent 核心（Plan-aware 推理 + virtual tool 截获）
@@ -2525,7 +2525,7 @@ iGraph/
 ├── tests/                               # 测试
 │   ├── servers/                         # 服务级集成测试
 │   └── test_*.py                        # 单元测试
-├── plans/                               # 迭代计划与 review 文档
+├── docs/archive/plans/                  # 已完成迭代计划与 review 文档
 ├── docs/                                # 项目文档
 └── logs/                                # 运行时日志（自动创建）
 ```

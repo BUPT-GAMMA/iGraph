@@ -11,6 +11,8 @@
 - `GRAPH_DATA_JSON_FORMAT.md`：`graph_data.v1` JSON 存储格式与服务交换文档格式。
 - `GRAPH_ML_SERVICE.md`：GraphData 内置 GraphML 子模块说明、训练/推理参数。
 - `NEBULAGRAPH.md`：NPZ/GraphData + NebulaGraph 混合存储的配置、同步工具、原生查询与验收方式。
+- `guides/datasets/`：数据集加载完整指南、搜索索引与快速参考。
+- `archive/plans/`：已完成迭代的历史计划与审查记录，不作为当前实施入口。
 
 ## 重要架构变更
 

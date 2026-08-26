@@ -18,7 +18,7 @@ All on-disk paths are derived from IGRAPH_DATA_ROOT (default: "data"):
       uploads/{session_id}/       # per-user graph data uploads
       playbooks.json              # per-user private playbooks
 
-Bundled (read-only) skills remain in backend/agent/skills/*/SKILL.md.
+Bundled (read-only) skill resources live in agent_runtime/resources/skills/.
 """
 
 from __future__ import annotations

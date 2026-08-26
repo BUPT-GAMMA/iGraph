@@ -1,7 +1,7 @@
 # iGraph Skills / Memory Remaining Implementation Plan
 
 > Date: 2026-04-23
-> Basis: `plans/hermes_skills_memory_plan_opus.md` plus current repository state.
+> Basis: `docs/archive/plans/hermes_skills_memory_plan_opus.md` plus current repository state.
 > Constraint: **Do not change the current ToolSelector or fallback strategy.** The current `LLMToolSelector` behavior, per-turn cache, core tool set, `tool_select`, `tool_expand`, and keyword fallback semantics are treated as intentional design and out of scope for this plan.
 
 ## 1. Scope

@@ -96,7 +96,7 @@ tool_select
 ## 关键文件 SHA-256
 
 ```text
-58ea01ab5f11b6893ed71a01dcf0506736877c333fb2ea955d3bef4c731d98a4  index.html
+58ea01ab5f11b6893ed71a01dcf0506736877c333fb2ea955d3bef4c731d98a4  frontend/public/index.html
 ffdbe02dfcb174692a84350ec8d6942624b983c6e3c19190740fc18245ccd2da  backend/api_gateway/app.py
 5ee2955ca38cce4dd1be3c56d50f2a2d0fb71458adef8960c94fc5185c50c455  backend/agent/igraph.py
 c37f5ae00e1ccd0b9be1bd67205a6e189500620b6f25a3dd3ea9a45352d47793  backend/agent/context/context_manager.py
@@ -107,4 +107,4 @@ bc7f6eb67ed7e30e37cc3fbfb9a4ce81b3f4c74a999149a9460fbef6113b8508  backend/agent/
 5a4fab5cec043d08afe67a9d0110e2b4ed9d1ae875ef9461887957000480dad9  graph_data_service/tool_catalog.py
 ```
 
-Agent 文件迁移后允许因 import 路径发生哈希变化；提示词、协议文本、模型请求、工具循环和数据处理语句不得发生行为性改写。`index.html`、MCP 与 GraphData 业务实现应保持内容一致，除非容器资源路径需要最小兼容适配。
+Agent 文件迁移后允许因 import 路径发生哈希变化；提示词、协议文本、模型请求、工具循环和数据处理语句不得发生行为性改写。`frontend/public/index.html`、MCP 与 GraphData 业务实现应保持内容一致，除非容器资源路径需要最小兼容适配。

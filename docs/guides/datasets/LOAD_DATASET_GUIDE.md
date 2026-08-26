@@ -13,7 +13,7 @@
 ## 1. 前端UI位置和操作流程
 
 ### 1.1 按钮位置
-**文件**: `/index.html` (行号 2648)
+**文件**: `frontend/public/index.html`
 ```html
 <button id="btn-dataset-modal" class="chip">
   <svg>...</svg>
@@ -608,4 +608,3 @@ def load_graph(self, dataset_id: str, version: str = "latest") -> GraphData:
 - API: `backend/api_gateway/app.py` (行号 1008)
 - Service: `graph_data_service/app.py` (行号 600)
 - Registry: `graph_data_service/dataset_registry.py` (行号 34)
-
