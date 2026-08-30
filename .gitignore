@@ -34,6 +34,7 @@ logs/
 uploads/
 artifacts/
 outputs/
+output/
 datasets/
 !graph_data_service/graph_ml/datasets/
 !graph_data_service/graph_ml/datasets/*.py

@@ -13,6 +13,7 @@ from backend.projects import ProjectDirectory
 
 class FakeServiceClient:
     runtime_sessions: dict[str, dict] = {}
+    runtime_runs: dict[str, list[dict]] = {}
     graph_loaded: dict[str, bool] = {}
     graph_sources: dict[str, str] = {}
     graph_deletes: list[str] = []
@@ -53,7 +54,7 @@ class FakeServiceClient:
             self.runtime_sessions[payload["session_id"]] = payload
             return payload
         if path.startswith("/sessions/") and path.endswith("/runs") and method == "GET":
-            return {"data": []}
+            return {"data": self.runtime_runs.get(path.split("/")[2], [])}
         if path.startswith("/sessions/"):
             session_id = path.split("/")[2]
             session = self.runtime_sessions.get(session_id)
@@ -82,6 +83,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         }
     }
     FakeServiceClient.graph_loaded = {}
+    FakeServiceClient.runtime_runs = {}
     FakeServiceClient.graph_sources = {}
     FakeServiceClient.graph_deletes = []
     seed = tmp_path / "supported.txt"
@@ -294,3 +296,29 @@ def test_project_dataset_delete_clears_sessions_but_conversation_delete_preserve
     assert FakeServiceClient.runtime_sessions[inheriting]["session_state"]["active_dataset_id"] is None
     assert inheriting in FakeServiceClient.graph_deletes
     assert not source.exists()
+
+
+def test_activate_returns_active_run_and_new_chat_is_rejected(client: TestClient):
+    session_id = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    FakeServiceClient.runtime_runs[session_id] = [{
+        "run_id": "run-active",
+        "status": "RUNNING",
+        "created_at": "2026-08-31T01:00:00Z",
+        "events": [{"event_index": 39}, {"event_index": 42}],
+    }]
+
+    activated = client.post(f"/api/sessions/{session_id}/activate", headers=headers())
+    assert activated.status_code == 200
+    assert activated.json()["active_run"] == {
+        "run_id": "run-active",
+        "status": "running",
+        "last_event_index": 42,
+    }
+
+    rejected = client.post(
+        f"/api/sessions/{session_id}/chat",
+        headers=headers(),
+        json={"message": "must not create a second run"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["active_run"]["run_id"] == "run-active"

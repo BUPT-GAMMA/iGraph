@@ -135,7 +135,14 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
     if event in {"RunStarted", "TeamRunStarted"}:
         return {"type": "model_turn_start", **common}
     if event in {"RunContent", "TeamRunContent"}:
-        return {"type": "token", "content": str(payload.get("content") or ""), **common}
+        run_id = str(common.get("run_id") or "")
+        message_id = str(_first_value(variants, "message_id", "messageId") or f"assistant:{run_id}")
+        return {
+            "type": "token",
+            "message_id": message_id,
+            "content": str(payload.get("content") or ""),
+            **common,
+        }
     if event in {"ReasoningStarted", "TeamReasoningStarted"}:
         return {"type": "thinking_start", "phase": "reasoning", **common}
     if event in {"ReasoningContent", "RunReasoningContent", "ReasoningStep", "TeamReasoningStep"}:
@@ -183,8 +190,11 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
             **common,
         }
     if event in {"RunCompleted", "TeamRunCompleted"}:
+        run_id = str(common.get("run_id") or "")
+        message_id = str(_first_value(variants, "message_id", "messageId") or f"assistant:{run_id}")
         return {
             "type": "done",
+            "message_id": message_id,
             "content": payload.get("content") or "",
             "context_usage": payload.get("metrics") or {},
             **common,
@@ -330,9 +340,23 @@ def _native_reasoning_step(payload: dict[str, Any], step_id: int) -> dict[str, A
     }
 
 
-async def translate_sse(lines: AsyncIterator[str]) -> AsyncIterator[str]:
+async def translate_sse(
+    lines: AsyncIterator[str],
+    *,
+    protocol_version: int = 1,
+    session_id: str = "",
+    run_id: str = "",
+) -> AsyncIterator[str]:
+    """Translate one AgentOS event into one atomic downstream SSE frame.
+
+    Version 1 preserves the legacy one-UI-event-per-frame behavior. Version 2
+    keeps every UI event derived from a single AgentOS event in one envelope so
+    a resume cursor can never land in the middle of a logical event.
+    """
+
     planning_started = False
     planning_step_id = 0
+    current_run_id = run_id
     async for line in lines:
         if not line.startswith("data:"):
             continue
@@ -343,7 +367,11 @@ async def translate_sse(lines: AsyncIterator[str]) -> AsyncIterator[str]:
         try:
             payload = json.loads(raw)
             event_payload = payload if isinstance(payload, dict) else {"content": payload}
+            current_run_id = str(event_payload.get("run_id") or current_run_id)
             mapped = map_agentos_event(event_payload)
+            current_run_id = str(mapped.get("run_id") or current_run_id)
+            if mapped.get("type") in {"token", "done"} and mapped.get("message_id") in {None, "", "assistant:"}:
+                mapped["message_id"] = f"assistant:{current_run_id}"
             extras = map_product_events(event_payload)
             event_name = str(event_payload.get("event") or event_payload.get("type") or "")
             plan_events: list[dict[str, Any]] = []
@@ -382,8 +410,16 @@ async def translate_sse(lines: AsyncIterator[str]) -> AsyncIterator[str]:
                 mapped = {"type": "agent_event", "event": fallback_event, "error": str(exc), "payload": event_payload}
             extras = []
             plan_events = []
-        yield f"data: {json.dumps(mapped, ensure_ascii=False)}\n\n"
-        for plan_event in plan_events:
-            yield f"data: {json.dumps(plan_event, ensure_ascii=False)}\n\n"
-        for extra in extras:
-            yield f"data: {json.dumps(extra, ensure_ascii=False)}\n\n"
+        derived_events = [mapped, *plan_events, *extras]
+        if protocol_version == 2:
+            envelope = {
+                "protocol_version": 2,
+                "session_id": str(event_payload.get("session_id") or mapped.get("session_id") or session_id),
+                "run_id": str(event_payload.get("run_id") or mapped.get("run_id") or current_run_id),
+                "event_index": event_payload.get("event_index", mapped.get("event_index")),
+                "events": derived_events,
+            }
+            yield f"data: {json.dumps(envelope, ensure_ascii=False)}\n\n"
+            continue
+        for event in derived_events:
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

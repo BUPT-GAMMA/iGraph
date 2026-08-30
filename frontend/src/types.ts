@@ -43,6 +43,7 @@ export type GraphSnapshot = {
 };
 
 export type Message = {
+  id?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   tools?: ToolCall[];
@@ -86,3 +87,15 @@ export type FeedbackRequest = {
   description?: string;
 };
 export type StreamEvent = { type?: string; [key: string]: any };
+export type ActiveRun = {
+  run_id: string;
+  status: string;
+  last_event_index: number;
+};
+export type StreamBatch = {
+  protocol_version?: 1 | 2;
+  session_id: string;
+  run_id: string;
+  event_index?: number | null;
+  events: StreamEvent[];
+};

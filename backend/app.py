@@ -186,6 +186,41 @@ def _ordered_runs(runs: list[dict]) -> list[dict]:
     ]
 
 
+_ACTIVE_RUN_STATUSES = {"pending", "running", "paused"}
+
+
+def _active_run_summary(runs: list[dict]) -> dict[str, Any] | None:
+    """Return the newest non-terminal run and its durable resume cursor."""
+
+    for run in reversed(_ordered_runs(runs)):
+        status = str(run.get("status") or "").lower()
+        if status not in _ACTIVE_RUN_STATUSES:
+            continue
+        indexes: list[int] = []
+        for value in (run.get("last_event_index"), run.get("event_index")):
+            try:
+                if value is not None:
+                    indexes.append(int(value))
+            except (TypeError, ValueError):
+                pass
+        events = run.get("events") or []
+        if isinstance(events, list):
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                try:
+                    if event.get("event_index") is not None:
+                        indexes.append(int(event["event_index"]))
+                except (TypeError, ValueError):
+                    pass
+        return {
+            "run_id": str(run.get("run_id") or run.get("id") or ""),
+            "status": status,
+            "last_event_index": max(indexes, default=-1),
+        }
+    return None
+
+
 def _run_input_text(run: dict) -> str:
     value = run.get("run_input")
     if isinstance(value, str):
@@ -309,10 +344,11 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
     messages: list[dict] = []
     async_training_cards: dict[str, dict] = {}
     for run in runs:
+        run_id = str(run.get("run_id") or run.get("id") or "")
         status = str(run.get("status") or "").lower()
         user_text = _run_input_text(run).strip()
         if user_text:
-            messages.append({"role": "user", "content": user_text})
+            messages.append({"id": f"user:{run_id}", "role": "user", "content": user_text})
 
         tool_cards: list[dict] = []
         graphs: list[dict] = []
@@ -375,6 +411,7 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
         plan = _plan_from_run(run)
         if assistant_text or tool_cards or graphs or reports or feedback_requests:
             messages.append({
+                "id": f"assistant:{run_id}",
                 "role": "assistant",
                 "content": assistant_text,
                 "tools": tool_cards,
@@ -505,6 +542,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     )
     runtime = ServiceClient(settings.agent_runtime_url, settings.request_timeout, settings.stream_timeout)
     graph = ServiceClient(settings.graph_engine_url, settings.request_timeout, settings.stream_timeout)
+    run_locks: dict[tuple[str, str], asyncio.Lock] = {}
+    run_locks_guard = asyncio.Lock()
+    reserved_runs: set[tuple[str, str]] = set()
 
     app = FastAPI(title="iGraph Backend", version="3.0.0")
     app.add_middleware(
@@ -625,6 +665,38 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             params={"type": "agent", "user_id": user_id},
         )
         return _ordered_runs(_data_rows(payload))
+
+    async def run_lock(user_id: str, session_id: str) -> asyncio.Lock:
+        key = (user_id, session_id)
+        async with run_locks_guard:
+            lock = run_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                run_locks[key] = lock
+            return lock
+
+    async def reserve_new_run(session_id: str, request: Request) -> tuple[str, tuple[str, str]]:
+        user = current_user(request, users)
+        key = (user.user_id, session_id)
+        lock = await run_lock(*key)
+        async with lock:
+            runs = await get_session_runs(session_id, request, user.user_id)
+            active_run = _active_run_summary(runs)
+            if key in reserved_runs or active_run is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "该会话已有正在运行或等待确认的任务",
+                        "active_run": active_run,
+                    },
+                )
+            reserved_runs.add(key)
+        return user.user_id, key
+
+    async def release_run_reservation(key: tuple[str, str]) -> None:
+        lock = await run_lock(*key)
+        async with lock:
+            reserved_runs.discard(key)
 
     async def restored_messages(session: dict, session_id: str, request: Request, user_id: str) -> list[dict]:
         runs = await get_session_runs(session_id, request, user_id)
@@ -1205,6 +1277,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "messages": restored,
             "has_graph": has_graph,
             "pending_feedback": pending,
+            "active_run": _active_run_summary(runs),
             "project_id": session_project_id(session, user.user_id),
             "active_dataset_id": state.get("active_dataset_id"),
             "provider": state.get("provider", "openai-compatible"),
@@ -1232,10 +1305,19 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         session = await get_session(session_id, request, user.user_id)
         state = _state(session)
         has_graph = await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        runs = await get_session_runs(session_id, request, user.user_id)
         return {
             "session_id": session_id,
             "has_graph": has_graph,
-            "pending_feedback": await pending_feedback(session_id, request, user.user_id),
+            "pending_feedback": next(
+                (
+                    feedback_request_from_payload(run)
+                    for run in reversed(runs)
+                    if str(run.get("status") or "").lower() == "paused"
+                ),
+                None,
+            ),
+            "active_run": _active_run_summary(runs),
             "project_id": session_project_id(session, user.user_id),
             "active_dataset_id": state.get("active_dataset_id"),
             "provider": state.get("provider", "openai-compatible"),
@@ -1391,29 +1473,54 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
     @app.post("/api/sessions/{session_id}/chat")
     async def chat(session_id: str, req: ChatReq, request: Request):
-        form, headers, user_id = await run_form(session_id, req, request)
-        form.update({"stream": "false", "background": "false"})
-        payload = await runtime.request("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form)
-        return {
-            "success": True,
-            "response": str(payload.get("content") or ""),
-            "has_graph": await graph_loaded(session_id, request, user_id),
-            "reasoning_mode": json.loads(form["factory_input"])["reasoning_mode"],
-            "context_usage": payload.get("metrics") or {},
-            "run_id": payload.get("run_id"),
-        }
+        _, reservation = await reserve_new_run(session_id, request)
+        try:
+            form, headers, user_id = await run_form(session_id, req, request)
+            form.update({"stream": "false", "background": "false"})
+            payload = await runtime.request("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form)
+            return {
+                "success": True,
+                "response": str(payload.get("content") or ""),
+                "has_graph": await graph_loaded(session_id, request, user_id),
+                "reasoning_mode": json.loads(form["factory_input"])["reasoning_mode"],
+                "context_usage": payload.get("metrics") or {},
+                "run_id": payload.get("run_id"),
+            }
+        finally:
+            await release_run_reservation(reservation)
 
     @app.post("/api/sessions/{session_id}/chat/stream")
     async def chat_stream(session_id: str, req: ChatReq, request: Request):
-        form, headers, _ = await run_form(session_id, req, request)
-        form.update({"stream": "true", "background": "true"})
+        _, reservation = await reserve_new_run(session_id, request)
+        try:
+            form, headers, _ = await run_form(session_id, req, request)
+            form.update({"stream": "true", "background": "true"})
+        except Exception:
+            await release_run_reservation(reservation)
+            raise
+        protocol_version = 2 if request.headers.get("X-iGraph-Stream-Version") == "2" else 1
 
         async def events():
-            async with runtime.stream("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form) as response:
-                async for chunk in translate_sse(response.aiter_lines()):
-                    yield chunk
+            try:
+                async with runtime.stream("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form) as response:
+                    async for chunk in translate_sse(
+                        response.aiter_lines(),
+                        protocol_version=protocol_version,
+                        session_id=session_id,
+                    ):
+                        yield chunk
+            finally:
+                await release_run_reservation(reservation)
 
-        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-iGraph-Stream-Version": str(protocol_version),
+            },
+        )
 
     @app.post("/api/sessions/{session_id}/runs/{run_id}/resume")
     async def resume_stream(session_id: str, run_id: str, request: Request, last_event_index: int = -1):
@@ -1421,14 +1528,28 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         await get_session(session_id, request, user.user_id)
         headers = forwarded_headers(request, user.user_id)
         data = {"session_id": session_id, "last_event_index": str(last_event_index)}
+        protocol_version = 2 if request.headers.get("X-iGraph-Stream-Version") == "2" else 1
 
         async def events():
             path = f"/agents/{settings.agent_id}/runs/{run_id}/resume"
             async with runtime.stream("POST", path, headers=headers, data=data) as response:
-                async for chunk in translate_sse(response.aiter_lines()):
+                async for chunk in translate_sse(
+                    response.aiter_lines(),
+                    protocol_version=protocol_version,
+                    session_id=session_id,
+                    run_id=run_id,
+                ):
                     yield chunk
 
-        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-iGraph-Stream-Version": str(protocol_version),
+            },
+        )
 
     @app.post("/api/sessions/{session_id}/feedback/stream")
     async def feedback(session_id: str, req: FeedbackReq, request: Request):
@@ -1443,14 +1564,28 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "confirmation_note": req.comment,
         }]
         data = {"tools": json.dumps(tools), "session_id": session_id, "user_id": user.user_id, "stream": "true"}
+        protocol_version = 2 if request.headers.get("X-iGraph-Stream-Version") == "2" else 1
 
         async def events():
             path = f"/agents/{settings.agent_id}/runs/{req.request_id}/continue"
             async with runtime.stream("POST", path, headers=forwarded_headers(request, user.user_id), data=data) as response:
-                async for chunk in translate_sse(response.aiter_lines()):
+                async for chunk in translate_sse(
+                    response.aiter_lines(),
+                    protocol_version=protocol_version,
+                    session_id=session_id,
+                    run_id=req.request_id,
+                ):
                     yield chunk
 
-        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-iGraph-Stream-Version": str(protocol_version),
+            },
+        )
 
     @app.get("/api/memory")
     async def list_memory(request: Request, scope: str = "long_term", query: str = "", limit: int = 100):
