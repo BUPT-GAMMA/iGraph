@@ -215,9 +215,10 @@ class SkillManager:
             "---\n"
             f"name: {name}\n"
             f"description: {description}\n"
-            f"version: {version}\n"
-            f"domain: {domain}\n"
-            f"risk_level: {risk_level}\n"
+            "metadata:\n"
+            f"  version: {version}\n"
+            f"  domain: {domain}\n"
+            f"  risk_level: {risk_level}\n"
             "---\n\n"
             f"{body.strip()}\n"
         )

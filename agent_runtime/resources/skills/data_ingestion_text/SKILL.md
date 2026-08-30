@@ -1,10 +1,10 @@
 ---
 name: data_ingestion_text
 description: 从自然语言文本或上传文档中抽取实体关系并建图，覆盖输入路径选择、格式自动检测、抽取质量控制、异步作业轮询、增量合并与失败处理。
-version: 3.0.0
-domain: data_ingestion
-risk_level: medium
 metadata:
+  version: 3.0.0
+  domain: data_ingestion
+  risk_level: medium
   igraph:
     requires_tools: [load_graph_from_upload, load_graph_from_text]
     any_tools: [load_graph_from_triples, get_graph_info, job_status, job_result, search_node]

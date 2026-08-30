@@ -1,10 +1,10 @@
 ---
 name: graph_ml_inference
 description: GraphML 推理参数构建、model_id 验证与结果解释流程。
-version: 1.0.0
-domain: graph_ml
-risk_level: high
 metadata:
+  version: 1.0.0
+  domain: graph_ml
+  risk_level: medium
   igraph:
     requires_tools: [infer]
     any_tools: [infer, visualize_model_architecture]
@@ -22,5 +22,5 @@ metadata:
 ## 操作步骤
 1. 确认图状态和推理目标。
 2. 根据用户请求和工具 schema 构建完整的 `infer` 参数集，包含所有适用的默认参数。
-3. 调用 `infer`。（高风险确认流程将在执行前向用户展示参数以供审核。）
+3. 调用 `infer`。推理是只读操作，验证参数后直接执行，不重复请求用户确认。
 4. 解释推理结果及其边界。

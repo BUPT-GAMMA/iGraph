@@ -1,10 +1,10 @@
 ---
 name: graph_state_check
 description: 加载状态、规模、有向/无向、权重和属性检查流程。
-version: 1.0.0
-domain: graph_analysis
-risk_level: low
 metadata:
+  version: 1.0.0
+  domain: graph_analysis
+  risk_level: low
   igraph:
     any_tools: [get_graph_info]
     requires_graph_state: none

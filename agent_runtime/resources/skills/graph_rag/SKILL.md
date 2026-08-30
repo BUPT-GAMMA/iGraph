@@ -1,10 +1,10 @@
 ---
 name: graph_rag
 description: 文档分块、检索、图知识辅助问答和引用边界流程。
-version: 1.0.0
-domain: graph_rag
-risk_level: medium
 metadata:
+  version: 1.0.0
+  domain: graph_rag
+  risk_level: medium
   igraph:
     any_tools: [rag_query, load_graph_from_text]
     requires_graph_state: none

@@ -1,26 +1,14 @@
 ---
 name: graph_visualization
 description: 图可视化与高亮展示技能，支持节点、路径、子图、社区等多种高亮类型
-version: 1.0.0
-domain: graph_analysis
-risk_level: low
-condition:
-  activates_on_intents:
-    - visualize_graph
-    - show_graph
-    - highlight_nodes
-    - highlight_path
-    - highlight_subgraph
-    - graph_visualization
-    - display_graph
-    - draw_graph
-    - plot_graph
-    - show_shortest_path
-    - show_community
-    - show_functional_group
-  any_tools:
-    - visualize_subgraph
-  requires_graph_state: loaded
+metadata:
+  version: 1.0.0
+  domain: graph_analysis
+  risk_level: low
+  igraph:
+    activates_on_intents: [visualize_graph, show_graph, highlight_nodes, highlight_path, highlight_subgraph, graph_visualization, display_graph, draw_graph, plot_graph, show_shortest_path, show_community, show_functional_group]
+    any_tools: [visualize_subgraph]
+    requires_graph_state: loaded
 ---
 
 # 图可视化

@@ -1,10 +1,10 @@
 ---
 name: graph_analysis_centrality
 description: 中心性算法选择、解释、适用边界和结果复核流程。
-version: 1.0.0
-domain: graph_analysis
-risk_level: low
 metadata:
+  version: 1.0.0
+  domain: graph_analysis
+  risk_level: low
   igraph:
     any_tools: [node_centrality]
     requires_graph_state: loaded

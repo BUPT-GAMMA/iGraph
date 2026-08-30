@@ -20,4 +20,4 @@ EXPOSE 21111
 HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=18 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:21111/health', timeout=2)" || exit 1
 
-CMD ["python", "-m", "graph_data_service"]
+CMD ["python", "-m", "graph_engine", "api"]

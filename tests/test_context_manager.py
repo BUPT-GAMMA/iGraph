@@ -422,7 +422,8 @@ class ContextManagerTests(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertIn("GraphML 训练", result)
         self.assertIn("依据 `train` 工具 schema 准备参数", result)
-        self.assertIn("高风险确认流程", result)
+        self.assertIn("用户发出的训练请求即为本次任务授权", result)
+        self.assertIn("不要重复提交同一训练任务", result)
 
 
 if __name__ == "__main__":

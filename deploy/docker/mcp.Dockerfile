@@ -20,4 +20,4 @@ EXPOSE 21110
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=12 \
   CMD python -c "import socket; s=socket.create_connection(('127.0.0.1', 21110), 2); s.close()" || exit 1
 
-CMD ["python", "-m", "mcp_service", "streamable-http"]
+CMD ["python", "-m", "graph_engine", "mcp", "http"]

@@ -1,0 +1,154 @@
+import { Fragment, type ReactNode } from 'react';
+import type { AttachmentRef, FeedbackRequest, Message, Plan, ToolCall } from '../types';
+import { Composer } from './Composer';
+import { Icon } from './Icon';
+
+function planCard(plan?: Plan | null) {
+  if (!plan?.steps?.length) return null;
+  const done = plan.steps.filter(step => step.status === 'done' || step.status === 'completed').length;
+  return <div className="plan-card"><div className="card-heading"><strong>分析计划</strong><span>{done} / {plan.steps.length} completed</span></div>{plan.steps.map((step, index) => <div className="plan-step" key={`${step.step_id}-${index}`}><span className={step.status === 'running' ? 'step-dot running' : 'step-dot'}>{step.status === 'done' || step.status === 'completed' ? <Icon name="check" size={12} /> : index + 1}</span><span>{step.goal || step.result_summary || '分析步骤'}</span></div>)}</div>;
+}
+
+function toolList(tools?: ToolCall[]) {
+  if (!tools?.length) return null;
+  return <div className="tool-list">{tools.map((tool, index) => {
+    const progress = tool.progress || {};
+    const epoch = Number(progress.epoch);
+    const epochs = Number(progress.epochs);
+    const hasEpoch = Number.isFinite(epoch) && Number.isFinite(epochs) && epochs > 0;
+    const progressLabel = hasEpoch ? `epoch ${epoch}/${epochs}` : progress.message;
+    return <div className="tool-row" key={`${tool.tool}-${index}`}>
+      <span className={tool.done ? 'tool-state done' : 'tool-state'}>{tool.done ? <Icon name="check" size={12} /> : <span className="loader" />}</span>
+      <span>{tool.tool || 'graph_tool'}</span>
+      {progressLabel ? <span className="tool-progress-label">{String(progressLabel)}</span> : null}
+      <span className="tool-time">{tool.done ? '完成' : '运行中'}</span>
+    </div>;
+  })}</div>;
+}
+
+function renderInline(text: string, keyPrefix: string): ReactNode[] {
+  const token = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|\[([^\]]+)\]\(([^)\s]+)\))/g;
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = token.exec(text))) {
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+    const value = match[0];
+    if (value.startsWith('`')) parts.push(<code key={`${keyPrefix}-code-${index}`}>{value.slice(1, -1)}</code>);
+    else if (value.startsWith('**') || value.startsWith('__')) parts.push(<strong key={`${keyPrefix}-strong-${index}`}>{value.slice(2, -2)}</strong>);
+    else if (value.startsWith('*') || value.startsWith('_')) parts.push(<em key={`${keyPrefix}-em-${index}`}>{value.slice(1, -1)}</em>);
+    else if (match[2] && match[3] && /^https?:\/\//i.test(match[3])) parts.push(<a key={`${keyPrefix}-link-${index}`} href={match[3]} target="_blank" rel="noreferrer">{match[2]}</a>);
+    else parts.push(value);
+    cursor = match.index + value.length;
+    index += 1;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts;
+}
+
+function splitTableRow(line: string) {
+  const normalized = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return normalized.split('|').map(cell => cell.trim());
+}
+
+function isTableSeparator(line: string) {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const blocks: ReactNode[] = [];
+  let paragraph: string[] = [];
+  let list: { ordered: boolean; items: string[] } | null = null;
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const linesInParagraph = paragraph;
+    blocks.push(<p key={`p-${blocks.length}`}>{linesInParagraph.map((line, index) => <Fragment key={index}>{renderInline(line, `p-${blocks.length}-${index}`)}{index < linesInParagraph.length - 1 ? <br /> : null}</Fragment>)}</p>);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    const current = list;
+    const ListTag = current.ordered ? 'ol' : 'ul';
+    blocks.push(<ListTag key={`list-${blocks.length}`}>{current.items.map((item, index) => <li key={index}>{renderInline(item, `list-${blocks.length}-${index}`)}</li>)}</ListTag>);
+    list = null;
+  };
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) { flushParagraph(); flushList(); index += 1; continue; }
+    if (trimmed.startsWith('```')) {
+      flushParagraph(); flushList();
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith('```')) { codeLines.push(lines[index]); index += 1; }
+      if (index < lines.length) index += 1;
+      blocks.push(<pre key={`pre-${blocks.length}`}><code>{codeLines.join('\n')}</code></pre>);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph(); flushList();
+      const Heading = `h${heading[1].length}` as keyof JSX.IntrinsicElements;
+      blocks.push(<Heading key={`heading-${blocks.length}`}>{renderInline(heading[2], `heading-${blocks.length}`)}</Heading>);
+      index += 1;
+      continue;
+    }
+    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(trimmed)) {
+      flushParagraph(); flushList(); blocks.push(<hr key={`hr-${blocks.length}`} />); index += 1; continue;
+    }
+    if (index + 1 < lines.length && line.includes('|') && isTableSeparator(lines[index + 1])) {
+      flushParagraph(); flushList();
+      const headers = splitTableRow(line);
+      const rows: string[][] = [];
+      index += 2;
+      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) { rows.push(splitTableRow(lines[index])); index += 1; }
+      blocks.push(<table key={`table-${blocks.length}`}><thead><tr>{headers.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell, `th-${cellIndex}`)}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{headers.map((_, cellIndex) => <td key={cellIndex}>{renderInline(row[cellIndex] || '', `td-${rowIndex}-${cellIndex}`)}</td>)}</tr>)}</tbody></table>);
+      continue;
+    }
+    const unordered = /^\s*[-*+]\s+(.+)$/.exec(line);
+    const ordered = /^\s*\d+[.)]\s+(.+)$/.exec(line);
+    if (unordered || ordered) {
+      flushParagraph();
+      const orderedList = Boolean(ordered);
+      if (list && list.ordered !== orderedList) flushList();
+      if (!list) list = { ordered: orderedList, items: [] };
+      list.items.push((ordered || unordered)![1]);
+      index += 1;
+      continue;
+    }
+    flushList(); paragraph.push(line); index += 1;
+  }
+  flushParagraph(); flushList();
+  return <div className="markdown-content">{blocks}</div>;
+}
+
+function renderContent(content: string, role: Message['role']) { return role === 'assistant' ? <MarkdownContent content={content} /> : <span className="plain-content">{content}</span>; }
+
+function confirmationCard(feedback: FeedbackRequest | null | undefined, onFeedback?: (decision: 'approve' | 'reject') => void) {
+  if (!feedback) return null;
+  const args = feedback.proposed_args && Object.keys(feedback.proposed_args).length
+    ? JSON.stringify(feedback.proposed_args, null, 2)
+    : '';
+  return <div className="confirmation-card">
+    <div className="confirmation-heading"><span className="confirmation-mark"><Icon name="settings" size={15} /></span><div><strong>确认执行高风险操作</strong><span>{feedback.tool_name || '图机器学习工具'}</span></div></div>
+    <p>{feedback.description || '该操作可能消耗较多计算资源，请确认是否继续。'}</p>
+    {args ? <pre>{args}</pre> : null}
+    <div className="confirmation-actions"><button className="confirmation-reject" onClick={() => onFeedback?.('reject')}><Icon name="close" size={14} /> 拒绝</button><button className="confirmation-approve" onClick={() => onFeedback?.('approve')}><Icon name="check" size={14} /> 批准并执行</button></div>
+  </div>;
+}
+
+export function ChatPane({ messages, value, model, models, activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, attachments, loading, uploading, disabled, hasGraph, onOpenGraph, onFeedback, feedback, runTools, plan }: { messages: Message[]; value: string; model: string; models: string[]; activeDatasetName?: string; onChange: (value: string) => void; onModelChange: (model: string) => void; onDataset: () => void; onSend: () => void; onUpload: (file: File) => void; onRemoveAttachment: (fileToken: string) => void; attachments: AttachmentRef[]; loading: boolean; uploading: boolean; disabled: boolean; hasGraph: boolean; onOpenGraph: () => void; onFeedback?: (decision: 'approve' | 'reject') => void; feedback?: FeedbackRequest | null; runTools?: ToolCall[]; plan?: Plan | null }) {
+  return <main className="chat-pane">
+    <div className="chat-scroll">
+      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><Icon name="graph" size={31} /></div><h1>开始图分析</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p><div className="suggestions"><button onClick={() => onChange('请检查当前图谱的结构和基本属性')}>检查图谱结构</button><button onClick={() => onChange('请计算节点的度数并找出最大度节点')}>计算节点度数</button><button onClick={() => onChange('请帮我进行社区检测')}>进行社区检测</button></div></div> : messages.map((message, index) => <div className={`message-row ${message.role}`} key={`${index}-${message.content.slice(0, 8)}`}><div className={`message-avatar ${message.role}`}>{message.role === 'assistant' ? <Icon name="spark" size={15} /> : 'A'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'iGraph Agent' : '你'}</div><div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{planCard(message.plan)}{toolList(message.tools)}{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图谱结果 <span>→</span></button> : null}</div></div>)}
+      {loading && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{planCard(plan)}{toolList(runTools)}</div> : null}
+      {confirmationCard(feedback, onFeedback)}
+      {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图谱已加载 · 在右侧工作台查看</button> : null}
+    </div>
+    <Composer value={value} model={model} models={models} activeDatasetName={activeDatasetName} onChange={onChange} onModelChange={onModelChange} onDataset={onDataset} onSend={onSend} onUpload={onUpload} onRemoveAttachment={onRemoveAttachment} attachments={attachments} loading={loading} uploading={uploading} disabled={disabled} />
+  </main>;
+}

@@ -17,17 +17,17 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from mcp.server.fastmcp import Context, FastMCP
+from fastmcp import Context, FastMCP
 
-from backend.logging.logger import get_service_logger, close_service_loggers
-import backend.data_paths as _dp
-from backend.runtime.dotenv_compat import load_dotenv_compat
+from graph_engine.observability import get_service_logger, close_service_loggers
+import graph_engine.paths as _dp
+from graph_engine.env import load_environment
 from mcp_service.config import MCPConfig
 from mcp_service.graph_data_client import GraphDataClient
 from mcp_service.session_registry import SessionRegistry
 from mcp_service.tool_forwarding import forwarded_graph_tool_arguments
 
-load_dotenv_compat()
+load_environment()
 
 
 def _setup_logging() -> logging.Logger:
@@ -59,8 +59,6 @@ logger.info("GraphData target configured: %s", config.graph_data_url)
 mcp = FastMCP(
     "iGraph",
     instructions="图论分析与图机器学习工具集。工具规格由 tool_catalog 统一定义，动态注册到 MCP。",
-    port=config.port,
-    host=config.host,
 )
 
 _graph_data = GraphDataClient(config.graph_data_url)
@@ -75,7 +73,20 @@ def _mcp_key(ctx: Context) -> str:
     return str(id(ctx.request_context.session))
 
 
+def _http_headers() -> dict[str, str]:
+    """Read HTTP headers when the streamable-http transport is active."""
+    try:
+        from fastmcp.server.dependencies import get_http_headers
+
+        return {str(key).lower(): str(value) for key, value in get_http_headers().items()}
+    except Exception:
+        return {}
+
+
 def _sid(ctx: Context) -> str:
+    header_value = _http_headers().get("x-session-id", "").strip()
+    if header_value:
+        return header_value
     key = _mcp_key(ctx)
     sid = _session_registry.get(key)
     if sid is None:
@@ -84,7 +95,12 @@ def _sid(ctx: Context) -> str:
 
 
 def _uid(ctx: Context) -> str:
-    return _session_registry.get_user_id(_mcp_key(ctx))
+    header_value = _http_headers().get("x-user-id", "").strip()
+    return header_value or _session_registry.get_user_id(_mcp_key(ctx))
+
+
+def _run_id() -> str:
+    return _http_headers().get("x-run-id", "").strip()
 
 
 def _service_logger(session_id: str, service: str, user_id: str = ""):
@@ -106,7 +122,13 @@ async def _invoke_graph_tool(tool_name: str, ctx: Context, arguments: dict) -> s
             target_base_url=_graph_data.base_url,
         )
     start = asyncio.get_event_loop().time()
-    result = await _graph_data.call_tool(sid, tool_name, forwarded_arguments, user_id=user_id)
+    result = await _graph_data.call_tool(
+        sid,
+        tool_name,
+        forwarded_arguments,
+        user_id=user_id,
+        run_id=_run_id(),
+    )
     duration_ms = int((asyncio.get_event_loop().time() - start) * 1000)
     result_dict = result if isinstance(result, dict) else {"success": False, "error": str(result)}
     mcp_log.response(tool_name, result_dict, duration_ms)
@@ -211,7 +233,7 @@ def _register_graph_tools(tool_specs: List[dict]) -> None:
 
 # 从 tool_catalog 导入并注册工具（同步方式，在 module 加载时执行）
 try:
-    from graph_data_service.tool_catalog import get_all_public_tools
+    from graph_engine.tool_catalog import get_all_public_tools
 
     all_tools = get_all_public_tools(include_graph_ml=True)
     _register_graph_tools(all_tools)
@@ -301,7 +323,9 @@ async def set_session_config(llm_model: Optional[str], ctx: Context) -> str:
 if __name__ == "__main__":
     transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
     logger.info("mcp_server starting  transport=%s", transport)
-    if transport in ("sse", "streamable-http"):
-        mcp.run(transport=transport)
+    if transport in ("streamable-http", "http"):
+        mcp.run(transport="http", host=config.host, port=config.port)
+    elif transport == "sse":
+        mcp.run(transport="sse", host=config.host, port=config.port)
     else:
         mcp.run()

@@ -1571,6 +1571,7 @@ class GraphCompute:
         if truncated:
             result["truncated"] = True
             result["total_nodes"] = g.number_of_nodes()
+            result["total_edges"] = g.number_of_edges()
             result["truncated_to"] = node_cap
         return result
 

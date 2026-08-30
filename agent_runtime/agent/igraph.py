@@ -28,6 +28,7 @@ import traceback
 import uuid
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
+from agent_runtime.approval_policy import GRAPH_TOOLS_REQUIRING_CONFIRMATION
 from agent_runtime.agent.context import (
     ContextManager,
     ReasoningMode,
@@ -81,7 +82,7 @@ _HIDDEN_TOOLS = {
 # SKILL.md whose frontmatter says ``risk_level: high`` — see
 # `IGraph._high_risk_tool_names()`. Skills can therefore opt extra
 # tools into the confirmation flow without editing Agent code.
-_HIGH_RISK_TOOLS_BASE = frozenset({"train", "infer", "clear_graph"})
+_HIGH_RISK_TOOLS_BASE = GRAPH_TOOLS_REQUIRING_CONFIRMATION
 # Tools that can raise pending_feedback mid-batch and therefore must run
 # serially within a tool_call batch so their continuation semantics are
 # preserved. Agent computes the dynamic counterpart at call time.
@@ -872,12 +873,17 @@ class IGraph:
         args: dict,
         progress_callback: Callable[[dict[str, Any]], None] | None,
     ) -> dict:
-        initial = self._decode_mcp_payload(await self._mcp_client.call_tool("train", dict(args or {})))
+        # Run training as a Graph Engine job so CPU-bound epochs do not block
+        # the MCP request and progress can be streamed back to the client.
+        train_args = dict(args or {})
+        train_args["async_job"] = True
+        initial = self._decode_mcp_payload(await self._mcp_client.call_tool("train", train_args))
         job_id = str(initial.get("job_id") or "").strip() if isinstance(initial, dict) else ""
         if not job_id:
             return initial if isinstance(initial, dict) else {"success": False, "error": str(initial)}
 
         progress_metadata = self._train_progress_metadata(args)
+        training_history: list[dict[str, Any]] = []
         last_delivered_kind = ""
         # Two-phase polling:
         # - Pre-training (data loading / preprocessing): poll every 2 s — no epoch
@@ -901,7 +907,15 @@ class IGraph:
                 poll_interval = 0.2
             for update in pending_updates:
                 if progress_callback is not None and isinstance(update, dict):
-                    progress_callback(self._with_train_progress_metadata(update, progress_metadata))
+                    enriched_update = self._with_train_progress_metadata(update, progress_metadata)
+                    progress_callback(enriched_update)
+                    if str(update.get("kind") or "") == "train_epoch":
+                        training_history.append({
+                            key: value
+                            for key, value in enriched_update.items()
+                            if isinstance(value, (str, int, float, bool))
+                            and key not in {"message", "job_id", "status", "display_model", "model", "method"}
+                        })
                     last_delivered_kind = str(update.get("kind") or "")
 
             status = str(job.get("status") or "").lower()
@@ -944,6 +958,8 @@ class IGraph:
                                     progress_metadata,
                                 )
                             )
+                    if training_history:
+                        return {**result, "history": training_history}
                     return result
                 return {"success": True, "result": result, "job_id": job_id}
             if status in {"failed", "cancelled"}:

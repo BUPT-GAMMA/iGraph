@@ -1,0 +1,1865 @@
+"""Public Backend/BFF for the four-module architecture.
+
+Backend owns users, authentication, authorization and public API compatibility.
+AgentOS owns agent sessions/runs/memory; Graph Engine owns graph state and jobs.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from backend.config import BackendConfig
+from backend.event_mapper import feedback_request_from_payload, translate_sse
+from backend.identity import current_user, public_user, require_admin
+from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
+from backend.projects import ProjectDirectory, ProjectRecord
+from backend.service_client import ServiceClient, forwarded_headers
+from backend.users import UserDirectory, UserRecord
+
+
+class CreateSessionReq(BaseModel):
+    model: str | None = None
+    project_id: str | None = None
+    reasoning_mode: Literal["staged", "direct"] = "direct"
+    planning_mode: Literal["never", "auto", "always"] = "auto"
+
+
+class ProjectWriteReq(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=500)
+
+
+class ProjectPatchReq(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class ProjectDatasetPatchReq(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class SessionDatasetReq(BaseModel):
+    active_dataset_id: str | None = None
+
+
+class DeleteProjectReq(BaseModel):
+    conversation_action: Literal["move_to_general", "delete"] = "move_to_general"
+
+
+class MoveSessionReq(BaseModel):
+    project_id: str = Field(min_length=1)
+
+
+class AttachmentRef(BaseModel):
+    file_token: str
+    filename: str | None = None
+
+
+class ChatReq(BaseModel):
+    message: str
+    attachments: list[AttachmentRef] | None = None
+    reasoning_mode: Literal["staged", "direct"] | None = None
+    planning_mode: Literal["never", "auto", "always"] | None = None
+    output_format: Literal["chat", "report", "json"] = "chat"
+    regenerate: bool = False
+
+
+class SessionSettingReq(BaseModel):
+    model: str | None = None
+    reasoning_mode: Literal["staged", "direct"] | None = None
+    planning_mode: Literal["never", "auto", "always"] | None = None
+
+
+class MemoryWriteReq(BaseModel):
+    scope: str = "long_term"
+    category: str = "fact"
+    key: str
+    value: str
+    confidence: float = 0.8
+    reason: str = ""
+
+
+class MemoryPatchReq(BaseModel):
+    scope: str = "long_term"
+    key: str = ""
+    value: str = ""
+    reason: str = ""
+
+
+class FeedbackReq(BaseModel):
+    request_id: str
+    decision: Literal["approve", "modify", "reject"]
+    patched_args: dict[str, Any] | None = None
+    comment: str = ""
+    tool_call_id: str = ""
+    tool_name: str = ""
+
+
+class UserWriteReq(BaseModel):
+    user_id: str = Field(min_length=1)
+    enabled: bool = True
+    roles: list[str] = Field(default_factory=lambda: ["user"])
+    allowed_models: list[str] = Field(default_factory=list)
+
+
+class GenerateSkillReq(BaseModel):
+    playbook_id: str = Field(min_length=1)
+    session_id: str = ""
+
+
+class PromotePlaybookReq(BaseModel):
+    playbook_id: str = Field(min_length=1)
+    skill_name: str = Field(min_length=1)
+    description: str = ""
+    domain: str = "generated"
+    risk_level: Literal["low", "medium", "high"] = "medium"
+
+
+def _state(session: dict) -> dict:
+    value = session.get("session_state") or {}
+    return value if isinstance(value, dict) else {}
+
+
+def _messages(session: dict) -> list[dict]:
+    history = session.get("chat_history") or []
+    if not history:
+        history = _state(session).get("legacy_messages") or []
+    result: list[dict] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "")
+        content = item.get("content")
+        if role in {"user", "assistant"} and content is not None:
+            result.append({"role": role, "content": str(content)})
+    return result
+
+
+def _data_rows(payload: Any) -> list[dict]:
+    """Normalize AgentOS list and paginated response shapes."""
+
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("data") or payload.get("items") or []
+    return [item for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
+
+
+def _ordered_runs(runs: list[dict]) -> list[dict]:
+    """Return AgentOS runs oldest-first for deterministic UI restoration."""
+
+    def timestamp(item: dict) -> float:
+        value = item.get("created_at") or item.get("started_at") or item.get("updated_at")
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value or "").strip()
+        if not text:
+            return float("inf")
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            return float("inf")
+
+    return [
+        run
+        for _, run in sorted(
+            enumerate(runs),
+            key=lambda pair: (timestamp(pair[1]), pair[0]),
+        )
+    ]
+
+
+def _run_input_text(run: dict) -> str:
+    value = run.get("run_input")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("input_content", "message", "content"):
+            if value.get(key) is not None:
+                return str(value[key])
+        return json.dumps(value, ensure_ascii=False)
+    if value is not None:
+        return str(value)
+    messages = run.get("messages") or []
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict) and message.get("role") == "user" and not message.get("from_history"):
+                return str(message.get("content") or "")
+    return ""
+
+
+def _run_output_text(run: dict) -> str:
+    value = run.get("content")
+    if isinstance(value, str):
+        return value
+    if value is None:
+        messages = run.get("messages") or []
+        if isinstance(messages, list):
+            for message in reversed(messages):
+                if isinstance(message, dict) and message.get("role") == "assistant" and not message.get("from_history"):
+                    return str(message.get("content") or "")
+        return ""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _decoded_result(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _merge_training_job_card(card: dict, status_result: dict) -> None:
+    job = status_result.get("job")
+    if not isinstance(job, dict) or str(job.get("tool_name") or "") != "train":
+        return
+
+    history = [item for item in (card.get("history") or []) if isinstance(item, dict)]
+    history.extend(
+        item
+        for item in (status_result.get("progress_updates") or [])
+        if isinstance(item, dict)
+    )
+    by_epoch: dict[int, dict] = {}
+    without_epoch: list[dict] = []
+    for item in history:
+        try:
+            epoch = int(item["epoch"])
+        except (KeyError, TypeError, ValueError):
+            without_epoch.append(item)
+        else:
+            by_epoch[epoch] = item
+    merged_history = without_epoch + [by_epoch[key] for key in sorted(by_epoch)]
+
+    current_result = card.get("result") if isinstance(card.get("result"), dict) else {}
+    final_result = _decoded_result(job.get("result"))
+    if isinstance(final_result, dict):
+        current_result = {**current_result, **final_result}
+    current_result["job_id"] = job.get("job_id")
+    current_result["job_status"] = job.get("status")
+    current_result["history"] = merged_history
+    card["result"] = current_result
+    card["history"] = merged_history
+    detail = job.get("detail") if isinstance(job.get("detail"), dict) else {}
+    card["progress"] = {
+        **detail,
+        "job_id": job.get("job_id"),
+        "status": job.get("status"),
+        "progress": job.get("progress", detail.get("progress", 0)),
+        "message": job.get("message", detail.get("message", "")),
+    }
+    card["done"] = str(job.get("status") or "").lower() in {"done", "failed", "cancelled"}
+
+
+def _plan_from_run(run: dict) -> dict | None:
+    """Rebuild the legacy read-only plan card from native reasoning steps."""
+
+    values = run.get("reasoning_steps") or []
+    if isinstance(values, dict):
+        values = values.get("steps") or []
+    if not isinstance(values, list):
+        return None
+    steps: list[dict] = []
+    for index, raw in enumerate(values, start=1):
+        if not isinstance(raw, dict):
+            continue
+        goal = str(raw.get("title") or raw.get("action") or raw.get("goal") or f"推理步骤 {index}").strip()
+        summary = str(raw.get("result") or raw.get("conclusion") or raw.get("reasoning") or "").strip()
+        steps.append({
+            "step_id": index,
+            "goal": goal[:500],
+            "status": "done",
+            "result_summary": summary[:2000],
+            "tool_hints": [],
+            "depends_on": [],
+            "source": "agentos_reasoning",
+        })
+    if not steps:
+        return None
+    return {
+        "plan_id": str(run.get("run_id") or ""),
+        "completed": str(run.get("status") or "").lower() == "completed",
+        "steps": steps,
+        "source": "agentos_reasoning",
+    }
+
+
+def _messages_from_runs(runs: list[dict]) -> list[dict]:
+    """Rebuild the legacy UI message/artifact contract from AgentOS runs."""
+
+    messages: list[dict] = []
+    async_training_cards: dict[str, dict] = {}
+    for run in runs:
+        status = str(run.get("status") or "").lower()
+        user_text = _run_input_text(run).strip()
+        if user_text:
+            messages.append({"role": "user", "content": user_text})
+
+        tool_cards: list[dict] = []
+        graphs: list[dict] = []
+        reports: list[dict] = []
+        tools = run.get("tools") or []
+        for tool in tools if isinstance(tools, list) else []:
+            if not isinstance(tool, dict):
+                continue
+            name = str(tool.get("tool_name") or tool.get("name") or "")
+            if not name:
+                continue
+            call_id = str(tool.get("tool_call_id") or tool.get("id") or "")
+            result = _decoded_result(tool.get("result"))
+            card = {
+                "tool": name,
+                "args": tool.get("tool_args") or tool.get("arguments") or {},
+                "call_id": call_id,
+                "done": True,
+                "result": result,
+            }
+            tool_cards.append(card)
+            if name == "train" and isinstance(result, dict) and result.get("async") and result.get("job_id"):
+                job_id = str(result["job_id"])
+                card["done"] = False
+                card["job_id"] = job_id
+                async_training_cards[job_id] = card
+            elif name == "get_job_status" and isinstance(result, dict) and isinstance(result.get("job"), dict):
+                job_id = str(result["job"].get("job_id") or "")
+                training_card = async_training_cards.get(job_id)
+                if training_card is not None:
+                    _merge_training_job_card(training_card, result)
+            if not isinstance(result, dict) or result.get("success") is False:
+                continue
+            if name == "visualize_subgraph":
+                graph = result.get("data") if isinstance(result.get("data"), dict) else result
+                if isinstance(graph.get("nodes"), list) and isinstance(graph.get("links", graph.get("edges")), list):
+                    graphs.append({
+                        **graph,
+                        "id": str(graph.get("id") or f"run-{run.get('run_id', '')}-{call_id}"),
+                        "edges": graph.get("edges", graph.get("links", [])),
+                    })
+            elif name == "create_analysis_report" and isinstance(result.get("report"), dict):
+                reports.append(result["report"])
+
+        feedback_requests = (
+            [feedback_request_from_payload(run)]
+            if status == "paused"
+            else []
+        )
+        if feedback_requests and tool_cards:
+            pending_call_id = str(feedback_requests[0].get("call_id") or "")
+            if pending_call_id:
+                for card in tool_cards:
+                    if str(card.get("call_id") or "") == pending_call_id:
+                        card["done"] = False
+            else:
+                tool_cards[-1]["done"] = False
+        assistant_text = _run_output_text(run)
+        reasoning_text = str(run.get("reasoning_content") or "").strip()
+        plan = _plan_from_run(run)
+        if assistant_text or tool_cards or graphs or reports or feedback_requests:
+            messages.append({
+                "role": "assistant",
+                "content": assistant_text,
+                "tools": tool_cards,
+                "graphs": graphs,
+                "reports": reports,
+                "thinking": ([{"phase": "reasoning", "text": reasoning_text, "streaming": False}] if reasoning_text else []),
+                "feedbackRequests": feedback_requests,
+                "plan": plan,
+            })
+    return messages
+
+
+def _sft_row(run: dict, output_format: str) -> dict | None:
+    user_text = _run_input_text(run).strip()
+    assistant_text = _run_output_text(run).strip()
+    if not user_text or not assistant_text:
+        return None
+    tools = run.get("tools") or []
+    tool_names = [
+        str(item.get("tool_name") or item.get("name") or "")
+        for item in tools
+        if isinstance(item, dict) and (item.get("tool_name") or item.get("name"))
+    ] if isinstance(tools, list) else []
+    if output_format == "raw":
+        return run
+    if output_format == "sharegpt":
+        conversations = [{"from": "human", "value": user_text}]
+        conversations.extend(
+            {"from": "function_call", "value": json.dumps({"tool": name}, ensure_ascii=False)}
+            for name in tool_names
+        )
+        conversations.append({"from": "gpt", "value": assistant_text})
+        return {"conversations": conversations}
+    return {
+        "instruction": user_text,
+        "input": ", ".join(tool_names),
+        "output": assistant_text,
+    }
+
+
+def _session_row(session: dict, default_model: str, default_project_id: str = "") -> dict:
+    state = _state(session)
+    messages = _messages(session)
+    preview = str(state.get("last_message_preview") or "")
+    if not preview and messages:
+        preview = str(messages[-1].get("content") or "")[:120]
+    return {
+        "session_id": session.get("session_id"),
+        "project_id": str(state.get("project_id") or default_project_id),
+        "active_dataset_id": state.get("active_dataset_id"),
+        "title": session.get("session_name") or "新会话",
+        "last_message_preview": preview,
+        "updated_at": session.get("updated_at"),
+        "created_at": session.get("created_at"),
+        "model": state.get("model", default_model),
+        "provider": state.get("provider", "openai-compatible"),
+        "reasoning_mode": state.get("reasoning_mode", "direct"),
+        "planning_mode": state.get("planning_mode", "auto"),
+        "archived": bool(state.get("archived", False)),
+        "active": False,
+    }
+
+
+def _project_row(project: ProjectRecord, conversation_count: int = 0) -> dict:
+    row = asdict(project)
+    row["created_at"] = datetime.fromtimestamp(project.created_at, timezone.utc).isoformat()
+    row["updated_at"] = datetime.fromtimestamp(project.updated_at, timezone.utc).isoformat()
+    row["conversation_count"] = conversation_count
+    return row
+
+
+def _project_dataset_row(dataset: ProjectDatasetRecord, default_dataset_id: str | None = None) -> dict:
+    row = asdict(dataset)
+    row["created_at"] = datetime.fromtimestamp(dataset.created_at, timezone.utc).isoformat()
+    row["updated_at"] = datetime.fromtimestamp(dataset.updated_at, timezone.utc).isoformat()
+    row["is_default"] = dataset.dataset_id == default_dataset_id
+    row.pop("storage_path", None)
+    return row
+
+
+def _message_with_attachments(req: ChatReq) -> str:
+    names = [item.filename for item in (req.attachments or []) if item.filename]
+    if not names:
+        return req.message
+    hints: list[str] = []
+    for name in names:
+        suffix = Path(name).suffix.lower()
+        if suffix == ".pt":
+            hint = "多图分类数据集使用 load_graph_classification_dataset；普通单图使用 load_graph_from_upload"
+        elif suffix in {".npz", ".json", ".csv", ".tsv", ".txt", ".edgelist", ".dat"}:
+            hint = "使用 load_graph_from_upload 自动检测并加载"
+        else:
+            hint = "根据文件格式选择上传文件加载工具"
+        hints.append(f"- {name}（{hint}）")
+    return (
+        req.message
+        + "\n\n[附件文件]\n以下文件已上传并注册到当前会话：\n"
+        + "\n".join(hints)
+        + "\n用户说‘这个文件/图数据’时即指上述附件；不要要求用户再次上传。"
+    )
+
+
+def _canonical_skill_name(value: str) -> str:
+    name = re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]+", "-", value.strip().lower())).strip("-")
+    if not name:
+        raise HTTPException(status_code=400, detail="Skill 名称必须包含小写字母或数字")
+    return name
+
+
+def _sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def create_app(config: BackendConfig | None = None) -> FastAPI:
+    settings = config or BackendConfig.from_env()
+    users = UserDirectory(
+        settings.users_file,
+        settings.supported_ids_file,
+        settings.admin_user_id,
+        settings.default_admin_model,
+        settings.default_user_model,
+    )
+    projects = ProjectDirectory(settings.projects_file)
+    data_root = settings.projects_file.parent.parent if settings.projects_file.parent.name == "backend" else settings.projects_file.parent
+    project_datasets = ProjectDatasetDirectory(
+        Path(os.getenv("BACKEND_PROJECT_DATASETS_FILE", str(settings.projects_file.with_name("project_datasets.json")))).resolve(),
+        Path(os.getenv("BACKEND_PROJECT_DATA_ROOT", str(data_root / "projects"))).resolve(),
+    )
+    runtime = ServiceClient(settings.agent_runtime_url, settings.request_timeout, settings.stream_timeout)
+    graph = ServiceClient(settings.graph_engine_url, settings.request_timeout, settings.stream_timeout)
+
+    app = FastAPI(title="iGraph Backend", version="3.0.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/")
+    @app.get("/health")
+    def health():
+        return {"status": "ok", "module": "backend"}
+
+    @app.post("/api/auth/validate")
+    def validate(request: Request):
+        user_id = request.headers.get("X-User-ID", "").strip()
+        record = users.get(user_id)
+        if not record or not record.enabled:
+            return {"valid": False, "reason": "user_not_supported" if user_id else "missing_user_id"}
+        models = record.allowed_models
+        return {
+            "valid": True,
+            "user_id": record.user_id,
+            "is_admin": "admin" in record.roles,
+            "available_models": models,
+            "default_model": models[0] if models else "qwen3.6-plus",
+        }
+
+    @app.get("/api/admin/users")
+    def list_users(request: Request):
+        require_admin(request, users)
+        return {"success": True, "users": [public_user(item) for item in users.list()]}
+
+    @app.post("/api/admin/users")
+    def save_user(req: UserWriteReq, request: Request):
+        require_admin(request, users)
+        record = users.save(UserRecord(**req.model_dump()))
+        return {"success": True, "user": public_user(record)}
+
+    @app.delete("/api/admin/users/{user_id}")
+    async def delete_user(user_id: str, request: Request):
+        require_admin(request, users)
+        if user_id == settings.admin_user_id:
+            raise HTTPException(status_code=400, detail="不能删除主管理员")
+        headers = forwarded_headers(request, user_id)
+        sessions_payload = await runtime.request(
+            "GET",
+            "/sessions",
+            headers=headers,
+            params={"type": "agent", "component_id": settings.agent_id, "user_id": user_id, "limit": 1000},
+        )
+        for session in _data_rows(sessions_payload):
+            session_id = str(session.get("session_id") or "") if isinstance(session, dict) else ""
+            if not session_id:
+                continue
+            try:
+                await graph.request("DELETE", f"/sessions/{session_id}", headers=headers)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+            await runtime.request(
+                "DELETE", f"/sessions/{session_id}", headers=headers,
+                params={"type": "agent", "user_id": user_id},
+            )
+        memories = await runtime.request("GET", "/memories", headers=headers, params={"user_id": user_id, "limit": 1000})
+        for memory in _data_rows(memories):
+            memory_id = str(memory.get("memory_id") or "") if isinstance(memory, dict) else ""
+            if memory_id:
+                await runtime.request("DELETE", f"/memories/{memory_id}", headers=headers, params={"user_id": user_id})
+        await runtime.request("DELETE", f"/internal/skills/users/{user_id}/all", headers=headers)
+        project_datasets.delete_user(user_id)
+        projects.delete_user(user_id)
+        return {"success": users.delete(user_id), "user_id": user_id}
+
+    async def get_session(session_id: str, request: Request, user_id: str) -> dict:
+        payload = await runtime.request(
+            "GET",
+            f"/sessions/{session_id}",
+            headers=forwarded_headers(request, user_id),
+            params={"type": "agent", "user_id": user_id},
+        )
+        if str(payload.get("user_id") or "") not in {"", user_id}:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        return payload
+
+    async def graph_loaded(session_id: str, request: Request, user_id: str) -> bool:
+        try:
+            payload = await graph.request(
+                "GET",
+                f"/sessions/{session_id}/graph/info",
+                headers=forwarded_headers(request, user_id),
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return False
+            raise
+        return bool(payload.get("loaded", False) or payload.get("num_nodes", 0))
+
+    async def get_playbook_memory(memory_id: str, request: Request, user_id: str) -> dict:
+        payload = await runtime.request(
+            "GET",
+            f"/memories/{memory_id}",
+            headers=forwarded_headers(request, user_id),
+            params={"user_id": user_id},
+        )
+        topics = payload.get("topics") or []
+        if topics and "playbook" not in {str(item) for item in topics}:
+            raise HTTPException(status_code=400, detail="指定 Memory 不是 Playbook")
+        return payload
+
+    async def get_session_runs(session_id: str, request: Request, user_id: str) -> list[dict]:
+        payload = await runtime.request(
+            "GET",
+            f"/sessions/{session_id}/runs",
+            headers=forwarded_headers(request, user_id),
+            params={"type": "agent", "user_id": user_id},
+        )
+        return _ordered_runs(_data_rows(payload))
+
+    async def restored_messages(session: dict, session_id: str, request: Request, user_id: str) -> list[dict]:
+        runs = await get_session_runs(session_id, request, user_id)
+        return _messages_from_runs(runs) or _messages(session)
+
+    async def pending_feedback(session_id: str, request: Request, user_id: str) -> dict | None:
+        runs = await get_session_runs(session_id, request, user_id)
+        for run in reversed(runs):
+            if str(run.get("status") or "").lower() == "paused":
+                return feedback_request_from_payload(run)
+        return None
+
+    def project_or_404(project_id: str, user_id: str) -> ProjectRecord:
+        project = projects.get(project_id, user_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="项目不存在")
+        return project
+
+    def project_dataset_or_404(
+        dataset_id: str,
+        project_id: str,
+        user_id: str,
+    ) -> ProjectDatasetRecord:
+        dataset = project_datasets.get(dataset_id, user_id, project_id)
+        if dataset is None:
+            raise HTTPException(status_code=404, detail="项目数据集不存在或不属于当前项目")
+        return dataset
+
+    def session_project_id(session: dict, user_id: str) -> str:
+        return str(_state(session).get("project_id") or projects.default_project_id(user_id))
+
+    async def write_session_state(
+        session_id: str,
+        session: dict,
+        request: Request,
+        user_id: str,
+        patch: dict[str, Any],
+    ) -> dict:
+        state = {**_state(session), **patch}
+        await runtime.request(
+            "PATCH",
+            f"/sessions/{session_id}",
+            headers=forwarded_headers(request, user_id),
+            params={"type": "agent", "user_id": user_id},
+            json_body={"session_state": state},
+        )
+        return state
+
+    async def reset_graph_runtime(
+        session_id: str,
+        request: Request,
+        user_id: str,
+        model: str = "",
+    ) -> None:
+        headers = forwarded_headers(request, user_id)
+        try:
+            await graph.request("DELETE", f"/sessions/{session_id}", headers=headers)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+        await graph.request("POST", f"/sessions/{session_id}", headers=headers, json_body={})
+        if model:
+            await graph.request(
+                "PATCH",
+                f"/sessions/{session_id}/config",
+                headers=headers,
+                json_body={"llm_model": model},
+            )
+
+    async def load_project_dataset_into_session(
+        session_id: str,
+        session: dict,
+        dataset: ProjectDatasetRecord,
+        request: Request,
+        user_id: str,
+        *,
+        reset: bool = False,
+    ) -> dict:
+        project_id = session_project_id(session, user_id)
+        if dataset.project_id != project_id:
+            raise HTTPException(status_code=403, detail="会话不能加载其他项目的数据集")
+        if dataset.status != "ready":
+            raise HTTPException(status_code=409, detail=f"数据集当前状态为 {dataset.status}，尚不可加载")
+        source_path = Path(dataset.storage_path)
+        if not source_path.is_file():
+            project_datasets.update(
+                dataset.dataset_id,
+                user_id,
+                project_id=project_id,
+                status="failed",
+            )
+            raise HTTPException(status_code=409, detail="项目数据集源文件不存在")
+        if reset:
+            await reset_graph_runtime(
+                session_id,
+                request,
+                user_id,
+                str(_state(session).get("model") or ""),
+            )
+        headers = forwarded_headers(request, user_id)
+        await graph.request(
+            "POST",
+            f"/sessions/{session_id}/uploads/register",
+            headers=headers,
+            json_body={
+                "file_token": f"project-{dataset.dataset_id}",
+                "original_filename": dataset.original_filename,
+                "saved_path": dataset.storage_path,
+            },
+        )
+        result = await graph.request(
+            "POST",
+            f"/sessions/{session_id}/graph/load_upload",
+            headers=headers,
+            json_body={"filename": dataset.original_filename, "append": False},
+        )
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=502, detail="Graph Engine 返回了无效的数据集加载结果")
+        if result.get("success") is False:
+            project_datasets.update(
+                dataset.dataset_id,
+                user_id,
+                project_id=project_id,
+                status="failed",
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=str(result.get("error") or "项目数据集加载失败"),
+            )
+        if result.get("async"):
+            job_id = str(result.get("job_id") or "").strip()
+            if not job_id:
+                raise HTTPException(status_code=502, detail="Graph Engine 未返回数据集加载任务 ID")
+            timeout = float(os.getenv("BACKEND_PROJECT_DATASET_LOAD_TIMEOUT_SECONDS", "300"))
+            deadline = asyncio.get_running_loop().time() + max(1.0, timeout)
+            while True:
+                status_payload = await graph.request(
+                    "POST",
+                    f"/sessions/{session_id}/tools/get_job_status",
+                    headers=headers,
+                    json_body={"arguments": {"job_id": job_id}},
+                )
+                job = status_payload.get("job") if isinstance(status_payload, dict) else None
+                status = str(job.get("status") or "") if isinstance(job, dict) else ""
+                if status == "done":
+                    result = job.get("result") if isinstance(job.get("result"), dict) else result
+                    break
+                if status in {"failed", "cancelled"}:
+                    project_datasets.update(
+                        dataset.dataset_id,
+                        user_id,
+                        project_id=project_id,
+                        status="failed",
+                    )
+                    raise HTTPException(
+                        status_code=422,
+                        detail=str(job.get("message") or "项目数据集加载失败"),
+                    )
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise HTTPException(status_code=504, detail="项目数据集加载超时，请稍后重试")
+                await asyncio.sleep(0.25)
+        if not result.get("async") or await graph_loaded(session_id, request, user_id):
+            try:
+                info = await graph.request(
+                    "GET",
+                    f"/sessions/{session_id}/graph/info",
+                    headers=headers,
+                )
+                metadata = {
+                    "num_nodes": info.get("num_nodes"),
+                    "num_edges": info.get("num_edges"),
+                    "directed": info.get("directed"),
+                    "has_node_features": info.get("has_node_features"),
+                    "has_node_labels": info.get("has_node_labels"),
+                }
+                project_datasets.update(
+                    dataset.dataset_id,
+                    user_id,
+                    project_id=project_id,
+                    metadata={key: value for key, value in metadata.items() if value is not None},
+                )
+            except HTTPException:
+                pass
+        return result
+
+    async def ensure_active_dataset_loaded(
+        session_id: str,
+        session: dict,
+        request: Request,
+        user_id: str,
+    ) -> bool:
+        if await graph_loaded(session_id, request, user_id):
+            return True
+        state = _state(session)
+        dataset_id = str(state.get("active_dataset_id") or "").strip()
+        if not dataset_id:
+            return False
+        project_id = session_project_id(session, user_id)
+        dataset = project_dataset_or_404(dataset_id, project_id, user_id)
+        await load_project_dataset_into_session(
+            session_id,
+            session,
+            dataset,
+            request,
+            user_id,
+        )
+        return await graph_loaded(session_id, request, user_id)
+
+    async def user_sessions(request: Request, user_id: str, limit: int = 1000) -> list[dict]:
+        payload = await runtime.request(
+            "GET",
+            "/sessions",
+            headers=forwarded_headers(request, user_id),
+            params={"type": "agent", "component_id": settings.agent_id, "user_id": user_id, "limit": limit},
+        )
+        return _data_rows(payload)
+
+    async def delete_owned_session(session_id: str, request: Request, user_id: str, *, verify: bool = True) -> None:
+        if verify:
+            await get_session(session_id, request, user_id)
+        headers = forwarded_headers(request, user_id)
+        try:
+            await graph.request("DELETE", f"/sessions/{session_id}", headers=headers)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+        await runtime.request(
+            "DELETE",
+            f"/sessions/{session_id}",
+            headers=headers,
+            params={"type": "agent", "user_id": user_id},
+        )
+
+    @app.get("/api/projects")
+    async def list_projects(request: Request):
+        user = current_user(request, users)
+        rows = await user_sessions(request, user.user_id)
+        counts: dict[str, int] = {}
+        for session in rows:
+            project_id = session_project_id(session, user.user_id)
+            counts[project_id] = counts.get(project_id, 0) + 1
+        return {
+            "success": True,
+            "projects": [_project_row(project, counts.get(project.project_id, 0)) for project in projects.list(user.user_id)],
+        }
+
+    @app.post("/api/projects")
+    async def create_project(req: ProjectWriteReq, request: Request):
+        user = current_user(request, users)
+        name = req.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="项目名称不能为空")
+        project = projects.create(user.user_id, name, req.description)
+        return {"success": True, "project": _project_row(project)}
+
+    @app.get("/api/projects/{project_id}")
+    async def get_project(project_id: str, request: Request):
+        user = current_user(request, users)
+        project = project_or_404(project_id, user.user_id)
+        rows = await user_sessions(request, user.user_id)
+        count = sum(session_project_id(session, user.user_id) == project_id for session in rows)
+        return {"success": True, "project": _project_row(project, count)}
+
+    @app.get("/api/projects/{project_id}/datasets")
+    async def list_project_datasets(project_id: str, request: Request):
+        user = current_user(request, users)
+        project = project_or_404(project_id, user.user_id)
+        rows = project_datasets.list(project_id, user.user_id)
+        return {
+            "success": True,
+            "project_id": project_id,
+            "default_dataset_id": project.default_dataset_id,
+            "datasets": [
+                _project_dataset_row(item, project.default_dataset_id) for item in rows
+            ],
+        }
+
+    @app.post("/api/projects/{project_id}/datasets")
+    async def create_project_dataset(
+        project_id: str,
+        request: Request,
+        file: UploadFile = File(...),
+        name: str = Form(""),
+        set_as_default: bool = Form(False),
+        session_id: str = Form(""),
+    ):
+        user = current_user(request, users)
+        project = project_or_404(project_id, user.user_id)
+        target_session = None
+        normalized_session_id = session_id.strip()
+        if normalized_session_id:
+            target_session = await get_session(normalized_session_id, request, user.user_id)
+            if session_project_id(target_session, user.user_id) != project_id:
+                raise HTTPException(status_code=400, detail="只能为当前项目中的会话激活数据集")
+        filename = file.filename or "dataset.bin"
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="数据集文件不能为空")
+        dataset = project_datasets.create(
+            project_id=project_id,
+            user_id=user.user_id,
+            name=name or Path(filename).stem,
+            original_filename=filename,
+            content=content,
+        )
+        if project.default_dataset_id is None or set_as_default:
+            project = projects.set_default_dataset(project_id, user.user_id, dataset.dataset_id) or project
+        activated_session_id = None
+        if target_session is not None:
+            state = await write_session_state(
+                normalized_session_id,
+                target_session,
+                request,
+                user.user_id,
+                {"active_dataset_id": dataset.dataset_id},
+            )
+            await load_project_dataset_into_session(
+                normalized_session_id,
+                {**target_session, "session_state": state},
+                dataset,
+                request,
+                user.user_id,
+                reset=True,
+            )
+            activated_session_id = normalized_session_id
+        return {
+            "success": True,
+            "dataset": _project_dataset_row(dataset, project.default_dataset_id),
+            "default_dataset_id": project.default_dataset_id,
+            "activated_session_id": activated_session_id,
+        }
+
+    @app.patch("/api/projects/{project_id}/datasets/{dataset_id}")
+    async def update_project_dataset(
+        project_id: str,
+        dataset_id: str,
+        req: ProjectDatasetPatchReq,
+        request: Request,
+    ):
+        user = current_user(request, users)
+        project = project_or_404(project_id, user.user_id)
+        project_dataset_or_404(dataset_id, project_id, user.user_id)
+        dataset = project_datasets.update(
+            dataset_id,
+            user.user_id,
+            project_id=project_id,
+            name=req.name,
+        )
+        return {
+            "success": True,
+            "dataset": _project_dataset_row(dataset, project.default_dataset_id),
+        }
+
+    @app.post("/api/projects/{project_id}/datasets/{dataset_id}/set-default")
+    async def set_default_project_dataset(project_id: str, dataset_id: str, request: Request):
+        user = current_user(request, users)
+        project_or_404(project_id, user.user_id)
+        dataset = project_dataset_or_404(dataset_id, project_id, user.user_id)
+        if dataset.status != "ready":
+            raise HTTPException(status_code=409, detail="只有 ready 状态的数据集可以设为默认")
+        project = projects.set_default_dataset(project_id, user.user_id, dataset_id)
+        return {
+            "success": True,
+            "project": _project_row(project),
+            "default_dataset_id": dataset_id,
+        }
+
+    @app.delete("/api/projects/{project_id}/datasets/{dataset_id}")
+    async def delete_project_dataset(project_id: str, dataset_id: str, request: Request):
+        user = current_user(request, users)
+        project = project_or_404(project_id, user.user_id)
+        project_dataset_or_404(dataset_id, project_id, user.user_id)
+        affected = 0
+        for session in await user_sessions(request, user.user_id):
+            state = _state(session)
+            if session_project_id(session, user.user_id) != project_id:
+                continue
+            if str(state.get("active_dataset_id") or "") != dataset_id:
+                continue
+            session_id = str(session.get("session_id") or "")
+            if not session_id:
+                continue
+            await write_session_state(
+                session_id,
+                session,
+                request,
+                user.user_id,
+                {"active_dataset_id": None},
+            )
+            await reset_graph_runtime(
+                session_id,
+                request,
+                user.user_id,
+                str(state.get("model") or ""),
+            )
+            affected += 1
+        if project.default_dataset_id == dataset_id:
+            projects.set_default_dataset(project_id, user.user_id, None)
+        if not project_datasets.delete(dataset_id, user.user_id, project_id):
+            raise HTTPException(status_code=409, detail="项目数据集删除失败")
+        return {
+            "success": True,
+            "dataset_id": dataset_id,
+            "cleared_conversations": affected,
+            "default_dataset_id": None if project.default_dataset_id == dataset_id else project.default_dataset_id,
+        }
+
+    @app.patch("/api/projects/{project_id}")
+    async def update_project(project_id: str, req: ProjectPatchReq, request: Request):
+        user = current_user(request, users)
+        current = project_or_404(project_id, user.user_id)
+        if current.is_default and req.name is not None and req.name.strip() != current.name:
+            raise HTTPException(status_code=400, detail="General 项目不能重命名")
+        if req.name is not None and not req.name.strip():
+            raise HTTPException(status_code=400, detail="项目名称不能为空")
+        project = projects.update(
+            project_id,
+            user.user_id,
+            name=req.name,
+            description=req.description,
+        )
+        if project is None:
+            raise HTTPException(status_code=404, detail="项目不存在")
+        return {"success": True, "project": _project_row(project)}
+
+    @app.get("/api/projects/{project_id}/conversations")
+    async def project_conversations(project_id: str, request: Request):
+        user = current_user(request, users)
+        project_or_404(project_id, user.user_id)
+        rows = await user_sessions(request, user.user_id)
+        default_model = user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"
+        default_project_id = projects.default_project_id(user.user_id)
+        sessions = [
+            _session_row(session, default_model, default_project_id)
+            for session in rows
+            if session_project_id(session, user.user_id) == project_id
+        ]
+        return {"success": True, "project_id": project_id, "conversations": sessions}
+
+    @app.delete("/api/projects/{project_id}")
+    async def delete_project(project_id: str, request: Request, req: DeleteProjectReq | None = None):
+        user = current_user(request, users)
+        project = project_or_404(project_id, user.user_id)
+        if project.is_default:
+            raise HTTPException(status_code=400, detail="General 项目不能删除")
+        action = (req or DeleteProjectReq()).conversation_action
+        rows = await user_sessions(request, user.user_id)
+        contained = [session for session in rows if session_project_id(session, user.user_id) == project_id]
+        general_id = projects.ensure_default(user.user_id).project_id
+        for session in contained:
+            session_id = str(session.get("session_id") or "")
+            if not session_id:
+                continue
+            if action == "delete":
+                await delete_owned_session(session_id, request, user.user_id, verify=False)
+            else:
+                general = projects.ensure_default(user.user_id)
+                state = await write_session_state(
+                    session_id,
+                    session,
+                    request,
+                    user.user_id,
+                    {
+                        "project_id": general_id,
+                        "active_dataset_id": general.default_dataset_id,
+                    },
+                )
+                await reset_graph_runtime(
+                    session_id,
+                    request,
+                    user.user_id,
+                    str(state.get("model") or ""),
+                )
+        if not projects.delete(project_id, user.user_id):
+            raise HTTPException(status_code=409, detail="项目删除失败")
+        deleted_datasets = project_datasets.delete_project(project_id, user.user_id)
+        return {
+            "success": True,
+            "project_id": project_id,
+            "conversation_action": action,
+            "affected_conversations": len(contained),
+            "deleted_datasets": deleted_datasets,
+            "general_project_id": general_id,
+        }
+
+    @app.get("/api/sessions")
+    async def list_sessions(request: Request):
+        user = current_user(request, users)
+        rows = await user_sessions(request, user.user_id, limit=200)
+        default_model = user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"
+        default_project_id = projects.ensure_default(user.user_id).project_id
+        return {"success": True, "sessions": [_session_row(row, default_model, default_project_id) for row in rows]}
+
+    @app.post("/api/sessions")
+    async def create_session(req: CreateSessionReq, request: Request):
+        user = current_user(request, users)
+        model = req.model or (user.allowed_models[0] if user.allowed_models else "qwen3.6-plus")
+        if model not in user.allowed_models:
+            raise HTTPException(status_code=403, detail=f"用户无权使用模型 {model}")
+        project = project_or_404(
+            req.project_id or projects.ensure_default(user.user_id).project_id,
+            user.user_id,
+        )
+        session_id = str(uuid.uuid4())
+        state = {
+            "model": model,
+            "project_id": project.project_id,
+            "active_dataset_id": project.default_dataset_id,
+            "reasoning_mode": req.reasoning_mode,
+            "planning_mode": req.planning_mode,
+        }
+        headers = forwarded_headers(request, user.user_id)
+        await runtime.request(
+            "POST",
+            "/sessions",
+            headers=headers,
+            params={"type": "agent"},
+            json_body={
+                "session_id": session_id,
+                "session_name": "新会话",
+                "session_state": state,
+                "metadata": {"owner": user.user_id},
+                "user_id": user.user_id,
+                "agent_id": settings.agent_id,
+            },
+        )
+        try:
+            await graph.request("POST", f"/sessions/{session_id}", headers=headers, json_body={})
+            await graph.request(
+                "PATCH",
+                f"/sessions/{session_id}/config",
+                headers=headers,
+                json_body={"llm_model": model},
+            )
+        except Exception:
+            # Session creation is a single product operation. Avoid exposing a
+            # half-created AgentOS session when Graph Engine initialization fails.
+            await runtime.request(
+                "DELETE",
+                f"/sessions/{session_id}",
+                headers=headers,
+                params={"type": "agent", "user_id": user.user_id},
+            )
+            raise
+        return {
+            "success": True,
+            "session_id": session_id,
+            "project_id": project.project_id,
+            "active_dataset_id": project.default_dataset_id,
+            "provider": "openai-compatible",
+            **state,
+            "context_usage": {"used_tokens": 0, "limit_tokens": 0, "ratio": 0},
+            "available_models": user.allowed_models,
+            "default_model": user.allowed_models[0] if user.allowed_models else model,
+        }
+
+    @app.post("/api/sessions/{session_id}/activate")
+    async def activate_session(session_id: str, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        state = _state(session)
+        has_graph = await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        runs = await get_session_runs(session_id, request, user.user_id)
+        restored = _messages_from_runs(runs) or _messages(session)
+        pending = next(
+            (
+                feedback_request_from_payload(run)
+                for run in reversed(runs)
+                if str(run.get("status") or "").lower() == "paused"
+            ),
+            None,
+        )
+        return {
+            "success": True,
+            "session_id": session_id,
+            "restored": True,
+            "requires_graph_reload": False,
+            "messages": restored,
+            "has_graph": has_graph,
+            "pending_feedback": pending,
+            "project_id": session_project_id(session, user.user_id),
+            "active_dataset_id": state.get("active_dataset_id"),
+            "provider": state.get("provider", "openai-compatible"),
+            "model": state.get("model", user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"),
+            "reasoning_mode": state.get("reasoning_mode", "direct"),
+            "planning_mode": state.get("planning_mode", "auto"),
+            "context_usage": session.get("metrics") or {},
+            "available_models": user.allowed_models,
+            "default_model": user.allowed_models[0] if user.allowed_models else "qwen3.6-plus",
+        }
+
+    @app.get("/api/sessions/{session_id}/messages")
+    async def session_messages(session_id: str, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "messages": await restored_messages(session, session_id, request, user.user_id),
+        }
+
+    @app.get("/api/sessions/{session_id}/info")
+    async def session_info(session_id: str, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        state = _state(session)
+        has_graph = await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        return {
+            "session_id": session_id,
+            "has_graph": has_graph,
+            "pending_feedback": await pending_feedback(session_id, request, user.user_id),
+            "project_id": session_project_id(session, user.user_id),
+            "active_dataset_id": state.get("active_dataset_id"),
+            "provider": state.get("provider", "openai-compatible"),
+            "model": state.get("model", user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"),
+            "reasoning_mode": state.get("reasoning_mode", "direct"),
+            "planning_mode": state.get("planning_mode", "auto"),
+            "context_usage": session.get("metrics") or {},
+            "available_models": user.allowed_models,
+            "default_model": user.allowed_models[0] if user.allowed_models else "qwen3.6-plus",
+        }
+
+    @app.get("/api/sessions/{session_id}/context-usage")
+    async def context_usage(session_id: str, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        return {"success": True, "session_id": session_id, "context_usage": session.get("metrics") or {}}
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str, request: Request):
+        user = current_user(request, users)
+        await delete_owned_session(session_id, request, user.user_id)
+        return {"success": True}
+
+    async def patch_setting(session_id: str, request: Request, patch: dict) -> dict:
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        state = {**_state(session), **patch}
+        if state.get("model") and state["model"] not in user.allowed_models:
+            raise HTTPException(status_code=403, detail=f"用户无权使用模型 {state['model']}")
+        await write_session_state(session_id, session, request, user.user_id, patch)
+        if "model" in patch and patch.get("model"):
+            await graph.request(
+                "PATCH",
+                f"/sessions/{session_id}/config",
+                headers=forwarded_headers(request, user.user_id),
+                json_body={"llm_model": patch["model"]},
+            )
+        return {"success": True, "session_id": session_id, **patch}
+
+    @app.patch("/api/sessions/{session_id}/model")
+    async def set_model(session_id: str, req: SessionSettingReq, request: Request):
+        result = await patch_setting(session_id, request, {"model": req.model})
+        result["provider"] = "openai-compatible"
+        return result
+
+    @app.patch("/api/sessions/{session_id}/reasoning-mode")
+    async def set_reasoning(session_id: str, req: SessionSettingReq, request: Request):
+        return await patch_setting(session_id, request, {"reasoning_mode": req.reasoning_mode})
+
+    @app.patch("/api/sessions/{session_id}/planning-mode")
+    async def set_planning(session_id: str, req: SessionSettingReq, request: Request):
+        return await patch_setting(session_id, request, {"planning_mode": req.planning_mode})
+
+    @app.patch("/api/sessions/{session_id}")
+    async def move_session(session_id: str, req: MoveSessionReq, request: Request):
+        user = current_user(request, users)
+        project = project_or_404(req.project_id, user.user_id)
+        session = await get_session(session_id, request, user.user_id)
+        state = await write_session_state(
+            session_id,
+            session,
+            request,
+            user.user_id,
+            {
+                "project_id": project.project_id,
+                "active_dataset_id": project.default_dataset_id,
+            },
+        )
+        await reset_graph_runtime(
+            session_id,
+            request,
+            user.user_id,
+            str(state.get("model") or ""),
+        )
+        return {
+            "success": True,
+            "session_id": session_id,
+            "project_id": project.project_id,
+            "active_dataset_id": project.default_dataset_id,
+        }
+
+    @app.patch("/api/sessions/{session_id}/dataset")
+    async def set_session_dataset(session_id: str, req: SessionDatasetReq, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        project_id = session_project_id(session, user.user_id)
+        dataset = None
+        if req.active_dataset_id:
+            dataset = project_dataset_or_404(req.active_dataset_id, project_id, user.user_id)
+            if dataset.status != "ready":
+                raise HTTPException(status_code=409, detail="数据集尚未准备完成")
+        state = await write_session_state(
+            session_id,
+            session,
+            request,
+            user.user_id,
+            {"active_dataset_id": dataset.dataset_id if dataset else None},
+        )
+        await reset_graph_runtime(
+            session_id,
+            request,
+            user.user_id,
+            str(state.get("model") or ""),
+        )
+        load_result = None
+        if dataset is not None:
+            updated_session = {**session, "session_state": state}
+            load_result = await load_project_dataset_into_session(
+                session_id,
+                updated_session,
+                dataset,
+                request,
+                user.user_id,
+            )
+        return {
+            "success": True,
+            "session_id": session_id,
+            "project_id": project_id,
+            "active_dataset_id": dataset.dataset_id if dataset else None,
+            "load_result": load_result,
+        }
+
+    async def run_form(session_id: str, req: ChatReq, request: Request) -> tuple[dict, dict[str, str], str]:
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        state = _state(session)
+        options = {
+            "model": state.get("model", user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"),
+            "reasoning_mode": req.reasoning_mode or state.get("reasoning_mode", "direct"),
+            "planning_mode": req.planning_mode or state.get("planning_mode", "auto"),
+            "output_format": req.output_format,
+        }
+        next_state = {**state, **options, "last_message_preview": req.message.strip()[:120]}
+        session_name = str(session.get("session_name") or "").strip()
+        session_patch: dict[str, Any] = {"session_state": next_state}
+        if not session_name or session_name == "新会话":
+            session_patch["session_name"] = req.message.strip().replace("\n", " ")[:36] or "新会话"
+        await runtime.request(
+            "PATCH",
+            f"/sessions/{session_id}",
+            headers=forwarded_headers(request, user.user_id),
+            params={"type": "agent", "user_id": user.user_id},
+            json_body=session_patch,
+        )
+        form = {
+            "message": _message_with_attachments(req),
+            "session_id": session_id,
+            "user_id": user.user_id,
+            "factory_input": json.dumps(options, ensure_ascii=False),
+        }
+        return form, forwarded_headers(request, user.user_id), user.user_id
+
+    @app.post("/api/sessions/{session_id}/chat")
+    async def chat(session_id: str, req: ChatReq, request: Request):
+        form, headers, user_id = await run_form(session_id, req, request)
+        form.update({"stream": "false", "background": "false"})
+        payload = await runtime.request("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form)
+        return {
+            "success": True,
+            "response": str(payload.get("content") or ""),
+            "has_graph": await graph_loaded(session_id, request, user_id),
+            "reasoning_mode": json.loads(form["factory_input"])["reasoning_mode"],
+            "context_usage": payload.get("metrics") or {},
+            "run_id": payload.get("run_id"),
+        }
+
+    @app.post("/api/sessions/{session_id}/chat/stream")
+    async def chat_stream(session_id: str, req: ChatReq, request: Request):
+        form, headers, _ = await run_form(session_id, req, request)
+        form.update({"stream": "true", "background": "true"})
+
+        async def events():
+            async with runtime.stream("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form) as response:
+                async for chunk in translate_sse(response.aiter_lines()):
+                    yield chunk
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/sessions/{session_id}/runs/{run_id}/resume")
+    async def resume_stream(session_id: str, run_id: str, request: Request, last_event_index: int = -1):
+        user = current_user(request, users)
+        await get_session(session_id, request, user.user_id)
+        headers = forwarded_headers(request, user.user_id)
+        data = {"session_id": session_id, "last_event_index": str(last_event_index)}
+
+        async def events():
+            path = f"/agents/{settings.agent_id}/runs/{run_id}/resume"
+            async with runtime.stream("POST", path, headers=headers, data=data) as response:
+                async for chunk in translate_sse(response.aiter_lines()):
+                    yield chunk
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/sessions/{session_id}/feedback/stream")
+    async def feedback(session_id: str, req: FeedbackReq, request: Request):
+        user = current_user(request, users)
+        await get_session(session_id, request, user.user_id)
+        confirmed = req.decision in {"approve", "modify"}
+        tools = [{
+            "tool_call_id": req.tool_call_id or req.request_id,
+            "tool_name": req.tool_name,
+            "tool_args": req.patched_args or {},
+            "confirmed": confirmed,
+            "confirmation_note": req.comment,
+        }]
+        data = {"tools": json.dumps(tools), "session_id": session_id, "user_id": user.user_id, "stream": "true"}
+
+        async def events():
+            path = f"/agents/{settings.agent_id}/runs/{req.request_id}/continue"
+            async with runtime.stream("POST", path, headers=forwarded_headers(request, user.user_id), data=data) as response:
+                async for chunk in translate_sse(response.aiter_lines()):
+                    yield chunk
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.get("/api/memory")
+    async def list_memory(request: Request, scope: str = "long_term", query: str = "", limit: int = 100):
+        user = current_user(request, users)
+        payload = await runtime.request(
+            "GET", "/memories", headers=forwarded_headers(request, user.user_id),
+            params={"user_id": user.user_id, "topics": scope, "search_content": query or None, "limit": limit},
+        )
+        rows = _data_rows(payload)
+        items = []
+        for row in rows:
+            topics = row.get("topics") or []
+            category = topics[1] if len(topics) > 1 else "fact"
+            key = topics[2] if len(topics) > 2 else "memory"
+            item = {
+                "memory_id": row.get("memory_id"),
+                "scope": scope,
+                "category": category,
+                "key": key,
+                "value": row.get("memory", ""),
+                "confidence": row.get("confidence"),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+            if scope == "playbook":
+                item.update({
+                    "playbook_id": row.get("memory_id"),
+                    "problem_type": key,
+                    "approach": row.get("memory", ""),
+                    "lifecycle_status": category if category in {"candidate", "validated", "active", "promoted_to_skill"} else "candidate",
+                })
+            elif scope == "user_profile":
+                item["profile_id"] = row.get("memory_id")
+            items.append(item)
+        return {"success": True, "scope": scope, "items": items}
+
+    @app.post("/api/memory")
+    async def write_memory(req: MemoryWriteReq, request: Request):
+        user = current_user(request, users)
+        payload = await runtime.request(
+            "POST", "/memories", headers=forwarded_headers(request, user.user_id),
+            json_body={"memory": req.value, "user_id": user.user_id, "topics": [req.scope, req.category, req.key]},
+        )
+        return {"success": True, "memory_id": payload.get("memory_id"), "item": payload}
+
+    @app.patch("/api/memory/{memory_id}")
+    async def update_memory(memory_id: str, req: MemoryPatchReq, request: Request):
+        user = current_user(request, users)
+        payload = await runtime.request(
+            "PATCH", f"/memories/{memory_id}", headers=forwarded_headers(request, user.user_id),
+            json_body={"memory": req.value, "user_id": user.user_id, "topics": [req.scope, "fact", req.key]},
+        )
+        return {"success": True, "item": payload}
+
+    @app.delete("/api/memory/{memory_id}")
+    async def delete_memory(memory_id: str, request: Request, scope: str = "long_term", reason: str = ""):
+        user = current_user(request, users)
+        await runtime.request(
+            "DELETE", f"/memories/{memory_id}", headers=forwarded_headers(request, user.user_id), params={"user_id": user.user_id}
+        )
+        return {"success": True, "memory_id": memory_id, "scope": scope, "reason": reason}
+
+    @app.get("/api/memory/events")
+    async def memory_events(request: Request, limit: int = 200):
+        user = current_user(request, users)
+        headers = forwarded_headers(request, user.user_id)
+        sessions_payload = await runtime.request(
+            "GET", "/sessions", headers=headers,
+            params={"type": "agent", "component_id": settings.agent_id, "user_id": user.user_id, "limit": 200},
+        )
+        events: list[dict] = []
+        for session in _data_rows(sessions_payload):
+            session_id = str(session.get("session_id") or "")
+            if not session_id:
+                continue
+            runs_payload = await runtime.request(
+                "GET", f"/sessions/{session_id}/runs", headers=headers,
+                params={"type": "agent", "user_id": user.user_id},
+            )
+            for run in _data_rows(runs_payload):
+                for event in run.get("events") or []:
+                    if not isinstance(event, dict):
+                        continue
+                    event_name = str(event.get("event") or "")
+                    if not any(token in event_name.lower() for token in ("memory", "learning", "knowledge")):
+                        continue
+                    events.append({
+                        "type": event_name,
+                        "session_id": session_id,
+                        "run_id": run.get("run_id"),
+                        "ts": event.get("created_at") or run.get("created_at"),
+                    })
+        events.sort(key=lambda item: str(item.get("ts") or ""))
+        return {"success": True, "events": events[-max(1, limit):], "source": "agentos-run-events"}
+
+    @app.get("/api/memory/usage")
+    async def memory_usage(request: Request):
+        user = current_user(request, users)
+        payload = await runtime.request("GET", "/memories", headers=forwarded_headers(request, user.user_id), params={"user_id": user.user_id, "limit": 1000})
+        meta = (payload.get("meta") or {}) if isinstance(payload, dict) else {}
+        rows = _data_rows(payload)
+        included_ids = [str(item.get("memory_id")) for item in rows if item.get("memory_id")]
+        return {
+            "success": True,
+            "count": meta.get("total_count", len(rows)),
+            "snapshot_char_count": sum(len(str(item.get("memory") or "")) for item in rows),
+            "snapshot": "",
+            "frozen": False,
+            "included_item_ids": included_ids,
+            "excluded_counts": {
+                "archived": 0,
+                "candidate": 0,
+                "promoted_to_skill": 0,
+                "char_budget": 0,
+                "wrong_scope": 0,
+            },
+            "scope": user.user_id,
+            "source": "agentos",
+        }
+
+    @app.get("/api/metrics/knowledge")
+    async def knowledge_metrics(request: Request):
+        """Compatibility metrics backed by AgentOS-owned resources."""
+
+        user = current_user(request, users)
+        headers = forwarded_headers(request, user.user_id)
+        memories = await runtime.request(
+            "GET", "/memories", headers=headers,
+            params={"user_id": user.user_id, "limit": 1},
+        )
+        skills = await runtime.request("GET", "/internal/skills", headers=headers)
+        memory_meta = memories.get("meta") if isinstance(memories, dict) else {}
+        memory_count = (memory_meta or {}).get("total_count", len(_data_rows(memories)))
+        skill_rows = skills.get("skills", []) if isinstance(skills, dict) else []
+        skill_counts: dict[str, int] = {}
+        for item in skill_rows if isinstance(skill_rows, list) else []:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "unknown")
+            skill_counts[source] = skill_counts.get(source, 0) + 1
+        return {
+            "counters": {
+                "agentos_memories": int(memory_count or 0),
+                "skills_total": sum(skill_counts.values()),
+                **{f"skills_{key}": value for key, value in skill_counts.items()},
+            },
+            "source": "agentos",
+        }
+
+    @app.get("/api/export/sft")
+    async def export_sft(
+        request: Request,
+        format: str = "alpaca",
+        min_turns: int = 1,
+        require_tool_calls: bool = False,
+    ):
+        """Export AgentOS runs using the former alpaca/sharegpt/raw contract."""
+
+        user = current_user(request, users)
+        output_format = str(format or "alpaca").strip().lower()
+        headers = forwarded_headers(request, user.user_id)
+        sessions_payload = await runtime.request(
+            "GET", "/sessions", headers=headers,
+            params={"type": "agent", "component_id": settings.agent_id, "user_id": user.user_id, "limit": 1000},
+        )
+        items: list[dict] = []
+        for session in _data_rows(sessions_payload):
+            session_id = str(session.get("session_id") or "")
+            if not session_id:
+                continue
+            runs_payload = await runtime.request(
+                "GET", f"/sessions/{session_id}/runs", headers=headers,
+                params={"user_id": user.user_id},
+            )
+            runs = _ordered_runs(_data_rows(runs_payload) or (
+                [item for item in runs_payload if isinstance(item, dict)]
+                if isinstance(runs_payload, list) else []
+            ))
+            completed = [
+                run for run in runs
+                if _run_input_text(run).strip() and _run_output_text(run).strip()
+            ]
+            if len(completed) < max(int(min_turns), 1):
+                continue
+            for run in completed:
+                tools = run.get("tools") or []
+                if require_tool_calls and not (isinstance(tools, list) and tools):
+                    continue
+                row = _sft_row(run, output_format)
+                if row is not None:
+                    items.append(row)
+        return {"success": True, "format": output_format, "items": items, "source": "agentos-runs"}
+
+    @app.post("/api/skills/generate-from-playbook")
+    async def generate_skill_from_playbook(req: GenerateSkillReq, request: Request):
+        user = current_user(request, users)
+        playbook = await get_playbook_memory(req.playbook_id, request, user.user_id)
+        playbook_content = str(playbook.get("memory") or "")
+        session_id = str(uuid.uuid4())
+        if req.session_id.strip():
+            session = await get_session(req.session_id.strip(), request, user.user_id)
+            state = _state(session)
+        else:
+            state = {}
+        model = state.get("model", user.allowed_models[0] if user.allowed_models else "qwen3.6-plus")
+        prompt = (
+            f"请把下面来自当前用户 AgentOS Memory/Learned Knowledge 的 Playbook 生成一个可执行 Skill。\n\n"
+            f"Playbook ID: {req.playbook_id}\nPlaybook 内容:\n{playbook_content[:12000]}\n\n"
+            "只输出完整 SKILL.md，不要解释；必须包含 YAML frontmatter（name、description）以及适用场景、操作步骤、"
+            "输入输出、失败处理和安全边界。name 必须使用小写字母、数字和连字符。不要调用任何工具。"
+        )
+        data = {
+            "message": prompt,
+            "session_id": session_id,
+            "user_id": user.user_id,
+            "factory_input": json.dumps({
+                "model": model,
+                "reasoning_mode": state.get("reasoning_mode", "direct"),
+                "planning_mode": state.get("planning_mode", "auto"),
+                "output_format": "chat",
+            }, ensure_ascii=False),
+            "stream": "true",
+            "background": "false",
+        }
+        headers = forwarded_headers(request, user.user_id)
+
+        async def events():
+            full: list[str] = []
+            completed = False
+            try:
+                async with runtime.stream("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=data) as response:
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line[5:].strip()
+                        if not raw:
+                            continue
+                        payload = json.loads(raw)
+                        event = str(payload.get("event") or payload.get("type") or "")
+                        if event in {"RunContent", "TeamRunContent"}:
+                            token = str(payload.get("content") or "")
+                            if token:
+                                full.append(token)
+                                yield _sse({"type": "token", "content": token})
+                        elif event in {"RunCompleted", "TeamRunCompleted"}:
+                            if not full and payload.get("content"):
+                                full.append(str(payload["content"]))
+                            completed = True
+                        elif event in {"RunError", "RunCancelled", "TeamRunError", "TeamRunCancelled"}:
+                            yield _sse({"type": "error", "error": str(payload.get("content") or event)})
+                            return
+                if not completed:
+                    yield _sse({"type": "error", "error": "AgentOS Skill 生成流未正常完成"})
+                    return
+                content = "".join(full)
+                suffix = re.sub(r"[^a-z0-9]", "", req.playbook_id.lower())[-8:] or "skill"
+                suggested = _canonical_skill_name(f"playbook-{suffix}")
+                yield _sse({"type": "done", "suggested_name": suggested, "full_content": content, "completed": completed})
+            except Exception as exc:
+                yield _sse({"type": "error", "error": str(exc)})
+            finally:
+                try:
+                    await runtime.request(
+                        "DELETE",
+                        f"/sessions/{session_id}",
+                        headers=headers,
+                        params={"type": "agent", "user_id": user.user_id},
+                    )
+                except Exception:
+                    pass
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/skills/promote-playbook")
+    async def promote_playbook(req: PromotePlaybookReq, request: Request):
+        user = current_user(request, users)
+        playbook = await get_playbook_memory(req.playbook_id, request, user.user_id)
+        playbook_content = str(playbook.get("memory") or "").strip()
+        name = _canonical_skill_name(req.skill_name)
+        description = req.description or f"从 AgentOS Learned Knowledge Playbook {req.playbook_id} 升级"
+        body = (
+            "---\n"
+            f"name: {name}\n"
+            f"description: {json.dumps(description, ensure_ascii=False)}\n"
+            f"domain: {req.domain}\n"
+            f"risk_level: {req.risk_level}\n"
+            "version: 0.1.0\n"
+            "---\n\n"
+            f"# {name}\n\n"
+            f"本 Skill 从当前用户的 AgentOS Learned Knowledge Playbook `{req.playbook_id}` 升级。\n\n"
+            "## 原始 Playbook\n\n"
+            f"{playbook_content}\n\n"
+            "## 执行约束\n\n"
+            "1. 校验 Playbook 的适用条件与当前任务一致。\n"
+            "2. 按记录的步骤执行，并在关键写操作前请求确认。\n"
+            "3. 汇总工具结果、失败原因与可复现信息。\n"
+        )
+        payload = await runtime.request(
+            "POST",
+            "/internal/skills",
+            headers={**forwarded_headers(request, user.user_id), "Content-Type": "application/json"},
+            json_body={
+                "name": name,
+                "body": body,
+                "metadata": {
+                    "source": "manual_promote",
+                    "playbook_id": req.playbook_id,
+                    "domain": req.domain,
+                    "risk_level": req.risk_level,
+                },
+                "destination": "review_queue",
+            },
+        )
+        return {**payload, "playbook_id": req.playbook_id}
+
+    @app.api_route("/api/skills", methods=["GET", "POST"])
+    async def skills_root(request: Request):
+        user = current_user(request, users)
+        body = await request.body()
+        return await runtime.request(
+            request.method, "/internal/skills", headers={**forwarded_headers(request, user.user_id), "Content-Type": "application/json"},
+            params=dict(request.query_params), json_body=json.loads(body) if body else None,
+        )
+
+    @app.api_route("/api/skills/{name}", methods=["GET", "PUT", "DELETE"])
+    async def skill_item(name: str, request: Request):
+        user = current_user(request, users)
+        body = await request.body()
+        return await runtime.request(
+            request.method, f"/internal/skills/{name}", headers={**forwarded_headers(request, user.user_id), "Content-Type": "application/json"},
+            params=dict(request.query_params), json_body=json.loads(body) if body else None,
+        )
+
+    @app.post("/api/skills/{name}/{decision}")
+    async def skill_decision(name: str, decision: Literal["approve", "reject"], request: Request):
+        user = current_user(request, users)
+        body = await request.body()
+        return await runtime.request(
+            "POST", f"/internal/skills/{name}/{decision}", headers={**forwarded_headers(request, user.user_id), "Content-Type": "application/json"},
+            json_body=json.loads(body) if body else {},
+        )
+
+    async def graph_tool(session_id: str, tool_name: str, arguments: dict, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        return await graph.request(
+            "POST", f"/sessions/{session_id}/tools/{tool_name}", headers=forwarded_headers(request, user.user_id),
+            json_body={"arguments": arguments},
+        )
+
+    @app.get("/api/datasets")
+    async def datasets(request: Request):
+        user = current_user(request, users)
+        return await graph.request("GET", "/datasets", headers=forwarded_headers(request, user.user_id))
+
+    @app.delete("/api/datasets/{dataset_id}")
+    async def delete_dataset(dataset_id: str, request: Request):
+        user = current_user(request, users)
+        return await graph.request("DELETE", f"/datasets/{dataset_id}", headers=forwarded_headers(request, user.user_id))
+
+    @app.post("/api/sessions/{session_id}/load-dataset")
+    async def load_dataset(session_id: str, request: Request):
+        return await graph_tool(session_id, "load_dataset", await request.json(), request)
+
+    @app.post("/api/sessions/{session_id}/save-dataset")
+    async def save_dataset(session_id: str, request: Request):
+        return await graph_tool(session_id, "save_as_dataset", await request.json(), request)
+
+    @app.post("/api/sessions/{session_id}/graph/clear")
+    async def clear_graph(session_id: str, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        result = await graph.request("POST", f"/sessions/{session_id}/graph/clear", headers=forwarded_headers(request, user.user_id), json_body={})
+        await write_session_state(
+            session_id,
+            session,
+            request,
+            user.user_id,
+            {"active_dataset_id": None},
+        )
+        return result
+
+    @app.post("/api/sessions/{session_id}/graph/visualize")
+    async def visualize_graph(session_id: str, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        body = await request.json()
+        return await graph.request(
+            "POST", f"/sessions/{session_id}/graph/visualize", headers=forwarded_headers(request, user.user_id),
+            json_body={"arguments": body or {}},
+        )
+
+    @app.post("/api/sessions/{session_id}/upload")
+    async def upload(session_id: str, request: Request, file: UploadFile = File(...)):
+        user = current_user(request, users)
+        await get_session(session_id, request, user.user_id)
+        file_token = uuid.uuid4().hex
+        content = await file.read()
+        filename = file.filename or f"upload-{file_token}.bin"
+        payload = await graph.request(
+            "POST", f"/sessions/{session_id}/uploads/ingest", headers=forwarded_headers(request, user.user_id),
+            data={"file_token": file_token, "original_filename": filename},
+            files={"file": (filename, content, file.content_type or "application/octet-stream")},
+        )
+        return {"success": True, "filename": filename, "file_token": file_token, "graph_engine": payload}
+
+    return app
+
+
+app = create_app()

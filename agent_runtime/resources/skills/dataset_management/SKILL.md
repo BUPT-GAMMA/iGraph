@@ -1,10 +1,10 @@
 ---
 name: dataset_management
 description: 保存、加载、版本说明和复用 dataset 的流程。
-version: 1.0.0
-domain: dataset
-risk_level: medium
 metadata:
+  version: 1.0.0
+  domain: dataset
+  risk_level: medium
   igraph:
     any_tools: [load_dataset, save_dataset, list_datasets]
     requires_graph_state: none

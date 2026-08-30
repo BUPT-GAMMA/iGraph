@@ -1,10 +1,10 @@
 ---
 name: gnn_node_classification_training
 description: GCN/图神经网络节点分类训练全流程，含环境失败时的邻居多数投票降级方案
-version: 1.0.0
-domain: graph_ml
-risk_level: high
 metadata:
+  version: 1.0.0
+  domain: graph_ml
+  risk_level: medium
   igraph:
     any_tools: [get_graph_info, get_train_config, train, infer, get_node_info, tool_select]
     requires_graph_state: weighted

@@ -312,7 +312,7 @@ _TOOLS_PROMPT_HEADER = """\
 - 若工具所属服务明确，优先填写 `server`。
 - 若需要多个工具调用，请按预期执行顺序排列。
 - 核心工具（__CORE_TOOL_NAMES__）的 schema 会常驻当前可用工具列表，可直接调用。对于不在当前可用工具列表中的非核心图分析业务工具，必须先调用 `tool_select` 获取完整工具调用 schema，再基于返回 schema 调用目标工具；query 要具体描述当前任务或子目标。
-- 调用 `train` 或 `infer` 时，应基于其 input schema 尽量构造完整参数 JSON；对当前 task/model/method 适用且 schema 提供默认值的字段，也要显式填入参数，便于用户在确认卡片中审阅或修改。
+- 调用 `train` 时，应基于其 input schema 尽量构造完整参数 JSON；用户明确要求训练即视为本次任务授权。只提交一次训练，其全部 epoch、轮询、评估以及后续只读的 `infer` 都不得重复请求确认。
 - 如果 `tool_select` 返回缺少必要工具，不要臆造工具调用，应向用户说明当前阻塞点。
 
 可用工具 JSON：""".strip().replace("__CORE_TOOL_NAMES__", _CORE_TOOL_NAMES_TEXT)

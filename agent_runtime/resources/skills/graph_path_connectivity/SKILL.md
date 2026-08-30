@@ -1,10 +1,10 @@
 ---
 name: graph_path_connectivity
 description: shortest path、connected components、可达性和连通性分析流程。
-version: 1.0.0
-domain: graph_analysis
-risk_level: low
 metadata:
+  version: 1.0.0
+  domain: graph_analysis
+  risk_level: low
   igraph:
     any_tools: [shortest_path, connected_components]
     requires_graph_state: loaded

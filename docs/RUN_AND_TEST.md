@@ -1,4 +1,7 @@
-# iGraph 运行与测试指南
+# iGraph 运行与测试指南（历史版本）
+
+> 本文保留重构前的启动与测试命令用于行为对照。当前四模块入口和部署方式请参阅
+> [`AGENTOS_FOUR_MODULE_REFACTOR.md`](AGENTOS_FOUR_MODULE_REFACTOR.md)。本次重构按要求未在本机运行测试。
 
 本文档覆盖：
 

@@ -1,27 +1,6 @@
-# Core service dependencies
-fastapi
-uvicorn
-pydantic
-python-dotenv
-httpx
-mcp
-openai
-tiktoken
-numpy
-networkx
-nebula3-python==3.8.3
-
-# GraphML (optional but required for train/infer, CUDA build)
-# If your NVIDIA driver/CUDA runtime is not compatible, change cu126 to cu124/cu121.
---extra-index-url https://download.pytorch.org/whl/cu128
-torch
-torchvision
-torch-geometric
-
-# Data ingestion (optional)
-openpyxl
-
-# Community detection extras (optional)
-python-louvain
-igraph
-leidenalg
+# Combined development environment. Production images install only their own
+# module-specific requirement file under deploy/requirements/.
+-r deploy/requirements/backend.txt
+-r deploy/requirements/agent-runtime.txt
+-r deploy/requirements/graph-data.txt
+-r deploy/requirements/mcp.txt

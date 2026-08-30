@@ -111,22 +111,28 @@ def _source_for_path(path: Path) -> str:
 def _fallback_spec(path: Path, body: str, metadata: dict[str, Any]) -> SkillSpec:
     name = str(metadata.get("name") or path.parent.name).strip()
     description = str(metadata.get("description") or _first_heading_or_line(body) or name).strip()
-    domain = str(metadata.get("domain") or name.replace("-", "_")).strip()
+    skill_meta: dict[str, Any] = {}
     igraph = {}
     raw_meta = metadata.get("metadata")
     if isinstance(raw_meta, dict):
+        skill_meta = raw_meta
         raw_ga = raw_meta.get("igraph")
         if not isinstance(raw_ga, dict):
             raw_ga = raw_meta.get("graphagent")
         if isinstance(raw_ga, dict):
             igraph = raw_ga
+    # Agno's Agent Skills validator only permits product-specific fields under
+    # the top-level ``metadata`` dictionary. Keep the legacy top-level lookup
+    # as a fallback so existing user-authored Skills remain readable.
+    domain = str(metadata.get("domain") or skill_meta.get("domain") or name.replace("-", "_")).strip()
     condition = SkillCondition(
         requires_tools=_list(igraph.get("requires_tools")),
         any_tools=_list(igraph.get("any_tools")),
         fallback_for_tools=_list(igraph.get("fallback_for_tools")),
         requires_graph_state=str(igraph.get("requires_graph_state") or "none"),
         activates_on_intents=_list(igraph.get("activates_on_intents")),
-        supports_protocols=_list(metadata.get("supports_protocols")) or ("text", "native"),
+        supports_protocols=_list(metadata.get("supports_protocols") or skill_meta.get("supports_protocols"))
+        or ("text", "native"),
         tags=_list(igraph.get("tags")),
         related_skills=_list(igraph.get("related_skills")),
     )
@@ -149,8 +155,8 @@ def _fallback_spec(path: Path, body: str, metadata: dict[str, Any]) -> SkillSpec
         domain=domain,
         path=str(path),
         body=body,
-        version=str(metadata.get("version") or "1.0.0"),
-        risk_level=str(metadata.get("risk_level") or "medium"),
+        version=str(metadata.get("version") or skill_meta.get("version") or "1.0.0"),
+        risk_level=str(metadata.get("risk_level") or skill_meta.get("risk_level") or "medium"),
         source=_source_for_path(path),
         condition=condition,
         config_keys=config_keys,

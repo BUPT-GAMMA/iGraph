@@ -137,24 +137,26 @@ class GraphDataClient:
         tool_name: str,
         arguments: Optional[dict] = None,
         user_id: str = "",
+        run_id: str = "",
     ) -> Dict[str, Any]:
         return await self._post(
             f"/sessions/{session_id}/tools/{tool_name}",
             {"arguments": arguments or {}},
             user_id=user_id,
+            run_id=run_id,
         )
 
-    async def _get(self, path: str, user_id: str = "") -> Dict[str, Any]:
-        return await self._request("GET", path, user_id=user_id)
+    async def _get(self, path: str, user_id: str = "", run_id: str = "") -> Dict[str, Any]:
+        return await self._request("GET", path, user_id=user_id, run_id=run_id)
 
-    async def _post(self, path: str, data: Optional[dict] = None, user_id: str = "") -> Dict[str, Any]:
-        return await self._request("POST", path, data, user_id=user_id)
+    async def _post(self, path: str, data: Optional[dict] = None, user_id: str = "", run_id: str = "") -> Dict[str, Any]:
+        return await self._request("POST", path, data, user_id=user_id, run_id=run_id)
 
-    async def _patch(self, path: str, data: Optional[dict] = None, user_id: str = "") -> Dict[str, Any]:
-        return await self._request("PATCH", path, data, user_id=user_id)
+    async def _patch(self, path: str, data: Optional[dict] = None, user_id: str = "", run_id: str = "") -> Dict[str, Any]:
+        return await self._request("PATCH", path, data, user_id=user_id, run_id=run_id)
 
-    async def _delete(self, path: str, user_id: str = "") -> Dict[str, Any]:
-        return await self._request("DELETE", path, user_id=user_id)
+    async def _delete(self, path: str, user_id: str = "", run_id: str = "") -> Dict[str, Any]:
+        return await self._request("DELETE", path, user_id=user_id, run_id=run_id)
 
     async def _request(
         self,
@@ -162,6 +164,7 @@ class GraphDataClient:
         path: str,
         data: Optional[dict] = None,
         user_id: str = "",
+        run_id: str = "",
     ) -> Dict[str, Any]:
         url = f"{self.base_url}{path}"
         is_heavy_tool = _is_heavy_tool_path(path)
@@ -173,8 +176,13 @@ class GraphDataClient:
                     timeout=_request_timeout(path),
                 ) as client:
                     kwargs: dict[str, Any] = {"json": data}
+                    headers = {}
                     if user_id:
-                        kwargs["headers"] = {"X-User-ID": user_id}
+                        headers["X-User-ID"] = user_id
+                    if run_id:
+                        headers["X-Run-ID"] = run_id
+                    if headers:
+                        kwargs["headers"] = headers
                     response = await client.request(method, url, **kwargs)
                 payload = _read_response_payload(response)
 

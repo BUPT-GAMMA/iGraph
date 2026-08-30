@@ -2133,6 +2133,8 @@ function getInitialTaskPanelCollapsed() {
 
 const state = {
   sessionId: null,
+  activeRunId: null,
+  lastEventIndex: -1,
   currentUserId: getCurrentUserId(),
   leftSidebarCollapsed: getInitialTaskPanelCollapsed(),
   availableModels: [],
@@ -2556,6 +2558,9 @@ const _bgSessions = new Map(); // sessionId → bgCtx  (sessions streaming in ba
 function _makeBgCtx() {
   return {
     _done: false,
+    sessionId: state.sessionId,
+    activeRunId: state.activeRunId,
+    lastEventIndex: state.lastEventIndex,
     messages: state.messages.map((m, messageIndex) => ({
       ...m,
       reports: Array.isArray(m.reports)
@@ -2588,6 +2593,8 @@ function _makeBgCtx() {
 }
 
 function _adoptBgCtx(bgCtx) {
+  state.activeRunId      = bgCtx.activeRunId || null;
+  state.lastEventIndex   = Number(bgCtx.lastEventIndex ?? -1);
   state.messages          = bgCtx.messages;
   state.streamBuf         = bgCtx.streamBuf;
   state.streamTools       = [...bgCtx.streamTools];
@@ -4589,6 +4596,14 @@ function scrollToBottom(force = false, smooth = false) {
 function handleSseEvent(evt) {
   const ctx = _streamCtx || state;
   const isActive = ctx === state;
+  if (evt.run_id) ctx.activeRunId = String(evt.run_id);
+  if (Number.isInteger(Number(evt.event_index))) ctx.lastEventIndex = Number(evt.event_index);
+  if (ctx.sessionId && ctx.activeRunId) {
+    sessionStorage.setItem(`igraph-active-run:${ctx.sessionId}`, JSON.stringify({
+      runId: ctx.activeRunId,
+      lastEventIndex: Number(ctx.lastEventIndex ?? -1),
+    }));
+  }
   switch (evt.type) {
     case 'context_usage': {
       ctx.contextUsage = normalizeContextUsage(evt.usage);
@@ -4822,10 +4837,16 @@ function handleSseEvent(evt) {
       ctx.feedbackArgsText = ctx.pendingFeedback ? JSON.stringify(ctx.pendingFeedback.proposed_args || {}, null, 2) : '';
       ctx.feedbackComment = '';
       assignFeedbackToSolverStep(ctx.pendingFeedback);
+      // A paused AgentOS run is no longer a resumable live stream. The Run ID
+      // is retained in the feedback request and is continued through /continue.
+      if (ctx.sessionId) sessionStorage.removeItem(`igraph-active-run:${ctx.sessionId}`);
+      ctx.activeRunId = null;
+      ctx.lastEventIndex = -1;
       if (isActive) { patchStreamingFeedback(); patchInputState(); scrollToBottom(false, false); }
       break;
     }
     case 'plan_complete': {
+      ctx.planAnalyzing = false;
       if (ctx.currentPlan) ctx.currentPlan.completed = true;
       if (isActive) patchPlanPanel();
       break;
@@ -4859,6 +4880,8 @@ function handleSseEvent(evt) {
     case 'graph_visualize': {
       // 从 agent 的 visualize_subgraph 工具结果中获取可视化数据
       if (evt.data && evt.data.nodes && evt.data.links) {
+        ctx.hasGraph = true;
+        if (isActive) state.hasGraph = true;
         const vizData = {
           nodes: evt.data.nodes,
           edges: (evt.data.links || []).map(l => ({
@@ -4911,7 +4934,7 @@ function handleSseEvent(evt) {
       break;
     }
     case 'done': {
-      ctx.hasGraph = evt.has_graph;
+      if (typeof evt.has_graph === 'boolean') ctx.hasGraph = evt.has_graph;
       if (evt.context_usage) ctx.contextUsage = normalizeContextUsage(evt.context_usage);
       ctx.contextCompressing = false;
       clearScheduledSolverPatch();
@@ -4933,6 +4956,8 @@ function handleSseEvent(evt) {
         last.streaming = false;
       }
       ctx.modelTurnCheckpoint = null;
+      if (ctx.sessionId) sessionStorage.removeItem(`igraph-active-run:${ctx.sessionId}`);
+      ctx.activeRunId = null; ctx.lastEventIndex = -1;
       if (isActive) { state.contextUsage = ctx.contextUsage || state.contextUsage; state.contextCompressing = false; finalizeStreamingBubble(); patchGraphBadge(); patchContextMeter(); patchSessionNotice(); }
       break;
     }
@@ -4942,6 +4967,8 @@ function handleSseEvent(evt) {
       const errLast = ctx.messages[ctx.messages.length - 1];
       if (errLast && errLast.streaming) { errLast.content = evt.error; errLast.tools = []; errLast.progressItems = []; errLast.thinking = []; errLast.streaming = false; }
       ctx.modelTurnCheckpoint = null;
+      if (ctx.sessionId) sessionStorage.removeItem(`igraph-active-run:${ctx.sessionId}`);
+      ctx.activeRunId = null; ctx.lastEventIndex = -1;
       if (isActive) {
         state.contextCompressing = false;
         patchContextMeter();
@@ -4958,6 +4985,71 @@ function handleSseEvent(evt) {
 }
 
 // ── Stream chat ────────────────────────────────────────────────────
+async function consumeAgentStream(res) {
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+  const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n'); buf = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const raw = line.slice(6).trim();
+      if (!raw) continue;
+      try { handleSseEvent(JSON.parse(raw)); } catch(e) { console.error('[SSE handle error]', e, 'raw:', raw?.slice(0,200)); }
+    }
+  }
+}
+
+async function resumeAgentStream(ctx) {
+  const runId = String(ctx?.activeRunId || '');
+  const sessionId = String(ctx?.sessionId || state.sessionId || '');
+  if (!runId || !sessionId) return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt)));
+      const cursor = Number(ctx.lastEventIndex ?? -1);
+      const res = await apiFetch(
+        `${API_BASE}/api/sessions/${sessionId}/runs/${runId}/resume?last_event_index=${encodeURIComponent(cursor)}`,
+        { method: 'POST', signal: _streamAbortController?.signal },
+      );
+      await consumeAgentStream(res);
+      return true;
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      if (attempt === 2) console.error('[SSE resume failed]', error);
+    }
+  }
+  return false;
+}
+
+async function resumePersistedAgentRun() {
+  if (!state.sessionId || state.loading) return;
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(`igraph-active-run:${state.sessionId}`) || 'null'); } catch (_) {}
+  if (!saved?.runId) return;
+  state.activeRunId = String(saved.runId);
+  state.lastEventIndex = Number(saved.lastEventIndex ?? -1);
+  state.streamBuf = ''; state.streamTools = []; state.streamProgressItems = []; state.streamThinking = [];
+  state.messages.push({ role: 'assistant', content: '', tools: [], progressItems: [], graphs: [], reports: [], streaming: true });
+  state.loading = true;
+  _streamCtx = state;
+  _streamAbortController = new AbortController();
+  render();
+  try {
+    const resumed = await resumeAgentStream(state);
+    if (!resumed) throw new Error('无法恢复 Agent Run');
+  } catch (error) {
+    handleSseEvent({ type: 'error', error: `断点恢复失败：${error.message || error}` });
+  } finally {
+    _streamAbortController = null;
+    state.loading = false;
+    patchInputState();
+    await refreshSessionList();
+  }
+}
+
 async function doStreamChat(message, attachments = [], { regenerate = false } = {}) {
   _streamCtx = state; // always start in foreground
   _streamAbortController = new AbortController();
@@ -4975,20 +5067,7 @@ async function doStreamChat(message, attachments = [], { regenerate = false } = 
       body: JSON.stringify({ message, attachments: attachments.length ? attachments : undefined, reasoning_mode: state.reasoningMode, planning_mode: state.planningMode, regenerate }),
       signal: _streamAbortController.signal,
     });
-    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split('\n'); buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6).trim();
-        if (!raw) continue;
-        try { handleSseEvent(JSON.parse(raw)); } catch(e) { console.error('[SSE handle error]', e, 'raw:', raw?.slice(0,200)); }
-      }
-    }
+    await consumeAgentStream(res);
   } catch (e) {
     clearScheduledSolverPatch();
     const ctx = _streamCtx || state;
@@ -5012,6 +5091,8 @@ async function doStreamChat(message, attachments = [], { regenerate = false } = 
         last.feedbackRequest = null;
       }
       if (ctx === state) { state.contextCompressing = false; finalizeStreamingBubble(); patchContextMeter(); patchSessionNotice(); }
+    } else if (await resumeAgentStream(ctx)) {
+      // AgentOS background run stayed alive; missing events were replayed by /resume.
     } else {
       const last = ctx.messages[ctx.messages.length - 1];
       if (last && last.streaming) { last.content = e.message; last.tools = []; last.progressItems = []; last.thinking = []; last.streaming = false; }
@@ -5439,6 +5520,7 @@ async function activateSession(sessionId) {
     state.pendingFeedback = null; state.streamFeedbackRequest = null; state.streamFeedbackRequests = []; state.feedbackArgsText = ''; state.feedbackComment = '';
   }
 
+  let shouldResumePersistedRun = false;
   state.switchingSession = true; state.error = null; state.sessionNotice = null; state.contextCompressing = false; render();
   try {
     const res = await apiFetch(`${API_BASE}/api/sessions/${sid}/activate`, { method: 'POST' });
@@ -5488,9 +5570,14 @@ async function activateSession(sessionId) {
         ? `已自动压缩 ${_compressions} 次较早会话上下文，完整聊天记录仍保留在界面中。`
         : null;
     state.error = null;
+    shouldResumePersistedRun = !!sessionStorage.getItem(`igraph-active-run:${state.sessionId}`) && !bgCtx;
     await refreshSessionList();
   } catch (err) { state.error = err.message || '会话切换失败'; }
-  finally { state.switchingSession = false; render(); }
+  finally {
+    state.switchingSession = false;
+    render();
+    if (shouldResumePersistedRun) void resumePersistedAgentRun();
+  }
 }
 
 async function handleModelChange(e) {
@@ -5925,8 +6012,12 @@ async function submitFeedbackResponse(decision) {
   patchInputState();
   await doFeedbackResume({
     request_id: request.request_id,
+    tool_call_id: request.call_id || request.tool_call_id || '',
+    tool_name: request.tool_name || request.proposed_tool || request.tool || '',
     decision,
-    patched_args: patchedArgs || undefined,
+    // AgentOS continue expects the complete ToolExecution, including the
+    // original arguments when the user approves or rejects without edits.
+    patched_args: patchedArgs || request.proposed_args || {},
     comment,
   });
 }

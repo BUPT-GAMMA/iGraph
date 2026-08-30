@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict
 import torch
 from torch.optim import Adam
 
-from backend.logging.logger import get_service_logger
+from graph_engine.observability import get_service_logger
 
 from ..artifact_store import ArtifactStore
 from ..datasets import (
