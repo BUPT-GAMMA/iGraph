@@ -336,6 +336,27 @@ class GraphDataAppTest(unittest.TestCase):
         release.assert_called_once_with("alice:s-release")
         self.assertNotIn("alice:s-release", self.service._sessions)
 
+    def test_delete_session_removes_runtime_storage_but_preserves_project_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"IGRAPH_DATA_ROOT": tmp}):
+                service = GraphDataService(text_graph_llm_factory=lambda: None)
+                service.get_or_create("s-storage", user_id="alice")
+                service.do_load_graph_text("s-storage", "A B\nB C", False, user_id="alice")
+                upload_dir = Path(tmp) / "users" / "alice" / "uploads" / "s-storage"
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                (upload_dir / "attachment.txt").write_text("A B", encoding="utf-8")
+                project_source = Path(tmp) / "projects" / "project-a" / "datasets" / "dataset-a" / "source.txt"
+                project_source.parent.mkdir(parents=True, exist_ok=True)
+                project_source.write_text("A B", encoding="utf-8")
+
+                runtime_dir = Path(tmp) / "users" / "alice" / "graph_sessions" / "s-storage"
+                self.assertTrue(runtime_dir.exists())
+                service.delete_session("s-storage", user_id="alice")
+
+                self.assertFalse(runtime_dir.exists())
+                self.assertFalse(upload_dir.exists())
+                self.assertTrue(project_source.exists())
+
     def test_reporting_tool_is_available_from_graph_data_when_requested(self) -> None:
         tools_resp = self.client.get("/tools?include_reporting=true")
         self.assertEqual(tools_resp.status_code, 200)

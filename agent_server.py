@@ -6,9 +6,8 @@ iGraph 网页入口。
   python agent_server.py
 """
 
-from backend.api_gateway.__main__ import main
+from backend.__main__ import main
 
 
 if __name__ == "__main__":
     main()
-

@@ -1,4 +1,8 @@
-# iGraph 系统设计文档
+# iGraph 系统设计文档（重构前基线）
+
+> 当前架构已拆分为 Frontend、Backend、Agent Runtime（Agno AgentOS）与 Graph Engine。
+> 最新边界请参阅 [`AGENTOS_FOUR_MODULE_REFACTOR.md`](AGENTOS_FOUR_MODULE_REFACTOR.md)；
+> 本文保留作为原有功能与实现细节的迁移基线。
 
 > 本文档详细描述 iGraph 系统的整体架构、各服务模块的设计与实现细节、数据流转、协议约定、以及关键设计决策的背景与取舍。
 

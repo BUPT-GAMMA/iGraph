@@ -1,24 +1,40 @@
 name: igraph
 
 services:
-  graph-data:
-    image: ${IGRAPH_GRAPH_DATA_IMAGE:-igraph-graph-data:local}
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-igraph}
+      POSTGRES_USER: ${POSTGRES_USER:-igraph}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-igraph}
+    volumes:
+      - igraph-postgres:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - backplane
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-igraph} -d ${POSTGRES_DB:-igraph}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  graph-engine-api:
+    image: ${IGRAPH_GRAPH_ENGINE_IMAGE:-igraph-graph-engine:local}
     build:
       context: .
       dockerfile: deploy/docker/graph-data.Dockerfile
+    pull_policy: never
     env_file:
       - .env
     environment:
       GRAPH_DATA_HOST: 0.0.0.0
       GRAPH_DATA_PORT: 21111
-      GRAPH_DATA_SERVER_URL: http://graph-data:21111
       IGRAPH_DATA_ROOT: /data
-      IGRAPH_HOME: /data/home
-      IGRAPH_MEMORY_ROOT: /data/memory
-      IGRAPH_LOGS_DIR: /data/logs
-      GRAPH_DATA_UPLOAD_DIR: /data/graph_data/uploads
-      GRAPH_DATASET_DIR: /data/graph_data/datasets
-      GRAPH_ML_ARTIFACT_ROOT: /data/graph_ml
+      GRAPH_DATA_UPLOAD_DIR: /data/graph_engine/uploads
+      GRAPH_DATASET_DIR: /data/graph_engine/datasets
+      GRAPH_ML_ARTIFACT_ROOT: /data/graph_engine/artifacts
     volumes:
       - igraph-data:/data
     expose:
@@ -28,59 +44,83 @@ services:
     shm_size: ${GRAPH_DATA_SHM_SIZE:-1gb}
     restart: unless-stopped
 
-  mcp:
-    image: ${IGRAPH_MCP_IMAGE:-igraph-mcp:local}
+  graph-engine-mcp:
+    image: ${IGRAPH_GRAPH_ENGINE_MCP_IMAGE:-igraph-graph-engine-mcp:local}
     build:
       context: .
       dockerfile: deploy/docker/mcp.Dockerfile
+    pull_policy: never
     env_file:
       - .env
     environment:
       MCP_HOST: 0.0.0.0
       MCP_PORT: 21110
-      GRAPH_DATA_SERVER_URL: http://graph-data:21111
+      GRAPH_DATA_SERVER_URL: http://graph-engine-api:21111
       IGRAPH_DATA_ROOT: /data
-      IGRAPH_LOGS_DIR: /data/logs
     volumes:
       - igraph-data:/data
     expose:
       - "21110"
     depends_on:
-      graph-data:
+      graph-engine-api:
         condition: service_healthy
     networks:
       - backplane
     restart: unless-stopped
 
-  application:
-    image: ${IGRAPH_APPLICATION_IMAGE:-igraph-application:local}
+  agent-runtime:
+    image: ${IGRAPH_AGENT_RUNTIME_IMAGE:-igraph-agent-runtime:local}
     build:
       context: .
-      dockerfile: deploy/docker/application.Dockerfile
+      dockerfile: deploy/docker/agent-runtime.Dockerfile
+    pull_policy: never
     env_file:
       - .env
     environment:
-      API_SERVER_HOST: 0.0.0.0
-      API_SERVER_PORT: 21109
-      API_UPLOAD_DIR: /data/uploads
-      MCP_HOST: 0.0.0.0
-      MCP_PORT: 21110
-      GRAPH_DATA_HOST: 0.0.0.0
-      GRAPH_DATA_PORT: 21111
-      MCP_SERVER_URL: http://mcp:21110/mcp
-      GRAPH_DATA_SERVER_URL: http://graph-data:21111
+      AGENT_RUNTIME_HOST: 0.0.0.0
+      AGENT_RUNTIME_PORT: 21112
+      AGENT_RUNTIME_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-igraph}:${POSTGRES_PASSWORD:-igraph}@postgres:5432/${POSTGRES_DB:-igraph}
+      GRAPH_ENGINE_MCP_URL: http://graph-engine-mcp:21110/mcp
+      AGENT_RUNTIME_SKILLS_ROOT: /data/agent_runtime/skills
       IGRAPH_DATA_ROOT: /data
-      IGRAPH_HOME: /data/home
-      IGRAPH_MEMORY_ROOT: /data/memory
-      IGRAPH_LOGS_DIR: /data/logs
+      AGNO_TELEMETRY: ${AGNO_TELEMETRY:-false}
+    volumes:
+      - igraph-data:/data
+    expose:
+      - "21112"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      graph-engine-mcp:
+        condition: service_healthy
+    networks:
+      - backplane
+    restart: unless-stopped
+
+  backend:
+    image: ${IGRAPH_BACKEND_IMAGE:-igraph-backend:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+    pull_policy: never
+    env_file:
+      - .env
+    environment:
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 21109
+      AGENT_RUNTIME_URL: http://agent-runtime:21112
+      GRAPH_ENGINE_URL: http://graph-engine-api:21111
+      BACKEND_USERS_FILE: /data/backend/users.json
+      BACKEND_PROJECTS_FILE: /data/backend/projects.json
+      IGRAPH_DATA_ROOT: /data
     volumes:
       - igraph-data:/data
     expose:
       - "21109"
     depends_on:
-      mcp:
+      agent-runtime:
         condition: service_healthy
-      graph-data:
+      graph-engine-api:
         condition: service_healthy
     networks:
       - backplane
@@ -91,13 +131,14 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+    pull_policy: never
     environment:
-      APPLICATION_HOST: application
-      APPLICATION_PORT: 21109
+      BACKEND_HOST: backend
+      BACKEND_PORT: 21109
     ports:
       - "${FRONTEND_PORT:-21108}:80"
     depends_on:
-      application:
+      backend:
         condition: service_healthy
     networks:
       - backplane
@@ -110,3 +151,5 @@ networks:
 volumes:
   igraph-data:
     name: ${IGRAPH_DATA_VOLUME:-igraph-data}
+  igraph-postgres:
+    name: ${IGRAPH_POSTGRES_VOLUME:-igraph-postgres}

@@ -1,10 +1,10 @@
 ---
 name: graph_analysis_community
 description: 社区检测算法选择、社区解释和子图联动分析流程。
-version: 1.0.0
-domain: graph_analysis
-risk_level: low
 metadata:
+  version: 1.0.0
+  domain: graph_analysis
+  risk_level: low
   igraph:
     any_tools: [community_detection]
     requires_graph_state: loaded

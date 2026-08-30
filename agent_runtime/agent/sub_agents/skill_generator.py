@@ -8,12 +8,12 @@ from agent_runtime.agent.sub_agents.base import SubAgent
 
 SKILL_MD_FORMAT = """\
 ---
-name: {lowercase_underscored_name}
+name: {lowercase-hyphenated-name}
 description: {concise one-line description in Chinese or English}
-version: 1.0.0
-domain: {graph_analysis|graph_ml|data_ingestion|reporting|rag|user|generated}
-risk_level: {low|medium|high}
 metadata:
+  version: 1.0.0
+  domain: {graph_analysis|graph_ml|data_ingestion|reporting|rag|user|generated}
+  risk_level: {low|medium|high}
   igraph:
     any_tools: [tool1, tool2]
     requires_graph_state: {none|loaded|weighted|directed}
@@ -52,8 +52,8 @@ SKILL.md format:
 {skill_md_format}
 
 Rules:
-- name field: lowercase letters/digits/underscores only, start with a letter, <= {max_name_chars} chars.
-- Choose a concise, descriptive name that reflects the problem type (e.g. community_detection, path_query_analysis).
+- name field: lowercase letters/digits/hyphens only, start and end with a letter or digit, <= {max_name_chars} chars.
+- Choose a concise, descriptive name that reflects the problem type (e.g. community-detection, path-query-analysis).
 - Infer domain, risk_level, required tools, and graph state from the approach and tool sequence.
 - risk_level is "high" only if the skill involves training/inference ML models.
 - Prefer Chinese for description and section content if the playbook is in Chinese.

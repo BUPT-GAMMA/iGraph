@@ -1,10 +1,10 @@
 ---
 name: graph_statistical_reporting
 description: 图分析报告生成流程：根据用户分析目标和工具事实组织报告 artifact。
-version: 1.0.0
-domain: reporting
-risk_level: low
 metadata:
+  version: 1.0.0
+  domain: reporting
+  risk_level: low
   igraph:
     any_tools: [create_analysis_report]
     requires_graph_state: loaded

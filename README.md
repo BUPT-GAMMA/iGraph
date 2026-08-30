@@ -1,71 +1,151 @@
 # iGraph
 
-## 项目结构
+iGraph 采用四个一级业务模块：Frontend、Backend、Agent Runtime 和 Graph Engine。
+Agent Runtime 使用开源 Agno AgentOS；Session、Run、Memory、Learning、Skills、Approval
+和 Trace 不再由 Backend 的进程内对象维护。
+
+## 架构
 
 ```text
-agent_runtime/       Agent Runtime 契约、实现与内置 Skill 资源
-backend/             HTTP API、会话、日志和本地进程监管
-graph_data_service/  图数据、算法、存储与 GraphML
-mcp_service/         MCP 工具注册与 GraphData 转发
-frontend/            Web 静态资源及 Nginx 容器配置
-config/              仓库级默认配置
-deploy/              Dockerfile、依赖锁定与外部组件编排
-docs/                当前文档、专题指南及历史计划归档
-tests/               单元、服务与集成测试
-data/ logs/ uploads/ artifacts/  本地运行数据（不纳入版本控制）
+Frontend
+   │ HTTP / SSE
+   ▼
+Backend ───────────────────────► Graph Engine HTTP API
+   │                                  ▲
+   │ AgentOS API / resumable SSE      │ Graph tools
+   ▼                                  │
+Agent Runtime ─────── MCP ────────────┘
+   │
+   ▼
+PostgreSQL + pgvector
 ```
 
-## 文档导航
+### Frontend
 
-## 文档列表
+- 页面、聊天和图可视化；
+- 保存当前 `session_id/run_id/event_index`；
+- 网络中断后通过 Backend 调用 AgentOS `/resume`；
+- 不保存权威 Session、Memory 或图数据。
 
-- `docs/DESIGN.md`：**主文档**。完整系统设计，涵盖架构总览、数据模型和关键设计决策。
-- `docs/SKILLS_MEMORY.md`：Skills / Memory / Tools Selector 机制详解。
-- `docs/RUN_AND_TEST.md`：环境准备、启动方式、API 联调和测试命令。
-- `docs/DEPLOY_SERVERS.md`：单机/拆分部署、环境变量和运维建议。
-- `docs/GRAPH_DATA_JSON_FORMAT.md`：`graph_data.v1` JSON 存储格式。
-- `docs/GRAPH_ML_SERVICE.md`：GraphData 内置 GraphML 子模块说明。
-- `docs/NEBULAGRAPH.md`：NebulaGraph 混合/主存储模式、通用工具自动路由、有界 NetworkX 物化与验收方式。
-- `docs/guides/`：面向具体功能的操作指南。
-- `docs/archive/plans/`：已完成迭代的历史计划和审查记录。
+### Backend
 
-## 重要架构变更
+- 前端唯一公共 API；
+- 用户目录、启用/禁用、角色和模型权限；
+- 保留当前 `/api/*` 契约；
+- 代理 AgentOS Session/Run/Memory/Skills；
+- 代理 Graph Engine 数据集、上传和图接口；
+- 不创建或缓存活动 Agent。
 
-- **进程内 Agent Runtime 边界**：原 `backend/agent/` 实现机械迁移到 `agent_runtime/agent/`，Backend 仅通过 `RuntimeSession` / `RuntimeFactory` 调用；当前仍由透明适配器执行原 `IGraph`，不新增 HTTP 协议或第二套状态，旧 `backend.agent.*` 导入继续兼容。
-- **GraphML 内置于 GraphData**：`graph_ml_service/` 独立项目已合并为 `graph_data_service/graph_ml/` 子模块，无需单独部署，直接访问会话内存中的图数据。
-- **ProtocolDriver 双模式**：通过 `LLM_TOOL_PROTOCOL=text|native` 切换文本协议和原生 Function Calling，前端接口不变。
-- **ContextManager 内置 ProtocolDriver**：`context/` 包统一管理上下文组装与流式驱动，iGraph 通过 `context_manager.stream_turn()` 调用。
-- **StatefulStreamParser**：合并流式解析与结果提取，消除了原有的三步解析链（stream → normalize → parse）；解析失败时自动重试（`_MAX_PROTOCOL_RETRIES` 次）。
-- **模块重组**：`context/`（协议驱动）、`memory/`（记忆引擎）、`skills/`（渐进披露）和 `tools/`（LLM selector）拆分为独立包；新增 `model_registry.py` 集中管理模型名称。
-- **planning_mode**：新增 `never / auto / always` 规划模式，可通过 `PATCH /api/sessions/{id}/planning-mode` 动态切换。
-- **数据集 API**：新增 `GET /api/datasets`、`POST /api/sessions/{id}/load-dataset`、`POST /api/sessions/{id}/save-dataset`。
-- **tool_catalog 唯一真相源**：工具规格集中在 `graph_data_service/tool_catalog.py`，MCP Server 动态注册，不再硬编码。
-- **Agent 惰性创建**：`activate_session` 只读 meta，Agent 在第一次 `chat_stream` 时才创建，切换历史会话不再销毁其他 Agent。
-- **Memory 架构升级**：引入 `MemoryManager` + `MemoryProvider` 抽象层；`UserProfile` 独立存储（`user_profile.json`），字段级优先级截断；frozen snapshot 机制保护 prefix cache；`memory_read` / `memory_delete` virtual tools。
-- **去 embedding 化**：`backend/agent/embedding.py` 已删除；`LLMToolSelector` 用 LLM sub-agent 替代语义向量选工具；Memory 改为全量加载 frozen snapshot，不再做语义召回；零 sentence-transformers 依赖（GraphML 训练/推理相关的 torch 保留）。
-- **Skills 渐进披露**：SKILL.md 升级为 YAML frontmatter 结构化格式；compact index 常驻，全文按需 `skill_view(name)` 加载；支持 `~/.igraph/config.yaml` 配置变量注入。
-- **Memory 安全加固**：注入 pattern 检测（`safety.py`）覆盖 memory + playbook + skill；文件写入统一走原子操作（temp+fsync+os.replace）+ 迁移幂等标记。
-- **Per-turn 工具选择缓存**：`LLMToolSelector.set_turn_id()` 在每个 user turn 入口重置，同一 turn 内多步 react 循环共享同一决策；fallback 改为关键词匹配而非全量工具加载。
-- **Plan-aware Agent**：新增 QueryAnalyzer + Planner，复杂多步任务自动生成结构化分析计划并按步执行（`_run_plan_solver`，solve_* 事件前缀）。
-- **算法扩展**：图算法从 19 种扩展到 50+，新增 Algorithm Catalog 算法知识层。
-- **数据集平台**：Dataset Registry（数据集 CRUD + 版本）、Table/Text → Graph 建图管线、轻量 RAG。
-- **图快照持久化**：GraphSession 支持快照写入/恢复/undo，服务重启后自动恢复图数据。
-- **NebulaGraph 混合/主存储**：可保留 NPZ 显式同步，也可设置 `GRAPH_STORAGE_BACKEND=nebula` 让 NebulaGraph 成为事实来源；通用工具自动使用固定 nGQL，NetworkX/GraphML 只做有界物化。
-- **实体搜索工具**：新增 `search_node` / `search_edge`，支持名称精确匹配、语义模糊搜索、类型/度数/权重过滤，复用版本化索引缓存；配合路径和子图工具使用，可先模糊定位再精确分析。
-- **结构化三元组建图**：新增 `build_graph_from_triples` 工具，从结构化三元组列表直接建图（relation→边类型，evidence→边文本，confidence→边特征）。
-- **LLM 辅助文本抽取**：`TextGraphExtractor` sub-agent（`text_graph_extractor.py`）接入 `build_graph_from_text`，支持长文本分块、逐块 LLM 抽取、三元组去重与置信度过滤。
-- **Playbook 去重**：新增 `PlaybookDedup` sub-agent（`playbook_dedup.py`），定期检测语义重复 playbook 并输出合并/归档方案，保持 playbook 库精简不冗余。
+默认入口：`python -m backend`。
 
-## 适用版本
+### Agent Runtime
 
-- API Gateway：`python -m backend.api_gateway` 或 `python agent_server.py`
-- GraphData（含 GraphML 子模块）：`python -m graph_data_service`
-- MCP：`python -m mcp_service streamable-http`
+- 原生 `AgentOS + AgentFactory + Agent`；
+- PostgreSQL Session/Run/Event/Trace；
+- `LearningMachine`：UserProfile、UserMemory、SessionContext、DecisionLog；
+- LearnedKnowledge 使用用户命名空间和 PROPOSE 模式；
+- `LocalSkills` 加载内置和已审批的用户 Skills；
+- `MCPTools.header_provider` 向 Graph Engine 传递用户、会话和 Run 身份；
+- `background=true + stream=true + /resume` 提供断点重连。
 
-## 快速开始
+默认入口：`python -m agent_runtime`。
 
-1. 按 `docs/RUN_AND_TEST.md` 完成依赖安装与 `.env` 配置；NebulaGraph 配置见 `docs/NEBULAGRAPH.md`。
-2. 一体化启动：`python agent_server.py`
-3. 打开 `http://localhost:1109`，创建会话并开始对话。
+### Graph Engine
 
-容器交付可直接执行 `docker compose up --build -d`，再打开 `http://localhost:21108`；Compose 复用原 `.env`，并在容器内覆盖服务地址，不要求改写本地启动配置。
+- 图数据、GraphML、图算法、图机器学习、数据集、上传、Job 和制品；
+- 同一业务模块提供 HTTP 与 MCP 两个进程适配器；
+- MCP 优先使用 `X-User-ID/X-Session-ID/X-Run-ID`，旧 `register_session` 只用于兼容。
+
+入口：
+
+```text
+python -m graph_engine api
+python -m graph_engine mcp http
+```
+
+## 目录
+
+```text
+frontend/                 Frontend 模块
+backend/                  Backend/BFF 与用户管理
+agent_runtime/            Agent Runtime/AgentOS
+graph_engine/             Graph Engine 一级入口与基础能力
+graph_data_service/       Graph Engine HTTP 实现兼容命名空间
+mcp_service/              Graph Engine MCP 实现兼容命名空间
+deploy/                   四模块镜像和依赖
+tests/                    旧契约与回归测试（本次重构未在本机运行）
+docs/                     设计、迁移和部署文档
+```
+
+`backend/api_gateway`、`backend/agent` 和旧 `agent_runtime/agent` 仅作为迁移期兼容代码保留，
+默认 Compose 和默认入口不再使用进程内 Runtime。
+
+## 数据归属
+
+| 数据 | 唯一所有者 |
+|---|---|
+| 用户、角色、模型权限 | Backend |
+| Session、Run、消息、Memory、Learning、Trace | Agent Runtime / AgentOS PostgreSQL |
+| 已批准和候选 Skills | Agent Runtime Skills 目录 |
+| 图、数据集、上传、图任务和制品 | Graph Engine |
+
+## 部署
+
+复制 `.env.example` 为 `.env`，配置一个模型供应商的 API Key/Base URL。若需要
+LearnedKnowledge 的语义检索，再配置 `EMBEDDING_API_KEY`、`EMBEDDING_BASE_URL` 和
+`EMBEDDING_MODEL`；未配置 embedding 时 UserProfile、UserMemory、SessionContext 和
+DecisionLog 仍启用，只有 LearnedKnowledge 关闭。然后使用：
+
+```text
+docker compose up --build -d
+```
+
+Compose 启动六个进程容器，但仍是四个业务模块：
+
+```text
+frontend
+backend
+agent-runtime
+graph-engine-api
+graph-engine-mcp
+postgres
+```
+
+Graph Engine 的 HTTP/MCP 是同一代码模块的两个协议适配器；PostgreSQL 是基础设施。
+
+## 依赖清单
+
+| 部署单元 | 依赖文件 | 主要依赖 |
+|---|---|---|
+| Backend | `deploy/requirements/backend.txt` | FastAPI、Uvicorn、Pydantic、HTTPX、python-multipart |
+| Agent Runtime | `deploy/requirements/agent-runtime.txt` | `agno[os,mcp,openai,postgres,pgvector,opentelemetry]==2.9.0`、psycopg、SQLAlchemy、pgvector |
+| Graph Engine HTTP | `deploy/requirements/graph-data.txt` | FastAPI、OpenAI SDK、NetworkX、iGraph、Leiden、Nebula、PyTorch/PyG |
+| Graph Engine MCP | `deploy/requirements/mcp.txt` | FastMCP、MCP、HTTPX |
+| Frontend | `frontend/Dockerfile` | Nginx；页面依赖 D3、Marked、KaTeX、Mermaid、Tailwind CDN |
+
+根目录 `requirements.txt` 是一次性开发环境的依赖合集；生产镜像使用上述拆分清单，防止
+Backend/Agent Runtime 被动安装 PyTorch 等 Graph Engine 重依赖。
+
+## 旧数据迁移
+
+迁移程序支持幂等 manifest 和 dry-run：
+
+```text
+python -m agent_runtime.migrations.legacy_data --dry-run
+python -m agent_runtime.migrations.legacy_data
+```
+
+它会：
+
+- 导入旧 Session 元数据和可见消息；
+- 将旧 Memory 写入 AgentOS Memories；
+- 将 Skill 名称规范化为小写连字符格式；
+- 将已批准 Skill 与候选 Skill 分别迁移到 `users/` 和 `candidates/`；
+- 保留旧文件，不执行删除。
+
+Graph Engine 启动时还会将旧的用户图快照从
+`data/users/{user}/sessions|uploads/{session}` 幂等复制到专属的
+`data/users/{user}/graph_sessions/{session}`。只迁移包含图快照、图版本记录或
+Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
+
+详细边界和迁移说明见 [AgentOS 四模块重构](docs/AGENTOS_FOUR_MODULE_REFACTOR.md)。

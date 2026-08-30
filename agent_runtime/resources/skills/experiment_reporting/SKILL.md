@@ -1,10 +1,10 @@
 ---
 name: experiment_reporting
 description: 图分析或 GraphML 结果整理为报告、方法、指标和限制说明的流程。
-version: 1.0.0
-domain: reporting
-risk_level: low
 metadata:
+  version: 1.0.0
+  domain: reporting
+  risk_level: low
   igraph:
     any_tools: [get_graph_info]
     requires_graph_state: none

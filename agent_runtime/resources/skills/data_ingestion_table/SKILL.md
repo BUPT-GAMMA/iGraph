@@ -1,10 +1,10 @@
 ---
 name: data_ingestion_table
 description: 表格上传、输入格式确认、加载和结果验证流程。
-version: 1.0.0
-domain: data_ingestion
-risk_level: medium
 metadata:
+  version: 1.0.0
+  domain: data_ingestion
+  risk_level: medium
   igraph:
     any_tools: [load_graph_from_upload]
     requires_graph_state: none

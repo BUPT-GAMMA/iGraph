@@ -1,4 +1,8 @@
-# iGraph 部署手册
+# iGraph 部署手册（历史版本）
+
+> 本文描述重构前的 `application = Backend + 进程内 Runtime` 部署。
+> 当前部署请以 [`AGENTOS_FOUR_MODULE_REFACTOR.md`](AGENTOS_FOUR_MODULE_REFACTOR.md)
+> 与仓库根目录 `compose.yaml` 为准。
 
 本文档聚焦部署维度：
 

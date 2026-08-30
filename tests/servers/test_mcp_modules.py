@@ -65,6 +65,33 @@ from mcp_service.tool_forwarding import forwarded_graph_tool_arguments
 
 
 class MCPModulesTest(unittest.TestCase):
+    def test_train_json_object_arguments_are_decoded_before_forwarding(self) -> None:
+        original = {
+            "task": "node_classification",
+            "data": '{"feature_source":"graph"}',
+            "train_config": '{"epochs":12,"lr":0.01}',
+            "algo_config": '{"hidden_dim":64}',
+        }
+
+        forwarded = forwarded_graph_tool_arguments("train", original)
+
+        self.assertEqual(original["train_config"], '{"epochs":12,"lr":0.01}')
+        self.assertEqual(forwarded["data"], {"feature_source": "graph"})
+        self.assertEqual(forwarded["train_config"], {"epochs": 12, "lr": 0.01})
+        self.assertEqual(
+            forwarded["algo_config"],
+            {"hidden_dim": 64, "__igraph_async_job": True},
+        )
+
+    def test_infer_json_object_arguments_are_decoded_before_forwarding(self) -> None:
+        forwarded = forwarded_graph_tool_arguments(
+            "infer",
+            {"model_id": "model-1", "query": '{"nodes":["1"]}', "infer_config": '{"topk":5}'},
+        )
+
+        self.assertEqual(forwarded["query"], {"nodes": ["1"]})
+        self.assertEqual(forwarded["infer_config"], {"topk": 5})
+
     def test_graph_classification_dataset_load_gets_private_async_marker(self) -> None:
         original = {"filename": "hiv.pt", "dataset_profile": "hiv"}
         forwarded = forwarded_graph_tool_arguments(

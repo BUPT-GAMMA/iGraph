@@ -13,7 +13,7 @@ server {
     }
 
     location /api/ {
-        proxy_pass http://${APPLICATION_HOST}:${APPLICATION_PORT};
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
         proxy_http_version 1.1;
         proxy_buffering off;
         proxy_request_buffering off;
@@ -22,17 +22,17 @@ server {
         proxy_send_timeout 3600s;
     }
 
-    # 保留原 Application 的 FastAPI 文档入口；业务 API 仍统一走 /api。
+    # Backend 是前端唯一公共 API 入口。
     location = /openapi.json {
-        proxy_pass http://${APPLICATION_HOST}:${APPLICATION_PORT};
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
     }
 
     location = /docs {
-        proxy_pass http://${APPLICATION_HOST}:${APPLICATION_PORT};
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
     }
 
     location = /redoc {
-        proxy_pass http://${APPLICATION_HOST}:${APPLICATION_PORT};
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
     }
 
     location = /favicon.ico {

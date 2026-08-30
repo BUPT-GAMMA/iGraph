@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-import backend.data_paths as _dp
+import graph_engine.paths as _dp
 from graph_data_service.graph_data import GraphData
 
 logger = logging.getLogger(__name__)
@@ -560,6 +560,27 @@ class GraphSession:
         if legacy.resolve() == self._session_dir.resolve():
             return []
         return [legacy]
+
+    def delete_storage(self) -> None:
+        """Delete only storage owned by this conversation runtime."""
+        if self.user_id:
+            upload_root = _dp.user_uploads_dir(self.user_id)
+        else:
+            upload_root = Path(
+                os.getenv("GRAPH_DATA_UPLOAD_DIR", "uploads/graph_data")
+            ).resolve()
+
+        targets = (
+            (self._session_dir, self._session_dir.parent),
+            (upload_root / self.session_id, upload_root),
+        )
+        for target, expected_parent in targets:
+            resolved = target.resolve()
+            if resolved.parent != expected_parent.resolve():
+                raise ValueError(
+                    f"refusing to delete storage outside session root: {resolved}"
+                )
+            shutil.rmtree(resolved, ignore_errors=True)
 
     def _migrate_legacy_session_storage(self) -> None:
         if (self._session_dir / "graph_current.npz").exists():

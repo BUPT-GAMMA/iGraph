@@ -1,6 +1,10 @@
-# Skills / Memory / Tools 机制详解
+# Skills / Memory / Tools 机制详解（重构前基线）
 
-本文描述 iGraph 当前的知识层与工具披露机制。设计目标：**事实可控、流程可复用、上下文按需、风险可审计**。
+> 当前 Agent Runtime 已改用 Agno AgentOS 的 LearningMachine、UserProfile、UserMemory、
+> SessionContext、LearnedKnowledge、DecisionLog 与 LocalSkills。本文只用于旧数据迁移和
+> 行为对照；当前设计请参阅 [`AGENTOS_FOUR_MODULE_REFACTOR.md`](AGENTOS_FOUR_MODULE_REFACTOR.md)。
+
+本文描述 iGraph 重构前的知识层与工具披露机制。设计目标：**事实可控、流程可复用、上下文按需、风险可审计**。
 
 ---
 

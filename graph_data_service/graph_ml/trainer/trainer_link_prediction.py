@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from torch_geometric.utils import negative_sampling
 
-from backend.logging.logger import get_service_logger
+from graph_engine.observability import get_service_logger
 from graph_data_service.graph_data import GraphData
 from ..artifact_store import ArtifactStore
 from ..models import build_backbone, parse_gnn_options

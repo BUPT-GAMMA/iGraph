@@ -17,12 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 from pydantic import BaseModel, Field
 
-import backend.data_paths as _dp
-from backend.logging.logger import close_service_loggers, get_service_logger
-from backend.agent.model_registry import DEFAULT_MODEL, normalize_model_name, provider_for_model
-from backend.agent.provider_gateway import ProviderGateway
-from backend.agent.sub_agents.file_format_classifier import FileFormatPreCheckSubAgent
-from backend.agent.sub_agents.text_graph_extractor import TextGraphExtractionSubAgent
+import graph_engine.paths as _dp
+from graph_engine.observability import close_service_loggers, get_service_logger
+from graph_engine.model_support import DEFAULT_MODEL, ProviderGateway, normalize_model_name, provider_for_model
+from graph_engine.extraction import FileFormatPreCheckSubAgent, TextGraphExtractionSubAgent
 from graph_data_service.data_pipeline import GraphBuilder
 from graph_data_service.dataset_registry import DatasetRegistry
 from graph_data_service.reporting import build_analysis_report
@@ -261,10 +259,11 @@ class GraphDataService:
         self._sessions: Dict[str, GraphSession] = {}
         self._compute = GraphCompute()
         self._graph_ml = GraphMLModule(get_session=self._get_graph_ml_session)
-        # Migrate legacy datasets/ → data/global/datasets/ on first startup.
+        # Copy legacy datasets and per-user graph snapshots into the
+        # Graph Engine-owned layout. Sources are deliberately retained.
         try:
-            from backend.migration import migrate_global_datasets
-            migrate_global_datasets()
+            from graph_engine.migration import migrate_legacy_graph_storage
+            migrate_legacy_graph_storage()
         except Exception:
             pass
         self._dataset_registry = DatasetRegistry(str(_dp.global_datasets_dir()))
@@ -311,9 +310,12 @@ class GraphDataService:
         except ValueError:
             return None
 
-        if provider in {"openai", "anthropic"}:
-            api_key = os.getenv("LLM_API_KEY")
-            base_url = os.getenv("LLM_BASE_URL")
+        if provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
+            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL")
+        elif provider == "anthropic":
+            api_key = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("LLM_API_KEY")
+            base_url = os.getenv("CLAUDE_BASE_URL") or os.getenv("ANTHROPIC_BASE_URL") or os.getenv("LLM_BASE_URL")
         elif provider == "qwen":
             api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("LLM_API_KEY")
             base_url = os.getenv("QWEN_BASE_URL") or os.getenv("DASHSCOPE_BASE_URL") or os.getenv("LLM_BASE_URL")
@@ -406,7 +408,10 @@ class GraphDataService:
     def delete_session(self, session_id: str, user_id: str = "") -> None:
         key = self._session_key(session_id, user_id)
         self._graph_ml.release_session(key)
-        self._sessions.pop(key, None)
+        session = self._sessions.pop(key, None)
+        if session is None:
+            session = GraphSession(session_id=session_id, user_id=user_id)
+        session.delete_storage()
         self._rag_cache.pop(key, None)
         self._search_index_cache.pop(key, None)
 
@@ -476,7 +481,7 @@ class GraphDataService:
         for user_dir in users_root.iterdir():
             if not user_dir.is_dir():
                 continue
-            for root_name in ("sessions", "uploads"):
+            for root_name in ("graph_sessions",):
                 root = user_dir / root_name
                 if not root.exists():
                     continue
@@ -1862,7 +1867,7 @@ class GraphDataService:
         if session_model:
             call_gateway = self._create_text_graph_provider_gateway(session_model)
             if call_gateway is not None:
-                from backend.agent.sub_agents.text_graph_extractor import TextGraphExtractionSubAgent
+                from graph_engine.extraction import TextGraphExtractionSubAgent
                 extractor = TextGraphExtractionSubAgent(provider_gateway=call_gateway)
         svc_log = _service_logger(session_id, "graph_data", user_id=user_id)
         svc_log.event(
@@ -2990,6 +2995,7 @@ class GraphDataService:
             if total_nodes > gd.num_nodes:
                 result["truncated"] = True
                 result["total_nodes"] = total_nodes
+                result["total_edges"] = summary.num_edges
                 result["truncated_to"] = gd.num_nodes
             result["backend"] = "nebula"
             result["graph_version"] = session.graph_version

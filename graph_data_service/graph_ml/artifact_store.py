@@ -13,7 +13,7 @@ from typing import Any, Dict, Mapping, Optional
 
 import numpy as np
 
-import backend.data_paths as _dp
+import graph_engine.paths as _dp
 
 
 @dataclass
