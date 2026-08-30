@@ -1,6 +1,7 @@
-import type { AttachmentRef, Dataset, FeedbackRequest, GraphData, Message, Project, Session, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, Dataset, FeedbackRequest, GraphData, Message, Project, Session, StreamBatch, StreamEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
+const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
 export const USER_KEY = 'igraph_user_id';
 
 export function getUserId() { return localStorage.getItem(USER_KEY) || ''; }
@@ -16,8 +17,31 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
 async function json<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await apiFetch(path, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || data.error || `请求失败 (${response.status})`);
+  if (!response.ok) throw ApiError.fromResponse(response.status, data);
   return data as T;
+}
+
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+  activeRun?: ActiveRun | null;
+
+  constructor(status: number, message: string, detail?: unknown, activeRun?: ActiveRun | null) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+    this.activeRun = activeRun;
+  }
+
+  static fromResponse(status: number, data: any) {
+    const detail = data?.detail ?? data?.error;
+    const body = detail && typeof detail === 'object' ? detail : data;
+    const message = typeof detail === 'string'
+      ? detail
+      : String(body?.message || body?.error || `请求失败 (${status})`);
+    return new ApiError(status, message, detail, body?.active_run || null);
+  }
 }
 
 export async function validateUser(userId: string) {
@@ -34,7 +58,19 @@ export async function createSession(model = 'qwen3.6-plus', projectId?: string) 
     body: JSON.stringify({ model, project_id: projectId, reasoning_mode: 'direct', planning_mode: 'auto' }),
   });
 }
-export async function activateSession(id: string, signal?: AbortSignal) { return json<any>(`/api/sessions/${encodeURIComponent(id)}/activate`, { method: 'POST', signal }); }
+export async function activateSession(id: string, signal?: AbortSignal) {
+  return json<{
+    messages?: Message[];
+    active_run?: ActiveRun | null;
+    pending_feedback?: FeedbackRequest | null;
+    project_id?: string;
+    active_dataset_id?: string | null;
+    has_graph?: boolean;
+    model?: string;
+    default_model?: string;
+    available_models?: string[];
+  }>(`/api/sessions/${encodeURIComponent(id)}/activate`, { method: 'POST', signal });
+}
 export async function updateSessionModel(id: string, model: string) {
   return json<{ success?: boolean; session_id: string; model: string; available_models?: string[]; default_model?: string }>(`/api/sessions/${encodeURIComponent(id)}/model`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }),
@@ -101,31 +137,87 @@ export async function visualizeGraph(sessionId: string, options: Record<string, 
   });
 }
 
-export type StreamHandlers = { onEvent: (event: StreamEvent) => void };
-export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal) {
-  const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
-    method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
-  });
-  if (!response.ok || !response.body) throw new Error(`流式请求失败 (${response.status})`);
+export type StreamHandlers = {
+  onEvent?: (event: StreamEvent) => void;
+  onBatch?: (batch: StreamBatch) => void;
+};
+
+function deliverStreamPayload(payload: unknown, sessionId: string, handlers: StreamHandlers) {
+  if (!payload || typeof payload !== 'object') return;
+  const value = payload as Record<string, any>;
+  if (value.protocol_version === 2 && Array.isArray(value.events)) {
+    const batch: StreamBatch = {
+      protocol_version: 2,
+      session_id: String(value.session_id || sessionId),
+      run_id: String(value.run_id || ''),
+      event_index: value.event_index != null && Number.isFinite(Number(value.event_index)) ? Number(value.event_index) : null,
+      events: value.events.filter((event: unknown): event is StreamEvent => Boolean(event && typeof event === 'object')),
+    };
+    if (handlers.onBatch) handlers.onBatch(batch);
+    else for (const event of batch.events) handlers.onEvent?.(event);
+    return;
+  }
+  const event = value as StreamEvent;
+  if (handlers.onBatch) {
+    handlers.onBatch({
+      protocol_version: 1,
+      session_id: String(event.session_id || sessionId),
+      run_id: String(event.run_id || ''),
+      event_index: event.event_index != null && Number.isFinite(Number(event.event_index)) ? Number(event.event_index) : null,
+      events: [event],
+    });
+  } else handlers.onEvent?.(event);
+}
+
+export async function consumeSseResponse(response: Response, sessionId: string, handlers: StreamHandlers) {
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw ApiError.fromResponse(response.status, data);
+  }
+  if (!response.body) throw new Error('服务器没有返回流式响应');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  const consumeFrames = (complete: boolean) => {
+    buffer = buffer.replace(/\r\n/g, '\n');
+    const frames = buffer.split('\n\n');
+    buffer = complete ? '' : (frames.pop() || '');
+    for (const frame of frames) {
+      const data = frame.split('\n')
+        .filter(line => line.startsWith('data:'))
+        .map(line => line.slice(5).trimStart())
+        .join('\n');
+      if (!data) continue;
+      try { deliverStreamPayload(JSON.parse(data), sessionId, handlers); } catch { /* Ignore malformed keep-alive frames. */ }
+    }
+  };
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n'); buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try { handlers.onEvent(JSON.parse(line.slice(6))); } catch { /* ignore keep-alive or partial frames */ }
-    }
+    consumeFrames(false);
   }
+  buffer += decoder.decode();
+  consumeFrames(false);
+  // An unterminated tail may be half of a JSON frame. Do not dispatch it or
+  // advance the resume cursor; the server will replay it on reconnect.
+}
+
+export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
+  const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
+    method: 'POST', signal, headers,
+    body: JSON.stringify({ message, attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
+  });
+  await consumeSseResponse(response, sessionId, handlers);
 }
 
 export async function streamFeedback(sessionId: string, feedback: FeedbackRequest, decision: 'approve' | 'reject', handlers: StreamHandlers, signal: AbortSignal) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
   const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/feedback/stream`, {
-    method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+    method: 'POST', signal, headers,
     body: JSON.stringify({
       request_id: feedback.request_id || '',
       decision,
@@ -135,18 +227,17 @@ export async function streamFeedback(sessionId: string, feedback: FeedbackReques
       tool_name: feedback.tool_name || '',
     }),
   });
-  if (!response.ok || !response.body) throw new Error(`确认请求失败 (${response.status})`);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n'); buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try { handlers.onEvent(JSON.parse(line.slice(6))); } catch { /* ignore keep-alive or partial frames */ }
-    }
-  }
+  await consumeSseResponse(response, sessionId, handlers);
+}
+
+export async function resumeRun(sessionId: string, runId: string, lastEventIndex: number, handlers: StreamHandlers, signal: AbortSignal) {
+  const query = new URLSearchParams({ last_event_index: String(lastEventIndex) });
+  const headers: Record<string, string> = {};
+  if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
+  const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/resume?${query}`, {
+    method: 'POST',
+    signal,
+    headers,
+  });
+  await consumeSseResponse(response, sessionId, handlers);
 }

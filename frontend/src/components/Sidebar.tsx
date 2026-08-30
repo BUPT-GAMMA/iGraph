@@ -7,6 +7,7 @@ function sessionTitle(session: Session) { return session.title || session.previe
 type Props = {
   projects: Project[];
   sessions: Session[];
+  runStatuses?: Record<string, string>;
   activeId?: string;
   activeProjectId?: string;
   userId: string;
@@ -28,7 +29,16 @@ type Props = {
   onCollapse: () => void;
 };
 
-export function Sidebar({ projects, sessions, activeId, activeProjectId, userId, dark, onTheme, onMemory, onSkills, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+function runStatusLabel(status?: string) {
+  if (status === 'awaiting_feedback') return '等待确认';
+  if (status === 'reconnecting') return '正在重连';
+  if (status === 'detached') return '后台运行';
+  if (status === 'starting' || status === 'streaming') return '正在运行';
+  if (status === 'failed') return '运行失败';
+  return '';
+}
+
+export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, dark, onTheme, onMemory, onSkills, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const activeSessionProjectId = sessions.find(session => session.session_id === activeId)?.project_id;
@@ -82,7 +92,7 @@ export function Sidebar({ projects, sessions, activeId, activeProjectId, userId,
               </div>}
               {expanded && <div className="project-session-list">
                 {projectSessions.length === 0 ? <div className="project-tree-empty">暂无会话</div> : projectSessions.map(session => <div className={`project-session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id}>
-                  <button className="project-session-main" onClick={() => { onSelect(session.session_id); onCloseMobile(); }} title={sessionTitle(session)}><Icon name="file" size={13} /><span>{sessionTitle(session)}</span></button>
+                  <button className="project-session-main" onClick={() => { onSelect(session.session_id); onCloseMobile(); }} title={sessionTitle(session)}><Icon name="file" size={13} />{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<span>{sessionTitle(session)}</span></button>
                   <button className="project-session-delete" onClick={() => onDelete(session.session_id)} title="删除会话" aria-label="删除会话"><Icon name="trash" size={12} /></button>
                 </div>)}
               </div>}
@@ -94,7 +104,7 @@ export function Sidebar({ projects, sessions, activeId, activeProjectId, userId,
         <div className="sidebar-section-head"><span>最近任务</span></div>
         <div className="session-list">
           {sessions.length === 0 ? <div className="sidebar-empty">暂无任务<br /><span>点击上方按钮开始新分析</span></div> : sessions.map(session => <div className={`session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id} onClick={() => { onSelect(session.session_id); onCloseMobile(); }}>
-            <Icon name="file" size={15} /><div className="session-copy"><strong>{sessionTitle(session)}</strong><span>{session.has_graph ? '已加载图谱' : '待开始分析'}</span></div><button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title="删除任务" aria-label="删除任务"><Icon name="trash" size={14} /></button>
+            <Icon name="file" size={15} /><div className="session-copy"><strong>{sessionTitle(session)}</strong><span>{runStatusLabel(runStatuses[session.session_id]) || (session.has_graph ? '已加载图谱' : '待开始分析')}</span></div>{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title="删除任务" aria-label="删除任务"><Icon name="trash" size={14} /></button>
           </div>)}
         </div>
       </section>

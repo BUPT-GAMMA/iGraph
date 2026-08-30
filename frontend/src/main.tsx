@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, SetStateAction } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { activateSession, createProject as addProject, createSession, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, setDefaultProjectDataset, setSessionDataset, setUserId, streamChat, streamFeedback, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph } from './api';
-import type { AttachmentRef, Dataset, FeedbackRequest, GraphData, Message, Project, Session, StreamEvent, ToolCall } from './types';
+import { activateSession, ApiError, createProject as addProject, createSession, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, resumeRun, setDefaultProjectDataset, setSessionDataset, setUserId, streamChat, streamFeedback, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph } from './api';
+import type { ActiveRun, Dataset, FeedbackRequest, GraphData, Message, Project, Session, StreamBatch, ToolCall } from './types';
+import { RunConnectionManager } from './RunConnectionManager';
+import { conversationReducer, createSessionView, initialConversationState, selectMessages, selectRunTools } from './sessionState';
 import { DatasetPanel } from './components/DatasetPanel';
 import { ChatPane } from './components/ChatPane';
 import { GraphWorkspace } from './components/GraphWorkspace';
@@ -15,17 +17,7 @@ import { TopBar } from './components/TopBar';
 import './styles.css';
 
 type GraphTab = 'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts';
-type RunTool = ToolCall;
 type ResizeSide = 'sidebar' | 'graph';
-type SessionViewSnapshot = {
-  messages: Message[];
-  graph: GraphData | null;
-  feedback: FeedbackRequest | null;
-  datasets: Dataset[];
-  model: string;
-  availableModels: string[];
-  activeDatasetId?: string | null;
-};
 const SIDEBAR_DEFAULT = 258;
 const GRAPH_DEFAULT = 382;
 const SIDEBAR_MIN = 190;
@@ -35,7 +27,6 @@ const GRAPH_MAX = 720;
 const MAIN_MIN = 420;
 const DIVIDER_WIDTH = 6;
 const DEFAULT_MODEL = 'qwen3.6-plus';
-const SESSION_VIEW_CACHE_LIMIT = 12;
 const demoMode = new URLSearchParams(window.location.search).get('demo') === '1';
 const demoGraph: GraphData = {
   nodes: ['A', 'B', 'C', 'D', 'E', 'F'].map(id => ({ id, label: id, type: 'entity' })),
@@ -78,7 +69,7 @@ function ColumnDivider({ side, value, minimum, maximum, onPointerDown, onNudge, 
 
 function normalizeMessages(input: unknown): Message[] {
   if (!Array.isArray(input)) return [];
-  return input.map(item => ({ role: item?.role === 'user' ? 'user' : 'assistant', content: String(item?.content || ''), tools: item?.tools || [], plan: item?.plan || null, graphs: item?.graphs || [], reports: item?.reports || [] }));
+  return input.map((item, index) => ({ id: item?.id || item?.message_id || `history:${index}`, role: item?.role === 'user' ? 'user' : 'assistant', content: String(item?.content || ''), tools: item?.tools || [], plan: item?.plan || null, graphs: item?.graphs || [], reports: item?.reports || [] }));
 }
 
 function mergeSessionLists(current: Session[], incoming: Session[]) {
@@ -96,86 +87,6 @@ function requestWasAborted(cause: unknown) {
   return Boolean(cause && typeof cause === 'object' && 'name' in cause && (cause as { name?: string }).name === 'AbortError');
 }
 
-function cacheSessionView(cache: Map<string, SessionViewSnapshot>, sessionId: string, snapshot: SessionViewSnapshot) {
-  cache.delete(sessionId);
-  cache.set(sessionId, snapshot);
-  while (cache.size > SESSION_VIEW_CACHE_LIMIT) {
-    const oldest = cache.keys().next().value;
-    if (!oldest) break;
-    cache.delete(oldest);
-  }
-}
-
-function decodedToolResult(value: unknown) {
-  if (typeof value !== 'string') return value;
-  try { return JSON.parse(value); } catch { return value; }
-}
-
-function appendTrainingProgress(history: Array<Record<string, unknown>> = [], progress: Record<string, unknown>) {
-  if (progress.kind !== 'train_epoch' || !Number.isFinite(Number(progress.epoch))) return history;
-  const epoch = Number(progress.epoch);
-  return [...history.filter(item => Number(item.epoch) !== epoch), progress]
-    .sort((left, right) => Number(left.epoch) - Number(right.epoch));
-}
-
-function mergeTrainingHistory(history: Array<Record<string, unknown>> = [], updates: unknown) {
-  if (!Array.isArray(updates)) return history;
-  return updates.reduce((current, update) => update && typeof update === 'object' && !Array.isArray(update)
-    ? appendTrainingProgress(current, update as Record<string, unknown>)
-    : current, history);
-}
-
-function normalizeFeedbackRequest(event: StreamEvent): FeedbackRequest | null {
-  const raw = event.request || event.payload?.request || event.payload || {};
-  if (!raw || typeof raw !== 'object') return null;
-  const request = raw as Record<string, any>;
-  const proposedArgs = request.proposed_args ?? request.tool_args ?? request.arguments ?? {};
-  return {
-    request_id: String(request.request_id ?? request.requestId ?? event.run_id ?? ''),
-    call_id: String(request.call_id ?? request.callId ?? request.tool_call_id ?? request.toolCallId ?? ''),
-    tool_name: String(request.tool_name ?? request.toolName ?? request.proposed_tool ?? request.name ?? ''),
-    proposed_args: proposedArgs && typeof proposedArgs === 'object' && !Array.isArray(proposedArgs) ? proposedArgs : {},
-    description: String(request.description ?? request.message ?? request.user_message ?? '该工具调用需要确认'),
-  };
-}
-
-function applyEvent(event: StreamEvent, setMessages: Dispatch<SetStateAction<Message[]>>, setGraph: Dispatch<SetStateAction<GraphData | null>>, setRunTools: Dispatch<SetStateAction<RunTool[]>>, setPlan: Dispatch<SetStateAction<any>>, setLoading: Dispatch<SetStateAction<boolean>>, setFeedback?: Dispatch<SetStateAction<FeedbackRequest | null>>) {
-  if (event.type === 'token') setMessages(current => current.map((message, index) => index === current.length - 1 ? { ...message, content: message.content + String(event.content || ''), streaming: true } : message));
-  if (event.type === 'tool_call') setRunTools(current => [...current, { tool: event.tool, call_id: event.call_id, args: event.args ?? event.arguments ?? {}, done: false }]);
-  if (event.type === 'tool_result') setRunTools(current => {
-    const result = decodedToolResult(event.result);
-    const resultHistory = result && typeof result === 'object' && Array.isArray((result as any).history) ? (result as any).history : null;
-    const callId = String(event.call_id || '');
-    let targetIndex = callId ? current.findIndex(tool => String(tool.call_id || '') === callId) : -1;
-    if (targetIndex < 0) targetIndex = current.map(tool => tool.tool).lastIndexOf(String(event.tool || ''));
-    if (targetIndex < 0) return current;
-    return current.map((tool, index) => index === targetIndex
-      ? { ...tool, result, history: mergeTrainingHistory(tool.history, resultHistory), done: event.done !== false }
-      : tool);
-  });
-  if (event.type === 'tool_progress') setRunTools(current => {
-    const callId = String(event.call_id || '');
-    const toolName = String(event.tool || '');
-    let targetIndex = callId ? current.findIndex(tool => String((tool as any).call_id || '') === callId) : -1;
-    if (targetIndex < 0) targetIndex = current.map(tool => tool.tool).lastIndexOf(toolName);
-    if (targetIndex < 0) return current;
-    const progress = event.progress && typeof event.progress === 'object' ? event.progress : {};
-    const terminal = progress.kind === 'train_done' || progress.kind === 'train_early_stop';
-    return current.map((tool, index) => index === targetIndex ? { ...tool, progress, history: appendTrainingProgress(tool.history, progress), done: Boolean(tool.done || terminal) } : tool);
-  });
-  const eventName = String(event.type || event.event || '').toLowerCase();
-  if (event.type === 'await_user_feedback' || eventName.includes('runpaused') || eventName.includes('await_user_feedback') || eventName.includes('confirmation_required')) {
-    setFeedback?.(normalizeFeedbackRequest(event));
-    setLoading(false);
-    setMessages(current => current.map(message => ({ ...message, streaming: false })));
-  }
-  if (event.type === 'plan_ready') setPlan({ completed: false, steps: event.steps || [] });
-  if (event.type === 'plan_step') setPlan((current: any) => ({ ...(current || {}), steps: [...(current?.steps || []).filter((step: any) => step.step_id !== event.step?.step_id), event.step] }));
-  if (event.type === 'graph_visualize' && event.data?.nodes) setGraph({ success: true, nodes: event.data.nodes, edges: (event.data.links || []).map((link: any) => ({ source: link.source, target: link.target, src: link.source, dst: link.target })), directed: event.data.directed, num_nodes: event.data.num_nodes, num_edges: event.data.num_edges, total_nodes: event.data.total_nodes, total_edges: event.data.total_edges, truncated: event.data.truncated, truncated_to: event.data.truncated_to });
-  if (event.type === 'done') { setLoading(false); setFeedback?.(null); setMessages(current => current.map(message => ({ ...message, streaming: false }))); }
-  if (event.type === 'error') { setLoading(false); setFeedback?.(null); setMessages(current => current.map((message, index) => index === current.length - 1 ? { ...message, content: event.error || '分析失败', streaming: false } : message)); }
-}
-
 function App() {
   const [userId, setUser] = useState(getUserId() || (demoMode ? 'demo' : ''));
   const [loginValue, setLoginValue] = useState(getUserId());
@@ -184,50 +95,64 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
-  const [activeSession, setActiveSession] = useState<Session | null>(demoMode ? { session_id: 'demo-session', title: '图谱分析演示', has_graph: true } : null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [graph, setGraph] = useState<GraphData | null>(demoMode ? demoGraph : null);
-  const [selectedNode, setSelectedNode] = useState<Record<string, unknown> | null>(null);
+  const [conversation, dispatchConversation] = useReducer(conversationReducer, initialConversationState, state => {
+    if (!demoMode) return state;
+    const view = { ...createSessionView('demo-session', DEFAULT_MODEL, Date.now()), hydration: 'ready' as const, graph: demoGraph };
+    return { activeSessionId: 'demo-session', viewsBySessionId: { 'demo-session': view } };
+  });
   const [graphTab, setGraphTab] = useState<GraphTab>('Graph');
   const [graphOpen, setGraphOpen] = useState(true);
-  const [composerValue, setComposerValue] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [workspaceError, setWorkspaceError] = useState('');
+  const [datasetsByProject, setDatasetsByProject] = useState<Record<string, Dataset[]>>({});
   const [datasetOpen, setDatasetOpen] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [managementTab, setManagementTab] = useState<'memory' | 'skills'>('memory');
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [defaultModel, setDefaultModel] = useState(DEFAULT_MODEL);
   const [availableModels, setAvailableModels] = useState<string[]>([DEFAULT_MODEL]);
   const [projectEditor, setProjectEditor] = useState<'create' | 'edit' | null>(null);
   const [projectEditorTarget, setProjectEditorTarget] = useState<Project | null>(null);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<Project | null>(null);
   const [moveSessionTarget, setMoveSessionTarget] = useState<Session | null>(null);
   const [dark, setDark] = useState(() => localStorage.getItem('igraph-theme') === 'dark');
-  const [runTools, setRunTools] = useState<RunTool[]>([]);
-  const [plan, setPlan] = useState<any>(null);
-  const [feedback, setFeedback] = useState<FeedbackRequest | null>(null);
-  const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, AttachmentRef[]>>({});
   const [sidebarWidth, setSidebarWidth] = useState(() => storedWidth('igraph-layout-sidebar-width', window.innerWidth <= 1280 ? 230 : SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX));
   const [graphWidth, setGraphWidth] = useState(() => storedWidth('igraph-layout-graph-width', window.innerWidth <= 1280 ? 330 : GRAPH_DEFAULT, GRAPH_MIN, GRAPH_MAX));
   const [graphLayoutVersion, setGraphLayoutVersion] = useState(0);
-  const abortRef = useRef<AbortController | null>(null);
-  const activeSessionRef = useRef<Session | null>(activeSession);
-  const sessionViewRef = useRef<SessionViewSnapshot>({ messages, graph, feedback, datasets, model, availableModels });
-  const sessionViewCacheRef = useRef<Map<string, SessionViewSnapshot>>(new Map());
-  const sessionSwitchRef = useRef<{ sequence: number; controller: AbortController } | null>(null);
-  const sessionSwitchForegroundRef = useRef(false);
-  const sessionSwitchSequenceRef = useRef(0);
+  const conversationRef = useRef(conversation);
+  const connectionManagerRef = useRef(new RunConnectionManager(4));
+  const hydrationVersionsRef = useRef(new Map<string, number>());
+  const hydrationControllersRef = useRef(new Map<string, AbortController>());
+  const graphVersionsRef = useRef(new Map<string, number>());
   const bodyRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
   const layoutRef = useRef({ sidebarWidth, graphWidth, graphOpen });
 
   layoutRef.current = { sidebarWidth, graphWidth, graphOpen };
-  activeSessionRef.current = activeSession;
-  sessionViewRef.current = { messages, graph, feedback, datasets, model, availableModels, activeDatasetId: activeSession?.active_dataset_id };
+  conversationRef.current = conversation;
+  const activeSessionId = conversation.activeSessionId;
+  const activeSession = activeSessionId ? sessions.find(session => session.session_id === activeSessionId) || { session_id: activeSessionId } : null;
+  const activeView = activeSessionId ? conversation.viewsBySessionId[activeSessionId] : null;
+  const visibleProjectId = activeProject?.project_id || activeSession?.project_id || '';
+  const datasets = visibleProjectId ? datasetsByProject[visibleProjectId] || [] : [];
+  const messages = selectMessages(activeView);
+  const graph = activeView?.graph || null;
+  const selectedNode = activeView?.selectedNode || null;
+  const composerValue = activeView?.draft || '';
+  const model = activeView?.model || defaultModel;
+  const runTools = selectRunTools(activeView);
+  const plan = activeView?.activeRun?.plan || null;
+  const feedback = activeView?.activeRun?.feedback || null;
+  const loading = Boolean(activeView?.activeRun && ['starting', 'streaming', 'reconnecting'].includes(activeView.activeRun.status));
+  const uploading = Boolean(activeView?.uploading);
+  const error = activeView?.error || workspaceError;
+
+  function updateProjectDatasets(projectId: string, update: Dataset[] | ((current: Dataset[]) => Dataset[])) {
+    setDatasetsByProject(current => ({
+      ...current,
+      [projectId]: typeof update === 'function' ? update(current[projectId] || []) : update,
+    }));
+  }
 
   function widthLimit(side: ResizeSide) {
     const bodyWidth = bodyRef.current?.clientWidth || window.innerWidth;
@@ -314,123 +239,253 @@ function App() {
     window.history.pushState({}, '', url);
   }
 
-  const selectSession = async (id: string, source = sessions, updateUrl = true) => {
-    if ((busy && !sessionSwitchForegroundRef.current) || (id === activeSessionRef.current?.session_id && !activeProject)) return;
+  function runStorageKey(sessionId: string) { return `igraph-active-run:v2:${userId}:${sessionId}`; }
 
-    const previousSession = activeSessionRef.current;
-    if (previousSession) cacheSessionView(sessionViewCacheRef.current, previousSession.session_id, { ...sessionViewRef.current });
+  function persistRun(sessionId: string, runId: string, lastEventIndex: number) {
+    if (!userId || !runId) return;
+    sessionStorage.setItem(runStorageKey(sessionId), JSON.stringify({ runId, lastEventIndex }));
+  }
 
-    sessionSwitchRef.current?.controller.abort();
-    const controller = new AbortController();
-    const sequence = ++sessionSwitchSequenceRef.current;
-    sessionSwitchRef.current = { sequence, controller };
-    sessionSwitchForegroundRef.current = true;
-    const isCurrent = () => sessionSwitchRef.current?.sequence === sequence;
-    const session = (source.find(item => item.session_id === id) || { session_id: id }) as Session;
-    const cached = sessionViewCacheRef.current.get(id);
+  function clearPersistedRun(sessionId: string) { sessionStorage.removeItem(runStorageKey(sessionId)); }
 
-    setBusy(true); setError(''); setActiveProject(null); setSelectedNode(null); setRunTools([]); setPlan(null);
-    setActiveSession({
-      ...session,
-      active_dataset_id: cached?.activeDatasetId ?? session.active_dataset_id,
-      has_graph: cached?.graph ? true : session.has_graph,
-      model: cached?.model || session.model,
+  function persistedRun(sessionId: string) {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(runStorageKey(sessionId)) || 'null');
+      return value && typeof value.runId === 'string'
+        ? { runId: value.runId, lastEventIndex: Number(value.lastEventIndex ?? -1) }
+        : null;
+    } catch { return null; }
+  }
+
+  function nextGraphVersion(sessionId: string) {
+    const version = (graphVersionsRef.current.get(sessionId) || 0) + 1;
+    graphVersionsRef.current.set(sessionId, version);
+    dispatchConversation({ type: 'GRAPH_REQUEST_START', sessionId, requestVersion: version });
+    return version;
+  }
+
+  async function refreshSessionGraph(sessionId: string, options: Record<string, unknown> = {}, reportError = false) {
+    const version = nextGraphVersion(sessionId);
+    try {
+      const nextGraph = await visualizeGraph(sessionId, options);
+      dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: nextGraph });
+      if (nextGraph?.nodes) setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, has_graph: true } : session));
+      return nextGraph;
+    } catch (cause: any) {
+      if (reportError) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '图谱加载失败' } });
+      return null;
+    }
+  }
+
+  function terminalEvent(batch: StreamBatch) {
+    return batch.events.some(event => event.type === 'done' || event.type === 'error');
+  }
+
+  function feedbackEvent(batch: StreamBatch) {
+    return batch.events.some(event => event.type === 'await_user_feedback' || String(event.event || event.type || '').toLowerCase().includes('runpaused'));
+  }
+
+  async function consumeRunConnection(
+    sessionId: string,
+    generation: string,
+    connection: NonNullable<ReturnType<RunConnectionManager['get']>>,
+    operation: 'start' | 'resume' | 'feedback',
+    startPayload?: { message: string; attachments: Array<{ file_token: string; filename: string }> },
+    pendingFeedback?: FeedbackRequest | null,
+    feedbackDecision?: 'approve' | 'reject',
+    resumeFromEventIndex?: number,
+  ) {
+    let runId = connection.runId || '';
+    let lastEventIndex = resumeFromEventIndex ?? conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.lastEventIndex ?? -1;
+    let terminal = false;
+    let awaitingFeedback = false;
+    const handlers = {
+      onBatch: (incoming: StreamBatch) => {
+        const batch = { ...incoming, session_id: incoming.session_id || sessionId, run_id: incoming.run_id || runId };
+        if (batch.session_id !== sessionId) return;
+        if (batch.run_id) {
+          runId = batch.run_id;
+          connectionManagerRef.current.updateRunId(sessionId, generation, runId);
+        }
+        if (batch.event_index != null && Number.isFinite(Number(batch.event_index))) lastEventIndex = Number(batch.event_index);
+        connectionManagerRef.current.receivedEvent(sessionId, generation);
+        dispatchConversation({ type: 'APPLY_BATCH', sessionId, generation, batch });
+        if (runId) persistRun(sessionId, runId, lastEventIndex);
+        terminal ||= terminalEvent(batch);
+        awaitingFeedback ||= feedbackEvent(batch);
+      },
+    };
+
+    try {
+      if (operation === 'start' && startPayload) {
+        await streamChat(sessionId, startPayload.message, startPayload.attachments, handlers, connection.controller.signal);
+      } else if (operation === 'feedback' && pendingFeedback && feedbackDecision) {
+        await streamFeedback(sessionId, pendingFeedback, feedbackDecision, handlers, connection.controller.signal);
+      } else if (runId) {
+        await resumeRun(sessionId, runId, lastEventIndex, handlers, connection.controller.signal);
+      }
+    } catch (cause: any) {
+      if (requestWasAborted(cause)) return;
+      if (operation === 'start' && cause instanceof ApiError && cause.status === 409 && cause.activeRun) {
+        runId = cause.activeRun.run_id;
+        lastEventIndex = cause.activeRun.last_event_index;
+        dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation });
+        dispatchConversation({ type: 'ADOPT_RUN', sessionId, generation, activeRun: cause.activeRun });
+        connectionManagerRef.current.updateRunId(sessionId, generation, runId);
+      } else if (operation === 'start' && !runId) {
+        try {
+          const activated = await activateSession(sessionId);
+          if (activated.active_run) {
+            runId = activated.active_run.run_id;
+            lastEventIndex = activated.active_run.last_event_index;
+            dispatchConversation({ type: 'ADOPT_RUN', sessionId, generation, activeRun: activated.active_run, feedback: activated.pending_feedback });
+            connectionManagerRef.current.updateRunId(sessionId, generation, runId);
+          } else {
+            dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'failed', error: cause.message || '任务启动失败，请手工重试' });
+            connectionManagerRef.current.release(sessionId, generation);
+            return;
+          }
+        } catch (activateError: any) {
+          dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'failed', error: activateError.message || '无法确认任务是否已启动' });
+          connectionManagerRef.current.release(sessionId, generation);
+          return;
+        }
+      }
+    }
+
+    if (terminal) {
+      clearPersistedRun(sessionId);
+      connectionManagerRef.current.release(sessionId, generation);
+      if (startPayload?.attachments.length) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [] } });
+      void refreshSessionGraph(sessionId, { include_community: false });
+      return;
+    }
+    if (awaitingFeedback) {
+      connectionManagerRef.current.release(sessionId, generation);
+      return;
+    }
+    if (!runId) {
+      dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'failed', error: '流连接已结束，但服务器未返回 Run ID' });
+      connectionManagerRef.current.release(sessionId, generation);
+      return;
+    }
+    persistRun(sessionId, runId, lastEventIndex);
+    dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting' });
+    connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => {
+      const restarted = connectionManagerRef.current.restart(sessionId, generation);
+      if (restarted) void consumeRunConnection(sessionId, generation, restarted, 'resume');
     });
-    setMessages(cached?.messages || []);
-    setGraph(cached?.graph || null);
-    setFeedback(cached?.feedback || null);
-    setDatasets(cached?.datasets || (previousSession?.project_id === session.project_id ? sessionViewRef.current.datasets : []));
-    if (cached?.model) setModel(cached.model);
-    if (cached?.availableModels?.length) setAvailableModels(cached.availableModels);
+  }
+
+  function openResumeConnection(sessionId: string, generation: string, activeRun: ActiveRun, foreground = conversationRef.current.activeSessionId === sessionId) {
+    if (!activeRun.run_id || activeRun.status.toLowerCase() === 'paused' || connectionManagerRef.current.get(sessionId)) return;
+    const retry = () => {
+      const viewRun = conversationRef.current.viewsBySessionId[sessionId]?.activeRun;
+      if (viewRun?.runId) openResumeConnection(sessionId, generation, { run_id: viewRun.runId, status: viewRun.status, last_event_index: viewRun.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
+    };
+    const connection = connectionManagerRef.current.acquire({
+      sessionId,
+      runId: activeRun.run_id,
+      generation,
+      foreground,
+      retry,
+      onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
+    });
+    if (!connection) return;
+    persistRun(sessionId, activeRun.run_id, activeRun.last_event_index);
+    dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting' });
+    void consumeRunConnection(sessionId, generation, connection, 'resume', undefined, undefined, undefined, activeRun.last_event_index);
+  }
+
+  const selectSession = async (id: string, source = sessions, updateUrl = true) => {
+    if (id === conversationRef.current.activeSessionId && !activeProject) return;
+    const session = (source.find(item => item.session_id === id) || { session_id: id }) as Session;
+    setActiveProject(null);
+    setWorkspaceError('');
+    dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: id, model: session.model || defaultModel, accessedAt: Date.now() });
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId: id, patch: { selectedNode: null, error: undefined } });
     setGraphOpen(window.innerWidth > 900);
     if (updateUrl) updateViewUrl('session', id);
 
-    let busyReleased = false;
+    hydrationControllersRef.current.get(id)?.abort();
+    const controller = new AbortController();
+    hydrationControllersRef.current.set(id, controller);
+    const requestVersion = (hydrationVersionsRef.current.get(id) || 0) + 1;
+    hydrationVersionsRef.current.set(id, requestVersion);
+    dispatchConversation({ type: 'HYDRATE_START', sessionId: id, requestVersion });
+
     try {
       const response = await activateSession(id, controller.signal);
-      if (!isCurrent()) return;
-      const selectedModel = String(response.model || session.model || response.default_model || DEFAULT_MODEL);
-      setModel(selectedModel);
-      setAvailableModels(normalizedModels(response.available_models, selectedModel));
-      const projectId = response.project_id || session.project_id;
       const restoredMessages = response.messages === undefined
         ? normalizeMessages((await getMessages(id, controller.signal)).messages)
         : normalizeMessages(response.messages);
-      if (!isCurrent()) return;
-      const pendingFeedback = response.pending_feedback || null;
+      if (hydrationVersionsRef.current.get(id) !== requestVersion) return;
+      const selectedModel = String(response.model || session.model || response.default_model || defaultModel);
+      const projectId = response.project_id || session.project_id;
       const activeDatasetId = Object.prototype.hasOwnProperty.call(response, 'active_dataset_id') ? response.active_dataset_id : session.active_dataset_id;
-      const reusableCachedGraph = cached && cached.activeDatasetId === activeDatasetId ? cached.graph : null;
-      setActiveSession({ ...session, project_id: projectId, active_dataset_id: activeDatasetId, has_graph: response.has_graph, model: selectedModel });
-      setSessions(current => current.map(item => item.session_id === id ? { ...item, project_id: projectId, active_dataset_id: activeDatasetId, has_graph: response.has_graph, model: selectedModel } : item));
-      setFeedback(pendingFeedback);
-      setMessages(restoredMessages);
-      if (cached?.graph && !reusableCachedGraph) setGraph(null);
-      cacheSessionView(sessionViewCacheRef.current, id, {
-        messages: restoredMessages,
-        graph: reusableCachedGraph || null,
-        feedback: pendingFeedback,
-        datasets: cached?.datasets || [],
-        model: selectedModel,
-        availableModels: normalizedModels(response.available_models, selectedModel),
-        activeDatasetId,
+      const previousView = conversationRef.current.viewsBySessionId[id];
+      const previousRun = previousView?.activeRun;
+      const storedRun = persistedRun(id);
+      const effectiveActiveRun = response.active_run ? {
+        ...response.active_run,
+        last_event_index: previousRun?.runId === response.active_run.run_id
+          ? Math.max(response.active_run.last_event_index, previousRun.lastEventIndex)
+          : response.active_run.last_event_index < 0 && storedRun?.runId === response.active_run.run_id
+            ? storedRun.lastEventIndex
+            : response.active_run.last_event_index,
+      } : null;
+      const generation = effectiveActiveRun && previousRun?.runId === effectiveActiveRun.run_id
+        ? previousRun.generation
+        : `resume:${effectiveActiveRun?.run_id || crypto.randomUUID()}`;
+      dispatchConversation({
+        type: 'HYDRATE_SUCCESS', sessionId: id, requestVersion, messages: restoredMessages,
+        model: selectedModel, activeDatasetId, feedback: response.pending_feedback,
+        activeRun: effectiveActiveRun, generation,
+        preserveMessages: Boolean(previousView?.messageOrder.length && previousView.activeRun),
       });
+      setAvailableModels(normalizedModels(response.available_models, selectedModel));
+      setSessions(current => current.map(item => item.session_id === id ? { ...item, project_id: projectId, active_dataset_id: activeDatasetId, has_graph: response.has_graph, model: selectedModel } : item));
 
-      const datasetRequest = projectId ? listProjectDatasets(projectId, controller.signal) : null;
-      const graphRequest = response.has_graph
-        ? visualizeGraph(id, { include_community: false }, controller.signal).catch(() => null)
-        : Promise.resolve<GraphData | null>(null);
-
-      if (datasetRequest) {
-        const datasetResponse = await datasetRequest;
-        if (!isCurrent()) return;
-        const nextDatasets = datasetResponse.datasets || [];
-        setDatasets(nextDatasets);
-        setProjects(current => current.map(project => project.project_id === projectId ? { ...project, default_dataset_id: datasetResponse.default_dataset_id } : project));
-        const currentSnapshot = sessionViewCacheRef.current.get(id);
-        if (currentSnapshot) cacheSessionView(sessionViewCacheRef.current, id, { ...currentSnapshot, datasets: nextDatasets });
-      } else setDatasets([]);
-      if (isCurrent()) {
-        setBusy(false);
-        sessionSwitchForegroundRef.current = false;
-        busyReleased = true;
+      if (projectId) {
+        void listProjectDatasets(projectId, controller.signal).then(datasetResponse => {
+          if (hydrationVersionsRef.current.get(id) !== requestVersion) return;
+          updateProjectDatasets(projectId, datasetResponse.datasets || []);
+          setProjects(current => current.map(project => project.project_id === projectId ? { ...project, default_dataset_id: datasetResponse.default_dataset_id } : project));
+        }).catch(() => undefined);
       }
 
-      const nextGraph = await graphRequest;
-      if (!isCurrent() || activeSessionRef.current?.session_id !== id) return;
-      if (nextGraph) setGraph(nextGraph);
-      else if (!response.has_graph) setGraph(null);
-      const currentSnapshot = sessionViewCacheRef.current.get(id);
-      if (currentSnapshot) cacheSessionView(sessionViewCacheRef.current, id, { ...currentSnapshot, graph: nextGraph || currentSnapshot.graph });
+      if (response.has_graph) void refreshSessionGraph(id, { include_community: false });
+      else {
+        const graphVersion = nextGraphVersion(id);
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: null });
+      }
+      if (effectiveActiveRun) openResumeConnection(id, generation, effectiveActiveRun, true);
     } catch (cause: any) {
-      if (!requestWasAborted(cause) && isCurrent()) setError(cause.message || '会话切换失败');
-    } finally {
-      if (isCurrent()) {
-        sessionSwitchRef.current = null;
-        if (!busyReleased) {
-          sessionSwitchForegroundRef.current = false;
-          setBusy(false);
-        }
+      if (!requestWasAborted(cause) && hydrationVersionsRef.current.get(id) === requestVersion) {
+        dispatchConversation({ type: 'HYDRATE_FAILED', sessionId: id, requestVersion, error: cause.message || '会话切换失败' });
       }
+    } finally {
+      if (hydrationControllersRef.current.get(id) === controller) hydrationControllersRef.current.delete(id);
     }
   };
 
   const selectProject = async (id: string, source = projects, updateUrl = true) => {
     if (busy) return;
     const project = source.find(item => item.project_id === id);
-    if (!project) return setError('项目不存在或已被删除');
-    setBusy(true); setError('');
+    if (!project) return setWorkspaceError('项目不存在或已被删除');
+    setBusy(true); setWorkspaceError('');
     try {
       const [conversationResponse, datasetResponse] = await Promise.all([listProjectConversations(id), listProjectDatasets(id)]);
       const conversations = conversationResponse.conversations || [];
       const nextProject = { ...project, conversation_count: conversations.length, default_dataset_id: datasetResponse.default_dataset_id };
-      setDatasets(datasetResponse.datasets || []);
+      updateProjectDatasets(id, datasetResponse.datasets || []);
       setSessions(current => mergeSessionLists(current, conversations));
       setProjects(current => current.map(item => item.project_id === id ? nextProject : item));
       setActiveProject(nextProject);
-      setActiveSession(null);
-      setMessages([]); setGraph(null); setFeedback(null); setSelectedNode(null); setComposerValue(''); setGraphOpen(false);
+      dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: null });
+      setGraphOpen(false);
       if (updateUrl) updateViewUrl('project', id);
-    } catch (cause: any) { setError(cause.message || '项目加载失败'); }
+    } catch (cause: any) { setWorkspaceError(cause.message || '项目加载失败'); }
     finally { setBusy(false); }
   };
 
@@ -453,44 +508,59 @@ function App() {
     validateUser(userId).then(response => {
       if (response.valid === false) throw new Error('用户 ID 无效');
       const selectedModel = response.default_model || DEFAULT_MODEL;
-      setModel(selectedModel);
+      setDefaultModel(selectedModel);
       setAvailableModels(normalizedModels(response.available_models, selectedModel));
       return refresh();
-    }).catch((cause: any) => setError(cause.message || '无法加载会话'));
+    }).catch((cause: any) => setWorkspaceError(cause.message || '无法加载会话'));
+  }, [userId]);
+  useEffect(() => () => connectionManagerRef.current.abortAll(), []);
+  useEffect(() => {
+    if (!userId) return;
+    for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+      const key = sessionStorage.key(index);
+      if (key?.startsWith('igraph-active-run:') && !key.startsWith('igraph-active-run:v2:')) sessionStorage.removeItem(key);
+    }
   }, [userId]);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('igraph-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { setReady(true); }, []);
 
   async function login() {
     const value = loginValue.trim(); if (!value) return setLoginError('请输入用户 ID');
-    try { const response = await validateUser(value); if (response.valid === false) throw new Error('用户 ID 无效'); const selectedModel = response.default_model || DEFAULT_MODEL; setModel(selectedModel); setAvailableModels(normalizedModels(response.available_models, selectedModel)); setUserId(value); setUser(value); setLoginError(''); } catch (cause: any) { setLoginError(cause.message || '登录失败'); }
+    try { const response = await validateUser(value); if (response.valid === false) throw new Error('用户 ID 无效'); const selectedModel = response.default_model || DEFAULT_MODEL; setDefaultModel(selectedModel); setAvailableModels(normalizedModels(response.available_models, selectedModel)); setUserId(value); setUser(value); setLoginError(''); } catch (cause: any) { setLoginError(cause.message || '登录失败'); }
   }
   async function newTask(targetProjectId?: string) {
-    if (busy || loading) return; setBusy(true); setError('');
+    if (busy) return; setBusy(true); setWorkspaceError('');
     const defaultProject = projects.find(project => project.is_default);
     const projectId = targetProjectId || activeProject?.project_id || activeSession?.project_id || defaultProject?.project_id;
     try {
       const response = await createSession(model, projectId);
       const selectedModel = response.model || model;
       const next: Session = { session_id: response.session_id, project_id: response.project_id || projectId, active_dataset_id: response.active_dataset_id, title: '新的图谱分析', model: selectedModel };
-      setModel(selectedModel);
       setAvailableModels(current => normalizedModels(current, selectedModel));
       setSessions(current => [next, ...current.filter(item => item.session_id !== next.session_id)]);
       setProjects(current => current.map(project => project.project_id === next.project_id ? { ...project, conversation_count: (project.conversation_count || 0) + 1 } : project));
-      setActiveProject(null); setActiveSession(next); setMessages([]); setGraph(null); setGraphOpen(window.innerWidth > 900); setSelectedNode(null); setComposerValue(''); updateViewUrl('session', next.session_id);
-    } catch (cause: any) { setError(cause.message || '创建任务失败'); } finally { setBusy(false); }
+      setActiveProject(null);
+      dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: next.session_id, model: selectedModel, accessedAt: Date.now() });
+      setGraphOpen(window.innerWidth > 900);
+      updateViewUrl('session', next.session_id);
+    } catch (cause: any) { setWorkspaceError(cause.message || '创建任务失败'); } finally { setBusy(false); }
   }
   async function deleteTask(id: string) {
     if (!window.confirm('确认删除这个分析任务吗？')) return;
     const deleted = sessions.find(item => item.session_id === id);
     try {
       await removeSession(id);
+      connectionManagerRef.current.abort(id);
+      hydrationControllersRef.current.get(id)?.abort();
+      hydrationControllersRef.current.delete(id);
+      clearPersistedRun(id);
+      dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
       const next = sessions.filter(item => item.session_id !== id);
       setSessions(next);
       if (deleted?.project_id) setProjects(current => current.map(project => project.project_id === deleted.project_id ? { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) } : project));
       if (activeProject?.project_id === deleted?.project_id) setActiveProject(current => current ? { ...current, conversation_count: Math.max(0, (current.conversation_count || 0) - 1) } : current);
-      if (activeSession?.session_id === id) { setActiveSession(null); setMessages([]); setGraph(null); if (next[0]) await selectSession(next[0].session_id, next); }
-    } catch (cause: any) { setError(cause.message || '删除任务失败'); }
+      if (activeSession?.session_id === id && next[0]) await selectSession(next[0].session_id, next);
+    } catch (cause: any) { setWorkspaceError(cause.message || '删除任务失败'); }
   }
   async function saveProject(name: string, description: string) {
     if (projectEditor === 'edit' && projectEditorTarget) {
@@ -527,10 +597,12 @@ function App() {
   async function moveCurrentSession(projectId: string) {
     if (!moveSessionTarget) return;
     const oldProjectId = moveSessionTarget.project_id;
+    nextGraphVersion(moveSessionTarget.session_id);
     const response = await moveSession(moveSessionTarget.session_id, projectId);
     setSessions(current => current.map(session => session.session_id === moveSessionTarget.session_id ? { ...session, project_id: projectId, active_dataset_id: response.active_dataset_id, has_graph: false } : session));
-    setActiveSession(current => current?.session_id === moveSessionTarget.session_id ? { ...current, project_id: projectId, active_dataset_id: response.active_dataset_id, has_graph: false } : current);
-    if (activeSession?.session_id === moveSessionTarget.session_id) { setGraph(null); setDatasets([]); }
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId: moveSessionTarget.session_id, patch: { activeDatasetId: response.active_dataset_id } });
+    const graphVersion = nextGraphVersion(moveSessionTarget.session_id);
+    dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: moveSessionTarget.session_id, requestVersion: graphVersion, graph: null });
     setProjects(current => current.map(project => {
       if (project.project_id === oldProjectId) return { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) };
       if (project.project_id === projectId) return { ...project, conversation_count: (project.conversation_count || 0) + 1 };
@@ -541,155 +613,184 @@ function App() {
   async function send() {
     const message = composerValue.trim(); if (!message || loading || !activeSession) return;
     const sessionId = activeSession.session_id;
-    const attachments = attachmentsBySession[sessionId] || [];
-    let streamFailed = false;
-    setComposerValue(''); setLoading(true); setError(''); setFeedback(null); setRunTools([]); setPlan(null); setMessages(current => [...current, { role: 'user', content: message }, { role: 'assistant', content: '', streaming: true, tools: [] }]);
-    const controller = new AbortController(); abortRef.current = controller;
-    try {
-      await streamChat(sessionId, message, attachments, { onEvent: event => { if (event.type === 'error') streamFailed = true; if (event.run_id) sessionStorage.setItem(`igraph-active-run:${sessionId}`, JSON.stringify({ runId: event.run_id, lastEventIndex: Number(event.event_index ?? -1) })); if (event.type === 'done' || event.type === 'error') sessionStorage.removeItem(`igraph-active-run:${sessionId}`); applyEvent(event, setMessages, setGraph, setRunTools, setPlan, setLoading, setFeedback); } }, controller.signal);
-      if (!streamFailed && attachments.length) setAttachmentsBySession(current => ({ ...current, [sessionId]: [] }));
-      try {
-        const nextGraph = await visualizeGraph(sessionId);
-        if (nextGraph?.nodes) {
-          setGraph(nextGraph);
-          setActiveSession(current => current?.session_id === sessionId ? { ...current, has_graph: true } : current);
-          setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, has_graph: true } : session));
-        }
-      } catch { /* The session may still have no graph after a regular chat turn. */ }
-    } catch (cause: any) { if (cause.name !== 'AbortError') { setError(cause.message || '网络连接失败'); setLoading(false); } } finally { abortRef.current = null; }
+    const attachments = activeView?.attachments || [];
+    const generation = crypto.randomUUID();
+    const userMessage: Message = { id: `user:${generation}`, role: 'user', content: message };
+    const assistantMessage: Message = { id: `assistant:${generation}`, role: 'assistant', content: '', streaming: true, tools: [] };
+    dispatchConversation({ type: 'START_RUN', sessionId, generation, userMessage, assistantMessage });
+    setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, preview: message, last_message: message } : session));
+    const retry = () => {
+      const run = conversationRef.current.viewsBySessionId[sessionId]?.activeRun;
+      if (run?.runId) openResumeConnection(sessionId, generation, { run_id: run.runId, status: run.status, last_event_index: run.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
+    };
+    const connection = connectionManagerRef.current.acquire({
+      sessionId,
+      generation,
+      foreground: true,
+      retry,
+      onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
+    });
+    if (connection) void consumeRunConnection(sessionId, generation, connection, 'start', { message, attachments });
   }
   async function respondToFeedback(decision: 'approve' | 'reject') {
     if (!activeSession || !feedback || loading) return;
     const sessionId = activeSession.session_id;
     const pending = feedback;
-    const controller = new AbortController(); abortRef.current = controller;
-    setFeedback(null); setLoading(true); setError('');
-    try {
-      await streamFeedback(sessionId, pending, decision, { onEvent: event => { if (event.run_id) sessionStorage.setItem(`igraph-active-run:${sessionId}`, JSON.stringify({ runId: event.run_id, lastEventIndex: Number(event.event_index ?? -1) })); if (event.type === 'done' || event.type === 'error') sessionStorage.removeItem(`igraph-active-run:${sessionId}`); applyEvent(event, setMessages, setGraph, setRunTools, setPlan, setLoading, setFeedback); } }, controller.signal);
-      if (decision === 'reject') setMessages(current => [...current, { role: 'assistant', content: '已拒绝执行训练操作。' }]);
-    } catch (cause: any) { if (cause.name !== 'AbortError') { setError(cause.message || '确认请求失败'); setLoading(false); } }
-    finally { abortRef.current = null; }
+    const run = activeView?.activeRun;
+    if (!run?.runId) return dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '当前确认请求缺少 Run ID，无法继续' } });
+    const generation = run.generation;
+    const retry = () => openResumeConnection(sessionId, generation, { run_id: run.runId!, status: 'running', last_event_index: run.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
+    const connection = connectionManagerRef.current.acquire({
+      sessionId,
+      runId: run.runId,
+      generation,
+      foreground: true,
+      retry,
+      onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
+    });
+    if (!connection) return;
+    dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'streaming' });
+    void consumeRunConnection(sessionId, generation, connection, 'feedback', undefined, pending, decision);
   }
   async function upload(file: File) {
     if (!activeSession || uploading) return;
     const sessionId = activeSession.session_id;
-    setUploading(true); setError('');
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
     try {
       const uploaded = await uploadFile(sessionId, file);
       const attachment = { file_token: uploaded.file_token, filename: uploaded.filename || file.name };
-      setAttachmentsBySession(current => ({ ...current, [sessionId]: [...(current[sessionId] || []).filter(item => item.file_token !== attachment.file_token), attachment] }));
-      setMessages(current => [...current, { role: 'user', content: `上传文件 ${attachment.filename}` }, { role: 'assistant', content: `文件「${attachment.filename}」已上传。请发送加载或分析指令。` }]);
-    } catch (cause: any) { setError(cause.message || '上传失败'); }
-    finally { setUploading(false); }
+      const currentAttachments = conversationRef.current.viewsBySessionId[sessionId]?.attachments || [];
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [...currentAttachments.filter(item => item.file_token !== attachment.file_token), attachment] } });
+      dispatchConversation({ type: 'APPEND_MESSAGES', sessionId, messages: [{ role: 'user', content: `上传文件 ${attachment.filename}` }, { role: 'assistant', content: `文件「${attachment.filename}」已上传。请发送加载或分析指令。` }] });
+    } catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '上传失败' } }); }
+    finally { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } }); }
   }
   function removeAttachment(fileToken: string) {
     if (!activeSession) return;
     const sessionId = activeSession.session_id;
-    setAttachmentsBySession(current => ({ ...current, [sessionId]: (current[sessionId] || []).filter(item => item.file_token !== fileToken) }));
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: (conversationRef.current.viewsBySessionId[sessionId]?.attachments || []).filter(item => item.file_token !== fileToken) } });
   }
   async function changeModel(nextModel: string) {
     if (!activeSession || busy || loading || nextModel === model) return;
+    const sessionId = activeSession.session_id;
     const previousModel = model;
-    setModel(nextModel); setBusy(true); setError('');
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: nextModel, error: undefined } });
+    setBusy(true);
     try {
-      const response = await updateSessionModel(activeSession.session_id, nextModel);
+      const response = await updateSessionModel(sessionId, nextModel);
       const selectedModel = response.model || nextModel;
-      setModel(selectedModel);
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: selectedModel } });
       setAvailableModels(normalizedModels(response.available_models || availableModels, selectedModel));
-      setActiveSession(current => current ? { ...current, model: selectedModel } : current);
-      setSessions(current => current.map(session => session.session_id === activeSession.session_id ? { ...session, model: selectedModel } : session));
+      setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, model: selectedModel } : session));
     } catch (cause: any) {
-      setModel(previousModel);
-      setError(cause.message || '模型切换失败');
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: previousModel, error: cause.message || '模型切换失败' } });
     } finally { setBusy(false); }
   }
   function openManagement(tab: 'memory' | 'skills') { setManagementTab(tab); setManagementOpen(true); }
   async function openDatasets() {
-    if (!activeSession?.project_id) return setError('当前会话尚未关联项目');
+    if (!activeSession?.project_id) return setWorkspaceError('当前会话尚未关联项目');
+    const projectId = activeSession.project_id;
+    const sessionId = activeSession.session_id;
     setDatasetOpen(true);
-    try { setDatasets((await listProjectDatasets(activeSession.project_id)).datasets || []); }
-    catch (cause: any) { setError(cause.message || '项目数据集加载失败'); }
+    try { updateProjectDatasets(projectId, (await listProjectDatasets(projectId)).datasets || []); }
+    catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '项目数据集加载失败' } }); }
   }
   async function chooseDataset(dataset: Dataset) {
     if (!activeSession || dataset.dataset_id === activeSession.active_dataset_id) return setDatasetOpen(false);
-    setBusy(true); setError('');
+    const sessionId = activeSession.session_id;
+    nextGraphVersion(sessionId);
+    setBusy(true); dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: undefined } });
     try {
-      await setSessionDataset(activeSession.session_id, dataset.dataset_id);
-      const nextGraph = await visualizeGraph(activeSession.session_id);
-      setDatasetOpen(false); setGraph(nextGraph); setGraphOpen(window.innerWidth > 900);
-      setActiveSession(current => current ? { ...current, active_dataset_id: dataset.dataset_id, has_graph: true } : current);
-      setSessions(current => current.map(session => session.session_id === activeSession.session_id ? { ...session, active_dataset_id: dataset.dataset_id, has_graph: true } : session));
-    } catch (cause: any) { setError(cause.message || '数据集切换失败'); }
+      await setSessionDataset(sessionId, dataset.dataset_id);
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { activeDatasetId: dataset.dataset_id } });
+      const nextGraph = await refreshSessionGraph(sessionId, {}, true);
+      setDatasetOpen(false);
+      if (conversationRef.current.activeSessionId === sessionId) setGraphOpen(window.innerWidth > 900);
+      setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: dataset.dataset_id, has_graph: Boolean(nextGraph) } : session));
+    } catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '数据集切换失败' } }); }
     finally { setBusy(false); }
   }
   async function addProjectDataset(file: File, activateCurrentSession: boolean) {
     const projectId = activeProject?.project_id || activeSession?.project_id;
     if (!projectId) return;
-    setUploading(true); setError('');
+    const sessionId = activateCurrentSession ? activeSession?.session_id : undefined;
+    if (sessionId) nextGraphVersion(sessionId);
+    if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
+    else { setBusy(true); setWorkspaceError(''); }
     try {
-      const response = await uploadProjectDataset(projectId, file, activateCurrentSession ? activeSession?.session_id : undefined);
+      const response = await uploadProjectDataset(projectId, file, sessionId);
       const next = [...datasets.filter(item => item.dataset_id !== response.dataset.dataset_id), response.dataset]
         .map(item => ({ ...item, is_default: item.dataset_id === response.default_dataset_id }));
-      setDatasets(next);
+      updateProjectDatasets(projectId, next);
       setProjects(current => current.map(project => project.project_id === projectId ? { ...project, default_dataset_id: response.default_dataset_id } : project));
       setActiveProject(current => current?.project_id === projectId ? { ...current, default_dataset_id: response.default_dataset_id } : current);
-      if (response.activated_session_id && activeSession) {
-        const nextGraph = await visualizeGraph(activeSession.session_id);
-        setGraph(nextGraph); setGraphOpen(window.innerWidth > 900);
-        setActiveSession(current => current ? { ...current, active_dataset_id: response.dataset.dataset_id, has_graph: true } : current);
-        setSessions(current => current.map(session => session.session_id === activeSession.session_id ? { ...session, active_dataset_id: response.dataset.dataset_id, has_graph: true } : session));
+      if (response.activated_session_id && sessionId) {
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { activeDatasetId: response.dataset.dataset_id } });
+        const nextGraph = await refreshSessionGraph(sessionId, {}, true);
+        if (conversationRef.current.activeSessionId === sessionId) setGraphOpen(window.innerWidth > 900);
+        setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: response.dataset.dataset_id, has_graph: Boolean(nextGraph) } : session));
       }
-    } catch (cause: any) { setError(cause.message || '项目数据集上传失败'); }
-    finally { setUploading(false); }
+    } catch (cause: any) {
+      if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '项目数据集上传失败' } });
+      else setWorkspaceError(cause.message || '项目数据集上传失败');
+    } finally {
+      if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } });
+      else setBusy(false);
+    }
   }
   async function makeDefaultDataset(dataset: Dataset) {
     try {
       await setDefaultProjectDataset(dataset.project_id, dataset.dataset_id);
-      setDatasets(current => current.map(item => ({ ...item, is_default: item.dataset_id === dataset.dataset_id })));
+      updateProjectDatasets(dataset.project_id, current => current.map(item => ({ ...item, is_default: item.dataset_id === dataset.dataset_id })));
       setProjects(current => current.map(project => project.project_id === dataset.project_id ? { ...project, default_dataset_id: dataset.dataset_id } : project));
       setActiveProject(current => current?.project_id === dataset.project_id ? { ...current, default_dataset_id: dataset.dataset_id } : current);
-    } catch (cause: any) { setError(cause.message || '默认数据集设置失败'); }
+    } catch (cause: any) { setWorkspaceError(cause.message || '默认数据集设置失败'); }
   }
   async function renameDataset(dataset: Dataset) {
     const name = window.prompt('数据集名称', dataset.name)?.trim();
     if (!name || name === dataset.name) return;
     try {
       const response = await renameProjectDataset(dataset.project_id, dataset.dataset_id, name);
-      setDatasets(current => current.map(item => item.dataset_id === dataset.dataset_id ? { ...item, ...response.dataset } : item));
-    } catch (cause: any) { setError(cause.message || '数据集重命名失败'); }
+      updateProjectDatasets(dataset.project_id, current => current.map(item => item.dataset_id === dataset.dataset_id ? { ...item, ...response.dataset } : item));
+    } catch (cause: any) { setWorkspaceError(cause.message || '数据集重命名失败'); }
   }
   async function removeDataset(dataset: Dataset) {
     if (!window.confirm(`确认从项目中删除数据集「${dataset.name}」吗？`)) return;
     try {
       const response = await deleteProjectDataset(dataset.project_id, dataset.dataset_id);
-      setDatasets(current => current.filter(item => item.dataset_id !== dataset.dataset_id));
+      updateProjectDatasets(dataset.project_id, current => current.filter(item => item.dataset_id !== dataset.dataset_id));
       setProjects(current => current.map(project => project.project_id === dataset.project_id ? { ...project, default_dataset_id: response.default_dataset_id } : project));
       setActiveProject(current => current?.project_id === dataset.project_id ? { ...current, default_dataset_id: response.default_dataset_id } : current);
       setSessions(current => current.map(session => session.active_dataset_id === dataset.dataset_id ? { ...session, active_dataset_id: null, has_graph: false } : session));
-      if (activeSession?.active_dataset_id === dataset.dataset_id) { setActiveSession(current => current ? { ...current, active_dataset_id: null, has_graph: false } : current); setGraph(null); }
-    } catch (cause: any) { setError(cause.message || '数据集删除失败'); }
+      for (const session of sessions.filter(item => item.active_dataset_id === dataset.dataset_id)) {
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId: session.session_id, patch: { activeDatasetId: null } });
+        const graphVersion = nextGraphVersion(session.session_id);
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: session.session_id, requestVersion: graphVersion, graph: null });
+      }
+    } catch (cause: any) { setWorkspaceError(cause.message || '数据集删除失败'); }
   }
   async function expandNode(node: Record<string, unknown>) {
     if (!activeSession) return;
+    const sessionId = activeSession.session_id;
     const name = String(node.id ?? node.label ?? '').trim();
     if (!name) return;
-    try {
-      const expanded = await visualizeGraph(activeSession.session_id, { node_names: [name], max_nodes: 200 });
-      if (expanded?.nodes?.length) setGraph(expanded);
-    } catch (cause: any) { setError(cause.message || '节点邻居加载失败'); }
+    await refreshSessionGraph(sessionId, { node_names: [name], max_nodes: 200 }, true);
   }
   if (!ready) return null;
   if (!userId) return <div className="login-screen"><div className="login-box"><div className="brand-mark large"><Icon name="graph" size={24} /></div><h1>进入 iGraph</h1><p>登录后开始图谱分析</p><input autoFocus value={loginValue} onChange={event => setLoginValue(event.target.value)} onKeyDown={event => event.key === 'Enter' && login()} placeholder="用户 ID" /><button onClick={login}>登录</button>{loginError && <span className="login-error">{loginError}</span>}</div></div>;
-  const activeAttachments = activeSession ? attachmentsBySession[activeSession.session_id] || [] : [];
+  const activeAttachments = activeView?.attachments || [];
   const layoutStyle = { '--sidebar-width': `${sidebarWidth}px`, '--graph-width': `${graphWidth}px` } as CSSProperties;
   const graphNodeCount = graph ? (graph.total_nodes ?? graph.num_nodes ?? graph.nodes.length) : 0;
   const graphEdgeCount = graph ? (graph.total_edges ?? graph.num_edges ?? graph.edges.length) : 0;
   const sessionProject = projects.find(project => project.project_id === activeSession?.project_id);
   const activeDataset = datasets.find(dataset => dataset.dataset_id === activeSession?.active_dataset_id);
+  const runStatuses = Object.fromEntries(Object.entries(conversation.viewsBySessionId)
+    .filter(([, view]) => Boolean(view.activeRun))
+    .map(([sessionId, view]) => [sessionId, view.activeRun!.status]));
   return <div className="app-shell">
     <TopBar onMenu={() => setMobileSidebarOpen(true)} />
     <div ref={bodyRef} className={`app-body ${graphOpen && activeSession ? 'has-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar projects={projects} sessions={sessions} activeId={activeSession?.session_id} activeProjectId={activeProject?.project_id} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelectProject={id => selectProject(id)} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={false} onCollapse={() => setMobileSidebarOpen(false)} />
+      <Sidebar projects={projects} sessions={sessions} runStatuses={runStatuses} activeId={activeSession?.session_id} activeProjectId={activeProject?.project_id} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelectProject={id => selectProject(id)} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={false} onCollapse={() => setMobileSidebarOpen(false)} />
       <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />
       <div className="main-column">
         {activeProject ? <>
@@ -705,10 +806,10 @@ function App() {
             </div>
           </div>
           <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
-          <ChatPaneWithState messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={setComposerValue} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !activeSession} hasGraph={!!graph} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} feedback={feedback} runTools={runTools} plan={plan} />
+          <ChatPaneWithState messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => activeSession && dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !activeSession} hasGraph={!!graph} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} feedback={feedback} runTools={runTools} plan={plan} />
         </>}
       </div>
-      {graphOpen && activeSession && <><ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} /><GraphWorkspace data={graph} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={setSelectedNode} onExpand={expandNode} onClose={() => setGraphOpen(false)} layoutVersion={graphLayoutVersion} /></>}
+      {graphOpen && activeSession && <><ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} /><GraphWorkspace data={graph} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} onClose={() => setGraphOpen(false)} layoutVersion={graphLayoutVersion} /></>}
     </div>
     {datasetOpen && <DatasetPanel datasets={datasets} projectName={sessionProject?.name} activeDatasetId={activeSession?.active_dataset_id} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, true)} onSetDefault={makeDefaultDataset} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
