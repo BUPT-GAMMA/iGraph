@@ -1,4 +1,4 @@
-type IconName = 'plus' | 'search' | 'project' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'graph' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
+type IconName = 'plus' | 'search' | 'project' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
 
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true };
@@ -14,6 +14,10 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     send: <><path d="m21 3-7.2 18-3.2-7.6L3 10.2 21 3Z" /><path d="M10.7 13.3 21 3" /></>,
     upload: <><path d="M12 16V4m0 0L7 9m5-5 5 5" /><path d="M5 14v5h14v-5" /></>,
     panel: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16m5-10 3 2-3 2" /></>,
+    'panel-left-open': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M14 9l3 3-3 3" /></>,
+    'panel-left-close': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M16 9l-3 3 3 3" /></>,
+    'panel-right-open': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16M10 9l-3 3 3 3" /></>,
+    'panel-right-close': <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M8 9l3 3-3 3" /></>,
     graph: <><circle cx="5" cy="12" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="18" cy="18" r="2" /><path d="m7 11 9-4M7 13l9 4" /></>,
     table: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 10h18M9 4v16M15 4v16" /></>,
     cube: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4 7.5 8 4.5 8-4.5M12 12v9" /></>,

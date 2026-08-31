@@ -53,7 +53,10 @@ const server = http.createServer((request, response) => {
     ...(!projectDeleted ? [{ project_id: 'project-1', user_id: 'e2e-user', name: 'E2E Project', conversation_count: 3 }] : []),
   ] });
   if (url.pathname === '/api/projects/project-1/conversations') return json(response, 200, { success: true, conversations: sessions.filter(session => !deletedSessions.has(session.session_id)) });
-  if (url.pathname === '/api/projects/project-1/datasets') return json(response, 200, { success: true, project_id: 'project-1', datasets: [] });
+  if (url.pathname === '/api/projects/project-1/datasets') return json(response, 200, { success: true, project_id: 'project-1', datasets: [
+    { dataset_id: 'dataset-cora', project_id: 'project-1', name: 'Cora', original_filename: 'cora.pt', file_type: 'pt', status: 'ready', is_default: true, metadata: { num_nodes: 2708, num_edges: 10556 } },
+    { dataset_id: 'dataset-hiv', project_id: 'project-1', name: 'hiv', original_filename: 'hiv.pt', file_type: 'pt', status: 'ready', is_default: false },
+  ] });
   if (url.pathname === '/api/projects/project-1' && request.method === 'DELETE') {
     projectDeleted = true;
     sessions.forEach(session => deletedSessions.add(session.session_id));
@@ -68,7 +71,7 @@ const server = http.createServer((request, response) => {
     active_run: activate[1] === 'session-c' ? { run_id: 'run-paused', status: 'paused', last_event_index: 8 } : null,
     pending_feedback: activate[1] === 'session-c' ? { run_id: 'run-paused', request_id: 'run-paused', call_id: 'call-train', tool_name: 'train', proposed_args: { epochs: 2 }, description: '确认训练任务' } : null,
     project_id: 'project-1',
-    active_dataset_id: null,
+    active_dataset_id: activate[1] === 'session-a' ? 'dataset-hiv' : null,
     has_graph: false,
     model: 'qwen3.6-plus',
     available_models: ['qwen3.6-plus'],

@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import type { GraphData, Message, ToolCall } from '../types';
 import { Icon } from './Icon';
+import { SlidingTabs } from './SlidingTabs';
 
 type Tab = 'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts';
 type LayoutMode = 'force' | 'radial' | 'circle';
 
 function nodeId(node: Record<string, unknown>, index: number) { return String(node.id ?? node.label ?? index); }
 
-export function GraphWorkspace({ data, messages = [], liveTools = [], tab, onTab, selected, onSelect, onClose, onExpand, layoutVersion = 0 }: { data: GraphData | null; messages?: Message[]; liveTools?: ToolCall[]; tab: Tab; onTab: (tab: Tab) => void; selected: Record<string, unknown> | null; onSelect: (node: Record<string, unknown>) => void; onClose: () => void; onExpand?: (node: Record<string, unknown>) => void; layoutVersion?: number }) {
+export function GraphWorkspace({ data, messages = [], liveTools = [], tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0 }: { data: GraphData | null; messages?: Message[]; liveTools?: ToolCall[]; tab: Tab; onTab: (tab: Tab) => void; selected: Record<string, unknown> | null; onSelect: (node: Record<string, unknown>) => void; collapsed: boolean; onToggle: () => void; onExpand?: (node: Record<string, unknown>) => void; layoutVersion?: number }) {
   const canvas = useRef<SVGSVGElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -36,7 +37,7 @@ export function GraphWorkspace({ data, messages = [], liveTools = [], tab, onTab
   }, [data, query, connectedOnly, degreeById]);
 
   useEffect(() => {
-    if (!canvas.current || !data?.nodes?.length || tab !== 'Graph') return;
+    if (collapsed || !canvas.current || !data?.nodes?.length || tab !== 'Graph') return;
     const svg = d3.select(canvas.current); svg.selectAll('*').remove();
     const host = canvas.current.parentElement; const width = host?.clientWidth || 360; const height = host?.clientHeight || 420;
     const nodes = visibleNodes.slice(0, 180).map(item => ({ ...item.node, id: item.id }));
@@ -56,11 +57,11 @@ export function GraphWorkspace({ data, messages = [], liveTools = [], tab, onTab
     simulation.on('tick', () => { link.attr('x1', (edge: any) => edge.source.x).attr('y1', (edge: any) => edge.source.y).attr('x2', (edge: any) => edge.target.x).attr('y2', (edge: any) => edge.target.y); node.attr('transform', (item: any) => `translate(${item.x},${item.y})`); });
     simulation.tick();
     return () => { simulation.stop(); };
-  }, [data, tab, selected, onSelect, layoutVersion, layout, visibleNodes]);
+  }, [collapsed, data, tab, selected, onSelect, layoutVersion, layout, visibleNodes]);
   const tabs: Tab[] = ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
-  return <aside className="graph-workspace"><div className="workspace-top"><strong>图谱工作台</strong><button className="plain-icon" onClick={onClose} aria-label="关闭图谱工作台"><Icon name="close" size={17} /></button></div><div className="workspace-tabs">{tabs.map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => onTab(item)}>{item}</button>)}</div>
+  return <aside className={`graph-workspace ${collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图谱工作台</strong><button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={collapsed ? '展开右侧栏' : '收起右侧栏'} title={collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={18} /></button></div><div className="workspace-panel-content" aria-hidden={collapsed}><SlidingTabs ariaLabel="图谱工作台视图" className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: item }))} value={tab} onChange={onTab} />
     {tab === 'ML' ? <MLTab messages={messages} liveTools={liveTools} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : !data ? <div className="graph-empty"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>暂无图谱</strong><span>加载数据或发送建图请求后，这里会显示图谱分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图谱布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button></div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} /></div><div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? 'Selected node')}</strong><span>selected</span></div><div className="inspector-row"><span>Node ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>Type</span><strong>{String(selected.type ?? selected.category ?? 'node')}</strong></div><div className="inspector-row"><span>Degree</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} liveTools={liveTools} />}
-  </aside>;
+  </div></aside>;
 }
 
 function WorkspaceTab({ tab, data, messages, liveTools }: { tab: Tab; data: GraphData; messages: Message[]; liveTools: ToolCall[] }) {
@@ -224,7 +225,7 @@ function MLRunCard({ run, index }: { run: ToolCall; index: number }) {
   const totalEpochs = Number(progress.epochs || recordValue(args.train_config).epochs || recordValue(args.algo_config).epochs || completedEpochs || 0);
   return <article className="ml-run-card"><header className="ml-run-header"><div className="workspace-list-icon"><Icon name="cube" size={16} /></div><div><strong>{taskNames[task] || task}</strong><span>{model}{totalEpochs ? ` · ${completedEpochs}/${totalEpochs} epochs` : ''}</span></div><b className={run.done ? 'done' : 'running'}>{run.done ? (metrics.stopped_early ? '提前停止' : '已完成') : '训练中'}</b></header>
     {summaryKeys.length ? <div className="ml-metric-grid">{summaryKeys.map(key => <div key={key}><span>{metricLabel(key)}</span><strong>{formatMetric(key, metrics[key])}</strong></div>)}</div> : null}
-    <div className="ml-view-bar"><span>{history.length ? `${history.length} 个训练点` : `运行 ${index + 1}`}</span><div className="ml-view-toggle" aria-label="训练结果视图"><button className={view === 'chart' ? 'active' : ''} onClick={() => setView('chart')} disabled={!history.length}>曲线</button><button className={view === 'table' ? 'active' : ''} onClick={() => setView('table')}>表格</button></div></div>
+    <div className="ml-view-bar"><span>{history.length ? `${history.length} 个训练点` : `运行 ${index + 1}`}</span><SlidingTabs ariaLabel="训练结果视图" className="ml-view-toggle" indicatorClassName="ml-view-indicator" options={[{ value: 'chart', label: '曲线', disabled: !history.length }, { value: 'table', label: '表格' }]} value={view} onChange={setView} /></div>
     {view === 'chart' ? <div className="ml-charts"><MetricChart rows={history} keys={lossKeys} title="损失" /><MetricChart rows={history} keys={scoreKeys} title="评估指标" />{!lossKeys.length && !scoreKeys.length ? <FinalMetricsTable metrics={metrics} /> : null}</div> : history.length ? <MetricsTable rows={history} /> : <FinalMetricsTable metrics={metrics} />}
   </article>;
 }
