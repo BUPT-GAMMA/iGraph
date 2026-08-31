@@ -5,6 +5,8 @@ const sessions = [
   { session_id: 'session-b', project_id: 'project-1', title: 'Session B', updated_at: '2026-08-31T01:00:00Z' },
   { session_id: 'session-c', project_id: 'project-1', title: 'Session C Paused', updated_at: '2026-08-31T00:00:00Z' },
 ];
+const deletedSessions = new Set();
+let projectDeleted = false;
 
 function json(response, status, body) {
   response.writeHead(status, {
@@ -45,11 +47,20 @@ const server = http.createServer((request, response) => {
   const url = new URL(request.url || '/', 'http://127.0.0.1:11109');
   if (request.method === 'OPTIONS') return json(response, 204, {});
   if (url.pathname === '/api/auth/validate') return json(response, 200, { valid: true, default_model: 'qwen3.6-plus', available_models: ['qwen3.6-plus'] });
-  if (url.pathname === '/api/sessions' && request.method === 'GET') return json(response, 200, { success: true, sessions });
-  if (url.pathname === '/api/projects' && request.method === 'GET') return json(response, 200, { success: true, projects: [{ project_id: 'project-1', user_id: 'e2e-user', name: 'E2E Project', conversation_count: 3 }] });
-  if (url.pathname === '/api/projects/project-1/conversations') return json(response, 200, { success: true, conversations: sessions });
+  if (url.pathname === '/api/sessions' && request.method === 'GET') return json(response, 200, { success: true, sessions: sessions.filter(session => !deletedSessions.has(session.session_id)) });
+  if (url.pathname === '/api/projects' && request.method === 'GET') return json(response, 200, { success: true, projects: [
+    { project_id: 'general', user_id: 'e2e-user', name: 'General', is_default: true, conversation_count: 0 },
+    ...(!projectDeleted ? [{ project_id: 'project-1', user_id: 'e2e-user', name: 'E2E Project', conversation_count: 3 }] : []),
+  ] });
+  if (url.pathname === '/api/projects/project-1/conversations') return json(response, 200, { success: true, conversations: sessions.filter(session => !deletedSessions.has(session.session_id)) });
   if (url.pathname === '/api/projects/project-1/datasets') return json(response, 200, { success: true, project_id: 'project-1', datasets: [] });
+  if (url.pathname === '/api/projects/project-1' && request.method === 'DELETE') {
+    projectDeleted = true;
+    sessions.forEach(session => deletedSessions.add(session.session_id));
+    return json(response, 200, { success: true, project_id: 'project-1', affected_conversations: sessions.length, general_project_id: 'general' });
+  }
   const activate = /^\/api\/sessions\/([^/]+)\/activate$/.exec(url.pathname);
+  if (activate && (!sessions.some(session => session.session_id === activate[1]) || deletedSessions.has(activate[1]))) return json(response, 404, { detail: '会话不存在' });
   if (activate) return json(response, 200, {
     success: true,
     session_id: activate[1],
@@ -62,6 +73,11 @@ const server = http.createServer((request, response) => {
     model: 'qwen3.6-plus',
     available_models: ['qwen3.6-plus'],
   });
+  const removeSession = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname);
+  if (removeSession && request.method === 'DELETE') {
+    deletedSessions.add(removeSession[1]);
+    return json(response, 200, { success: true, session_id: removeSession[1] });
+  }
   const feedback = /^\/api\/sessions\/([^/]+)\/feedback\/stream$/.exec(url.pathname);
   if (feedback) {
     response.writeHead(200, {
