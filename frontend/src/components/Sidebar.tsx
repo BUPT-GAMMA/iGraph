@@ -65,9 +65,12 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
     onCloseMobile();
   }
 
+  const effectivelyCollapsed = collapsed && !mobileOpen;
+
   return <>
-  <aside className={`sidebar ${collapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
-    <div className="sidebar-head"><span className="version">iGraph 1.0</span><div className="sidebar-tools"><button className="sidebar-collapse" onClick={onCollapse} aria-label="收起侧栏"><Icon name="panel" size={17} /></button></div></div>
+  <aside className={`sidebar ${effectivelyCollapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
+    <div className="sidebar-head"><button className="sidebar-collapse" onClick={onCollapse} aria-label={mobileOpen ? '关闭左侧栏' : effectivelyCollapsed ? '展开左侧栏' : '收起左侧栏'} title={mobileOpen ? '关闭左侧栏' : effectivelyCollapsed ? '展开左侧栏' : '收起左侧栏'}><Icon name={effectivelyCollapsed ? 'panel-left-open' : 'panel-left-close'} size={18} /></button></div>
+    <div className="sidebar-content" aria-hidden={effectivelyCollapsed}>
     <button className="new-task" onClick={() => { onNew(); onCloseMobile(); }}><Icon name="plus" size={18} /> 新建任务</button>
     <nav className="sidebar-utilities" aria-label="知识与能力管理">
       <button onClick={() => { onMemory(); onCloseMobile(); }}><Icon name="spark" size={16} /><span>Memory</span></button>
@@ -81,9 +84,9 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
             const expanded = expandedProjects.has(project.project_id);
             const projectSessions = sessions.filter(session => session.project_id === project.project_id);
             return <div className={`project-tree-node ${expanded ? 'expanded' : ''}`} key={project.project_id}>
-              <div className={`project-row ${activeProjectId === project.project_id || activeSessionProjectId === project.project_id ? 'selected' : ''}`}>
+              <div className={`project-row ${activeProjectId === project.project_id ? 'selected' : ''}`}>
                 <button className="project-disclosure" onClick={() => toggleProject(project.project_id)} aria-label={`${expanded ? '收起' : '展开'} ${project.name}`} aria-expanded={expanded}><Icon name="chevron" size={13} /></button>
-                <button className="project-row-main" onClick={() => openProject(project.project_id)} title={project.name}><span className="project-row-icon"><Icon name="project" size={14} /></span><strong>{project.name}</strong><small>{project.conversation_count || 0}</small></button>
+                <button className="project-row-main" onClick={() => openProject(project.project_id)} title={project.name}><span className="project-row-icon"><Icon name="project" size={14} /></span><strong>{project.name}</strong></button>
                 <button className="project-inline-action" onClick={() => { onNewInProject(project.project_id); onCloseMobile(); }} title={`在 ${project.name} 中新建会话`} aria-label={`在 ${project.name} 中新建会话`}><Icon name="plus" size={14} /></button>
                 <button className="project-inline-action" onClick={() => setMenuProjectId(current => current === project.project_id ? null : project.project_id)} title="项目操作" aria-label={`${project.name} 项目操作`}><Icon name="more" size={15} /></button>
               </div>
@@ -111,7 +114,8 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
       </section>
     </div>
     <div className="sidebar-footer"><div className="avatar">{(userId || 'A').slice(0, 1).toUpperCase()}</div><div><strong>{userId}</strong><span>Personal Workspace</span></div><button className="sidebar-theme" onClick={onTheme} aria-label={dark ? '切换到浅色主题' : '切换到深色主题'} title={dark ? '切换到浅色主题' : '切换到深色主题'}><Icon name={dark ? 'sun' : 'moon'} size={17} /></button></div>
+    </div>
   </aside>
-  {mobileOpen && <button className="mobile-sidebar-backdrop" onClick={onCloseMobile} aria-label="关闭侧栏" />}
+  <button className={`mobile-sidebar-backdrop ${mobileOpen ? 'is-visible' : ''}`} onClick={onCloseMobile} aria-label="关闭侧栏" aria-hidden={!mobileOpen} tabIndex={mobileOpen ? 0 : -1} />
   </>;
 }

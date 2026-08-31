@@ -23,7 +23,7 @@ export function ProjectDialog({ project, onClose, onSave }: EditorProps) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <form className="project-dialog" onSubmit={submit}>
       <div className="dialog-head"><div><span>{project ? 'Project settings' : 'New project'}</span><h2>{project ? '编辑项目' : '创建项目'}</h2></div><button type="button" className="dialog-close" title="关闭" aria-label="关闭" onClick={onClose}><Icon name="close" size={17} /></button></div>
-      <label>项目名称<input autoFocus value={name} disabled={project?.is_default} maxLength={80} onChange={event => setName(event.target.value)} placeholder="例如：GraphAgent Research" /></label>
+      <label>项目名称<input type="text" autoFocus value={name} disabled={project?.is_default} maxLength={80} onChange={event => setName(event.target.value)} placeholder="例如：GraphAgent Research" /></label>
       <label>描述<textarea value={description} maxLength={500} onChange={event => setDescription(event.target.value)} placeholder="这个项目关注的工作内容（可选）" /></label>
       {error && <div className="dialog-error">{error}</div>}
       <div className="dialog-actions"><button type="button" className="secondary-command" onClick={onClose}>取消</button><button className="primary-command" disabled={saving || !name.trim()}>{saving ? '保存中…' : project ? '保存' : '创建'}</button></div>

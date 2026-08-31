@@ -37,6 +37,9 @@ class ServiceLogger:
     def response(self, operation: str, result: Any, duration_ms: int) -> None:
         self._write("RESPONSE", operation=operation, result=result, duration_ms=duration_ms)
 
+    def error(self, operation: str, error: str) -> None:
+        self._write("ERROR", operation=operation, error=error)
+
 
 _LOGGERS: dict[tuple[str, str], ServiceLogger] = {}
 _LOCK = threading.Lock()
@@ -54,4 +57,3 @@ def close_service_loggers(session_id: str) -> None:
     with _LOCK:
         for key in [item for item in _LOGGERS if item[0] == session_id]:
             _LOGGERS.pop(key, None)
-

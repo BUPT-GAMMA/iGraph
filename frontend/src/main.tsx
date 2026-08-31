@@ -27,6 +27,7 @@ const GRAPH_MIN = 280;
 const GRAPH_MAX = 720;
 const MAIN_MIN = 420;
 const DIVIDER_WIDTH = 6;
+const COLLAPSED_PANEL_WIDTH = 52;
 const DEFAULT_MODEL = 'qwen3.6-plus';
 const demoMode = new URLSearchParams(window.location.search).get('demo') === '1';
 const demoGraph: GraphData = {
@@ -103,6 +104,7 @@ function App() {
   });
   const [graphTab, setGraphTab] = useState<GraphTab>('Graph');
   const [graphOpen, setGraphOpen] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
   const [datasetsByProject, setDatasetsByProject] = useState<Record<string, Dataset[]>>({});
@@ -127,12 +129,12 @@ function App() {
   const graphVersionsRef = useRef(new Map<string, number>());
   const bodyRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
-  const layoutRef = useRef({ sidebarWidth, graphWidth, graphOpen });
+  const layoutRef = useRef({ sidebarWidth, graphWidth, graphOpen, sidebarCollapsed, hasGraphPanel: false });
 
-  layoutRef.current = { sidebarWidth, graphWidth, graphOpen };
   conversationRef.current = conversation;
   const activeSessionId = conversation.activeSessionId;
   const activeSession = activeSessionId ? sessions.find(session => session.session_id === activeSessionId) || null : null;
+  layoutRef.current = { sidebarWidth, graphWidth, graphOpen, sidebarCollapsed, hasGraphPanel: Boolean(activeSession) };
   const activeView = activeSessionId ? conversation.viewsBySessionId[activeSessionId] : null;
   const visibleProjectId = activeProject?.project_id || activeSession?.project_id || '';
   const datasets = visibleProjectId ? datasetsByProject[visibleProjectId] || [] : [];
@@ -166,10 +168,17 @@ function App() {
   function widthLimit(side: ResizeSide) {
     const bodyWidth = bodyRef.current?.clientWidth || window.innerWidth;
     if (side === 'sidebar') {
-      const occupied = layoutRef.current.graphOpen ? layoutRef.current.graphWidth + DIVIDER_WIDTH * 2 : DIVIDER_WIDTH;
+      const leftDivider = layoutRef.current.sidebarCollapsed ? 0 : DIVIDER_WIDTH;
+      const graphOccupied = !layoutRef.current.hasGraphPanel
+        ? 0
+        : layoutRef.current.graphOpen
+          ? layoutRef.current.graphWidth + DIVIDER_WIDTH
+          : COLLAPSED_PANEL_WIDTH;
+      const occupied = leftDivider + graphOccupied;
       return Math.min(SIDEBAR_MAX, bodyWidth - MAIN_MIN - occupied);
     }
-    return Math.min(GRAPH_MAX, bodyWidth - layoutRef.current.sidebarWidth - MAIN_MIN - DIVIDER_WIDTH * 2);
+    const sidebarOccupied = layoutRef.current.sidebarCollapsed ? COLLAPSED_PANEL_WIDTH : layoutRef.current.sidebarWidth + DIVIDER_WIDTH;
+    return Math.min(GRAPH_MAX, bodyWidth - sidebarOccupied - MAIN_MIN - DIVIDER_WIDTH);
   }
 
   function updateColumnWidth(side: ResizeSide, value: number) {
@@ -226,19 +235,22 @@ function App() {
     function fitColumnsToViewport() {
       if (window.innerWidth <= 900) return;
       const bodyWidth = bodyRef.current?.clientWidth || window.innerWidth;
-      if (!layoutRef.current.graphOpen) {
-        setSidebarWidth(current => clamp(current, SIDEBAR_MIN, Math.min(SIDEBAR_MAX, bodyWidth - MAIN_MIN - DIVIDER_WIDTH)));
+      const leftDivider = layoutRef.current.sidebarCollapsed ? 0 : DIVIDER_WIDTH;
+      const collapsedGraphWidth = layoutRef.current.hasGraphPanel ? COLLAPSED_PANEL_WIDTH : 0;
+      if (!layoutRef.current.graphOpen || !layoutRef.current.hasGraphPanel) {
+        if (!layoutRef.current.sidebarCollapsed) setSidebarWidth(current => clamp(current, SIDEBAR_MIN, Math.min(SIDEBAR_MAX, bodyWidth - MAIN_MIN - leftDivider - collapsedGraphWidth)));
         return;
       }
-      const nextSidebar = clamp(layoutRef.current.sidebarWidth, SIDEBAR_MIN, Math.min(SIDEBAR_MAX, bodyWidth - MAIN_MIN - GRAPH_MIN - DIVIDER_WIDTH * 2));
-      const nextGraph = clamp(layoutRef.current.graphWidth, GRAPH_MIN, Math.min(GRAPH_MAX, bodyWidth - nextSidebar - MAIN_MIN - DIVIDER_WIDTH * 2));
-      setSidebarWidth(nextSidebar);
+      const sidebarTrack = layoutRef.current.sidebarCollapsed ? COLLAPSED_PANEL_WIDTH : layoutRef.current.sidebarWidth;
+      const nextSidebar = layoutRef.current.sidebarCollapsed ? sidebarTrack : clamp(sidebarTrack, SIDEBAR_MIN, Math.min(SIDEBAR_MAX, bodyWidth - MAIN_MIN - GRAPH_MIN - DIVIDER_WIDTH * 2));
+      const nextGraph = clamp(layoutRef.current.graphWidth, GRAPH_MIN, Math.min(GRAPH_MAX, bodyWidth - nextSidebar - MAIN_MIN - leftDivider - DIVIDER_WIDTH));
+      if (!layoutRef.current.sidebarCollapsed) setSidebarWidth(nextSidebar);
       setGraphWidth(nextGraph);
     }
     fitColumnsToViewport();
     window.addEventListener('resize', fitColumnsToViewport);
     return () => window.removeEventListener('resize', fitColumnsToViewport);
-  }, [graphOpen]);
+  }, [activeSessionId, graphOpen, sidebarCollapsed]);
 
   function updateViewUrl(view: 'project' | 'session', id: string) {
     writeWorkspaceRoute({ kind: view, id });
@@ -986,7 +998,7 @@ function App() {
   if (!ready) return null;
   if (!userId) return <div className="login-screen"><div className="login-box"><div className="brand-mark large"><Icon name="graph" size={24} /></div><h1>进入 iGraph</h1><p>登录后开始图谱分析</p><input autoFocus value={loginValue} onChange={event => setLoginValue(event.target.value)} onKeyDown={event => event.key === 'Enter' && login()} placeholder="用户 ID" /><button onClick={login}>登录</button>{loginError && <span className="login-error">{loginError}</span>}</div></div>;
   const activeAttachments = activeView?.attachments || [];
-  const layoutStyle = { '--sidebar-width': `${sidebarWidth}px`, '--graph-width': `${graphWidth}px` } as CSSProperties;
+  const layoutStyle = { '--sidebar-width': `${sidebarWidth}px`, '--graph-width': `${graphWidth}px`, '--collapsed-panel-width': `${COLLAPSED_PANEL_WIDTH}px` } as CSSProperties;
   const graphNodeCount = graph ? (graph.total_nodes ?? graph.num_nodes ?? graph.nodes.length) : 0;
   const graphEdgeCount = graph ? (graph.total_edges ?? graph.num_edges ?? graph.edges.length) : 0;
   const sessionProject = projects.find(project => project.project_id === activeSession?.project_id);
@@ -996,9 +1008,11 @@ function App() {
     .map(([sessionId, view]) => [sessionId, view.activeRun!.status]));
   return <div className="app-shell">
     <TopBar onMenu={() => setMobileSidebarOpen(true)} />
-    <div ref={bodyRef} className={`app-body ${graphOpen && activeSession ? 'has-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar projects={projects} sessions={sessions} runStatuses={runStatuses} activeId={activeSession?.session_id} activeProjectId={activeProject?.project_id} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelectProject={id => selectProject(id)} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={false} onCollapse={() => setMobileSidebarOpen(false)} />
-      <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />
+    <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle} onTransitionEnd={event => {
+      if (event.target === event.currentTarget && event.propertyName === 'grid-template-columns') setGraphLayoutVersion(current => current + 1);
+    }}>
+      <Sidebar projects={projects} sessions={sessions} runStatuses={runStatuses} activeId={activeSession?.session_id} activeProjectId={activeProject?.project_id} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelectProject={id => selectProject(id)} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
+      {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
         {activeProject ? <>
           <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
@@ -1009,7 +1023,7 @@ function App() {
             <div>{sessionProject && <button className="project-breadcrumb" onClick={() => selectProject(sessionProject.project_id)}>{sessionProject.name} /</button>}<strong>{activeSession?.title || 'iGraph 工作台'}</strong><span>{activeSession ? (graph ? `${graphNodeCount.toLocaleString()} nodes · ${graphEdgeCount.toLocaleString()} edges` : '等待加载图谱数据') : '选择已有会话，或新建任务'}</span></div>
             <div className="context-actions">
               {activeSession && <button onClick={() => setMoveSessionTarget(activeSession)}><Icon name="move" size={14} /> 移动</button>}
-              <button onClick={() => setGraphOpen(true)} disabled={!graph}><Icon name="graph" size={14} /> 打开图谱</button>
+              {activeSession && !graphOpen && <button onClick={() => setGraphOpen(true)}><Icon name="graph" size={14} /> 展开图谱</button>}
             </div>
           </div>
           <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
@@ -1018,9 +1032,9 @@ function App() {
             : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><Icon name="graph" size={31} /></div><h1>开始新的图谱分析</h1><p>选择左侧已有会话，或创建一个新任务。</p><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button></div></div>}
         </>}
       </div>
-      {graphOpen && activeSession && <><ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} /><GraphWorkspace data={graph} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} onClose={() => setGraphOpen(false)} layoutVersion={graphLayoutVersion} /></>}
+      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace data={graph} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
     </div>
-    {datasetOpen && <DatasetPanel datasets={datasets} projectName={sessionProject?.name} activeDatasetId={activeSession?.active_dataset_id} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, true)} onSetDefault={makeDefaultDataset} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
+    {datasetOpen && <DatasetPanel datasets={datasets} projectName={sessionProject?.name} activeDatasetId={activeSession?.active_dataset_id} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, true)} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
     {projectEditor && <ProjectDialog key={`${projectEditor}-${projectEditorTarget?.project_id || 'new'}`} project={projectEditor === 'edit' ? projectEditorTarget : null} onClose={() => { setProjectEditor(null); setProjectEditorTarget(null); }} onSave={saveProject} />}
     {deleteProjectTarget && <DeleteProjectDialog project={deleteProjectTarget} onClose={() => setDeleteProjectTarget(null)} onConfirm={deleteCurrentProject} />}
