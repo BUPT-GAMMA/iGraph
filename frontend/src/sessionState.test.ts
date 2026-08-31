@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { conversationReducer, initialConversationState, selectMessages, selectRunTools } from './sessionState';
+import { conversationReducer, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import type { ConversationState } from './sessionState';
 import type { StreamBatch, StreamEvent } from './types';
 
@@ -40,6 +40,10 @@ describe('conversationReducer session/run isolation', () => {
   it('ignores events from an older generation in the same session', () => {
     let state = session(initialConversationState, 'A');
     state = start(state, 'A', 'old');
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'old',
+      batch: batch('A', 'old-run', 1, [{ type: 'done' }]),
+    });
     state = start(state, 'A', 'new');
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'old',
@@ -47,6 +51,99 @@ describe('conversationReducer session/run isolation', () => {
     });
 
     expect(lastMessage(state, 'A')?.content).toBe('');
+  });
+
+  it('blocks START_RUN in every active state without touching draft, attachments, or messages', () => {
+    const statuses = ['awaiting_feedback', 'submitting_feedback', 'reconnecting', 'detached'] as const;
+    for (const status of statuses) {
+      let state = start(session(initialConversationState, 'A'), 'A', 'gen');
+      state = conversationReducer(state, { type: 'SET_RUN_STATUS', sessionId: 'A', generation: 'gen', status });
+      state = conversationReducer(state, {
+        type: 'PATCH_VIEW', sessionId: 'A',
+        patch: { draft: 'next question', attachments: [{ file_token: 'file-1', filename: 'next.txt' }] },
+      });
+      const before = state.viewsBySessionId.A;
+      state = start(state, 'A', 'replacement');
+
+      expect(state.viewsBySessionId.A).toBe(before);
+      expect(selectRunGate(state.viewsBySessionId.A).canStartRun).toBe(false);
+      expect(state.viewsBySessionId.A.draft).toBe('next question');
+      expect(state.viewsBySessionId.A.attachments).toHaveLength(1);
+      expect(selectMessages(state.viewsBySessionId.A)).toHaveLength(2);
+    }
+  });
+
+  it('submits feedback only for the current run/call and clears it after acceptance', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'gen');
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+      batch: batch('A', 'run', 3, [{
+        type: 'await_user_feedback',
+        request: { run_id: 'run', request_id: 'run', call_id: 'call-1', tool_name: 'train', proposed_args: { epochs: 2 } },
+      }]),
+    });
+    const waiting = state;
+    state = conversationReducer(state, {
+      type: 'BEGIN_FEEDBACK_SUBMISSION', sessionId: 'A', generation: 'gen', runId: 'run', callId: 'stale-call', decisionId: 'bad', decision: 'approve',
+    });
+    expect(state).toBe(waiting);
+
+    state = conversationReducer(state, {
+      type: 'BEGIN_FEEDBACK_SUBMISSION', sessionId: 'A', generation: 'gen', runId: 'run', callId: 'call-1', decisionId: 'decision-1', decision: 'approve',
+    });
+    expect(state.viewsBySessionId.A.activeRun?.status).toBe('submitting_feedback');
+    expect(state.viewsBySessionId.A.activeRun?.feedback?.call_id).toBe('call-1');
+
+    const submitting = state;
+    state = conversationReducer(state, {
+      type: 'BEGIN_FEEDBACK_SUBMISSION', sessionId: 'A', generation: 'gen', runId: 'run', callId: 'call-1', decisionId: 'decision-2', decision: 'reject',
+    });
+    expect(state).toBe(submitting);
+
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+      batch: { protocol_version: 2, session_id: 'A', run_id: 'run', events: [{ type: 'feedback_accepted', decision_id: 'decision-1' }] },
+    });
+    expect(state.viewsBySessionId.A.activeRun?.status).toBe('streaming');
+    expect(state.viewsBySessionId.A.activeRun?.feedback).toBeNull();
+    expect(state.viewsBySessionId.A.activeRun?.feedbackSubmission).toBeUndefined();
+  });
+
+  it('derives a safe bottom interaction from authoritative Run state', () => {
+    let state = session(initialConversationState, 'A');
+    expect(selectBottomInteraction(state.viewsBySessionId.A)).toEqual({ kind: 'composer' });
+    const hydrating = conversationReducer(state, { type: 'HYDRATE_START', sessionId: 'A', requestVersion: 1 });
+    expect(selectBottomInteraction(hydrating.viewsBySessionId.A)).toEqual({ kind: 'syncing_feedback', reason: 'session_hydration' });
+
+    state = start(state, 'A', 'gen');
+    state = conversationReducer(state, { type: 'SET_RUN_STATUS', sessionId: 'A', generation: 'gen', status: 'awaiting_feedback' });
+    expect(selectBottomInteraction(state.viewsBySessionId.A)).toEqual({ kind: 'syncing_feedback', reason: 'missing_feedback' });
+
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+      batch: batch('A', 'run', 4, [{
+        type: 'await_user_feedback',
+        request: { run_id: 'run', call_id: 'call-1', tool_name: 'train' },
+      }]),
+    });
+    expect(selectBottomInteraction(state.viewsBySessionId.A)).toEqual(expect.objectContaining({ kind: 'approval', phase: 'awaiting' }));
+
+    state = conversationReducer(state, {
+      type: 'BEGIN_FEEDBACK_SUBMISSION', sessionId: 'A', generation: 'gen', runId: 'run', callId: 'call-1', decisionId: 'decision-1', decision: 'approve',
+    });
+    expect(selectBottomInteraction(state.viewsBySessionId.A)).toEqual(expect.objectContaining({ kind: 'approval', phase: 'submitting' }));
+  });
+
+  it('restores a blocked optimistic send without overwriting a newer draft', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'gen');
+    state = conversationReducer(state, { type: 'PATCH_VIEW', sessionId: 'A', patch: { draft: 'newer draft' } });
+    state = conversationReducer(state, {
+      type: 'ROLLBACK_RUN_START', sessionId: 'A', generation: 'gen', restoreDraft: 'original',
+      restoreAttachments: [{ file_token: 'original-file', filename: 'graph.txt' }],
+    });
+    expect(state.viewsBySessionId.A.draft).toBe('newer draft');
+    expect(state.viewsBySessionId.A.attachments).toEqual([{ file_token: 'original-file', filename: 'graph.txt' }]);
+    expect(selectMessages(state.viewsBySessionId.A)).toEqual([]);
   });
 
   it('deduplicates an entire v2 event_index batch', () => {

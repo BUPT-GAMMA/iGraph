@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode } from 'react';
-import type { AttachmentRef, FeedbackRequest, Message, Plan, ToolCall } from '../types';
-import { Composer } from './Composer';
+import type { Message, Plan, ToolCall } from '../types';
+import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { Icon } from './Icon';
 
 function planCard(plan?: Plan | null) {
@@ -128,27 +128,22 @@ function MarkdownContent({ content }: { content: string }) {
 
 function renderContent(content: string, role: Message['role']) { return role === 'assistant' ? <MarkdownContent content={content} /> : <span className="plain-content">{content}</span>; }
 
-function confirmationCard(feedback: FeedbackRequest | null | undefined, onFeedback?: (decision: 'approve' | 'reject') => void) {
-  if (!feedback) return null;
-  const args = feedback.proposed_args && Object.keys(feedback.proposed_args).length
-    ? JSON.stringify(feedback.proposed_args, null, 2)
-    : '';
-  return <div className="confirmation-card">
-    <div className="confirmation-heading"><span className="confirmation-mark"><Icon name="settings" size={15} /></span><div><strong>确认执行高风险操作</strong><span>{feedback.tool_name || '图机器学习工具'}</span></div></div>
-    <p>{feedback.description || '该操作可能消耗较多计算资源，请确认是否继续。'}</p>
-    {args ? <pre>{args}</pre> : null}
-    <div className="confirmation-actions"><button className="confirmation-reject" onClick={() => onFeedback?.('reject')}><Icon name="close" size={14} /> 拒绝</button><button className="confirmation-approve" onClick={() => onFeedback?.('approve')}><Icon name="check" size={14} /> 批准并执行</button></div>
-  </div>;
-}
+export type ChatPaneProps = ConversationInputAreaProps & {
+  messages: Message[];
+  hasGraph: boolean;
+  onOpenGraph: () => void;
+  runTools?: ToolCall[];
+  plan?: Plan | null;
+};
 
-export function ChatPane({ messages, value, model, models, activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, attachments, loading, uploading, disabled, hasGraph, onOpenGraph, onFeedback, feedback, runTools, plan }: { messages: Message[]; value: string; model: string; models: string[]; activeDatasetName?: string; onChange: (value: string) => void; onModelChange: (model: string) => void; onDataset: () => void; onSend: () => void; onUpload: (file: File) => void; onRemoveAttachment: (fileToken: string) => void; attachments: AttachmentRef[]; loading: boolean; uploading: boolean; disabled: boolean; hasGraph: boolean; onOpenGraph: () => void; onFeedback?: (decision: 'approve' | 'reject') => void; feedback?: FeedbackRequest | null; runTools?: ToolCall[]; plan?: Plan | null }) {
+export function ChatPane({ messages, hasGraph, onOpenGraph, runTools, plan, ...inputProps }: ChatPaneProps) {
+  const composerAvailable = inputProps.interaction.kind === 'composer';
   return <main className="chat-pane">
     <div className="chat-scroll">
-      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><Icon name="graph" size={31} /></div><h1>开始图分析</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p><div className="suggestions"><button onClick={() => onChange('请检查当前图谱的结构和基本属性')}>检查图谱结构</button><button onClick={() => onChange('请计算节点的度数并找出最大度节点')}>计算节点度数</button><button onClick={() => onChange('请帮我进行社区检测')}>进行社区检测</button></div></div> : messages.map((message, index) => <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}><div className={`message-avatar ${message.role}`}>{message.role === 'assistant' ? <Icon name="spark" size={15} /> : 'A'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'iGraph Agent' : '你'}</div><div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{planCard(message.plan)}{toolList(message.tools)}{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图谱结果 <span>→</span></button> : null}</div></div>)}
-      {loading && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{planCard(plan)}{toolList(runTools)}</div> : null}
-      {confirmationCard(feedback, onFeedback)}
+      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><Icon name="graph" size={31} /></div><h1>开始图分析</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange('请检查当前图谱的结构和基本属性')}>检查图谱结构</button><button onClick={() => inputProps.onChange('请计算节点的度数并找出最大度节点')}>计算节点度数</button><button onClick={() => inputProps.onChange('请帮我进行社区检测')}>进行社区检测</button></div> : null}</div> : messages.map((message, index) => <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}><div className={`message-avatar ${message.role}`}>{message.role === 'assistant' ? <Icon name="spark" size={15} /> : 'A'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'iGraph Agent' : '你'}</div><div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{planCard(message.plan)}{toolList(message.tools)}{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图谱结果 <span>→</span></button> : null}</div></div>)}
+      {inputProps.loading && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{planCard(plan)}{toolList(runTools)}</div> : null}
       {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图谱已加载 · 在右侧工作台查看</button> : null}
     </div>
-    <Composer value={value} model={model} models={models} activeDatasetName={activeDatasetName} onChange={onChange} onModelChange={onModelChange} onDataset={onDataset} onSend={onSend} onUpload={onUpload} onRemoveAttachment={onRemoveAttachment} attachments={attachments} loading={loading} uploading={uploading} disabled={disabled} />
+    <ConversationInputArea {...inputProps} />
   </main>;
 }

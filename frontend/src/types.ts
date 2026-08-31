@@ -80,6 +80,7 @@ export type Dataset = {
 };
 export type AttachmentRef = { file_token: string; filename: string };
 export type FeedbackRequest = {
+  run_id?: string;
   request_id?: string;
   call_id?: string;
   tool_name?: string;

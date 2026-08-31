@@ -24,14 +24,18 @@ async function json<T>(path: string, options?: RequestInit): Promise<T> {
 export class ApiError extends Error {
   status: number;
   detail: unknown;
+  code?: string;
   activeRun?: ActiveRun | null;
+  pendingFeedback?: FeedbackRequest | null;
 
-  constructor(status: number, message: string, detail?: unknown, activeRun?: ActiveRun | null) {
+  constructor(status: number, message: string, detail?: unknown, activeRun?: ActiveRun | null, pendingFeedback?: FeedbackRequest | null, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.detail = detail;
+    this.code = code;
     this.activeRun = activeRun;
+    this.pendingFeedback = pendingFeedback;
   }
 
   static fromResponse(status: number, data: any) {
@@ -40,7 +44,7 @@ export class ApiError extends Error {
     const message = typeof detail === 'string'
       ? detail
       : String(body?.message || body?.error || `请求失败 (${status})`);
-    return new ApiError(status, message, detail, body?.active_run || null);
+    return new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
   }
 }
 
@@ -213,13 +217,15 @@ export async function streamChat(sessionId: string, message: string, attachments
   await consumeSseResponse(response, sessionId, handlers);
 }
 
-export async function streamFeedback(sessionId: string, feedback: FeedbackRequest, decision: 'approve' | 'reject', handlers: StreamHandlers, signal: AbortSignal) {
+export async function streamFeedback(sessionId: string, feedback: FeedbackRequest, decision: 'approve' | 'reject', decisionId: string, handlers: StreamHandlers, signal: AbortSignal) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
   const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/feedback/stream`, {
     method: 'POST', signal, headers,
     body: JSON.stringify({
+      run_id: feedback.run_id || feedback.request_id || '',
       request_id: feedback.request_id || '',
+      decision_id: decisionId,
       decision,
       patched_args: feedback.proposed_args || {},
       comment: '',
