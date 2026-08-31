@@ -40,4 +40,27 @@ describe('RunConnectionManager', () => {
     vi.advanceTimersByTime(1000);
     expect(next).toHaveBeenCalledTimes(1);
   });
+
+  it('does not replace an existing same-session connection', () => {
+    const manager = new RunConnectionManager(2);
+    const first = manager.acquire({ sessionId: 'A', generation: 'first', foreground: true, retry: vi.fn(), onDetached: vi.fn() });
+    const abort = vi.spyOn(first!.controller, 'abort');
+
+    const duplicate = manager.acquire({ sessionId: 'A', generation: 'second', foreground: true, retry: vi.fn(), onDetached: vi.fn() });
+
+    expect(duplicate).toBeNull();
+    expect(abort).not.toHaveBeenCalled();
+    expect(manager.get('A')?.generation).toBe('first');
+  });
+
+  it('never displaces a protected feedback connection', () => {
+    const manager = new RunConnectionManager(1);
+    const protectedConnection = manager.acquire({ sessionId: 'A', generation: 'feedback', foreground: true, protected: true, retry: vi.fn(), onDetached: vi.fn() });
+    const abort = vi.spyOn(protectedConnection!.controller, 'abort');
+    const detached = vi.fn();
+
+    expect(manager.acquire({ sessionId: 'B', generation: 'new', foreground: true, retry: vi.fn(), onDetached: detached })).toBeNull();
+    expect(abort).not.toHaveBeenCalled();
+    expect(detached).toHaveBeenCalledTimes(1);
+  });
 });

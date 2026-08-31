@@ -6,6 +6,7 @@ export type RunConnection = {
   reconnectAttempt: number;
   reconnectTimer?: number;
   openedAt: number;
+  protected?: boolean;
   retry: () => void;
   onDetached: () => void;
 };
@@ -27,12 +28,14 @@ export class RunConnectionManager {
     runId?: string;
     generation: string;
     foreground: boolean;
+    protected?: boolean;
     retry: () => void;
     onDetached: () => void;
   }): RunConnection | null {
-    this.abort(options.sessionId, false);
+    if (this.connections.has(options.sessionId)) return null;
+    this.detached.delete(options.sessionId);
     if (this.connections.size >= this.maxConnections) {
-      const candidates = [...this.connections.values()].sort((left, right) => left.openedAt - right.openedAt);
+      const candidates = [...this.connections.values()].filter(connection => !connection.protected).sort((left, right) => left.openedAt - right.openedAt);
       const displaced = options.foreground ? candidates[0] : undefined;
       if (!displaced) {
         this.detached.set(options.sessionId, {

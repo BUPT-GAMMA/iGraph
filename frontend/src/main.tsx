@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { activateSession, ApiError, createProject as addProject, createSession, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, resumeRun, setDefaultProjectDataset, setSessionDataset, setUserId, streamChat, streamFeedback, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph } from './api';
 import type { ActiveRun, Dataset, FeedbackRequest, GraphData, Message, Project, Session, StreamBatch, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
-import { conversationReducer, createSessionView, initialConversationState, selectMessages, selectRunTools } from './sessionState';
+import { conversationReducer, createSessionView, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import { DatasetPanel } from './components/DatasetPanel';
 import { ChatPane } from './components/ChatPane';
 import { GraphWorkspace } from './components/GraphWorkspace';
@@ -142,7 +142,15 @@ function App() {
   const model = activeView?.model || defaultModel;
   const runTools = selectRunTools(activeView);
   const plan = activeView?.activeRun?.plan || null;
-  const feedback = activeView?.activeRun?.feedback || null;
+  const runGate = selectRunGate(activeView);
+  const bottomInteraction = selectBottomInteraction(activeView);
+  const sendBlockedReason = runGate.reason === 'awaiting_feedback'
+    ? '请先批准或拒绝当前待确认操作；草稿和附件会继续保留'
+    : runGate.reason === 'submitting_feedback'
+      ? '确认正在提交并核对状态；草稿和附件会继续保留'
+      : runGate.reason
+        ? '当前会话已有活动任务，完成后可发送下一条消息'
+        : undefined;
   const loading = Boolean(activeView?.activeRun && ['starting', 'streaming', 'reconnecting'].includes(activeView.activeRun.status));
   const uploading = Boolean(activeView?.uploading);
   const error = activeView?.error || workspaceError;
@@ -277,6 +285,69 @@ function App() {
     }
   }
 
+  async function reconcileAuthoritativeRun(sessionId: string, generation: string) {
+    const requestVersion = (hydrationVersionsRef.current.get(sessionId) || 0) + 1;
+    hydrationVersionsRef.current.set(sessionId, requestVersion);
+    dispatchConversation({ type: 'HYDRATE_START', sessionId, requestVersion });
+    try {
+      const response = await activateSession(sessionId);
+      const restoredMessages = response.messages === undefined
+        ? normalizeMessages((await getMessages(sessionId)).messages)
+        : normalizeMessages(response.messages);
+      if (hydrationVersionsRef.current.get(sessionId) !== requestVersion) return null;
+      const currentView = conversationRef.current.viewsBySessionId[sessionId];
+      const selectedModel = String(response.model || currentView?.model || response.default_model || defaultModel);
+      dispatchConversation({
+        type: 'HYDRATE_SUCCESS',
+        sessionId,
+        requestVersion,
+        messages: restoredMessages,
+        model: selectedModel,
+        activeDatasetId: Object.prototype.hasOwnProperty.call(response, 'active_dataset_id')
+          ? response.active_dataset_id
+          : currentView?.activeDatasetId,
+        activeRun: response.active_run,
+        feedback: response.pending_feedback,
+        generation,
+        preserveMessages: Boolean(response.active_run && currentView?.messageOrder.length),
+      });
+      if (!response.active_run) {
+        dispatchConversation({ type: 'CLEAR_ACTIVE_RUN', sessionId, generation });
+        clearPersistedRun(sessionId);
+      }
+      setAvailableModels(normalizedModels(response.available_models, selectedModel));
+      setSessions(current => current.map(session => session.session_id === sessionId ? {
+        ...session,
+        project_id: response.project_id || session.project_id,
+        active_dataset_id: Object.prototype.hasOwnProperty.call(response, 'active_dataset_id') ? response.active_dataset_id : session.active_dataset_id,
+        has_graph: response.has_graph,
+        model: selectedModel,
+      } : session));
+      return { activeRun: response.active_run || null, feedback: response.pending_feedback || null };
+    } catch (cause: any) {
+      if (hydrationVersionsRef.current.get(sessionId) === requestVersion) {
+        dispatchConversation({ type: 'HYDRATE_FAILED', sessionId, requestVersion, error: cause.message || '无法核对 Run 状态' });
+      }
+      throw cause;
+    }
+  }
+
+  async function reconcileFeedbackOutcome(sessionId: string, generation: string) {
+    try {
+      const snapshot = await reconcileAuthoritativeRun(sessionId, generation);
+      connectionManagerRef.current.release(sessionId, generation);
+      if (snapshot?.activeRun && snapshot.activeRun.status.toLowerCase() !== 'paused') {
+        openResumeConnection(sessionId, generation, snapshot.activeRun, conversationRef.current.activeSessionId === sessionId);
+      }
+    } catch {
+      dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'submitting_feedback', error: '确认结果暂时无法核对，系统会自动重试' });
+      connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => {
+        const restarted = connectionManagerRef.current.restart(sessionId, generation);
+        if (restarted) void reconcileFeedbackOutcome(sessionId, generation);
+      });
+    }
+  }
+
   function terminalEvent(batch: StreamBatch) {
     return batch.events.some(event => event.type === 'done' || event.type === 'error');
   }
@@ -294,11 +365,14 @@ function App() {
     pendingFeedback?: FeedbackRequest | null,
     feedbackDecision?: 'approve' | 'reject',
     resumeFromEventIndex?: number,
+    feedbackDecisionId?: string,
   ) {
     let runId = connection.runId || '';
     let lastEventIndex = resumeFromEventIndex ?? conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.lastEventIndex ?? -1;
     let terminal = false;
     let awaitingFeedback = false;
+    let feedbackAccepted = false;
+    let feedbackSubmitFailed = false;
     const handlers = {
       onBatch: (incoming: StreamBatch) => {
         const batch = { ...incoming, session_id: incoming.session_id || sessionId, run_id: incoming.run_id || runId };
@@ -313,25 +387,35 @@ function App() {
         if (runId) persistRun(sessionId, runId, lastEventIndex);
         terminal ||= terminalEvent(batch);
         awaitingFeedback ||= feedbackEvent(batch);
+        feedbackAccepted ||= batch.events.some(event => event.type === 'feedback_accepted' || (event.type === 'feedback_submit_error' && event.accepted === true));
+        feedbackSubmitFailed ||= batch.events.some(event => event.type === 'feedback_submit_error' && event.accepted !== true);
       },
     };
 
     try {
       if (operation === 'start' && startPayload) {
         await streamChat(sessionId, startPayload.message, startPayload.attachments, handlers, connection.controller.signal);
-      } else if (operation === 'feedback' && pendingFeedback && feedbackDecision) {
-        await streamFeedback(sessionId, pendingFeedback, feedbackDecision, handlers, connection.controller.signal);
+      } else if (operation === 'feedback' && pendingFeedback && feedbackDecision && feedbackDecisionId) {
+        await streamFeedback(sessionId, pendingFeedback, feedbackDecision, feedbackDecisionId, handlers, connection.controller.signal);
       } else if (runId) {
         await resumeRun(sessionId, runId, lastEventIndex, handlers, connection.controller.signal);
       }
     } catch (cause: any) {
       if (requestWasAborted(cause)) return;
-      if (operation === 'start' && cause instanceof ApiError && cause.status === 409 && cause.activeRun) {
-        runId = cause.activeRun.run_id;
-        lastEventIndex = cause.activeRun.last_event_index;
-        dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation });
-        dispatchConversation({ type: 'ADOPT_RUN', sessionId, generation, activeRun: cause.activeRun });
-        connectionManagerRef.current.updateRunId(sessionId, generation, runId);
+      if (operation === 'feedback') {
+        feedbackSubmitFailed = true;
+      } else if (operation === 'start' && cause instanceof ApiError && cause.status === 409) {
+        dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: startPayload?.message, restoreAttachments: startPayload?.attachments });
+        connectionManagerRef.current.release(sessionId, generation);
+        try {
+          const snapshot = await reconcileAuthoritativeRun(sessionId, generation);
+          if (snapshot?.activeRun && snapshot.activeRun.status.toLowerCase() !== 'paused') {
+            openResumeConnection(sessionId, generation, snapshot.activeRun, conversationRef.current.activeSessionId === sessionId);
+          }
+        } catch (activateError: any) {
+          dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: activateError.message || cause.message || '无法恢复当前活动 Run' } });
+        }
+        return;
       } else if (operation === 'start' && !runId) {
         try {
           const activated = await activateSession(sessionId);
@@ -351,6 +435,11 @@ function App() {
           return;
         }
       }
+    }
+
+    if (operation === 'feedback' && (feedbackSubmitFailed || !feedbackAccepted)) {
+      void reconcileFeedbackOutcome(sessionId, generation);
+      return;
     }
 
     if (terminal) {
@@ -521,6 +610,10 @@ function App() {
       if (key?.startsWith('igraph-active-run:') && !key.startsWith('igraph-active-run:v2:')) sessionStorage.removeItem(key);
     }
   }, [userId]);
+  useEffect(() => {
+    if (bottomInteraction.kind !== 'syncing_feedback' || bottomInteraction.reason !== 'missing_feedback' || !activeSessionId || !activeView?.activeRun) return;
+    void reconcileAuthoritativeRun(activeSessionId, activeView.activeRun.generation).catch(() => undefined);
+  }, [activeSessionId, activeView?.activeRun?.generation, activeView?.activeRun?.runId, bottomInteraction.kind, bottomInteraction.kind === 'syncing_feedback' ? bottomInteraction.reason : 'ready']);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('igraph-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { setReady(true); }, []);
 
@@ -611,9 +704,22 @@ function App() {
     setMoveSessionTarget(null);
   }
   async function send() {
-    const message = composerValue.trim(); if (!message || loading || !activeSession) return;
+    if (!activeSession) return;
     const sessionId = activeSession.session_id;
-    const attachments = activeView?.attachments || [];
+    const targetView = conversationRef.current.viewsBySessionId[sessionId];
+    const message = String(targetView?.draft || '').trim();
+    if (!message) return;
+    const gate = selectRunGate(targetView);
+    if (!gate.canStartRun) {
+      const blockedMessage = gate.reason === 'awaiting_feedback'
+        ? '请先批准或拒绝当前待确认操作'
+        : gate.reason === 'submitting_feedback'
+          ? '确认正在提交，请等待状态核对完成'
+          : '当前会话已有活动任务，请等待其完成';
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: blockedMessage } });
+      return;
+    }
+    const attachments = targetView?.attachments || [];
     const generation = crypto.randomUUID();
     const userMessage: Message = { id: `user:${generation}`, role: 'user', content: message };
     const assistantMessage: Message = { id: `assistant:${generation}`, role: 'assistant', content: '', streaming: true, tools: [] };
@@ -630,27 +736,40 @@ function App() {
       retry,
       onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
     });
-    if (connection) void consumeRunConnection(sessionId, generation, connection, 'start', { message, attachments });
+    if (!connection) {
+      dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: message, restoreAttachments: attachments });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '当前会话仍有连接正在收尾，请稍后重试' } });
+      return;
+    }
+    void consumeRunConnection(sessionId, generation, connection, 'start', { message, attachments });
   }
   async function respondToFeedback(decision: 'approve' | 'reject') {
-    if (!activeSession || !feedback || loading) return;
+    if (!activeSession) return;
     const sessionId = activeSession.session_id;
-    const pending = feedback;
-    const run = activeView?.activeRun;
+    const targetView = conversationRef.current.viewsBySessionId[sessionId];
+    const gate = selectRunGate(targetView);
+    const pending = targetView?.activeRun?.feedback;
+    const run = targetView?.activeRun;
+    if (!gate.canSubmitFeedback || !pending) return;
     if (!run?.runId) return dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '当前确认请求缺少 Run ID，无法继续' } });
+    const callId = String(pending.call_id || '');
+    if (!callId) return dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '当前确认请求缺少工具 Call ID，无法安全继续' } });
+    if (connectionManagerRef.current.get(sessionId)) return;
     const generation = run.generation;
+    const decisionId = crypto.randomUUID();
     const retry = () => openResumeConnection(sessionId, generation, { run_id: run.runId!, status: 'running', last_event_index: run.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
     const connection = connectionManagerRef.current.acquire({
       sessionId,
       runId: run.runId,
       generation,
       foreground: true,
+      protected: true,
       retry,
       onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
     });
     if (!connection) return;
-    dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'streaming' });
-    void consumeRunConnection(sessionId, generation, connection, 'feedback', undefined, pending, decision);
+    dispatchConversation({ type: 'BEGIN_FEEDBACK_SUBMISSION', sessionId, generation, runId: run.runId, callId, decisionId, decision });
+    void consumeRunConnection(sessionId, generation, connection, 'feedback', undefined, pending, decision, undefined, decisionId);
   }
   async function upload(file: File) {
     if (!activeSession || uploading) return;
@@ -661,7 +780,9 @@ function App() {
       const attachment = { file_token: uploaded.file_token, filename: uploaded.filename || file.name };
       const currentAttachments = conversationRef.current.viewsBySessionId[sessionId]?.attachments || [];
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [...currentAttachments.filter(item => item.file_token !== attachment.file_token), attachment] } });
-      dispatchConversation({ type: 'APPEND_MESSAGES', sessionId, messages: [{ role: 'user', content: `上传文件 ${attachment.filename}` }, { role: 'assistant', content: `文件「${attachment.filename}」已上传。请发送加载或分析指令。` }] });
+      if (!selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
+        dispatchConversation({ type: 'APPEND_MESSAGES', sessionId, messages: [{ role: 'user', content: `上传文件 ${attachment.filename}` }, { role: 'assistant', content: `文件「${attachment.filename}」已上传。请发送加载或分析指令。` }] });
+      }
     } catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '上传失败' } }); }
     finally { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } }); }
   }
@@ -671,8 +792,12 @@ function App() {
     dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: (conversationRef.current.viewsBySessionId[sessionId]?.attachments || []).filter(item => item.file_token !== fileToken) } });
   }
   async function changeModel(nextModel: string) {
-    if (!activeSession || busy || loading || nextModel === model) return;
+    if (!activeSession || busy || nextModel === model) return;
     const sessionId = activeSession.session_id;
+    if (selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能切换模型' } });
+      return;
+    }
     const previousModel = model;
     dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: nextModel, error: undefined } });
     setBusy(true);
@@ -691,6 +816,10 @@ function App() {
     if (!activeSession?.project_id) return setWorkspaceError('当前会话尚未关联项目');
     const projectId = activeSession.project_id;
     const sessionId = activeSession.session_id;
+    if (selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能切换数据集' } });
+      return;
+    }
     setDatasetOpen(true);
     try { updateProjectDatasets(projectId, (await listProjectDatasets(projectId)).datasets || []); }
     catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '项目数据集加载失败' } }); }
@@ -698,6 +827,11 @@ function App() {
   async function chooseDataset(dataset: Dataset) {
     if (!activeSession || dataset.dataset_id === activeSession.active_dataset_id) return setDatasetOpen(false);
     const sessionId = activeSession.session_id;
+    if (selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能切换数据集' } });
+      setDatasetOpen(false);
+      return;
+    }
     nextGraphVersion(sessionId);
     setBusy(true); dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: undefined } });
     try {
@@ -714,6 +848,10 @@ function App() {
     const projectId = activeProject?.project_id || activeSession?.project_id;
     if (!projectId) return;
     const sessionId = activateCurrentSession ? activeSession?.session_id : undefined;
+    if (sessionId && selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能激活新数据集' } });
+      return;
+    }
     if (sessionId) nextGraphVersion(sessionId);
     if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
     else { setBusy(true); setWorkspaceError(''); }
@@ -806,7 +944,7 @@ function App() {
             </div>
           </div>
           <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
-          <ChatPaneWithState messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => activeSession && dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !activeSession} hasGraph={!!graph} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} feedback={feedback} runTools={runTools} plan={plan} />
+          <ChatPaneWithState messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => activeSession && dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !activeSession} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={!!graph} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} />
         </>}
       </div>
       {graphOpen && activeSession && <><ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} /><GraphWorkspace data={graph} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} onClose={() => setGraphOpen(false)} layoutVersion={graphLayoutVersion} /></>}
@@ -819,7 +957,7 @@ function App() {
   </div>;
 }
 
-function ChatPaneWithState(props: any) { return <div className="chat-pane-shell"><div className="run-summary">{props.loading ? <><span className="loader" /> Agent 正在分析图谱</> : props.hasGraph ? <><span className="status-dot" /> 图谱分析就绪</> : '输入问题或粘贴边列表开始任务'}{props.plan?.steps?.length ? <span className="run-count">{props.plan.steps.filter((step: any) => step.status === 'done').length}/{props.plan.steps.length} steps</span> : null}</div><div className="chat-pane-proxy"><ChatPane {...props} /></div></div>; }
+function ChatPaneWithState(props: any) { return <div className="chat-pane-shell"><div className="run-summary">{props.runGateReason === 'awaiting_feedback' ? '等待确认：请先批准或拒绝当前操作' : props.runGateReason === 'submitting_feedback' ? <><span className="loader" /> 正在提交确认并核对状态</> : props.loading ? <><span className="loader" /> Agent 正在分析图谱</> : props.hasGraph ? <><span className="status-dot" /> 图谱分析就绪</> : '输入问题或粘贴边列表开始任务'}{props.plan?.steps?.length ? <span className="run-count">{props.plan.steps.filter((step: any) => step.status === 'done').length}/{props.plan.steps.length} steps</span> : null}</div><div className="chat-pane-proxy"><ChatPane {...props} /></div></div>; }
 
 export default App;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { consumeSseResponse } from './api';
+import { ApiError, consumeSseResponse } from './api';
 
 function responseFromChunks(chunks: string[]) {
   const encoder = new TextEncoder();
@@ -12,6 +12,20 @@ function responseFromChunks(chunks: string[]) {
 }
 
 describe('SSE parser', () => {
+  it('keeps structured run and feedback conflict details', () => {
+    const error = ApiError.fromResponse(409, {
+      detail: {
+        code: 'RUN_AWAITING_FEEDBACK',
+        message: 'wait',
+        active_run: { run_id: 'run-1', status: 'paused', last_event_index: 4 },
+        pending_feedback: { run_id: 'run-1', request_id: 'run-1', call_id: 'call-1' },
+      },
+    });
+    expect(error.code).toBe('RUN_AWAITING_FEEDBACK');
+    expect(error.activeRun?.run_id).toBe('run-1');
+    expect(error.pendingFeedback?.call_id).toBe('call-1');
+  });
+
   it('parses a v2 envelope split at arbitrary byte boundaries', async () => {
     const onBatch = vi.fn();
     const frame = 'data: {"protocol_version":2,"session_id":"A","run_id":"run-1","event_index":42,"events":[{"type":"token","message_id":"assistant:run-1","content":"好"}]}\n\n';

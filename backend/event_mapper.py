@@ -68,7 +68,15 @@ def _terminal_job_status(status: Any) -> bool:
 def feedback_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     variants = _payload_variants(payload)
     requirements = _as_rows(_first_value(variants, "requirements", "requirement"))
-    first = requirements[0] if requirements else {}
+    pending_requirements: list[dict[str, Any]] = []
+    for requirement in requirements:
+        execution = requirement.get("tool_execution") or requirement.get("tool_call") or requirement.get("tool") or {}
+        confirmed = execution.get("confirmed") if isinstance(execution, dict) else None
+        if confirmed is None:
+            confirmed = requirement.get("confirmed")
+        if confirmed is None:
+            pending_requirements.append(requirement)
+    first = pending_requirements[0] if pending_requirements else requirements[0] if requirements else {}
     tools: Any = _first_value(variants, "tools", "tool_calls") or []
     tool_rows = _as_rows(tools)
     paused_tool = next(
@@ -110,12 +118,14 @@ def feedback_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     description = first.get("description") or first.get("message") or first.get("user_message")
     return {
+        "run_id": run_id,
         "request_id": run_id,
         "call_id": call_id,
         "tool_name": tool_name,
         "proposed_args": proposed_args if isinstance(proposed_args, dict) else {},
         "description": description or "该工具调用需要确认",
         "requirements": requirements,
+        "pending_requirements": pending_requirements,
     }
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,8 @@ class FakeServiceClient:
     graph_loaded: dict[str, bool] = {}
     graph_sources: dict[str, str] = {}
     graph_deletes: list[str] = []
+    runtime_stream_calls: list[dict] = []
+    runtime_stream_error: HTTPException | None = None
 
     def __init__(self, base_url: str, *_args) -> None:
         self.is_runtime = "runtime" in base_url
@@ -70,6 +74,21 @@ class FakeServiceClient:
                 return None
         raise AssertionError(f"Unexpected fake request: {method} {path}")
 
+    @asynccontextmanager
+    async def stream(self, method: str, path: str, *, headers: dict, data=None):
+        if not self.is_runtime:
+            raise AssertionError(f"Unexpected fake stream: {method} {path}")
+        self.runtime_stream_calls.append({"method": method, "path": path, "headers": headers, "data": data})
+        if self.runtime_stream_error is not None:
+            raise self.runtime_stream_error
+
+        class Response:
+            async def aiter_lines(self):
+                if False:
+                    yield ""
+
+        yield Response()
+
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -86,6 +105,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     FakeServiceClient.runtime_runs = {}
     FakeServiceClient.graph_sources = {}
     FakeServiceClient.graph_deletes = []
+    FakeServiceClient.runtime_stream_calls = []
+    FakeServiceClient.runtime_stream_error = None
     seed = tmp_path / "supported.txt"
     seed.write_text("admin\nalice\n", encoding="utf-8")
     config = BackendConfig(
@@ -322,3 +343,150 @@ def test_activate_returns_active_run_and_new_chat_is_rejected(client: TestClient
     )
     assert rejected.status_code == 409
     assert rejected.json()["detail"]["active_run"]["run_id"] == "run-active"
+
+
+def paused_run(run_id: str = "run-paused", call_id: str = "call-train") -> dict:
+    return {
+        "run_id": run_id,
+        "status": "PAUSED",
+        "created_at": "2026-08-31T02:00:00Z",
+        "events": [{"event_index": 7}],
+        "requirements": [{
+            "description": "确认训练",
+            "tool_execution": {
+                "tool_call_id": call_id,
+                "tool_name": "train",
+                "tool_args": {"epochs": 2},
+            },
+        }],
+    }
+
+
+def test_paused_run_snapshot_blocks_both_chat_endpoints(client: TestClient):
+    session_id = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    FakeServiceClient.runtime_runs[session_id] = [paused_run()]
+
+    activated = client.post(f"/api/sessions/{session_id}/activate", headers=headers()).json()
+    assert activated["active_run"]["run_id"] == "run-paused"
+    assert activated["pending_feedback"] == {
+        "run_id": "run-paused",
+        "request_id": "run-paused",
+        "call_id": "call-train",
+        "tool_name": "train",
+        "proposed_args": {"epochs": 2},
+        "description": "确认训练",
+    }
+
+    for endpoint in ("chat", "chat/stream"):
+        response = client.post(
+            f"/api/sessions/{session_id}/{endpoint}",
+            headers=headers(),
+            json={"message": "must wait"},
+        )
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == "RUN_AWAITING_FEEDBACK"
+        assert detail["active_run"]["run_id"] == detail["pending_feedback"]["run_id"]
+    assert FakeServiceClient.runtime_stream_calls == []
+
+
+def test_feedback_is_validated_and_duplicate_continue_is_rejected(client: TestClient):
+    session_id = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    FakeServiceClient.runtime_runs[session_id] = [paused_run()]
+    body = {
+        "run_id": "run-paused",
+        "request_id": "run-paused",
+        "decision_id": "decision-1",
+        "decision": "approve",
+        "tool_call_id": "call-train",
+        "tool_name": "train",
+        "patched_args": {"epochs": 999},
+    }
+
+    accepted = client.post(
+        f"/api/sessions/{session_id}/feedback/stream",
+        headers={**headers(), "X-iGraph-Stream-Version": "2"},
+        json=body,
+    )
+    assert accepted.status_code == 200
+    envelope = json.loads(accepted.text.removeprefix("data: ").strip())
+    assert envelope["events"][0]["type"] == "feedback_accepted"
+    assert "event_index" not in envelope
+    assert len(FakeServiceClient.runtime_stream_calls) == 1
+    forwarded_tools = json.loads(FakeServiceClient.runtime_stream_calls[0]["data"]["tools"])
+    assert forwarded_tools[0]["tool_call_id"] == "call-train"
+    assert forwarded_tools[0]["tool_args"] == {"epochs": 2}
+
+    duplicate = client.post(
+        f"/api/sessions/{session_id}/feedback/stream",
+        headers=headers(),
+        json={**body, "decision_id": "decision-2", "decision": "reject"},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "FEEDBACK_ALREADY_ACCEPTED"
+    assert len(FakeServiceClient.runtime_stream_calls) == 1
+
+
+def test_stale_or_ambiguous_feedback_fails_closed_without_continue(client: TestClient):
+    session_id = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    FakeServiceClient.runtime_runs[session_id] = [paused_run()]
+    stale = client.post(
+        f"/api/sessions/{session_id}/feedback/stream",
+        headers=headers(),
+        json={
+            "run_id": "run-paused",
+            "request_id": "run-paused",
+            "decision_id": "stale",
+            "decision": "approve",
+            "tool_call_id": "old-call",
+            "tool_name": "train",
+        },
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "STALE_FEEDBACK"
+
+    FakeServiceClient.runtime_runs[session_id] = [{
+        **paused_run(),
+        "requirements": [
+            paused_run()["requirements"][0],
+            {"tool_execution": {"tool_call_id": "call-clear", "tool_name": "clear_graph", "tool_args": {}}},
+        ],
+    }]
+    multiple = client.post(
+        f"/api/sessions/{session_id}/feedback/stream",
+        headers=headers(),
+        json={
+            "run_id": "run-paused",
+            "decision_id": "multiple",
+            "decision": "approve",
+            "tool_call_id": "call-train",
+            "tool_name": "train",
+        },
+    )
+    assert multiple.status_code == 409
+    assert multiple.json()["detail"]["code"] == "MULTIPLE_FEEDBACK_UNSUPPORTED"
+    assert FakeServiceClient.runtime_stream_calls == []
+
+
+def test_upstream_feedback_rejection_releases_submission_guard(client: TestClient):
+    session_id = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    FakeServiceClient.runtime_runs[session_id] = [paused_run()]
+    FakeServiceClient.runtime_stream_error = HTTPException(status_code=503, detail="runtime unavailable")
+    body = {
+        "run_id": "run-paused",
+        "decision_id": "retry-1",
+        "decision": "approve",
+        "tool_call_id": "call-train",
+        "tool_name": "train",
+    }
+    first = client.post(f"/api/sessions/{session_id}/feedback/stream", headers=headers(), json=body)
+    assert first.status_code == 200
+    assert "feedback_submit_error" in first.text
+
+    second = client.post(
+        f"/api/sessions/{session_id}/feedback/stream",
+        headers=headers(),
+        json={**body, "decision_id": "retry-2"},
+    )
+    assert second.status_code == 200
+    assert len(FakeServiceClient.runtime_stream_calls) == 2

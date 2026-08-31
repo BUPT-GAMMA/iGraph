@@ -100,7 +100,9 @@ class MemoryPatchReq(BaseModel):
 
 
 class FeedbackReq(BaseModel):
-    request_id: str
+    run_id: str = ""
+    request_id: str = ""
+    decision_id: str = ""
     decision: Literal["approve", "modify", "reject"]
     patched_args: dict[str, Any] | None = None
     comment: str = ""
@@ -189,36 +191,88 @@ def _ordered_runs(runs: list[dict]) -> list[dict]:
 _ACTIVE_RUN_STATUSES = {"pending", "running", "paused"}
 
 
+def _active_run_record(runs: list[dict]) -> dict[str, Any] | None:
+    for run in reversed(_ordered_runs(runs)):
+        status = str(run.get("status") or "").lower()
+        if status in _ACTIVE_RUN_STATUSES:
+            return run
+    return None
+
+
+def _run_summary(run: dict) -> dict[str, Any]:
+    indexes: list[int] = []
+    for value in (run.get("last_event_index"), run.get("event_index")):
+        try:
+            if value is not None:
+                indexes.append(int(value))
+        except (TypeError, ValueError):
+            pass
+    events = run.get("events") or []
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            try:
+                if event.get("event_index") is not None:
+                    indexes.append(int(event["event_index"]))
+            except (TypeError, ValueError):
+                pass
+    return {
+        "run_id": str(run.get("run_id") or run.get("id") or ""),
+        "status": str(run.get("status") or "").lower(),
+        "last_event_index": max(indexes, default=-1),
+    }
+
+
+def _public_feedback(feedback: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not feedback:
+        return None
+    return {
+        key: feedback.get(key)
+        for key in ("run_id", "request_id", "call_id", "tool_name", "proposed_args", "description")
+    }
+
+
+def _active_run_snapshot(
+    runs: list[dict],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """Return active run, its matching public feedback, and the source record."""
+
+    record = _active_run_record(runs)
+    if record is None:
+        return None, None, None
+    active_run = _run_summary(record)
+    feedback = None
+    if active_run["status"] == "paused":
+        feedback = feedback_request_from_payload(record)
+        feedback["run_id"] = active_run["run_id"]
+        feedback["request_id"] = active_run["run_id"]
+    return active_run, _public_feedback(feedback), record
+
+
 def _active_run_summary(runs: list[dict]) -> dict[str, Any] | None:
     """Return the newest non-terminal run and its durable resume cursor."""
 
-    for run in reversed(_ordered_runs(runs)):
-        status = str(run.get("status") or "").lower()
-        if status not in _ACTIVE_RUN_STATUSES:
-            continue
-        indexes: list[int] = []
-        for value in (run.get("last_event_index"), run.get("event_index")):
-            try:
-                if value is not None:
-                    indexes.append(int(value))
-            except (TypeError, ValueError):
-                pass
-        events = run.get("events") or []
-        if isinstance(events, list):
-            for event in events:
-                if not isinstance(event, dict):
-                    continue
-                try:
-                    if event.get("event_index") is not None:
-                        indexes.append(int(event["event_index"]))
-                except (TypeError, ValueError):
-                    pass
-        return {
-            "run_id": str(run.get("run_id") or run.get("id") or ""),
-            "status": status,
-            "last_event_index": max(indexes, default=-1),
+    return _active_run_snapshot(runs)[0]
+
+
+def _stream_event_frame(
+    event: dict[str, Any],
+    *,
+    protocol_version: int,
+    session_id: str,
+    run_id: str,
+) -> str:
+    if protocol_version == 2:
+        payload = {
+            "protocol_version": 2,
+            "session_id": session_id,
+            "run_id": run_id,
+            "events": [event],
         }
-    return None
+    else:
+        payload = event
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def _run_input_text(run: dict) -> str:
@@ -545,6 +599,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     run_locks: dict[tuple[str, str], asyncio.Lock] = {}
     run_locks_guard = asyncio.Lock()
     reserved_runs: set[tuple[str, str]] = set()
+    feedback_attempts: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    feedback_attempt_ttl_seconds = 30 * 60
 
     app = FastAPI(title="iGraph Backend", version="3.0.0")
     app.add_middleware(
@@ -681,13 +737,16 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         lock = await run_lock(*key)
         async with lock:
             runs = await get_session_runs(session_id, request, user.user_id)
-            active_run = _active_run_summary(runs)
+            active_run, pending, _ = _active_run_snapshot(runs)
             if key in reserved_runs or active_run is not None:
+                awaiting_feedback = active_run is not None and active_run.get("status") == "paused"
                 raise HTTPException(
                     status_code=409,
                     detail={
-                        "message": "该会话已有正在运行或等待确认的任务",
+                        "code": "RUN_AWAITING_FEEDBACK" if awaiting_feedback else "RUN_ACTIVE",
+                        "message": "请先处理当前待确认操作" if awaiting_feedback else "该会话已有正在运行的任务",
                         "active_run": active_run,
+                        "pending_feedback": pending,
                     },
                 )
             reserved_runs.add(key)
@@ -704,10 +763,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
     async def pending_feedback(session_id: str, request: Request, user_id: str) -> dict | None:
         runs = await get_session_runs(session_id, request, user_id)
-        for run in reversed(runs):
-            if str(run.get("status") or "").lower() == "paused":
-                return feedback_request_from_payload(run)
-        return None
+        return _active_run_snapshot(runs)[1]
 
     def project_or_404(project_id: str, user_id: str) -> ProjectRecord:
         project = projects.get(project_id, user_id)
@@ -1261,14 +1317,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         has_graph = await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
         runs = await get_session_runs(session_id, request, user.user_id)
         restored = _messages_from_runs(runs) or _messages(session)
-        pending = next(
-            (
-                feedback_request_from_payload(run)
-                for run in reversed(runs)
-                if str(run.get("status") or "").lower() == "paused"
-            ),
-            None,
-        )
+        active_run, pending, _ = _active_run_snapshot(runs)
         return {
             "success": True,
             "session_id": session_id,
@@ -1277,7 +1326,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "messages": restored,
             "has_graph": has_graph,
             "pending_feedback": pending,
-            "active_run": _active_run_summary(runs),
+            "active_run": active_run,
             "project_id": session_project_id(session, user.user_id),
             "active_dataset_id": state.get("active_dataset_id"),
             "provider": state.get("provider", "openai-compatible"),
@@ -1306,18 +1355,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         state = _state(session)
         has_graph = await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
         runs = await get_session_runs(session_id, request, user.user_id)
+        active_run, pending, _ = _active_run_snapshot(runs)
         return {
             "session_id": session_id,
             "has_graph": has_graph,
-            "pending_feedback": next(
-                (
-                    feedback_request_from_payload(run)
-                    for run in reversed(runs)
-                    if str(run.get("status") or "").lower() == "paused"
-                ),
-                None,
-            ),
-            "active_run": _active_run_summary(runs),
+            "pending_feedback": pending,
+            "active_run": active_run,
             "project_id": session_project_id(session, user.user_id),
             "active_dataset_id": state.get("active_dataset_id"),
             "provider": state.get("provider", "openai-compatible"),
@@ -1555,11 +1598,89 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def feedback(session_id: str, req: FeedbackReq, request: Request):
         user = current_user(request, users)
         await get_session(session_id, request, user.user_id)
+        run_id = (req.run_id or req.request_id).strip()
+        decision_id = req.decision_id.strip() or f"legacy:{uuid.uuid4()}"
+        if not run_id or (req.run_id and req.request_id and req.run_id != req.request_id):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "STALE_FEEDBACK",
+                    "message": "确认请求缺少有效 Run ID",
+                    "active_run": None,
+                    "pending_feedback": None,
+                },
+            )
+
+        lock = await run_lock(user.user_id, session_id)
+        async with lock:
+            now = asyncio.get_running_loop().time()
+            for key, attempt in list(feedback_attempts.items()):
+                if now - float(attempt.get("updated_at", now)) > feedback_attempt_ttl_seconds:
+                    feedback_attempts.pop(key, None)
+
+            runs = await get_session_runs(session_id, request, user.user_id)
+            active_run, pending, active_record = _active_run_snapshot(runs)
+
+            def conflict(code: str, message: str) -> HTTPException:
+                return HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": code,
+                        "message": message,
+                        "active_run": active_run,
+                        "pending_feedback": pending,
+                    },
+                )
+
+            requested_call_id = req.tool_call_id.strip()
+            prior = next(
+                (
+                    attempt
+                    for key, attempt in feedback_attempts.items()
+                    if key[:3] == (user.user_id, session_id, run_id)
+                    and (not requested_call_id or key[3] == requested_call_id)
+                ),
+                None,
+            )
+            if prior is not None:
+                code = "FEEDBACK_ALREADY_ACCEPTED" if prior.get("state") == "accepted" else "FEEDBACK_IN_PROGRESS"
+                message = "该确认已经提交，正在核对 Run 状态" if code == "FEEDBACK_ALREADY_ACCEPTED" else "该确认正在提交，请勿重复操作"
+                raise conflict(code, message)
+
+            if active_run is None:
+                raise conflict("NO_PENDING_FEEDBACK", "当前会话没有待确认的活动 Run")
+            if active_run.get("run_id") != run_id:
+                raise conflict("STALE_FEEDBACK", "确认请求已过期，请刷新当前会话状态")
+            if active_run.get("status") != "paused" or active_record is None or pending is None:
+                raise conflict("NO_PENDING_FEEDBACK", "当前 Run 已不再等待确认")
+
+            authoritative = feedback_request_from_payload(active_record)
+            requirements = authoritative.get("pending_requirements") or []
+            if isinstance(requirements, list) and len(requirements) > 1:
+                raise conflict("MULTIPLE_FEEDBACK_UNSUPPORTED", "当前 Run 存在多个待确认操作，已安全停止提交")
+            call_id = str(authoritative.get("call_id") or "").strip()
+            tool_name = str(authoritative.get("tool_name") or "").strip()
+            if not call_id or not tool_name:
+                raise conflict("STALE_FEEDBACK", "AgentOS 暂停记录缺少工具身份，无法安全继续")
+            if requested_call_id and requested_call_id != call_id:
+                raise conflict("STALE_FEEDBACK", "待确认工具已经变化，请重新核对确认卡片")
+            if req.tool_name.strip() and req.tool_name.strip() != tool_name:
+                raise conflict("STALE_FEEDBACK", "待确认工具名称已经变化，请重新核对确认卡片")
+
+            attempt_key = (user.user_id, session_id, run_id, call_id)
+            feedback_attempts[attempt_key] = {
+                "decision_id": decision_id,
+                "state": "submitting",
+                "updated_at": now,
+            }
+
         confirmed = req.decision in {"approve", "modify"}
+        authoritative_args = authoritative.get("proposed_args")
+        tool_args = req.patched_args if req.decision == "modify" else authoritative_args
         tools = [{
-            "tool_call_id": req.tool_call_id or req.request_id,
-            "tool_name": req.tool_name,
-            "tool_args": req.patched_args or {},
+            "tool_call_id": call_id,
+            "tool_name": tool_name,
+            "tool_args": tool_args if isinstance(tool_args, dict) else {},
             "confirmed": confirmed,
             "confirmation_note": req.comment,
         }]
@@ -1567,15 +1688,57 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         protocol_version = 2 if request.headers.get("X-iGraph-Stream-Version") == "2" else 1
 
         async def events():
-            path = f"/agents/{settings.agent_id}/runs/{req.request_id}/continue"
-            async with runtime.stream("POST", path, headers=forwarded_headers(request, user.user_id), data=data) as response:
-                async for chunk in translate_sse(
-                    response.aiter_lines(),
+            accepted = False
+            try:
+                path = f"/agents/{settings.agent_id}/runs/{run_id}/continue"
+                async with runtime.stream("POST", path, headers=forwarded_headers(request, user.user_id), data=data) as response:
+                    accepted = True
+                    # Mark accepted before the next await. If the browser disconnects
+                    # immediately after AgentOS returns 2xx, a duplicate decision must
+                    # still be rejected while the durable Run state catches up.
+                    attempt = feedback_attempts.get(attempt_key)
+                    if attempt and attempt.get("decision_id") == decision_id:
+                        attempt.update({"state": "accepted", "updated_at": asyncio.get_running_loop().time()})
+                    yield _stream_event_frame(
+                        {
+                            "type": "feedback_accepted",
+                            "session_id": session_id,
+                            "run_id": run_id,
+                            "decision_id": decision_id,
+                        },
+                        protocol_version=protocol_version,
+                        session_id=session_id,
+                        run_id=run_id,
+                    )
+                    async for chunk in translate_sse(
+                        response.aiter_lines(),
+                        protocol_version=protocol_version,
+                        session_id=session_id,
+                        run_id=run_id,
+                    ):
+                        yield chunk
+            except Exception as exc:
+                if not accepted:
+                    attempt_lock = await run_lock(user.user_id, session_id)
+                    async with attempt_lock:
+                        attempt = feedback_attempts.get(attempt_key)
+                        if attempt and attempt.get("decision_id") == decision_id:
+                            feedback_attempts.pop(attempt_key, None)
+                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                message = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
+                yield _stream_event_frame(
+                    {
+                        "type": "feedback_submit_error",
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "decision_id": decision_id,
+                        "accepted": accepted,
+                        "error": message,
+                    },
                     protocol_version=protocol_version,
                     session_id=session_id,
-                    run_id=req.request_id,
-                ):
-                    yield chunk
+                    run_id=run_id,
+                )
 
         return StreamingResponse(
             events(),

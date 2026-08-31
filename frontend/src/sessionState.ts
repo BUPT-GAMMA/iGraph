@@ -5,6 +5,7 @@ export type RunStatus =
   | 'starting'
   | 'streaming'
   | 'awaiting_feedback'
+  | 'submitting_feedback'
   | 'reconnecting'
   | 'detached'
   | 'completed'
@@ -21,6 +22,11 @@ export type SessionRunState = {
   toolOrder: string[];
   plan: Plan | null;
   feedback: FeedbackRequest | null;
+  feedbackSubmission?: {
+    decisionId: string;
+    callId: string;
+    decision: 'approve' | 'reject';
+  };
   error?: string;
 };
 
@@ -61,8 +67,10 @@ export type ConversationAction =
   | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'uploading' | 'model' | 'activeDatasetId' | 'error' | 'selectedNode'>> }
   | { type: 'APPEND_MESSAGES'; sessionId: string; messages: Message[] }
   | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
-  | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string }
+  | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string; restoreDraft?: string; restoreAttachments?: AttachmentRef[] }
   | { type: 'ADOPT_RUN'; sessionId: string; generation: string; activeRun: ActiveRun; feedback?: FeedbackRequest | null }
+  | { type: 'BEGIN_FEEDBACK_SUBMISSION'; sessionId: string; generation: string; runId: string; callId: string; decisionId: string; decision: 'approve' | 'reject' }
+  | { type: 'CLEAR_ACTIVE_RUN'; sessionId: string; generation: string }
   | { type: 'APPLY_BATCH'; sessionId: string; generation: string; batch: StreamBatch }
   | { type: 'SET_RUN_STATUS'; sessionId: string; generation: string; status: RunStatus; error?: string }
   | { type: 'GRAPH_REQUEST_START'; sessionId: string; requestVersion: number }
@@ -70,8 +78,50 @@ export type ConversationAction =
   | { type: 'REMOVE_SESSION'; sessionId: string };
 
 export const SESSION_VIEW_CACHE_LIMIT = 12;
-const PROTECTED_RUN_STATUSES = new Set<RunStatus>(['starting', 'streaming', 'awaiting_feedback', 'reconnecting', 'detached']);
+const PROTECTED_RUN_STATUSES = new Set<RunStatus>(['starting', 'streaming', 'awaiting_feedback', 'submitting_feedback', 'reconnecting', 'detached']);
 const TERMINAL_RUN_STATUSES = new Set<RunStatus>(['completed', 'failed', 'cancelled']);
+
+export type RunGateReason = 'run_active' | 'awaiting_feedback' | 'submitting_feedback' | 'reconnecting' | 'detached' | null;
+
+export type BottomInteraction =
+  | { kind: 'composer' }
+  | { kind: 'approval'; feedback: FeedbackRequest; phase: 'awaiting' | 'submitting' }
+  | { kind: 'syncing_feedback'; reason: 'session_hydration' | 'missing_feedback' };
+
+export function selectRunGate(view?: SessionViewState | null) {
+  const status = view?.activeRun?.status;
+  const reason: RunGateReason = status === 'awaiting_feedback'
+    ? 'awaiting_feedback'
+    : status === 'submitting_feedback'
+      ? 'submitting_feedback'
+      : status === 'reconnecting'
+        ? 'reconnecting'
+        : status === 'detached'
+          ? 'detached'
+          : status === 'starting' || status === 'streaming'
+            ? 'run_active'
+            : null;
+  return {
+    reason,
+    canStartRun: reason === null,
+    canSubmitFeedback: status === 'awaiting_feedback' && Boolean(view?.activeRun?.feedback),
+    blocksSessionMutation: reason !== null,
+  };
+}
+
+export function selectBottomInteraction(view?: SessionViewState | null): BottomInteraction {
+  const run = view?.activeRun;
+  if (run?.status === 'awaiting_feedback' || run?.status === 'submitting_feedback') {
+    if (!run.feedback) return { kind: 'syncing_feedback', reason: 'missing_feedback' };
+    return {
+      kind: 'approval',
+      feedback: run.feedback,
+      phase: run.status === 'submitting_feedback' ? 'submitting' : 'awaiting',
+    };
+  }
+  if (view?.hydration === 'loading') return { kind: 'syncing_feedback', reason: 'session_hydration' };
+  return { kind: 'composer' };
+}
 
 export const initialConversationState: ConversationState = { activeSessionId: null, viewsBySessionId: {} };
 
@@ -159,8 +209,10 @@ function normalizeFeedbackRequest(event: StreamEvent): FeedbackRequest | null {
   if (!raw || typeof raw !== 'object') return null;
   const request = raw as Record<string, any>;
   const proposedArgs = request.proposed_args ?? request.tool_args ?? request.arguments ?? {};
+  const runId = String(request.run_id ?? request.runId ?? request.request_id ?? request.requestId ?? event.run_id ?? '');
   return {
-    request_id: String(request.request_id ?? request.requestId ?? event.run_id ?? ''),
+    run_id: runId,
+    request_id: String(request.request_id ?? request.requestId ?? runId),
     call_id: String(request.call_id ?? request.callId ?? request.tool_call_id ?? request.toolCallId ?? ''),
     tool_name: String(request.tool_name ?? request.toolName ?? request.proposed_tool ?? request.name ?? ''),
     proposed_args: proposedArgs && typeof proposedArgs === 'object' && !Array.isArray(proposedArgs) ? proposedArgs : {},
@@ -184,8 +236,24 @@ function renameAssistantMessage(view: SessionViewState, run: SessionRunState, ne
 function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: StreamEvent): { view: SessionViewState; run: SessionRunState } {
   const eventType = String(event.type || '');
   const eventName = String(event.type || event.event || '').toLowerCase();
+  if (eventType === 'feedback_submit_error') {
+    if (run.feedbackSubmission && event.decision_id && run.feedbackSubmission.decisionId !== event.decision_id) return { view, run };
+    const error = String(event.error || '确认提交失败，正在核对 Run 状态');
+    return { view: { ...view, error }, run: { ...run, error } };
+  }
+  if (eventType === 'feedback_accepted') {
+    if (run.feedbackSubmission && event.decision_id && run.feedbackSubmission.decisionId !== event.decision_id) return { view, run };
+    return {
+      view,
+      run: { ...run, status: 'streaming', feedback: null, feedbackSubmission: undefined, error: undefined },
+    };
+  }
   if (eventType === 'stream_status') {
     return { view, run: { ...run, status: run.status === 'reconnecting' ? 'streaming' : run.status } };
+  }
+
+  if (run.status === 'submitting_feedback') {
+    run = { ...run, status: 'streaming', feedback: null, feedbackSubmission: undefined, error: undefined };
   }
 
   if (eventType === 'token') {
@@ -404,17 +472,26 @@ export function conversationReducer(state: ConversationState, action: Conversati
         : indexMessages(view.sessionId, action.messages);
       let activeRun = view.activeRun;
       if (action.activeRun) {
+        const status = action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'reconnecting';
         if (!activeRun || activeRun.runId !== action.activeRun.run_id) {
           activeRun = {
             runId: action.activeRun.run_id,
             generation: action.generation || `resume:${action.activeRun.run_id}`,
-            status: action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'reconnecting',
+            status,
             lastEventIndex: Number(action.activeRun.last_event_index ?? -1),
             assistantMessageId: `assistant:${action.activeRun.run_id}`,
             toolsById: {}, toolOrder: [], plan: null,
             feedback: action.feedback || null,
           };
-        } else if (action.feedback) activeRun = { ...activeRun, feedback: action.feedback };
+        } else {
+          activeRun = {
+            ...activeRun,
+            status,
+            lastEventIndex: Math.max(activeRun.lastEventIndex, Number(action.activeRun.last_event_index ?? -1)),
+            feedback: status === 'awaiting_feedback' ? action.feedback || activeRun.feedback : null,
+            feedbackSubmission: undefined,
+          };
+        }
       } else if (!activeRun || !PROTECTED_RUN_STATUSES.has(activeRun.status)) activeRun = null;
       view = {
         ...view,
@@ -438,6 +515,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       view = appendMessages(view, action.messages);
       break;
     case 'START_RUN': {
+      if (PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle')) return state;
       view = appendMessages(view, [action.userMessage, action.assistantMessage]);
       view = {
         ...view,
@@ -462,6 +540,11 @@ export function conversationReducer(state: ConversationState, action: Conversati
         ...view,
         messagesById,
         messageOrder: view.messageOrder.filter(id => !removeIds.has(id)),
+        draft: view.draft.trim() ? view.draft : action.restoreDraft || view.draft,
+        attachments: [
+          ...view.attachments,
+          ...(action.restoreAttachments || []).filter(item => !view.attachments.some(current => current.file_token === item.file_token)),
+        ],
         activeRun: null,
       };
       break;
@@ -479,12 +562,34 @@ export function conversationReducer(state: ConversationState, action: Conversati
         },
       };
       break;
+    case 'BEGIN_FEEDBACK_SUBMISSION': {
+      const run = view.activeRun;
+      if (!run || run.generation !== action.generation || run.runId !== action.runId || run.status !== 'awaiting_feedback') return state;
+      const callId = String(run.feedback?.call_id || '');
+      if (!callId || callId !== action.callId) return state;
+      view = {
+        ...view,
+        error: undefined,
+        activeRun: {
+          ...run,
+          status: 'submitting_feedback',
+          feedbackSubmission: { decisionId: action.decisionId, callId: action.callId, decision: action.decision },
+          error: undefined,
+        },
+      };
+      break;
+    }
+    case 'CLEAR_ACTIVE_RUN':
+      if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
+      view = { ...view, activeRun: null };
+      break;
     case 'APPLY_BATCH':
       view = applyBatch(view, action.generation, action.batch);
       break;
     case 'SET_RUN_STATUS':
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
       if (TERMINAL_RUN_STATUSES.has(view.activeRun.status) && !TERMINAL_RUN_STATUSES.has(action.status)) return state;
+      if (view.activeRun.status === 'awaiting_feedback' && !['awaiting_feedback', 'failed', 'cancelled'].includes(action.status)) return state;
       view = {
         ...view,
         error: action.error || view.error,
