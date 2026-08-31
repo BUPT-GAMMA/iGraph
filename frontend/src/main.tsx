@@ -14,6 +14,7 @@ import { DeleteProjectDialog, MoveConversationDialog, ProjectDialog } from './co
 import { ProjectWorkspace } from './components/ProjectWorkspace';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
+import { parseWorkspaceRoute, writeWorkspaceRoute } from './navigation';
 import './styles.css';
 
 type GraphTab = 'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts';
@@ -131,7 +132,7 @@ function App() {
   layoutRef.current = { sidebarWidth, graphWidth, graphOpen };
   conversationRef.current = conversation;
   const activeSessionId = conversation.activeSessionId;
-  const activeSession = activeSessionId ? sessions.find(session => session.session_id === activeSessionId) || { session_id: activeSessionId } : null;
+  const activeSession = activeSessionId ? sessions.find(session => session.session_id === activeSessionId) || null : null;
   const activeView = activeSessionId ? conversation.viewsBySessionId[activeSessionId] : null;
   const visibleProjectId = activeProject?.project_id || activeSession?.project_id || '';
   const datasets = visibleProjectId ? datasetsByProject[visibleProjectId] || [] : [];
@@ -240,11 +241,18 @@ function App() {
   }, [graphOpen]);
 
   function updateViewUrl(view: 'project' | 'session', id: string) {
-    const url = new URL(window.location.href);
-    url.searchParams.delete('project');
-    url.searchParams.delete('session');
-    url.searchParams.set(view, id);
-    window.history.pushState({}, '', url);
+    writeWorkspaceRoute({ kind: view, id });
+  }
+
+  function showWorkspaceHome(updateUrl = true, replaceUrl = false, message = '') {
+    setActiveProject(null);
+    dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: null });
+    setGraphOpen(false);
+    setDatasetOpen(false);
+    setMoveSessionTarget(null);
+    setMobileSidebarOpen(false);
+    setWorkspaceError(message);
+    if (updateUrl) writeWorkspaceRoute({ kind: 'home' }, replaceUrl);
   }
 
   function runStorageKey(sessionId: string) { return `igraph-active-run:v2:${userId}:${sessionId}`; }
@@ -486,9 +494,14 @@ function App() {
     void consumeRunConnection(sessionId, generation, connection, 'resume', undefined, undefined, undefined, activeRun.last_event_index);
   }
 
-  const selectSession = async (id: string, source = sessions, updateUrl = true) => {
-    if (id === conversationRef.current.activeSessionId && !activeProject) return;
-    const session = (source.find(item => item.session_id === id) || { session_id: id }) as Session;
+  const selectSession = async (id: string, source = sessions, updateUrl = true, allowUnlisted = false) => {
+    const listedSession = source.find(item => item.session_id === id);
+    if (!listedSession && !allowUnlisted) {
+      showWorkspaceHome(true, true, '该会话不存在或已被删除');
+      return;
+    }
+    if (id === conversationRef.current.activeSessionId && !activeProject && listedSession) return;
+    const session = listedSession || { session_id: id };
     setActiveProject(null);
     setWorkspaceError('');
     dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: id, model: session.model || defaultModel, accessedAt: Date.now() });
@@ -533,7 +546,7 @@ function App() {
         preserveMessages: Boolean(previousView?.messageOrder.length && previousView.activeRun),
       });
       setAvailableModels(normalizedModels(response.available_models, selectedModel));
-      setSessions(current => current.map(item => item.session_id === id ? { ...item, project_id: projectId, active_dataset_id: activeDatasetId, has_graph: response.has_graph, model: selectedModel } : item));
+      setSessions(current => mergeSessionLists(current, [{ ...session, project_id: projectId, active_dataset_id: activeDatasetId, has_graph: response.has_graph, model: selectedModel }]));
 
       if (projectId) {
         void listProjectDatasets(projectId, controller.signal).then(datasetResponse => {
@@ -550,7 +563,13 @@ function App() {
       }
       if (effectiveActiveRun) openResumeConnection(id, generation, effectiveActiveRun, true);
     } catch (cause: any) {
-      if (!requestWasAborted(cause) && hydrationVersionsRef.current.get(id) === requestVersion) {
+      if (!requestWasAborted(cause) && cause instanceof ApiError && cause.status === 404) {
+        connectionManagerRef.current.abort(id);
+        clearPersistedRun(id);
+        dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
+        setSessions(current => current.filter(item => item.session_id !== id));
+        if (conversationRef.current.activeSessionId === id) showWorkspaceHome(true, true, '该会话不存在或已被删除');
+      } else if (!requestWasAborted(cause) && hydrationVersionsRef.current.get(id) === requestVersion) {
         dispatchConversation({ type: 'HYDRATE_FAILED', sessionId: id, requestVersion, error: cause.message || '会话切换失败' });
       }
     } finally {
@@ -561,7 +580,10 @@ function App() {
   const selectProject = async (id: string, source = projects, updateUrl = true) => {
     if (busy) return;
     const project = source.find(item => item.project_id === id);
-    if (!project) return setWorkspaceError('项目不存在或已被删除');
+    if (!project) {
+      showWorkspaceHome(true, true, '该项目不存在或已被删除');
+      return;
+    }
     setBusy(true); setWorkspaceError('');
     try {
       const [conversationResponse, datasetResponse] = await Promise.all([listProjectConversations(id), listProjectDatasets(id)]);
@@ -574,7 +596,12 @@ function App() {
       dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: null });
       setGraphOpen(false);
       if (updateUrl) updateViewUrl('project', id);
-    } catch (cause: any) { setWorkspaceError(cause.message || '项目加载失败'); }
+    } catch (cause: any) {
+      if (cause instanceof ApiError && cause.status === 404) {
+        setProjects(current => current.filter(item => item.project_id !== id));
+        showWorkspaceHome(true, true, '该项目不存在或已被删除');
+      } else setWorkspaceError(cause.message || '项目加载失败');
+    }
     finally { setBusy(false); }
   };
 
@@ -583,13 +610,13 @@ function App() {
     const nextSessions = sessionResponse.sessions || [];
     const nextProjects = projectResponse.projects || [];
     setSessions(nextSessions); setProjects(nextProjects);
-    const query = new URLSearchParams(window.location.search);
-    const projectId = query.get('project');
-    const sessionId = query.get('session');
-    if (projectId && nextProjects.some(project => project.project_id === projectId)) await selectProject(projectId, nextProjects, false);
-    else if (sessionId) await selectSession(sessionId, nextSessions, false);
-    else if (nextSessions[0]) await selectSession(nextSessions[0].session_id, nextSessions, false);
-    else if (nextProjects[0]) await selectProject(nextProjects[0].project_id, nextProjects, false);
+    const route = parseWorkspaceRoute(window.location.search);
+    if (route.kind === 'project') {
+      if (nextProjects.some(project => project.project_id === route.id)) await selectProject(route.id, nextProjects, false);
+      else showWorkspaceHome(true, true, '该项目不存在或已被删除');
+    } else if (route.kind === 'session') {
+      await selectSession(route.id, nextSessions, false, true);
+    } else showWorkspaceHome(false);
   }
 
   useEffect(() => {
@@ -602,6 +629,21 @@ function App() {
       return refresh();
     }).catch((cause: any) => setWorkspaceError(cause.message || '无法加载会话'));
   }, [userId]);
+  useEffect(() => {
+    if (!userId || demoMode) return;
+    function handleHistoryNavigation() {
+      const route = parseWorkspaceRoute(window.location.search);
+      if (route.kind === 'home') {
+        showWorkspaceHome(false);
+      } else if (route.kind === 'session') {
+        void selectSession(route.id, sessions, false, true);
+      } else if (projects.some(project => project.project_id === route.id)) {
+        void selectProject(route.id, projects, false);
+      } else showWorkspaceHome(true, true, '该项目不存在或已被删除');
+    }
+    window.addEventListener('popstate', handleHistoryNavigation);
+    return () => window.removeEventListener('popstate', handleHistoryNavigation);
+  }, [userId, sessions, projects, busy]);
   useEffect(() => () => connectionManagerRef.current.abortAll(), []);
   useEffect(() => {
     if (!userId) return;
@@ -641,6 +683,7 @@ function App() {
   async function deleteTask(id: string) {
     if (!window.confirm('确认删除这个分析任务吗？')) return;
     const deleted = sessions.find(item => item.session_id === id);
+    const deletingActiveSession = conversationRef.current.activeSessionId === id;
     try {
       await removeSession(id);
       connectionManagerRef.current.abort(id);
@@ -648,11 +691,10 @@ function App() {
       hydrationControllersRef.current.delete(id);
       clearPersistedRun(id);
       dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
-      const next = sessions.filter(item => item.session_id !== id);
-      setSessions(next);
+      setSessions(current => current.filter(item => item.session_id !== id));
       if (deleted?.project_id) setProjects(current => current.map(project => project.project_id === deleted.project_id ? { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) } : project));
       if (activeProject?.project_id === deleted?.project_id) setActiveProject(current => current ? { ...current, conversation_count: Math.max(0, (current.conversation_count || 0) - 1) } : current);
-      if (activeSession?.session_id === id && next[0]) await selectSession(next[0].session_id, next);
+      if (deletingActiveSession) showWorkspaceHome(true, true);
     } catch (cause: any) { setWorkspaceError(cause.message || '删除任务失败'); }
   }
   async function saveProject(name: string, description: string) {
@@ -673,6 +715,10 @@ function App() {
   async function deleteCurrentProject(action: 'move_to_general' | 'delete') {
     if (!deleteProjectTarget) return;
     const targetId = deleteProjectTarget.project_id;
+    const affectedSessions = sessions.filter(session => session.project_id === targetId);
+    const affectedSessionIds = new Set(affectedSessions.map(session => session.session_id));
+    const deletingActiveSession = Boolean(activeSessionId && affectedSessionIds.has(activeSessionId));
+    const deletingActiveProject = activeProject?.project_id === targetId;
     const response = await removeProject(targetId, action);
     const generalProject = projects.find(project => project.project_id === response.general_project_id);
     const nextSessions = action === 'delete'
@@ -683,9 +729,32 @@ function App() {
       .map(project => project.project_id === response.general_project_id && action === 'move_to_general'
         ? { ...project, conversation_count: (project.conversation_count || 0) + response.affected_conversations }
         : project);
+    if (action === 'delete') {
+      for (const session of affectedSessions) {
+        connectionManagerRef.current.abort(session.session_id);
+        hydrationControllersRef.current.get(session.session_id)?.abort();
+        hydrationControllersRef.current.delete(session.session_id);
+        clearPersistedRun(session.session_id);
+        dispatchConversation({ type: 'REMOVE_SESSION', sessionId: session.session_id });
+      }
+    } else {
+      for (const session of affectedSessions) {
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId: session.session_id, patch: { activeDatasetId: generalProject?.default_dataset_id, selectedNode: null } });
+        const graphVersion = nextGraphVersion(session.session_id);
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: session.session_id, requestVersion: graphVersion, graph: null });
+      }
+    }
     setSessions(nextSessions); setProjects(nextProjects); setDeleteProjectTarget(null);
     const general = nextProjects.find(project => project.project_id === response.general_project_id);
-    if (general) await selectProject(general.project_id, nextProjects);
+    if (deletingActiveSession && action === 'delete') showWorkspaceHome(true, true);
+    else if (deletingActiveProject) {
+      if (general) await selectProject(general.project_id, nextProjects);
+      else showWorkspaceHome(true, true);
+    } else if (deletingActiveSession) {
+      setActiveProject(null);
+      setGraphOpen(false);
+      setWorkspaceError('');
+    }
   }
   async function moveCurrentSession(projectId: string) {
     if (!moveSessionTarget) return;
@@ -937,14 +1006,16 @@ function App() {
         </> : <>
           <div className="workspace-context">
             <div className="context-icon"><Icon name="graph" size={18} /></div>
-            <div>{sessionProject && <button className="project-breadcrumb" onClick={() => selectProject(sessionProject.project_id)}>{sessionProject.name} /</button>}<strong>{activeSession?.title || '新的图谱分析'}</strong><span>{graph ? `${graphNodeCount.toLocaleString()} nodes · ${graphEdgeCount.toLocaleString()} edges` : '等待加载图谱数据'}</span></div>
+            <div>{sessionProject && <button className="project-breadcrumb" onClick={() => selectProject(sessionProject.project_id)}>{sessionProject.name} /</button>}<strong>{activeSession?.title || 'iGraph 工作台'}</strong><span>{activeSession ? (graph ? `${graphNodeCount.toLocaleString()} nodes · ${graphEdgeCount.toLocaleString()} edges` : '等待加载图谱数据') : '选择已有会话，或新建任务'}</span></div>
             <div className="context-actions">
               {activeSession && <button onClick={() => setMoveSessionTarget(activeSession)}><Icon name="move" size={14} /> 移动</button>}
               <button onClick={() => setGraphOpen(true)} disabled={!graph}><Icon name="graph" size={14} /> 打开图谱</button>
             </div>
           </div>
           <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
-          <ChatPaneWithState messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => activeSession && dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !activeSession} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={!!graph} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} />
+          {activeSession
+            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={!!graph} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} />
+            : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><Icon name="graph" size={31} /></div><h1>开始新的图谱分析</h1><p>选择左侧已有会话，或创建一个新任务。</p><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button></div></div>}
         </>}
       </div>
       {graphOpen && activeSession && <><ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} /><GraphWorkspace data={graph} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} onClose={() => setGraphOpen(false)} layoutVersion={graphLayoutVersion} /></>}

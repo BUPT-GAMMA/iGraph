@@ -119,4 +119,49 @@ describe('ConversationInputArea', () => {
     rerender(<ChatPane {...baseChatProps} value="preserved draft" interaction={{ kind: 'composer' }} />);
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('preserved draft');
   });
+
+  it('shows a jump-to-latest button without interrupting a user who scrolled up', () => {
+    const initialMessages = [
+      { id: 'user-1', role: 'user' as const, content: 'question' },
+      { id: 'assistant-1', role: 'assistant' as const, content: 'first chunk', streaming: true },
+    ];
+    const { container, rerender } = render(<ChatPane {...baseChatProps} conversationKey="session-a" messages={initialMessages} />);
+    const scroll = container.querySelector('.chat-scroll') as HTMLDivElement;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 120 },
+    });
+    const scrollTo = vi.fn((options: ScrollToOptions) => { scroll.scrollTop = Number(options.top); });
+    Object.defineProperty(scroll, 'scrollTo', { configurable: true, value: scrollTo });
+
+    fireEvent.scroll(scroll);
+    expect(screen.getByRole('button', { name: '滚动到最新消息' })).toBeTruthy();
+
+    rerender(<ChatPane {...baseChatProps} conversationKey="session-a" messages={[initialMessages[0], { ...initialMessages[1], content: 'first chunk\nsecond chunk' }]} />);
+    expect(scroll.scrollTop).toBe(120);
+    expect(screen.getByRole('button', { name: '滚动到最新消息' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '滚动到最新消息' }));
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' });
+    expect(screen.queryByRole('button', { name: '滚动到最新消息' })).toBeNull();
+  });
+
+  it('jumps to the bottom when switching conversations', () => {
+    const messages = [
+      { id: 'user-1', role: 'user' as const, content: 'question' },
+      { id: 'assistant-1', role: 'assistant' as const, content: 'answer' },
+    ];
+    const { container, rerender } = render(<ChatPane {...baseChatProps} conversationKey="session-a" messages={messages} />);
+    const scroll = container.querySelector('.chat-scroll') as HTMLDivElement;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 0 },
+    });
+
+    rerender(<ChatPane {...baseChatProps} conversationKey="session-b" messages={messages.map(message => ({ ...message, id: `b-${message.id}` }))} />);
+    expect(scroll.scrollTop).toBe(1200);
+    expect(screen.queryByRole('button', { name: '滚动到最新消息' })).toBeNull();
+  });
 });

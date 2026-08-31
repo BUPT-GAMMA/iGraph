@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, type ReactNode, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { Icon } from './Icon';
@@ -130,20 +130,73 @@ function renderContent(content: string, role: Message['role']) { return role ===
 
 export type ChatPaneProps = ConversationInputAreaProps & {
   messages: Message[];
+  conversationKey?: string;
   hasGraph: boolean;
   onOpenGraph: () => void;
   runTools?: ToolCall[];
   plan?: Plan | null;
 };
 
-export function ChatPane({ messages, hasGraph, onOpenGraph, runTools, plan, ...inputProps }: ChatPaneProps) {
+const BOTTOM_THRESHOLD = 48;
+
+function isNearBottom(element: HTMLDivElement) {
+  return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
+}
+
+export function ChatPane({ messages, conversationKey = 'default', hasGraph, onOpenGraph, runTools, plan, ...inputProps }: ChatPaneProps) {
   const composerAvailable = inputProps.interaction.kind === 'composer';
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sticksToBottomRef = useRef(true);
+  const initializedRef = useRef(false);
+  const previousConversationRef = useRef(conversationKey);
+  const previousLatestUserRef = useRef<string | undefined>(undefined);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const latestUserId = [...messages].reverse().find(message => message.role === 'user')?.id;
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const element = scrollRef.current;
+    if (!element) return;
+    sticksToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    if (behavior === 'smooth' && typeof element.scrollTo === 'function') {
+      element.scrollTo({ top: element.scrollHeight, behavior });
+    } else {
+      element.scrollTop = element.scrollHeight;
+    }
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const atBottom = isNearBottom(element);
+    sticksToBottomRef.current = atBottom;
+    setShowJumpToLatest(!atBottom);
+  }, []);
+
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const conversationChanged = previousConversationRef.current !== conversationKey;
+    const userSentMessage = Boolean(latestUserId && previousLatestUserRef.current !== latestUserId);
+    const shouldForceLatest = !initializedRef.current || conversationChanged || userSentMessage;
+    initializedRef.current = true;
+    previousConversationRef.current = conversationKey;
+    previousLatestUserRef.current = latestUserId;
+
+    if (shouldForceLatest || sticksToBottomRef.current) {
+      scrollToLatest('auto');
+      return;
+    }
+    setShowJumpToLatest(!isNearBottom(element));
+  }, [conversationKey, latestUserId, messages, plan, runTools, scrollToLatest]);
+
   return <main className="chat-pane">
-    <div className="chat-scroll">
+    <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
       {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><Icon name="graph" size={31} /></div><h1>开始图分析</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange('请检查当前图谱的结构和基本属性')}>检查图谱结构</button><button onClick={() => inputProps.onChange('请计算节点的度数并找出最大度节点')}>计算节点度数</button><button onClick={() => inputProps.onChange('请帮我进行社区检测')}>进行社区检测</button></div> : null}</div> : messages.map((message, index) => <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}><div className={`message-avatar ${message.role}`}>{message.role === 'assistant' ? <Icon name="spark" size={15} /> : 'A'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'iGraph Agent' : '你'}</div><div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{planCard(message.plan)}{toolList(message.tools)}{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图谱结果 <span>→</span></button> : null}</div></div>)}
       {inputProps.loading && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{planCard(plan)}{toolList(runTools)}</div> : null}
       {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图谱已加载 · 在右侧工作台查看</button> : null}
     </div>
+    {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label="滚动到最新消息" title="滚动到最新消息"><Icon name="chevron" size={18} /></button></div> : null}
     <ConversationInputArea {...inputProps} />
   </main>;
 }

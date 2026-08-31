@@ -51,7 +51,7 @@ export function GraphWorkspace({ data, messages = [], liveTools = [], tab, onTab
       nodes.forEach((item: any, index) => { const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2; item.x = width / 2 + Math.cos(angle) * radius; item.y = height / 2 + Math.sin(angle) * radius; });
       simulation.stop();
     }
-    node.append('circle').attr('r', (item: any) => item.id === String(selected?.id ?? '') ? 13 : 8).attr('fill', (item: any) => item.id === String(selected?.id ?? '') ? '#13b8a6' : '#d8f3ef');
+    node.append('circle').attr('r', (item: any) => item.id === String(selected?.id ?? '') ? 13 : 8).attr('fill', (item: any) => item.id === String(selected?.id ?? '') ? 'var(--graph-node-selected-fill)' : 'var(--graph-node-fill)');
     node.append('text').attr('dy', 20).text((item: any) => String(item.label ?? item.id).slice(0, 12));
     simulation.on('tick', () => { link.attr('x1', (edge: any) => edge.source.x).attr('y1', (edge: any) => edge.source.y).attr('x2', (edge: any) => edge.target.x).attr('y2', (edge: any) => edge.target.y); node.attr('transform', (item: any) => `translate(${item.x},${item.y})`); });
     simulation.tick();
