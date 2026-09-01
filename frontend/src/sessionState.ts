@@ -89,7 +89,7 @@ export type ConversationAction =
   | { type: 'CLEAR_ACTIVE_RUN'; sessionId: string; generation: string }
   | { type: 'APPLY_BATCH'; sessionId: string; generation: string; batch: StreamBatch }
   | { type: 'SET_RUN_STATUS'; sessionId: string; generation: string; status: RunStatus; error?: string }
-  | { type: 'GRAPH_REQUEST_START'; sessionId: string; requestVersion: number }
+  | { type: 'GRAPH_REQUEST_START'; sessionId: string; requestVersion: number; preserveCurrent?: boolean }
   | { type: 'GRAPH_REQUEST_SUCCESS'; sessionId: string; requestVersion: number; graph: GraphViewState }
   | { type: 'REMOVE_SESSION'; sessionId: string };
 
@@ -764,7 +764,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'GRAPH_REQUEST_START':
       if (action.requestVersion < view.graphRequestVersion) return state;
-      view = { ...view, graphRequestVersion: action.requestVersion, graph: { status: 'loading', data: null }, selectedNode: null };
+      view = action.preserveCurrent && view.graph.status === 'ready'
+        ? { ...view, graphRequestVersion: action.requestVersion }
+        : { ...view, graphRequestVersion: action.requestVersion, graph: { status: 'loading', data: null }, selectedNode: null };
       break;
     case 'GRAPH_REQUEST_SUCCESS':
       if (action.requestVersion !== view.graphRequestVersion) return state;

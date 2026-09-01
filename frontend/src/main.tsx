@@ -382,15 +382,15 @@ function App() {
     } catch { return null; }
   }
 
-  function nextGraphVersion(sessionId: string) {
+  function nextGraphVersion(sessionId: string, preserveCurrent = false) {
     const version = (graphVersionsRef.current.get(sessionId) || 0) + 1;
     graphVersionsRef.current.set(sessionId, version);
-    dispatchConversation({ type: 'GRAPH_REQUEST_START', sessionId, requestVersion: version });
+    dispatchConversation({ type: 'GRAPH_REQUEST_START', sessionId, requestVersion: version, preserveCurrent });
     return version;
   }
 
-  async function refreshSessionGraph(sessionId: string, options: Record<string, unknown> = {}, reportError = false, requestVersion?: number) {
-    const version = requestVersion ?? nextGraphVersion(sessionId);
+  async function refreshSessionGraph(sessionId: string, options: Record<string, unknown> = {}, reportError = false, requestVersion?: number, preserveCurrent = false) {
+    const version = requestVersion ?? nextGraphVersion(sessionId, preserveCurrent);
     try {
       const nextGraph = await visualizeGraph(sessionId, options);
       dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'ready', data: nextGraph } });
@@ -398,14 +398,19 @@ function App() {
       return nextGraph;
     } catch (cause: any) {
       const unsupported = unsupportedGraphViewFromError(cause);
+      let retainedCurrentGraph = false;
       if (unsupported) {
         dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: unsupported });
       } else {
         const message = cause.message || '图谱加载失败';
-        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'failed', data: null, error: message } });
+        const currentGraph = conversationRef.current.viewsBySessionId[sessionId]?.graph;
+        retainedCurrentGraph = Boolean(preserveCurrent && currentGraph?.status === 'ready');
+        if (!retainedCurrentGraph) {
+          dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'failed', data: null, error: message } });
+        }
         if (reportError) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: message } });
       }
-      setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, has_graph: false } : session));
+      setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, has_graph: retainedCurrentGraph } : session));
       return null;
     }
   }
@@ -614,7 +619,7 @@ function App() {
       if (clearPendingOnOpen) clearPendingFirstTurn(sessionId);
       connectionManagerRef.current.release(sessionId, generation);
       if (startPayload?.attachments.length) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [] } });
-      void refreshSessionGraph(sessionId, { include_community: false });
+      void refreshSessionGraph(sessionId, { include_community: false }, false, undefined, true);
       return;
     }
     if (awaitingFeedback) {
@@ -1558,7 +1563,7 @@ function App() {
     const sessionId = activeSession.session_id;
     const name = String(node.id ?? node.label ?? '').trim();
     if (!name) return;
-    await refreshSessionGraph(sessionId, { node_names: [name], max_nodes: 200 }, true);
+    await refreshSessionGraph(sessionId, { node_names: [name], max_nodes: 200 }, true, undefined, true);
   }
   if (!ready) return null;
   if (!userId) return <div className="login-screen"><div className="login-box"><div className="brand-mark large"><Icon name="graph" size={24} /></div><h1>进入 iGraph</h1><p>登录后开始图谱分析</p><input autoFocus value={loginValue} onChange={event => setLoginValue(event.target.value)} onKeyDown={event => event.key === 'Enter' && login()} placeholder="用户 ID" /><button onClick={login}>登录</button>{loginError && <span className="login-error">{loginError}</span>}</div></div>;

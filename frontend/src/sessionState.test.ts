@@ -247,6 +247,19 @@ describe('conversationReducer session/run isolation', () => {
     expect(state.viewsBySessionId.A.graph.status === 'ready' ? state.viewsBySessionId.A.graph.data.nodes[0] : null).toEqual({ id: 'new' });
   });
 
+  it('keeps the current graph visible during a background refresh', () => {
+    let state = session(initialConversationState, 'A');
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 1 });
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 1, graph: { status: 'ready', data: { nodes: [{ id: 'current' }], edges: [] } } });
+    state = conversationReducer(state, { type: 'PATCH_VIEW', sessionId: 'A', patch: { selectedNode: { id: 'current' } } });
+
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 2, preserveCurrent: true });
+
+    expect(state.viewsBySessionId.A.graph).toEqual({ status: 'ready', data: { nodes: [{ id: 'current' }], edges: [] } });
+    expect(state.viewsBySessionId.A.selectedNode).toEqual({ id: 'current' });
+    expect(state.viewsBySessionId.A.graphRequestVersion).toBe(2);
+  });
+
   it('switches atomically to unsupported and rejects an older graph response', () => {
     let state = session(initialConversationState, 'A');
     state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 1 });
