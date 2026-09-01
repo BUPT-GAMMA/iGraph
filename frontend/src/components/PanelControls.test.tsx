@@ -29,7 +29,7 @@ const sidebarProps = {
 };
 
 const graphProps = {
-  data: null,
+  view: { status: 'empty' as const, data: null },
   tab: 'Graph' as const,
   onTab: noop,
   selected: null,
@@ -87,6 +87,29 @@ describe('docked panel controls', () => {
     expect(expandRight.querySelector('path')?.getAttribute('d')).toBe('M15 4v16M10 9l-3 3 3 3');
     expect(screen.getByText('图谱工作台').classList.contains('workspace-title')).toBe(true);
     expect(screen.getByText('Overview').closest('.workspace-panel-content')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('degrades graph collections without mounting a canvas and keeps statistics tabs useful', () => {
+    const view = {
+      status: 'unsupported' as const,
+      data: null,
+      code: 'NON_SINGLE_GRAPH' as const,
+      summary: { num_graphs: 41127, num_tasks: 1, metric: 'roc_auc', split_sizes: { train: 32901, val: 4113, test: 4113 }, node_vocab_size: 382, edge_vocab_size: 8, missing_label_rate: 0 },
+    };
+    const { rerender, container } = render(<GraphWorkspace {...graphProps} view={view} datasetName="hiv" collapsed={false} onToggle={noop} />);
+
+    expect(screen.getByText('非独立图，无法直接可视化')).toBeTruthy();
+    expect(container.querySelector('.graph-canvas svg')).toBeNull();
+    expect(container.querySelector('.graph-toolbar')).toBeNull();
+    expect(container.querySelector('.node-inspector')).toBeNull();
+
+    rerender(<GraphWorkspace {...graphProps} view={view} datasetName="hiv" tab="Overview" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('41,127')).toBeTruthy();
+    expect(screen.getByText('roc_auc')).toBeTruthy();
+
+    rerender(<GraphWorkspace {...graphProps} view={view} datasetName="hiv" tab="Data" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('32,901')).toBeTruthy();
+    expect(screen.getByText('Node vocab')).toBeTruthy();
   });
 
   it('keeps a drawer mounted until its exit animation completes', () => {

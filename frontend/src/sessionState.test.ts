@@ -25,6 +25,52 @@ function lastMessage(state: ConversationState, sessionId: string) {
 }
 
 describe('conversationReducer session/run isolation', () => {
+  it('keeps one local draft per project without creating a session view', () => {
+    const draftA = { draftId: 'draft-a', projectId: 'project-a', phase: 'editing' as const, text: 'hello', model: 'model-a', activeDatasetId: null, attachments: [] };
+    let state = conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft: draftA });
+    state = conversationReducer(state, { type: 'OPEN_DRAFT', draft: { ...draftA, draftId: 'replacement', text: '' } });
+
+    expect(state.draftsByProjectId['project-a']).toEqual(draftA);
+    expect(state.activeDraftProjectId).toBe('project-a');
+    expect(state.activeSessionId).toBeNull();
+    expect(state.viewsBySessionId).toEqual({});
+  });
+
+  it('isolates drafts from different projects and switches without losing either one', () => {
+    let state = conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft: { draftId: 'A', projectId: 'project-a', phase: 'editing', text: 'A text', model: 'm', activeDatasetId: null, attachments: [] } });
+    state = conversationReducer(state, { type: 'OPEN_DRAFT', draft: { draftId: 'B', projectId: 'project-b', phase: 'editing', text: 'B text', model: 'm', activeDatasetId: null, attachments: [] } });
+
+    expect(state.activeDraftProjectId).toBe('project-b');
+    expect(state.draftsByProjectId['project-a'].text).toBe('A text');
+    expect(state.draftsByProjectId['project-b'].text).toBe('B text');
+  });
+
+  it('materializes a draft atomically into one preparing session', () => {
+    let state = conversationReducer(initialConversationState, {
+      type: 'OPEN_DRAFT',
+      draft: {
+        draftId: 'session-new', projectId: 'project-a', phase: 'editing', text: 'first turn', model: 'm', activeDatasetId: 'dataset-a',
+        attachments: [
+          { localId: 'uploaded', filename: 'ready.txt', fileToken: 'token-1', status: 'uploaded' },
+          { localId: 'pending', filename: 'local.txt', status: 'staged' },
+        ],
+      },
+    });
+    state = conversationReducer(state, { type: 'MATERIALIZE_DRAFT', projectId: 'project-a', draftId: 'session-new', sessionId: 'session-new', generation: 'gen', model: 'm', activeDatasetId: 'dataset-a' });
+
+    expect(state.draftsByProjectId['project-a']).toBeUndefined();
+    expect(state.activeDraftProjectId).toBeNull();
+    expect(state.activeSessionId).toBe('session-new');
+    expect(state.viewsBySessionId['session-new']).toEqual(expect.objectContaining({
+      draft: 'first turn',
+      attachments: [{ file_token: 'token-1', filename: 'ready.txt' }],
+      pendingAttachments: [expect.objectContaining({ localId: 'pending' })],
+      activeRun: expect.objectContaining({ generation: 'gen', status: 'preparing' }),
+    }));
+    const unchanged = start(state, 'session-new', 'duplicate');
+    expect(unchanged).toBe(state);
+  });
+
   it('only applies A tokens to session A', () => {
     let state = session(session(initialConversationState, 'A'), 'B');
     state = start(start(state, 'A', 'gen-a'), 'B', 'gen-b');
@@ -195,10 +241,32 @@ describe('conversationReducer session/run isolation', () => {
     let state = session(initialConversationState, 'A');
     state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 1 });
     state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 2 });
-    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 1, graph: { nodes: [{ id: 'old' }], edges: [] } });
-    expect(state.viewsBySessionId.A.graph).toBeNull();
-    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 2, graph: { nodes: [{ id: 'new' }], edges: [] } });
-    expect(state.viewsBySessionId.A.graph?.nodes[0]).toEqual({ id: 'new' });
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 1, graph: { status: 'ready', data: { nodes: [{ id: 'old' }], edges: [] } } });
+    expect(state.viewsBySessionId.A.graph.status).toBe('loading');
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 2, graph: { status: 'ready', data: { nodes: [{ id: 'new' }], edges: [] } } });
+    expect(state.viewsBySessionId.A.graph.status === 'ready' ? state.viewsBySessionId.A.graph.data.nodes[0] : null).toEqual({ id: 'new' });
+  });
+
+  it('switches atomically to unsupported and rejects an older graph response', () => {
+    let state = session(initialConversationState, 'A');
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 1 });
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 1, graph: { status: 'ready', data: { nodes: [{ id: 'cora' }], edges: [] } } });
+    state = conversationReducer(state, { type: 'PATCH_VIEW', sessionId: 'A', patch: { selectedNode: { id: 'cora' }, activeDatasetId: 'cora' } });
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 2 });
+    state = conversationReducer(state, {
+      type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 2,
+      graph: { status: 'unsupported', data: null, code: 'NON_SINGLE_GRAPH', summary: { num_graphs: 41127 } },
+    });
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 1, graph: { status: 'ready', data: { nodes: [{ id: 'stale' }], edges: [] } } });
+
+    state = start(state, 'A', 'collection-run');
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'collection-run',
+      batch: batch('A', 'collection-run-id', 3, [{ type: 'graph_visualize', data: { success: true, nodes: [{ id: 'sample' }], edges: [] } }]),
+    });
+
+    expect(state.viewsBySessionId.A.graph).toEqual(expect.objectContaining({ status: 'unsupported', summary: { num_graphs: 41127 } }));
+    expect(state.viewsBySessionId.A.selectedNode).toBeNull();
   });
 
   it('rejects stale hydration responses and protects active/draft/running LRU entries', () => {
