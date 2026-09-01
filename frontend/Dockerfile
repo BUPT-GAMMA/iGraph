@@ -1,13 +1,18 @@
 ARG NODE_IMAGE=node:22-alpine
 ARG NGINX_IMAGE=nginx:1.27-alpine
+ARG PNPM_VERSION=10.28.1
 FROM ${NODE_IMAGE} AS build
+ARG PNPM_VERSION
 WORKDIR /app
-COPY frontend/package.json frontend/tsconfig.json frontend/tsconfig.node.json frontend/vite.config.ts ./
-RUN npm install
+RUN corepack enable \
+    && corepack prepare pnpm@${PNPM_VERSION} --activate
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY frontend/tsconfig.json frontend/tsconfig.node.json frontend/vite.config.ts ./
 COPY frontend/index.html ./index.html
 COPY frontend/src ./src
 COPY frontend/public/figures ./public/figures
-RUN npm run build
+RUN pnpm build
 
 FROM ${NGINX_IMAGE}
 

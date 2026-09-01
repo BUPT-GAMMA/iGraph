@@ -1,0 +1,5 @@
+# Reproducible Python 3.12 test environment used by CI and local verification.
+# Python 3.12 matches the production images and has the pinned PyTorch CPU wheel.
+-r requirements.txt
+pytest==9.1.1
+pytest-cov==7.1.0
