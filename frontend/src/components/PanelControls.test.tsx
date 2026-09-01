@@ -67,6 +67,17 @@ describe('docked panel controls', () => {
     expect(container.querySelector('.project-session-row')?.classList.contains('selected')).toBe(false);
   });
 
+  it('shows the project name before each recent task title', () => {
+    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
+    const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '会话一' }];
+    render(<Sidebar {...sidebarProps} projects={projects} sessions={sessions} collapsed={false} onCollapse={noop} />);
+
+    const recent = screen.getByTitle('项目一 / 会话一');
+    expect(recent.querySelector('.recent-project-name')?.textContent).toBe('项目一');
+    expect(recent.querySelector('.recent-session-separator')?.textContent).toBe('/');
+    expect(recent.querySelector('.recent-session-name')?.textContent).toBe('会话一');
+  });
+
   it('uses one right panel toggle for both expanded and collapsed states', () => {
     const onToggle = vi.fn();
     const onTab = vi.fn();
@@ -110,6 +121,25 @@ describe('docked panel controls', () => {
     rerender(<GraphWorkspace {...graphProps} view={view} datasetName="hiv" tab="Data" collapsed={false} onToggle={noop} />);
     expect(screen.getByText('32,901')).toBeTruthy();
     expect(screen.getByText('Node vocab')).toBeTruthy();
+  });
+
+  it('keeps the graph canvas stable across unrelated renders and supports zoom gestures', () => {
+    const graphData = {
+      nodes: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
+      edges: [{ source: 'a', target: 'b' }],
+    };
+    const view = { status: 'ready' as const, data: graphData };
+    const { container, rerender } = render(<GraphWorkspace {...graphProps} view={view} collapsed={false} onToggle={noop} />);
+    const canvas = screen.getByLabelText('图谱画布，可拖动平移并使用滚轮缩放');
+    const originalViewport = container.querySelector('.graph-viewport');
+
+    expect(originalViewport).toBeTruthy();
+    expect((canvas as unknown as SVGSVGElement & { __zoom?: unknown }).__zoom).toBeTruthy();
+
+    rerender(<GraphWorkspace {...graphProps} view={{ status: 'ready', data: { nodes: graphData.nodes.map(node => ({ ...node })), edges: graphData.edges.map(edge => ({ ...edge })) } }} messages={[{ id: 'm1', role: 'user', content: '输入变化' }]} selected={{ id: 'a' }} onSelect={() => undefined} collapsed={false} onToggle={noop} />);
+
+    expect(container.querySelector('.graph-viewport')).toBe(originalViewport);
+    expect(container.querySelector<SVGCircleElement>('.graph-node circle')?.getAttribute('r')).toBe('13');
   });
 
   it('keeps a drawer mounted until its exit animation completes', () => {

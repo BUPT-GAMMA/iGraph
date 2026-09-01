@@ -542,3 +542,52 @@ body.is-resizing-columns .app-body { transition: none; }
   }
   .drawer-overlay, .drawer-overlay > .drawer { animation-duration: .01ms !important; }
 }
+
+/* Keep long, unbroken user input inside the message bubble. */
+.message-content, .plain-content {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.plain-content {
+  display: block;
+  white-space: pre-wrap;
+}
+
+/* The graph canvas itself owns pan and zoom gestures. */
+.graph-canvas svg {
+  cursor: grab;
+  touch-action: none;
+}
+.graph-canvas svg:active { cursor: grabbing; }
+
+/* User bubbles shrink to their content; the percentage remains only an upper limit. */
+.message-row.user .message-body {
+  width: fit-content;
+  max-width: min(70%, calc(100% - 40px));
+  flex: 0 1 auto;
+}
+
+/* Recent task parts truncate independently so the highlighted separator stays visible. */
+.session-copy .recent-session-title {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.recent-project-name, .recent-session-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-copy .recent-project-name, .session-copy .recent-session-name { color: inherit; }
+.recent-project-name { max-width: 45%; }
+.recent-session-name { flex: 1; }
+.session-copy .recent-session-separator {
+  flex: 0 0 auto;
+  color: #0a9f92;
+  font-weight: 800;
+}
+[data-theme="dark"] .session-copy .recent-session-separator { color: #56d1c4; }

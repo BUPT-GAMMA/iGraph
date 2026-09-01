@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 import torch
 
-from backend.logging.logger import close_service_loggers
 from graph_data_service.graph_ml.artifact_store import ArtifactStore
 from graph_data_service.graph_ml.infer import GraphMLInferencer
 from graph_data_service.graph_ml.models import GraphClassifier
@@ -17,6 +16,7 @@ from graph_data_service.graph_ml.trainer import GraphMLTrainer
 from graph_data_service.graph_ml.trainer.trainer_graph_classification import (
     GraphClassificationTrainer,
 )
+from graph_engine.observability import close_service_loggers
 from tests.fixtures.graph_classification import (
     make_trainable_graph_classification_bundle,
 )
@@ -144,7 +144,7 @@ class GraphClassificationTrainingTest(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual(Path(ref.model_dir).parent.name, "admin_91ba0949")
             self.assertTrue(
-                (Path(log_root) / "admin_91ba0949" / "graph_ml.log").exists()
+                (Path(log_root) / "admin_91ba0949" / "graph_ml.jsonl").exists()
             )
 
     def test_early_stop_finishes_selection_before_touching_test_split(self) -> None:

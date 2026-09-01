@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -173,6 +175,15 @@ class _StrictRuntime:
 
 class ApiGatewayAppTest(unittest.TestCase):
     def setUp(self) -> None:
+        self._supported_ids_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._supported_ids_dir.cleanup)
+        supported_ids_file = Path(self._supported_ids_dir.name) / "supported_ids.txt"
+        supported_ids_file.write_text("admin\nalice\n", encoding="utf-8")
+        self._supported_ids_patch = patch.object(
+            gateway_app,
+            "_SUPPORTED_IDS_FILE",
+            str(supported_ids_file),
+        )
         self._admin_model_patch = patch.object(
             gateway_app,
             "_DEFAULT_ADMIN_MODEL",
@@ -183,8 +194,10 @@ class ApiGatewayAppTest(unittest.TestCase):
             "_DEFAULT_NON_ADMIN_MODEL",
             "qwen3.6-plus",
         )
+        self._supported_ids_patch.start()
         self._admin_model_patch.start()
         self._user_model_patch.start()
+        self.addCleanup(self._supported_ids_patch.stop)
         self.addCleanup(self._admin_model_patch.stop)
         self.addCleanup(self._user_model_patch.stop)
         self.server = create_server(

@@ -781,7 +781,7 @@ class GraphDataAppTest(unittest.TestCase):
                     self.assertTrue(result["current_graph_replaced"])
                     self.assertEqual(result["graph_version"], 2)
 
-                    session_dir = os.path.join(td, "users", "alice", "sessions", sid)
+                    session_dir = os.path.join(td, "users", "alice", "graph_sessions", sid)
                     self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_current.npz")))
                     self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_versions.json")))
                     self.assertTrue(os.path.exists(os.path.join(session_dir, "snapshots", "v002.npz")))

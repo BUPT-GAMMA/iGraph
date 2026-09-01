@@ -4,6 +4,18 @@ import { Icon } from './Icon';
 
 function sessionTitle(session: Session) { return session.title || session.preview || session.last_message || '未命名分析'; }
 
+function recentSessionTitle(session: Session, projectNames: Map<string, string>) {
+  const projectName = session.project_id ? projectNames.get(session.project_id) : undefined;
+  return projectName ? `${projectName} / ${sessionTitle(session)}` : sessionTitle(session);
+}
+
+function RecentSessionTitle({ session, projectNames }: { session: Session; projectNames: Map<string, string> }) {
+  const projectName = session.project_id ? projectNames.get(session.project_id) : undefined;
+  const title = sessionTitle(session);
+  if (!projectName) return <strong className="recent-session-title"><span className="recent-session-name">{title}</span></strong>;
+  return <strong className="recent-session-title"><span className="recent-project-name">{projectName}</span><span className="recent-session-separator" aria-hidden="true">/</span><span className="recent-session-name">{title}</span></strong>;
+}
+
 type Props = {
   projects: Project[];
   sessions: Session[];
@@ -44,6 +56,7 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const activeSessionProjectId = sessions.find(session => session.session_id === activeId)?.project_id;
+  const projectNames = new Map(projects.map(project => [project.project_id, project.name]));
 
   useEffect(() => {
     const projectId = activeProjectId || activeSessionProjectId;
@@ -108,8 +121,8 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
       <section className="sidebar-recents">
         <div className="sidebar-section-head"><span>最近任务</span></div>
         <div className="session-list">
-          {sessions.length === 0 ? <div className="sidebar-empty">暂无任务<br /><span>点击上方按钮开始新分析</span></div> : sessions.map(session => <div className={`session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id} onClick={() => { onSelect(session.session_id); onCloseMobile(); }}>
-            <Icon name="file" size={15} /><div className="session-copy"><strong>{sessionTitle(session)}</strong><span>{runStatusLabel(runStatuses[session.session_id]) || (session.has_graph ? '已加载图谱' : '待开始分析')}</span></div>{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title="删除任务" aria-label="删除任务"><Icon name="trash" size={14} /></button>
+          {sessions.length === 0 ? <div className="sidebar-empty">暂无任务<br /><span>点击上方按钮开始新分析</span></div> : sessions.map(session => <div className={`session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id} title={recentSessionTitle(session, projectNames)} onClick={() => { onSelect(session.session_id); onCloseMobile(); }}>
+            <Icon name="file" size={15} /><div className="session-copy"><RecentSessionTitle session={session} projectNames={projectNames} /><span>{runStatusLabel(runStatuses[session.session_id]) || (session.has_graph ? '已加载图谱' : '待开始分析')}</span></div>{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title="删除任务" aria-label="删除任务"><Icon name="trash" size={14} /></button>
           </div>)}
         </div>
       </section>

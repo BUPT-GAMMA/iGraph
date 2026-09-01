@@ -29,9 +29,16 @@ export function GraphWorkspace(props: GraphWorkspaceProps) {
   return <GraphWorkspaceErrorBoundary resetKey={props.resetKey} collapsed={props.collapsed} onToggle={props.onToggle}><GraphWorkspaceContent {...props} /></GraphWorkspaceErrorBoundary>;
 }
 
-function GraphWorkspaceContent({ view, datasetName, messages = [], liveTools = [], tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0 }: GraphWorkspaceProps) {
-  const data = view.status === 'ready' ? view.data : null;
+function GraphWorkspaceContent({ view, datasetName, messages = [], liveTools = [], tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, resetKey }: GraphWorkspaceProps) {
+  const incomingData = view.status === 'ready' ? view.data : null;
+  const incomingDataSignature = useMemo(() => incomingData ? JSON.stringify(incomingData) : 'empty', [incomingData]);
+  const stableDataRef = useRef<{ signature: string; data: GraphData | null }>({ signature: incomingDataSignature, data: incomingData });
+  if (stableDataRef.current.signature !== incomingDataSignature) stableDataRef.current = { signature: incomingDataSignature, data: incomingData };
+  const data = stableDataRef.current.data;
   const canvas = useRef<SVGSVGElement>(null);
+  const onSelectRef = useRef(onSelect);
+  const zoomTransformRef = useRef(d3.zoomIdentity);
+  const renderedResetKeyRef = useRef(resetKey);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [layout, setLayout] = useState<LayoutMode>('force');
@@ -57,31 +64,54 @@ function GraphWorkspaceContent({ view, datasetName, messages = [], liveTools = [
     });
   }, [data, query, connectedOnly, degreeById]);
 
+  useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
+
   useEffect(() => {
     if (collapsed || !canvas.current || !data?.nodes?.length || tab !== 'Graph') return;
     const svg = d3.select(canvas.current); svg.selectAll('*').remove();
     const host = canvas.current.parentElement; const width = host?.clientWidth || 360; const height = host?.clientHeight || 420;
+    if (renderedResetKeyRef.current !== resetKey) {
+      renderedResetKeyRef.current = resetKey;
+      zoomTransformRef.current = d3.zoomIdentity;
+    }
+    const viewport = svg.append('g').attr('class', 'graph-viewport').attr('transform', zoomTransformRef.current.toString());
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .extent([[0, 0], [width, height]])
+      .scaleExtent([.25, 6])
+      .on('zoom', event => {
+        zoomTransformRef.current = event.transform;
+        viewport.attr('transform', event.transform.toString());
+      });
+    svg.call(zoom).call(zoom.transform, zoomTransformRef.current).on('dblclick.zoom', null);
     const nodes = visibleNodes.slice(0, 180).map(item => ({ ...item.node, id: item.id }));
     const nodeIds = new Set(nodes.map(node => node.id));
     const edges = (data.edges || []).map(edge => ({ source: String(edge.src ?? edge.source), target: String(edge.dst ?? edge.target) })).filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target)).slice(0, 400);
     const simulation = d3.forceSimulation(nodes as any).force('link', d3.forceLink(edges as any).id((node: any) => node.id).distance(layout === 'radial' ? 72 : 58)).force('charge', d3.forceManyBody().strength(-150)).force('center', d3.forceCenter(width / 2, height / 2)).force('collision', d3.forceCollide(15));
     if (layout === 'radial') simulation.force('radial', d3.forceRadial(Math.min(width, height) * .3, width / 2, height / 2).strength(.45));
-    const link = svg.append('g').selectAll('line').data(edges).join('line').attr('class', 'graph-link');
-    const node = svg.append('g').selectAll('g').data(nodes).join('g').attr('class', 'graph-node').on('click', (_, item) => onSelect(item as Record<string, unknown>)).call(d3.drag<any, any>().on('start', (event, item) => { if (!event.active) simulation.alphaTarget(.25).restart(); item.fx = item.x; item.fy = item.y; }).on('drag', (event, item) => { item.fx = event.x; item.fy = event.y; }).on('end', (event, item) => { if (!event.active) simulation.alphaTarget(0); item.fx = null; item.fy = null; }));
+    const link = viewport.append('g').selectAll('line').data(edges).join('line').attr('class', 'graph-link');
+    const node = viewport.append('g').selectAll('g').data(nodes).join('g').attr('class', 'graph-node').on('click', (_, item) => onSelectRef.current(item as Record<string, unknown>)).call(d3.drag<any, any>().on('start', (event, item) => { if (!event.active) simulation.alphaTarget(.25).restart(); item.fx = item.x; item.fy = item.y; }).on('drag', (event, item) => { item.fx = event.x; item.fy = event.y; }).on('end', (event, item) => { if (!event.active) simulation.alphaTarget(0); item.fx = null; item.fy = null; }));
     if (layout === 'circle') {
       const radius = Math.max(35, Math.min(width, height) * .34);
       nodes.forEach((item: any, index) => { const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2; item.x = width / 2 + Math.cos(angle) * radius; item.y = height / 2 + Math.sin(angle) * radius; });
       simulation.stop();
     }
-    node.append('circle').attr('r', (item: any) => item.id === String(selected?.id ?? '') ? 13 : 8).attr('fill', (item: any) => item.id === String(selected?.id ?? '') ? 'var(--graph-node-selected-fill)' : 'var(--graph-node-fill)');
+    node.append('circle').attr('r', 8).attr('fill', 'var(--graph-node-fill)');
     node.append('text').attr('dy', 20).text((item: any) => String(item.label ?? item.id).slice(0, 12));
     simulation.on('tick', () => { link.attr('x1', (edge: any) => edge.source.x).attr('y1', (edge: any) => edge.source.y).attr('x2', (edge: any) => edge.target.x).attr('y2', (edge: any) => edge.target.y); node.attr('transform', (item: any) => `translate(${item.x},${item.y})`); });
     simulation.tick();
-    return () => { simulation.stop(); };
-  }, [collapsed, data, tab, selected, onSelect, layoutVersion, layout, visibleNodes]);
+    return () => { simulation.stop(); svg.on('.zoom', null); };
+  }, [collapsed, data, tab, layoutVersion, layout, visibleNodes, resetKey]);
+
+  useEffect(() => {
+    if (!canvas.current) return;
+    const selectedId = String(selected?.id ?? '');
+    d3.select(canvas.current).selectAll<SVGCircleElement, Record<string, unknown>>('.graph-node circle')
+      .attr('r', item => String(item.id ?? '') === selectedId ? 13 : 8)
+      .attr('fill', item => String(item.id ?? '') === selectedId ? 'var(--graph-node-selected-fill)' : 'var(--graph-node-fill)');
+  }, [selected, data, visibleNodes, collapsed, tab, layoutVersion, layout]);
   const tabs: Tab[] = ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
   return <aside className={`graph-workspace ${collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图谱工作台</strong><button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={collapsed ? '展开右侧栏' : '收起右侧栏'} title={collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={18} /></button></div><div className="workspace-panel-content" aria-hidden={collapsed}><SlidingTabs ariaLabel="图谱工作台视图" className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: item }))} value={tab} onChange={onTab} />
-    {tab === 'ML' ? <MLTab messages={messages} liveTools={liveTools} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : view.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图谱</strong></div> : view.status === 'failed' ? <div className="graph-empty"><div className="empty-icon small"><Icon name="close" size={22} /></div><strong>图谱加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>暂无图谱</strong><span>加载数据或发送建图请求后，这里会显示图谱分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图谱布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button></div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} /></div><div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? 'Selected node')}</strong><span>selected</span></div><div className="inspector-row"><span>Node ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>Type</span><strong>{String(selected.type ?? selected.category ?? 'node')}</strong></div><div className="inspector-row"><span>Degree</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} liveTools={liveTools} />}
+    {tab === 'ML' ? <MLTab messages={messages} liveTools={liveTools} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : view.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图谱</strong></div> : view.status === 'failed' ? <div className="graph-empty"><div className="empty-icon small"><Icon name="close" size={22} /></div><strong>图谱加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>暂无图谱</strong><span>加载数据或发送建图请求后，这里会显示图谱分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图谱布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button></div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} aria-label="图谱画布，可拖动平移并使用滚轮缩放" /></div><div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? 'Selected node')}</strong><span>selected</span></div><div className="inspector-row"><span>Node ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>Type</span><strong>{String(selected.type ?? selected.category ?? 'node')}</strong></div><div className="inspector-row"><span>Degree</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} liveTools={liveTools} />}
   </div></aside>;
 }
 
