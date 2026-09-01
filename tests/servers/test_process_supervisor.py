@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -16,14 +17,28 @@ class ProcessSupervisorStartTest(unittest.TestCase):
         self._pid_lookup_patch.start()
         self.addCleanup(self._pid_lookup_patch.stop)
 
-    @staticmethod
-    def _new_supervisor(graph_data_url: str | None = None) -> ProcessSupervisor:
-        return ProcessSupervisor(
+    def _new_supervisor(self, graph_data_url: str | None = None) -> ProcessSupervisor:
+        supervisor = ProcessSupervisor(
             base_dir=".",
             graph_data_port=19111,
             mcp_port=19110,
             graph_data_url=graph_data_url,
         )
+        self.addCleanup(atexit.unregister, supervisor.stop_all)
+        return supervisor
+
+    @patch("backend.runtime.process_supervisor.os.killpg")
+    @patch("backend.runtime.process_supervisor.os.getpgid")
+    def test_stop_proc_rejects_non_integer_mock_pid(self, mock_getpgid, mock_killpg):
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.pid = MagicMock()
+
+        ProcessSupervisor._stop_proc(proc)
+
+        mock_getpgid.assert_not_called()
+        mock_killpg.assert_not_called()
+        proc.kill.assert_called_once_with()
 
     @patch.object(ProcessSupervisor, "_find_local_pid_by_port", return_value=None)
     @patch.object(ProcessSupervisor, "_is_http_ready", return_value=True)
