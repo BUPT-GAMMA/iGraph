@@ -64,6 +64,13 @@ class GraphDataAppTest(unittest.TestCase):
         self.service = GraphDataService(text_graph_llm_factory=fake_text_graph_llm)
         self.service._embedding_provider = LexicalProvider()
         self.client = TestClient(create_app(self.service))
+        self.addCleanup(self.service._nebula.close)
+        self.addCleanup(
+            self.service._process_pool.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        self.addCleanup(self.client.close)
 
     def test_health_and_load_graph(self) -> None:
         health = self.client.get("/health")
