@@ -49,6 +49,31 @@ test('both docked panel toggles remain reachable in the same screen position', a
   await expect(page.getByLabel('关闭图谱工作台')).toHaveCount(0);
 });
 
+test('new conversations stay local until the first prompt is sent', async ({ page }) => {
+  let createRequests = 0;
+  page.on('request', request => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions') createRequests += 1;
+  });
+  await page.goto('/?session=session-a');
+  const sessionsBefore = await page.locator('.session-row').count();
+  const newInProject = page.getByRole('button', { name: '在 E2E Project 中新建会话' });
+
+  for (let index = 0; index < 10; index += 1) await newInProject.click();
+
+  await expect(page).toHaveURL(/\?project=project-1&new=1$/);
+  await expect(page.locator('.workspace-context strong')).toHaveText('新对话');
+  await expect(page.locator('.session-row')).toHaveCount(sessionsBefore);
+  expect(createRequests).toBe(0);
+
+  const composer = page.getByPlaceholder('今天帮你分析什么？粘贴边列表，或直接用自然语言提问');
+  await composer.fill('首次问题只创建一次');
+  await composer.press('Enter');
+  await expect.poll(() => createRequests).toBe(1);
+  await expect(page).toHaveURL(/\?session=[^&]+$/);
+  await expect(page.locator('.session-row')).toHaveCount(sessionsBefore + 1);
+  await expect(page.locator('.workspace-context strong')).toHaveText('首次问题只创建一次');
+});
+
 test('the workspace tab indicator slides between tabs', async ({ page }) => {
   await page.goto('/?session=session-a');
   await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
@@ -67,6 +92,43 @@ test('the workspace tab indicator slides between tabs', async ({ page }) => {
   const artifactsTransform = await indicator.evaluate(element => getComputedStyle(element).transform);
   expect(artifactsTransform).not.toBe(movingTransform);
   await expect(page.getByRole('tab', { name: 'Artifacts' })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('graph collections degrade safely and recover when switching back to a single graph', async ({ page }) => {
+  await page.goto('/?session=session-a');
+  await expect(page.locator('.graph-canvas svg')).toBeVisible();
+  await expect(page.locator('.workspace-context span').filter({ hasText: '2,708 nodes' })).toBeVisible();
+
+  await page.locator('.composer-dataset').click();
+  const datasetDialog = page.getByRole('dialog', { name: '项目数据集' });
+  await datasetDialog.locator('.dataset-row').filter({ hasText: 'hiv' }).locator('.dataset-row-main').click();
+
+  await expect(page.locator('#root').first()).not.toBeEmpty();
+  await expect(page.getByText('非独立图，无法直接可视化')).toBeVisible();
+  await expect(page.locator('.graph-canvas')).toHaveCount(0);
+  await expect(page.locator('.graph-toolbar')).toHaveCount(0);
+  await expect(page.locator('.node-inspector')).toHaveCount(0);
+  await expect(page.locator('.workspace-context span').filter({ hasText: '41,127 graphs' })).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Overview' }).click();
+  await expect(page.getByText('41,127', { exact: true })).toBeVisible();
+  await expect(page.getByText('roc_auc')).toBeVisible();
+  await page.getByRole('tab', { name: 'Data' }).click();
+  await expect(page.getByText('32,901')).toBeVisible();
+  await expect(page.getByText('Node vocab')).toBeVisible();
+  await page.getByRole('tab', { name: 'ML' }).click();
+  await expect(page.locator('.tab-placeholder strong')).toHaveText('Graph ML');
+  await page.getByRole('tab', { name: 'Artifacts' }).click();
+  await expect(page.locator('.tab-placeholder strong')).toHaveText('Artifacts');
+
+  await page.reload();
+  await expect(page.getByText('非独立图，无法直接可视化')).toBeVisible();
+  await expect(page.locator('.graph-canvas')).toHaveCount(0);
+
+  await page.locator('.composer-dataset').click();
+  await page.getByRole('dialog', { name: '项目数据集' }).locator('.dataset-row').filter({ hasText: 'Cora' }).locator('.dataset-row-main').click();
+  await expect(page.getByText('非独立图，无法直接可视化')).toHaveCount(0);
+  await expect(page.locator('.graph-canvas svg')).toBeVisible();
 });
 
 test('a selected conversation owns the highlight and dark project fields share one style', async ({ page }) => {

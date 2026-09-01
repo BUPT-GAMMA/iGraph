@@ -1,7 +1,9 @@
-import type { ActiveRun, AttachmentRef, FeedbackRequest, GraphData, Message, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
+import { isGraphData } from './types';
+import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphViewState, Message, NewConversationDraft, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
 
 export type RunStatus =
   | 'idle'
+  | 'preparing'
   | 'starting'
   | 'streaming'
   | 'awaiting_feedback'
@@ -36,11 +38,12 @@ export type SessionViewState = {
   hydrationRequestVersion: number;
   messagesById: Record<string, Message>;
   messageOrder: string[];
-  graph: GraphData | null;
+  graph: GraphViewState;
   graphRequestVersion: number;
   selectedNode: Record<string, unknown> | null;
   draft: string;
   attachments: AttachmentRef[];
+  pendingAttachments: DraftAttachment[];
   uploading: boolean;
   model: string;
   activeDatasetId?: string | null;
@@ -51,21 +54,34 @@ export type SessionViewState = {
 
 export type ConversationState = {
   activeSessionId: string | null;
+  activeDraftProjectId: string | null;
   viewsBySessionId: Record<string, SessionViewState>;
+  draftsByProjectId: Record<string, NewConversationDraft>;
 };
 
 export type ConversationAction =
   | { type: 'ENSURE_SESSION'; sessionId: string; model?: string; accessedAt?: number }
   | { type: 'SET_ACTIVE_SESSION'; sessionId: string | null; model?: string; accessedAt?: number }
+  | { type: 'OPEN_DRAFT'; draft: NewConversationDraft }
+  | { type: 'PATCH_DRAFT'; projectId: string; draftId: string; patch: Partial<Pick<NewConversationDraft, 'phase' | 'text' | 'model' | 'activeDatasetId' | 'attachments' | 'error'>> }
+  | { type: 'REMOVE_DRAFT'; projectId: string; draftId?: string }
+  | { type: 'MATERIALIZE_DRAFT'; projectId: string; draftId: string; sessionId: string; generation: string; model: string; activeDatasetId?: string | null; datasetView?: DatasetView | null; accessedAt?: number }
   | { type: 'HYDRATE_START'; sessionId: string; requestVersion: number }
   | {
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
       model: string; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
       activeRun?: ActiveRun | null; generation?: string; preserveMessages?: boolean;
+      datasetView?: DatasetView | null; hasGraph?: boolean;
     }
   | { type: 'HYDRATE_FAILED'; sessionId: string; requestVersion: number; error: string }
-  | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'uploading' | 'model' | 'activeDatasetId' | 'error' | 'selectedNode'>> }
+  | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'pendingAttachments' | 'uploading' | 'model' | 'activeDatasetId' | 'error' | 'selectedNode'>> }
   | { type: 'APPEND_MESSAGES'; sessionId: string; messages: Message[] }
+  | { type: 'BEGIN_RUN_PREPARATION'; sessionId: string; generation: string }
+  | { type: 'START_PREPARED_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
+  | { type: 'PREPARE_RUN_FAILED'; sessionId: string; generation: string; error: string }
+  | { type: 'SET_PENDING_ATTACHMENT'; sessionId: string; localId: string; status: DraftAttachment['status']; error?: string }
+  | { type: 'RESOLVE_PENDING_ATTACHMENT'; sessionId: string; localId: string; attachment: AttachmentRef }
+  | { type: 'REMOVE_PENDING_ATTACHMENT'; sessionId: string; localId: string }
   | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
   | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string; restoreDraft?: string; restoreAttachments?: AttachmentRef[] }
   | { type: 'ADOPT_RUN'; sessionId: string; generation: string; activeRun: ActiveRun; feedback?: FeedbackRequest | null }
@@ -74,14 +90,14 @@ export type ConversationAction =
   | { type: 'APPLY_BATCH'; sessionId: string; generation: string; batch: StreamBatch }
   | { type: 'SET_RUN_STATUS'; sessionId: string; generation: string; status: RunStatus; error?: string }
   | { type: 'GRAPH_REQUEST_START'; sessionId: string; requestVersion: number }
-  | { type: 'GRAPH_REQUEST_SUCCESS'; sessionId: string; requestVersion: number; graph: GraphData | null }
+  | { type: 'GRAPH_REQUEST_SUCCESS'; sessionId: string; requestVersion: number; graph: GraphViewState }
   | { type: 'REMOVE_SESSION'; sessionId: string };
 
 export const SESSION_VIEW_CACHE_LIMIT = 12;
-const PROTECTED_RUN_STATUSES = new Set<RunStatus>(['starting', 'streaming', 'awaiting_feedback', 'submitting_feedback', 'reconnecting', 'detached']);
+const PROTECTED_RUN_STATUSES = new Set<RunStatus>(['preparing', 'starting', 'streaming', 'awaiting_feedback', 'submitting_feedback', 'reconnecting', 'detached']);
 const TERMINAL_RUN_STATUSES = new Set<RunStatus>(['completed', 'failed', 'cancelled']);
 
-export type RunGateReason = 'run_active' | 'awaiting_feedback' | 'submitting_feedback' | 'reconnecting' | 'detached' | null;
+export type RunGateReason = 'preparing' | 'run_active' | 'awaiting_feedback' | 'submitting_feedback' | 'reconnecting' | 'detached' | null;
 
 export type BottomInteraction =
   | { kind: 'composer' }
@@ -90,7 +106,9 @@ export type BottomInteraction =
 
 export function selectRunGate(view?: SessionViewState | null) {
   const status = view?.activeRun?.status;
-  const reason: RunGateReason = status === 'awaiting_feedback'
+  const reason: RunGateReason = status === 'preparing'
+    ? 'preparing'
+    : status === 'awaiting_feedback'
     ? 'awaiting_feedback'
     : status === 'submitting_feedback'
       ? 'submitting_feedback'
@@ -123,7 +141,7 @@ export function selectBottomInteraction(view?: SessionViewState | null): BottomI
   return { kind: 'composer' };
 }
 
-export const initialConversationState: ConversationState = { activeSessionId: null, viewsBySessionId: {} };
+export const initialConversationState: ConversationState = { activeSessionId: null, activeDraftProjectId: null, viewsBySessionId: {}, draftsByProjectId: {} };
 
 export function createSessionView(sessionId: string, model = 'qwen3.6-plus', accessedAt = 0): SessionViewState {
   return {
@@ -132,11 +150,12 @@ export function createSessionView(sessionId: string, model = 'qwen3.6-plus', acc
     hydrationRequestVersion: 0,
     messagesById: {},
     messageOrder: [],
-    graph: null,
+    graph: { status: 'empty', data: null },
     graphRequestVersion: 0,
     selectedNode: null,
     draft: '',
     attachments: [],
+    pendingAttachments: [],
     uploading: false,
     model,
     activeDatasetId: null,
@@ -338,13 +357,13 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
   }
   if (eventType === 'plan_complete') run = { ...run, plan: { ...(run.plan || {}), completed: true } };
 
-  if (eventType === 'graph_visualize' && event.data?.nodes) {
+  if (eventType === 'graph_visualize' && view.graph.status !== 'unsupported' && isGraphData(event.data)) {
     view = {
       ...view,
-      graph: {
+      graph: { status: 'ready', data: {
         success: true,
         nodes: event.data.nodes,
-        edges: (event.data.links || event.data.edges || []).map((link: any) => ({
+        edges: event.data.edges.map((link: any) => ({
           ...link,
           source: link.source ?? link.src,
           target: link.target ?? link.dst,
@@ -358,7 +377,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
         total_edges: event.data.total_edges,
         truncated: event.data.truncated,
         truncated_to: event.data.truncated_to,
-      },
+      } },
     };
   }
 
@@ -430,6 +449,7 @@ function evictViews(state: ConversationState): ConversationState {
       return id !== state.activeSessionId
         && !view.draft
         && view.attachments.length === 0
+        && view.pendingAttachments.length === 0
         && !view.uploading
         && !PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle');
     })
@@ -441,10 +461,93 @@ function evictViews(state: ConversationState): ConversationState {
   return { ...state, viewsBySessionId };
 }
 
+function graphStateAfterHydration(
+  view: SessionViewState,
+  datasetView: DatasetView | null | undefined,
+  activeDatasetId: string | null | undefined,
+  hasGraph: boolean | undefined,
+): GraphViewState {
+  if (datasetView?.kind === 'graph_collection') {
+    return { status: 'unsupported', data: null, code: 'NON_SINGLE_GRAPH', summary: datasetView.summary || {} };
+  }
+  const datasetChanged = view.activeDatasetId !== activeDatasetId;
+  if (hasGraph) {
+    if (!datasetChanged && view.graph.status === 'ready') return view.graph;
+    return { status: 'loading', data: null };
+  }
+  return { status: 'empty', data: null };
+}
+
 export function conversationReducer(state: ConversationState, action: ConversationAction): ConversationState {
+  if (action.type === 'OPEN_DRAFT') {
+    const current = state.draftsByProjectId[action.draft.projectId];
+    const draft = current || action.draft;
+    return {
+      ...state,
+      activeSessionId: null,
+      activeDraftProjectId: draft.projectId,
+      draftsByProjectId: current ? state.draftsByProjectId : { ...state.draftsByProjectId, [draft.projectId]: draft },
+    };
+  }
+  if (action.type === 'PATCH_DRAFT') {
+    const current = state.draftsByProjectId[action.projectId];
+    if (!current || current.draftId !== action.draftId) return state;
+    return {
+      ...state,
+      draftsByProjectId: {
+        ...state.draftsByProjectId,
+        [action.projectId]: { ...current, ...action.patch },
+      },
+    };
+  }
+  if (action.type === 'REMOVE_DRAFT') {
+    const current = state.draftsByProjectId[action.projectId];
+    if (!current || (action.draftId && current.draftId !== action.draftId)) return state;
+    const draftsByProjectId = { ...state.draftsByProjectId };
+    delete draftsByProjectId[action.projectId];
+    return {
+      ...state,
+      activeDraftProjectId: state.activeDraftProjectId === action.projectId ? null : state.activeDraftProjectId,
+      draftsByProjectId,
+    };
+  }
+  if (action.type === 'MATERIALIZE_DRAFT') {
+    const draft = state.draftsByProjectId[action.projectId];
+    if (!draft || draft.draftId !== action.draftId) return state;
+    const uploaded = draft.attachments
+      .filter(item => Boolean(item.fileToken))
+      .map(item => ({ file_token: item.fileToken!, filename: item.filename }));
+    const pendingAttachments = draft.attachments.filter(item => !item.fileToken);
+    let view = createSessionView(action.sessionId, action.model, action.accessedAt);
+    view = {
+      ...view,
+      hydration: 'ready',
+      draft: draft.text,
+      attachments: uploaded,
+      pendingAttachments,
+      activeDatasetId: action.activeDatasetId,
+      graph: graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, false),
+      activeRun: {
+        generation: action.generation,
+        status: 'preparing',
+        lastEventIndex: -1,
+        toolsById: {}, toolOrder: [], plan: null, feedback: null,
+      },
+    };
+    const draftsByProjectId = { ...state.draftsByProjectId };
+    delete draftsByProjectId[action.projectId];
+    const wasActive = state.activeDraftProjectId === action.projectId;
+    return evictViews({
+      ...state,
+      activeSessionId: wasActive ? action.sessionId : state.activeSessionId,
+      activeDraftProjectId: wasActive ? null : state.activeDraftProjectId,
+      draftsByProjectId,
+      viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view },
+    });
+  }
   if (action.type === 'ENSURE_SESSION' || action.type === 'SET_ACTIVE_SESSION') {
     const sessionId = action.sessionId;
-    if (sessionId === null) return { ...state, activeSessionId: null };
+    if (sessionId === null) return { ...state, activeSessionId: null, activeDraftProjectId: null };
     const current = state.viewsBySessionId[sessionId];
     const view = current
       ? { ...current, model: action.model || current.model, lastAccessedAt: action.accessedAt ?? current.lastAccessedAt }
@@ -452,6 +555,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
     return evictViews({
       ...state,
       activeSessionId: action.type === 'SET_ACTIVE_SESSION' ? sessionId : state.activeSessionId,
+      activeDraftProjectId: action.type === 'SET_ACTIVE_SESSION' ? null : state.activeDraftProjectId,
       viewsBySessionId: { ...state.viewsBySessionId, [sessionId]: view },
     });
   }
@@ -493,12 +597,15 @@ export function conversationReducer(state: ConversationState, action: Conversati
           };
         }
       } else if (!activeRun || !PROTECTED_RUN_STATUSES.has(activeRun.status)) activeRun = null;
+      const graph = graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, action.hasGraph);
       view = {
         ...view,
         ...indexed,
         hydration: 'ready',
         model: action.model,
         activeDatasetId: action.activeDatasetId,
+        graph,
+        selectedNode: graph.status === 'ready' ? view.selectedNode : null,
         activeRun,
         error: undefined,
       };
@@ -513,6 +620,60 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'APPEND_MESSAGES':
       view = appendMessages(view, action.messages);
+      break;
+    case 'BEGIN_RUN_PREPARATION':
+      if (PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle')) return state;
+      view = {
+        ...view,
+        error: undefined,
+        activeRun: {
+          generation: action.generation,
+          status: 'preparing',
+          lastEventIndex: -1,
+          toolsById: {}, toolOrder: [], plan: null, feedback: null,
+        },
+      };
+      break;
+    case 'START_PREPARED_RUN': {
+      const preparingRun = view.activeRun;
+      if (!preparingRun || preparingRun.generation !== action.generation || preparingRun.status !== 'preparing') return state;
+      view = appendMessages(view, [action.userMessage, action.assistantMessage]);
+      view = {
+        ...view,
+        draft: '',
+        error: undefined,
+        activeRun: {
+          ...preparingRun,
+          status: 'starting',
+          assistantMessageId: action.assistantMessage.id,
+        },
+      };
+      break;
+    }
+    case 'PREPARE_RUN_FAILED':
+      if (!view.activeRun || view.activeRun.generation !== action.generation || view.activeRun.status !== 'preparing') return state;
+      view = { ...view, activeRun: null, error: action.error };
+      break;
+    case 'SET_PENDING_ATTACHMENT':
+      view = {
+        ...view,
+        pendingAttachments: view.pendingAttachments.map(item => item.localId === action.localId
+          ? { ...item, status: action.status, error: action.error }
+          : item),
+      };
+      break;
+    case 'RESOLVE_PENDING_ATTACHMENT':
+      view = {
+        ...view,
+        attachments: view.attachments.some(item => item.file_token === action.attachment.file_token)
+          ? view.attachments
+          : [...view.attachments, action.attachment],
+        pendingAttachments: view.pendingAttachments.filter(item => item.localId !== action.localId),
+      };
+      break;
+    case 'REMOVE_PENDING_ATTACHMENT':
+      if (PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle')) return state;
+      view = { ...view, pendingAttachments: view.pendingAttachments.filter(item => item.localId !== action.localId) };
       break;
     case 'START_RUN': {
       if (PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle')) return state;
@@ -603,7 +764,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'GRAPH_REQUEST_START':
       if (action.requestVersion < view.graphRequestVersion) return state;
-      view = { ...view, graphRequestVersion: action.requestVersion };
+      view = { ...view, graphRequestVersion: action.requestVersion, graph: { status: 'loading', data: null }, selectedNode: null };
       break;
     case 'GRAPH_REQUEST_SUCCESS':
       if (action.requestVersion !== view.graphRequestVersion) return state;

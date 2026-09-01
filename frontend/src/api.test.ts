@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError, consumeSseResponse } from './api';
+import { ApiError, consumeSseResponse, parseGraphDataResponse } from './api';
 
 function responseFromChunks(chunks: string[]) {
   const encoder = new TextEncoder();
@@ -53,5 +53,22 @@ describe('SSE parser', () => {
     expect(onBatch.mock.calls[0][0].protocol_version).toBe(1);
     expect(onBatch.mock.calls[0][0].events[0].type).toBe('stream_status');
     expect(onBatch.mock.calls[1][0].events[0].type).toBe('token');
+  });
+});
+
+describe('graph response validation', () => {
+  it('accepts only complete graph structures', () => {
+    expect(parseGraphDataResponse({ success: true, nodes: [], edges: [] })).toEqual({ success: true, nodes: [], edges: [] });
+  });
+
+  it.each([
+    { success: false, error: 'not loaded' },
+    { success: true, edges: [] },
+    { success: true, nodes: [] },
+  ])('rejects malformed graph payload %#', payload => {
+    expect(() => parseGraphDataResponse(payload)).toThrow(ApiError);
+    try { parseGraphDataResponse(payload); } catch (cause) {
+      expect((cause as ApiError).code).toBe('INVALID_GRAPH_RESPONSE');
+    }
   });
 });

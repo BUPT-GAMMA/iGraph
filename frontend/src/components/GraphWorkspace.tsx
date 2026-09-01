@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useEffect, useMemo, useRef, useState } from 'react';
+import type { ErrorInfo, ReactNode } from 'react';
 import * as d3 from 'd3';
-import type { GraphData, Message, ToolCall } from '../types';
+import type { GraphCollectionSummary, GraphData, GraphViewState, Message, ToolCall } from '../types';
 import { Icon } from './Icon';
 import { SlidingTabs } from './SlidingTabs';
 
@@ -9,7 +10,27 @@ type LayoutMode = 'force' | 'radial' | 'circle';
 
 function nodeId(node: Record<string, unknown>, index: number) { return String(node.id ?? node.label ?? index); }
 
-export function GraphWorkspace({ data, messages = [], liveTools = [], tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0 }: { data: GraphData | null; messages?: Message[]; liveTools?: ToolCall[]; tab: Tab; onTab: (tab: Tab) => void; selected: Record<string, unknown> | null; onSelect: (node: Record<string, unknown>) => void; collapsed: boolean; onToggle: () => void; onExpand?: (node: Record<string, unknown>) => void; layoutVersion?: number }) {
+type GraphWorkspaceProps = { view: GraphViewState; datasetName?: string; messages?: Message[]; liveTools?: ToolCall[]; tab: Tab; onTab: (tab: Tab) => void; selected: Record<string, unknown> | null; onSelect: (node: Record<string, unknown>) => void; collapsed: boolean; onToggle: () => void; onExpand?: (node: Record<string, unknown>) => void; layoutVersion?: number; resetKey?: string };
+
+class GraphWorkspaceErrorBoundary extends Component<{ children: ReactNode; resetKey?: string; collapsed: boolean; onToggle: () => void }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error('Graph workspace render failed', { error, info }); }
+  componentDidUpdate(previous: Readonly<{ resetKey?: string }>) {
+    if (this.state.failed && previous.resetKey !== this.props.resetKey) this.setState({ failed: false });
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return <aside className={`graph-workspace ${this.props.collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图谱工作台</strong><button className="plain-icon workspace-panel-toggle" onClick={this.props.onToggle} aria-label={this.props.collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={this.props.collapsed ? 'panel-right-open' : 'panel-right-close'} size={18} /></button></div><div className="workspace-panel-content" aria-hidden={this.props.collapsed}><div className="graph-empty"><strong>工作台暂时无法显示</strong><span>切换会话或数据集后将自动恢复。</span></div></div></aside>;
+  }
+}
+
+export function GraphWorkspace(props: GraphWorkspaceProps) {
+  return <GraphWorkspaceErrorBoundary resetKey={props.resetKey} collapsed={props.collapsed} onToggle={props.onToggle}><GraphWorkspaceContent {...props} /></GraphWorkspaceErrorBoundary>;
+}
+
+function GraphWorkspaceContent({ view, datasetName, messages = [], liveTools = [], tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0 }: GraphWorkspaceProps) {
+  const data = view.status === 'ready' ? view.data : null;
   const canvas = useRef<SVGSVGElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -60,8 +81,23 @@ export function GraphWorkspace({ data, messages = [], liveTools = [], tab, onTab
   }, [collapsed, data, tab, selected, onSelect, layoutVersion, layout, visibleNodes]);
   const tabs: Tab[] = ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
   return <aside className={`graph-workspace ${collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图谱工作台</strong><button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={collapsed ? '展开右侧栏' : '收起右侧栏'} title={collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={18} /></button></div><div className="workspace-panel-content" aria-hidden={collapsed}><SlidingTabs ariaLabel="图谱工作台视图" className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: item }))} value={tab} onChange={onTab} />
-    {tab === 'ML' ? <MLTab messages={messages} liveTools={liveTools} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : !data ? <div className="graph-empty"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>暂无图谱</strong><span>加载数据或发送建图请求后，这里会显示图谱分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图谱布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button></div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} /></div><div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? 'Selected node')}</strong><span>selected</span></div><div className="inspector-row"><span>Node ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>Type</span><strong>{String(selected.type ?? selected.category ?? 'node')}</strong></div><div className="inspector-row"><span>Degree</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} liveTools={liveTools} />}
+    {tab === 'ML' ? <MLTab messages={messages} liveTools={liveTools} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : view.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图谱</strong></div> : view.status === 'failed' ? <div className="graph-empty"><div className="empty-icon small"><Icon name="close" size={22} /></div><strong>图谱加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>暂无图谱</strong><span>加载数据或发送建图请求后，这里会显示图谱分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图谱布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button></div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} /></div><div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? 'Selected node')}</strong><span>selected</span></div><div className="inspector-row"><span>Node ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>Type</span><strong>{String(selected.type ?? selected.category ?? 'node')}</strong></div><div className="inspector-row"><span>Degree</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} liveTools={liveTools} />}
   </div></aside>;
+}
+
+function displayCount(value: unknown) {
+  const count = Number(value);
+  return Number.isFinite(count) ? count.toLocaleString() : '-';
+}
+
+function CollectionTab({ tab, datasetName, summary }: { tab: Tab; datasetName?: string; summary: GraphCollectionSummary }) {
+  const splits = summary.split_sizes || {};
+  const validationSize = splits.val ?? splits.valid;
+  if (tab === 'Overview') {
+    return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">GRAPH COLLECTION</span><h2>{datasetName || '当前数据集'}</h2><strong>多图分类数据集已就绪</strong></div><div className="stat-grid"><div><span>Graphs</span><strong>{displayCount(summary.num_graphs)}</strong></div><div><span>Tasks</span><strong>{displayCount(summary.num_tasks)}</strong></div><div><span>Metric</span><strong>{summary.metric || '-'}</strong></div><div><span>Splits</span><strong>{Object.keys(splits).length || '-'}</strong></div></div><div className="workspace-note"><Icon name="spark" size={15} /> 该数据集包含多张独立样本图，可继续用于图分类训练和推理。</div></div>;
+  }
+  const missingRate = Number(summary.missing_label_rate);
+  return <div className="tab-content collection-data"><div className="tab-title"><strong>数据集划分与特征</strong><span>{displayCount(summary.num_graphs)} graphs</span></div><div className="collection-section"><strong>数据划分</strong><div className="stat-grid"><div><span>Train</span><strong>{displayCount(splits.train)}</strong></div><div><span>Validation</span><strong>{displayCount(validationSize)}</strong></div><div><span>Test</span><strong>{displayCount(splits.test)}</strong></div><div><span>Edgeless</span><strong>{displayCount(summary.num_edgeless_graphs)}</strong></div></div></div><div className="collection-section"><strong>词表与标签</strong><div className="stat-grid"><div><span>Node vocab</span><strong>{displayCount(summary.node_vocab_size)}</strong></div><div><span>Edge vocab</span><strong>{displayCount(summary.edge_vocab_size)}</strong></div><div><span>Missing labels</span><strong>{Number.isFinite(missingRate) ? `${(missingRate * 100).toFixed(2)}%` : '-'}</strong></div><div><span>Edge features</span><strong>{summary.uses_edge_features == null ? '-' : summary.uses_edge_features ? 'Yes' : 'No'}</strong></div></div></div></div>;
 }
 
 function WorkspaceTab({ tab, data, messages, liveTools }: { tab: Tab; data: GraphData; messages: Message[]; liveTools: ToolCall[] }) {

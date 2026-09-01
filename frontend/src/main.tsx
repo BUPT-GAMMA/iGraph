@@ -2,7 +2,7 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { activateSession, ApiError, createProject as addProject, createSession, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, resumeRun, setDefaultProjectDataset, setSessionDataset, setUserId, streamChat, streamFeedback, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph } from './api';
-import type { ActiveRun, Dataset, FeedbackRequest, GraphData, Message, Project, Session, StreamBatch, ToolCall } from './types';
+import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, StreamBatch, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { conversationReducer, createSessionView, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import { DatasetPanel } from './components/DatasetPanel';
@@ -89,6 +89,74 @@ function requestWasAborted(cause: unknown) {
   return Boolean(cause && typeof cause === 'object' && 'name' in cause && (cause as { name?: string }).name === 'AbortError');
 }
 
+function unsupportedGraphView(datasetView: DatasetView | null | undefined): GraphViewState | null {
+  if (datasetView?.kind !== 'graph_collection') return null;
+  return { status: 'unsupported', data: null, code: 'NON_SINGLE_GRAPH', summary: datasetView.summary || {} };
+}
+
+function unsupportedGraphViewFromError(cause: unknown): GraphViewState | null {
+  if (!(cause instanceof ApiError) || cause.code !== 'GRAPH_NOT_VISUALIZABLE') return null;
+  const detail = cause.detail && typeof cause.detail === 'object' ? cause.detail as Record<string, unknown> : {};
+  return unsupportedGraphView(detail.dataset_view as DatasetView | undefined);
+}
+
+function graphTotalNodes(graph: GraphData | null) {
+  return graph ? Number(graph.total_nodes ?? graph.num_nodes ?? graph.nodes.length) : 0;
+}
+
+function graphTotalEdges(graph: GraphData | null) {
+  return graph ? Number(graph.total_edges ?? graph.num_edges ?? graph.edges.length) : 0;
+}
+
+type PendingFirstTurn = {
+  message: string;
+  attachments: AttachmentRef[];
+  pendingAttachments: Array<Pick<DraftAttachment, 'localId' | 'filename' | 'status' | 'error'>>;
+  model: string;
+  projectId: string;
+  activeDatasetId: string | null;
+};
+
+function draftStorageKey(userId: string, projectId: string) {
+  return `igraph-new-session-draft:v1:${userId}:${projectId}`;
+}
+
+function pendingFirstTurnStorageKey(userId: string, sessionId: string) {
+  return `igraph-pending-first-turn:v1:${userId}:${sessionId}`;
+}
+
+function serializableDraft(draft: NewConversationDraft): NewConversationDraft {
+  return {
+    ...draft,
+    phase: draft.phase === 'editing' || draft.phase === 'failed' ? draft.phase : 'failed',
+    attachments: draft.attachments.map(attachment => ({
+      localId: attachment.localId,
+      filename: attachment.filename,
+      fileToken: attachment.fileToken,
+      status: attachment.fileToken ? 'uploaded' : 'needs_reselect',
+      error: attachment.fileToken ? undefined : '刷新后需要重新选择文件',
+    })),
+    error: draft.phase === 'editing' || draft.phase === 'failed' ? draft.error : '创建流程被页面刷新中断，请重试',
+  };
+}
+
+function readStoredDraft(userId: string, projectId: string): NewConversationDraft | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(draftStorageKey(userId, projectId)) || 'null');
+    if (!value || value.projectId !== projectId || typeof value.draftId !== 'string') return null;
+    return serializableDraft(value as NewConversationDraft);
+  } catch { return null; }
+}
+
+function readPendingFirstTurn(userId: string, sessionId: string): PendingFirstTurn | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(pendingFirstTurnStorageKey(userId, sessionId)) || 'null');
+    return value && typeof value.message === 'string' && Array.isArray(value.attachments) && Array.isArray(value.pendingAttachments)
+      ? value as PendingFirstTurn
+      : null;
+  } catch { return null; }
+}
+
 function App() {
   const [userId, setUser] = useState(getUserId() || (demoMode ? 'demo' : ''));
   const [loginValue, setLoginValue] = useState(getUserId());
@@ -99,8 +167,8 @@ function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [conversation, dispatchConversation] = useReducer(conversationReducer, initialConversationState, state => {
     if (!demoMode) return state;
-    const view = { ...createSessionView('demo-session', DEFAULT_MODEL, Date.now()), hydration: 'ready' as const, graph: demoGraph };
-    return { activeSessionId: 'demo-session', viewsBySessionId: { 'demo-session': view } };
+    const view = { ...createSessionView('demo-session', DEFAULT_MODEL, Date.now()), hydration: 'ready' as const, graph: { status: 'ready' as const, data: demoGraph } };
+    return { activeSessionId: 'demo-session', activeDraftProjectId: null, viewsBySessionId: { 'demo-session': view }, draftsByProjectId: {} };
   });
   const [graphTab, setGraphTab] = useState<GraphTab>('Graph');
   const [graphOpen, setGraphOpen] = useState(true);
@@ -122,10 +190,13 @@ function App() {
   const [sidebarWidth, setSidebarWidth] = useState(() => storedWidth('igraph-layout-sidebar-width', window.innerWidth <= 1280 ? 230 : SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX));
   const [graphWidth, setGraphWidth] = useState(() => storedWidth('igraph-layout-graph-width', window.innerWidth <= 1280 ? 330 : GRAPH_DEFAULT, GRAPH_MIN, GRAPH_MAX));
   const [graphLayoutVersion, setGraphLayoutVersion] = useState(0);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const conversationRef = useRef(conversation);
   const connectionManagerRef = useRef(new RunConnectionManager(4));
   const hydrationVersionsRef = useRef(new Map<string, number>());
   const hydrationControllersRef = useRef(new Map<string, AbortController>());
+  const draftCreationControllersRef = useRef(new Map<string, AbortController>());
+  const preparationControllersRef = useRef(new Map<string, AbortController>());
   const graphVersionsRef = useRef(new Map<string, number>());
   const bodyRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
@@ -136,27 +207,40 @@ function App() {
   const activeSession = activeSessionId ? sessions.find(session => session.session_id === activeSessionId) || null : null;
   layoutRef.current = { sidebarWidth, graphWidth, graphOpen, sidebarCollapsed, hasGraphPanel: Boolean(activeSession) };
   const activeView = activeSessionId ? conversation.viewsBySessionId[activeSessionId] : null;
-  const visibleProjectId = activeProject?.project_id || activeSession?.project_id || '';
+  const activeDraftProjectId = conversation.activeDraftProjectId;
+  const activeDraft = activeDraftProjectId ? conversation.draftsByProjectId[activeDraftProjectId] || null : null;
+  const draftProject = activeDraft ? projects.find(project => project.project_id === activeDraft.projectId) || null : null;
+  const visibleProjectId = activeProject?.project_id || activeDraft?.projectId || activeSession?.project_id || '';
   const datasets = visibleProjectId ? datasetsByProject[visibleProjectId] || [] : [];
   const messages = selectMessages(activeView);
-  const graph = activeView?.graph || null;
+  const graphView: GraphViewState = activeView?.graph || { status: 'empty', data: null };
+  const graph = graphView.status === 'ready' ? graphView.data : null;
   const selectedNode = activeView?.selectedNode || null;
-  const composerValue = activeView?.draft || '';
-  const model = activeView?.model || defaultModel;
+  const composerValue = activeDraft?.text ?? activeView?.draft ?? '';
+  const model = activeDraft?.model || activeView?.model || defaultModel;
   const runTools = selectRunTools(activeView);
   const plan = activeView?.activeRun?.plan || null;
   const runGate = selectRunGate(activeView);
   const bottomInteraction = selectBottomInteraction(activeView);
-  const sendBlockedReason = runGate.reason === 'awaiting_feedback'
+  const sendBlockedReason = activeDraft && activeDraft.phase !== 'editing' && activeDraft.phase !== 'failed'
+    ? activeDraft.phase === 'creating_session'
+      ? '正在创建会话，请稍候'
+      : activeDraft.phase === 'uploading'
+        ? '正在上传附件，请稍候'
+        : '正在启动任务，请稍候'
+    : runGate.reason === 'preparing'
+      ? '正在准备会话或附件，请稍候'
+      : runGate.reason === 'awaiting_feedback'
     ? '请先批准或拒绝当前待确认操作；草稿和附件会继续保留'
     : runGate.reason === 'submitting_feedback'
       ? '确认正在提交并核对状态；草稿和附件会继续保留'
       : runGate.reason
         ? '当前会话已有活动任务，完成后可发送下一条消息'
         : undefined;
-  const loading = Boolean(activeView?.activeRun && ['starting', 'streaming', 'reconnecting'].includes(activeView.activeRun.status));
-  const uploading = Boolean(activeView?.uploading);
-  const error = activeView?.error || workspaceError;
+  const loading = Boolean(activeDraft && !['editing', 'failed'].includes(activeDraft.phase))
+    || Boolean(activeView?.activeRun && ['preparing', 'starting', 'streaming', 'reconnecting'].includes(activeView.activeRun.status));
+  const uploading = activeDraft?.phase === 'uploading' || Boolean(activeView?.uploading);
+  const error = activeDraft?.error || activeView?.error || workspaceError;
 
   function updateProjectDatasets(projectId: string, update: Dataset[] | ((current: Dataset[]) => Dataset[])) {
     setDatasetsByProject(current => ({
@@ -276,6 +360,19 @@ function App() {
 
   function clearPersistedRun(sessionId: string) { sessionStorage.removeItem(runStorageKey(sessionId)); }
 
+  function persistPendingFirstTurn(sessionId: string, value: PendingFirstTurn) {
+    if (!userId) return;
+    localStorage.setItem(pendingFirstTurnStorageKey(userId, sessionId), JSON.stringify(value));
+  }
+
+  function clearPendingFirstTurn(sessionId: string) {
+    if (userId) localStorage.removeItem(pendingFirstTurnStorageKey(userId, sessionId));
+  }
+
+  function clearStoredDraft(projectId: string) {
+    if (userId) localStorage.removeItem(draftStorageKey(userId, projectId));
+  }
+
   function persistedRun(sessionId: string) {
     try {
       const value = JSON.parse(sessionStorage.getItem(runStorageKey(sessionId)) || 'null');
@@ -292,15 +389,23 @@ function App() {
     return version;
   }
 
-  async function refreshSessionGraph(sessionId: string, options: Record<string, unknown> = {}, reportError = false) {
-    const version = nextGraphVersion(sessionId);
+  async function refreshSessionGraph(sessionId: string, options: Record<string, unknown> = {}, reportError = false, requestVersion?: number) {
+    const version = requestVersion ?? nextGraphVersion(sessionId);
     try {
       const nextGraph = await visualizeGraph(sessionId, options);
-      dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: nextGraph });
-      if (nextGraph?.nodes) setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, has_graph: true } : session));
+      dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'ready', data: nextGraph } });
+      setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, has_graph: true } : session));
       return nextGraph;
     } catch (cause: any) {
-      if (reportError) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '图谱加载失败' } });
+      const unsupported = unsupportedGraphViewFromError(cause);
+      if (unsupported) {
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: unsupported });
+      } else {
+        const message = cause.message || '图谱加载失败';
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'failed', data: null, error: message } });
+        if (reportError) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: message } });
+      }
+      setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, has_graph: false } : session));
       return null;
     }
   }
@@ -317,6 +422,7 @@ function App() {
       if (hydrationVersionsRef.current.get(sessionId) !== requestVersion) return null;
       const currentView = conversationRef.current.viewsBySessionId[sessionId];
       const selectedModel = String(response.model || currentView?.model || response.default_model || defaultModel);
+      const graphVersion = nextGraphVersion(sessionId);
       dispatchConversation({
         type: 'HYDRATE_SUCCESS',
         sessionId,
@@ -330,7 +436,12 @@ function App() {
         feedback: response.pending_feedback,
         generation,
         preserveMessages: Boolean(response.active_run && currentView?.messageOrder.length),
+        datasetView: response.dataset_view,
+        hasGraph: response.has_graph,
       });
+      if (response.has_graph && response.dataset_view?.kind !== 'graph_collection') {
+        void refreshSessionGraph(sessionId, { include_community: false }, false, graphVersion);
+      }
       if (!response.active_run) {
         dispatchConversation({ type: 'CLEAR_ACTIVE_RUN', sessionId, generation });
         clearPersistedRun(sessionId);
@@ -386,6 +497,7 @@ function App() {
     feedbackDecision?: 'approve' | 'reject',
     resumeFromEventIndex?: number,
     feedbackDecisionId?: string,
+    clearPendingOnOpen = false,
   ) {
     let runId = connection.runId || '';
     let lastEventIndex = resumeFromEventIndex ?? conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.lastEventIndex ?? -1;
@@ -393,8 +505,13 @@ function App() {
     let awaitingFeedback = false;
     let feedbackAccepted = false;
     let feedbackSubmitFailed = false;
+    let pendingFirstTurnCleared = false;
     const handlers = {
       onBatch: (incoming: StreamBatch) => {
+        if (clearPendingOnOpen && !pendingFirstTurnCleared) {
+          clearPendingFirstTurn(sessionId);
+          pendingFirstTurnCleared = true;
+        }
         const batch = { ...incoming, session_id: incoming.session_id || sessionId, run_id: incoming.run_id || runId };
         if (batch.session_id !== sessionId) return;
         if (batch.run_id) {
@@ -410,6 +527,31 @@ function App() {
         feedbackAccepted ||= batch.events.some(event => event.type === 'feedback_accepted' || (event.type === 'feedback_submit_error' && event.accepted === true));
         feedbackSubmitFailed ||= batch.events.some(event => event.type === 'feedback_submit_error' && event.accepted !== true);
       },
+    };
+
+    const reconcileUnknownFirstTurn = async () => {
+      try {
+        const activated = await activateSession(sessionId);
+        if (activated.active_run) {
+          clearPendingFirstTurn(sessionId);
+          pendingFirstTurnCleared = true;
+          runId = activated.active_run.run_id;
+          lastEventIndex = activated.active_run.last_event_index;
+          dispatchConversation({ type: 'ADOPT_RUN', sessionId, generation, activeRun: activated.active_run, feedback: activated.pending_feedback });
+          connectionManagerRef.current.updateRunId(sessionId, generation, runId);
+          if (activated.active_run.status.toLowerCase() !== 'paused') {
+            const restarted = connectionManagerRef.current.restart(sessionId, generation);
+            if (restarted) void consumeRunConnection(sessionId, generation, restarted, 'resume', undefined, undefined, undefined, lastEventIndex);
+          } else connectionManagerRef.current.release(sessionId, generation);
+          return;
+        }
+        dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: startPayload?.message, restoreAttachments: startPayload?.attachments });
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '任务尚未启动，请手工重试' } });
+        connectionManagerRef.current.release(sessionId, generation);
+      } catch (activateError: any) {
+        dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting', error: activateError.message || '正在核对首次任务是否已启动' });
+        connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => { void reconcileUnknownFirstTurn(); });
+      }
     };
 
     try {
@@ -430,16 +572,21 @@ function App() {
         try {
           const snapshot = await reconcileAuthoritativeRun(sessionId, generation);
           if (snapshot?.activeRun && snapshot.activeRun.status.toLowerCase() !== 'paused') {
+            if (clearPendingOnOpen) clearPendingFirstTurn(sessionId);
             openResumeConnection(sessionId, generation, snapshot.activeRun, conversationRef.current.activeSessionId === sessionId);
           }
         } catch (activateError: any) {
           dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: activateError.message || cause.message || '无法恢复当前活动 Run' } });
         }
         return;
+      } else if (operation === 'start' && !runId && clearPendingOnOpen) {
+        void reconcileUnknownFirstTurn();
+        return;
       } else if (operation === 'start' && !runId) {
         try {
           const activated = await activateSession(sessionId);
           if (activated.active_run) {
+            if (clearPendingOnOpen) clearPendingFirstTurn(sessionId);
             runId = activated.active_run.run_id;
             lastEventIndex = activated.active_run.last_event_index;
             dispatchConversation({ type: 'ADOPT_RUN', sessionId, generation, activeRun: activated.active_run, feedback: activated.pending_feedback });
@@ -464,6 +611,7 @@ function App() {
 
     if (terminal) {
       clearPersistedRun(sessionId);
+      if (clearPendingOnOpen) clearPendingFirstTurn(sessionId);
       connectionManagerRef.current.release(sessionId, generation);
       if (startPayload?.attachments.length) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [] } });
       void refreshSessionGraph(sessionId, { include_community: false });
@@ -551,12 +699,34 @@ function App() {
       const generation = effectiveActiveRun && previousRun?.runId === effectiveActiveRun.run_id
         ? previousRun.generation
         : `resume:${effectiveActiveRun?.run_id || crypto.randomUUID()}`;
+      const graphVersion = nextGraphVersion(id);
       dispatchConversation({
         type: 'HYDRATE_SUCCESS', sessionId: id, requestVersion, messages: restoredMessages,
         model: selectedModel, activeDatasetId, feedback: response.pending_feedback,
         activeRun: effectiveActiveRun, generation,
         preserveMessages: Boolean(previousView?.messageOrder.length && previousView.activeRun),
+        datasetView: response.dataset_view,
+        hasGraph: response.has_graph,
       });
+      const pendingFirstTurn = readPendingFirstTurn(userId, id);
+      if (pendingFirstTurn) {
+        const alreadyStarted = Boolean(effectiveActiveRun)
+          || restoredMessages.some(message => message.role === 'user' && message.content.trim() === pendingFirstTurn.message.trim());
+        if (alreadyStarted) clearPendingFirstTurn(id);
+        else dispatchConversation({
+          type: 'PATCH_VIEW',
+          sessionId: id,
+          patch: {
+            draft: pendingFirstTurn.message,
+            attachments: pendingFirstTurn.attachments,
+            pendingAttachments: pendingFirstTurn.pendingAttachments.map(attachment => ({
+              ...attachment,
+              status: 'needs_reselect',
+              error: '刷新后需要重新选择文件',
+            })),
+          },
+        });
+      }
       setAvailableModels(normalizedModels(response.available_models, selectedModel));
       setSessions(current => mergeSessionLists(current, [{ ...session, project_id: projectId, active_dataset_id: activeDatasetId, has_graph: response.has_graph, model: selectedModel }]));
 
@@ -568,10 +738,8 @@ function App() {
         }).catch(() => undefined);
       }
 
-      if (response.has_graph) void refreshSessionGraph(id, { include_community: false });
-      else {
-        const graphVersion = nextGraphVersion(id);
-        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: null });
+      if (response.has_graph && response.dataset_view?.kind !== 'graph_collection') {
+        void refreshSessionGraph(id, { include_community: false }, false, graphVersion);
       }
       if (effectiveActiveRun) openResumeConnection(id, generation, effectiveActiveRun, true);
     } catch (cause: any) {
@@ -623,7 +791,19 @@ function App() {
     const nextProjects = projectResponse.projects || [];
     setSessions(nextSessions); setProjects(nextProjects);
     const route = parseWorkspaceRoute(window.location.search);
-    if (route.kind === 'project') {
+    if (route.kind === 'new-session') {
+      const project = nextProjects.find(item => item.project_id === route.projectId);
+      if (!project) showWorkspaceHome(true, true, '该项目不存在或已被删除');
+      else {
+        const storedDraft = readStoredDraft(userId, route.projectId);
+        const materialized = storedDraft && nextSessions.find(session => session.session_id === storedDraft.draftId);
+        if (materialized) {
+          clearStoredDraft(route.projectId);
+          writeWorkspaceRoute({ kind: 'session', id: materialized.session_id }, true);
+          await selectSession(materialized.session_id, nextSessions, false);
+        } else newTask(route.projectId, nextProjects, false);
+      }
+    } else if (route.kind === 'project') {
       if (nextProjects.some(project => project.project_id === route.id)) await selectProject(route.id, nextProjects, false);
       else showWorkspaceHome(true, true, '该项目不存在或已被删除');
     } else if (route.kind === 'session') {
@@ -649,7 +829,9 @@ function App() {
         showWorkspaceHome(false);
       } else if (route.kind === 'session') {
         void selectSession(route.id, sessions, false, true);
-      } else if (projects.some(project => project.project_id === route.id)) {
+      } else if (route.kind === 'new-session' && projects.some(project => project.project_id === route.projectId)) {
+        newTask(route.projectId, projects, false);
+      } else if (route.kind === 'project' && projects.some(project => project.project_id === route.id)) {
         void selectProject(route.id, projects, false);
       } else showWorkspaceHome(true, true, '该项目不存在或已被删除');
     }
@@ -657,6 +839,29 @@ function App() {
     return () => window.removeEventListener('popstate', handleHistoryNavigation);
   }, [userId, sessions, projects, busy]);
   useEffect(() => () => connectionManagerRef.current.abortAll(), []);
+  useEffect(() => () => {
+    for (const controller of draftCreationControllersRef.current.values()) controller.abort();
+    for (const controller of preparationControllersRef.current.values()) controller.abort();
+  }, []);
+  useEffect(() => {
+    if (!userId) return;
+    for (const draft of Object.values(conversation.draftsByProjectId)) {
+      localStorage.setItem(draftStorageKey(userId, draft.projectId), JSON.stringify(serializableDraft(draft)));
+    }
+  }, [conversation.draftsByProjectId, userId]);
+  useEffect(() => {
+    function warnBeforeLeaving(event: BeforeUnloadEvent) {
+      const hasVolatileFile = Object.values(conversationRef.current.draftsByProjectId)
+        .some(draft => draft.attachments.some(attachment => Boolean(attachment.file)))
+        || Object.values(conversationRef.current.viewsBySessionId)
+          .some(view => view.pendingAttachments.some(attachment => Boolean(attachment.file)));
+      if (!hasVolatileFile) return;
+      event.preventDefault();
+      event.returnValue = '';
+    }
+    window.addEventListener('beforeunload', warnBeforeLeaving);
+    return () => window.removeEventListener('beforeunload', warnBeforeLeaving);
+  }, []);
   useEffect(() => {
     if (!userId) return;
     for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
@@ -675,39 +880,68 @@ function App() {
     const value = loginValue.trim(); if (!value) return setLoginError('请输入用户 ID');
     try { const response = await validateUser(value); if (response.valid === false) throw new Error('用户 ID 无效'); const selectedModel = response.default_model || DEFAULT_MODEL; setDefaultModel(selectedModel); setAvailableModels(normalizedModels(response.available_models, selectedModel)); setUserId(value); setUser(value); setLoginError(''); } catch (cause: any) { setLoginError(cause.message || '登录失败'); }
   }
-  async function newTask(targetProjectId?: string) {
-    if (busy) return; setBusy(true); setWorkspaceError('');
-    const defaultProject = projects.find(project => project.is_default);
-    const projectId = targetProjectId || activeProject?.project_id || activeSession?.project_id || defaultProject?.project_id;
-    try {
-      const response = await createSession(model, projectId);
-      const selectedModel = response.model || model;
-      const next: Session = { session_id: response.session_id, project_id: response.project_id || projectId, active_dataset_id: response.active_dataset_id, title: '新的图谱分析', model: selectedModel };
-      setAvailableModels(current => normalizedModels(current, selectedModel));
-      setSessions(current => [next, ...current.filter(item => item.session_id !== next.session_id)]);
-      setProjects(current => current.map(project => project.project_id === next.project_id ? { ...project, conversation_count: (project.conversation_count || 0) + 1 } : project));
-      setActiveProject(null);
-      dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: next.session_id, model: selectedModel, accessedAt: Date.now() });
-      setGraphOpen(window.innerWidth > 900);
-      updateViewUrl('session', next.session_id);
-    } catch (cause: any) { setWorkspaceError(cause.message || '创建任务失败'); } finally { setBusy(false); }
+  function newTask(targetProjectId?: string, sourceProjects = projects, updateUrl = true) {
+    const currentState = conversationRef.current;
+    const defaultProject = sourceProjects.find(project => project.is_default);
+    const projectId = targetProjectId
+      || currentState.activeDraftProjectId
+      || activeProject?.project_id
+      || activeSession?.project_id
+      || defaultProject?.project_id;
+    const project = sourceProjects.find(item => item.project_id === projectId);
+    if (!project) {
+      setWorkspaceError('没有可用于新建会话的项目');
+      return;
+    }
+    const existing = currentState.draftsByProjectId[project.project_id] || readStoredDraft(userId, project.project_id);
+    const draft: NewConversationDraft = existing || {
+      draftId: crypto.randomUUID(),
+      projectId: project.project_id,
+      phase: 'editing',
+      text: '',
+      model: activeSession?.model || defaultModel,
+      activeDatasetId: project.default_dataset_id || null,
+      attachments: [],
+    };
+    dispatchConversation({ type: 'OPEN_DRAFT', draft });
+    setActiveProject(null);
+    setGraphOpen(false);
+    setDatasetOpen(false);
+    setMoveSessionTarget(null);
+    setMobileSidebarOpen(false);
+    setWorkspaceError('');
+    setComposerFocusRequest(current => current + 1);
+    if (updateUrl) {
+      const route = parseWorkspaceRoute(window.location.search);
+      if (route.kind !== 'new-session' || route.projectId !== project.project_id) {
+        writeWorkspaceRoute({ kind: 'new-session', projectId: project.project_id });
+      }
+    }
   }
   async function deleteTask(id: string) {
     if (!window.confirm('确认删除这个分析任务吗？')) return;
     const deleted = sessions.find(item => item.session_id === id);
     const deletingActiveSession = conversationRef.current.activeSessionId === id;
+    const preparation = preparationControllersRef.current.get(id);
+    preparation?.abort();
+    preparationControllersRef.current.delete(id);
     try {
       await removeSession(id);
       connectionManagerRef.current.abort(id);
       hydrationControllersRef.current.get(id)?.abort();
       hydrationControllersRef.current.delete(id);
       clearPersistedRun(id);
+      clearPendingFirstTurn(id);
       dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
       setSessions(current => current.filter(item => item.session_id !== id));
       if (deleted?.project_id) setProjects(current => current.map(project => project.project_id === deleted.project_id ? { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) } : project));
       if (activeProject?.project_id === deleted?.project_id) setActiveProject(current => current ? { ...current, conversation_count: Math.max(0, (current.conversation_count || 0) - 1) } : current);
       if (deletingActiveSession) showWorkspaceHome(true, true);
-    } catch (cause: any) { setWorkspaceError(cause.message || '删除任务失败'); }
+    } catch (cause: any) {
+      const run = conversationRef.current.viewsBySessionId[id]?.activeRun;
+      if (preparation && run?.status === 'preparing') dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId: id, generation: run.generation, error: '删除任务失败，请重试' });
+      setWorkspaceError(cause.message || '删除任务失败');
+    }
   }
   async function saveProject(name: string, description: string) {
     if (projectEditor === 'edit' && projectEditorTarget) {
@@ -727,10 +961,13 @@ function App() {
   async function deleteCurrentProject(action: 'move_to_general' | 'delete') {
     if (!deleteProjectTarget) return;
     const targetId = deleteProjectTarget.project_id;
+    draftCreationControllersRef.current.get(targetId)?.abort();
+    draftCreationControllersRef.current.delete(targetId);
     const affectedSessions = sessions.filter(session => session.project_id === targetId);
     const affectedSessionIds = new Set(affectedSessions.map(session => session.session_id));
     const deletingActiveSession = Boolean(activeSessionId && affectedSessionIds.has(activeSessionId));
     const deletingActiveProject = activeProject?.project_id === targetId;
+    const deletingActiveDraft = conversationRef.current.activeDraftProjectId === targetId;
     const response = await removeProject(targetId, action);
     const generalProject = projects.find(project => project.project_id === response.general_project_id);
     const nextSessions = action === 'delete'
@@ -744,21 +981,27 @@ function App() {
     if (action === 'delete') {
       for (const session of affectedSessions) {
         connectionManagerRef.current.abort(session.session_id);
+        preparationControllersRef.current.get(session.session_id)?.abort();
+        preparationControllersRef.current.delete(session.session_id);
         hydrationControllersRef.current.get(session.session_id)?.abort();
         hydrationControllersRef.current.delete(session.session_id);
         clearPersistedRun(session.session_id);
+        clearPendingFirstTurn(session.session_id);
         dispatchConversation({ type: 'REMOVE_SESSION', sessionId: session.session_id });
       }
     } else {
       for (const session of affectedSessions) {
         dispatchConversation({ type: 'PATCH_VIEW', sessionId: session.session_id, patch: { activeDatasetId: generalProject?.default_dataset_id, selectedNode: null } });
         const graphVersion = nextGraphVersion(session.session_id);
-        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: session.session_id, requestVersion: graphVersion, graph: null });
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: session.session_id, requestVersion: graphVersion, graph: { status: 'empty', data: null } });
       }
     }
     setSessions(nextSessions); setProjects(nextProjects); setDeleteProjectTarget(null);
+    dispatchConversation({ type: 'REMOVE_DRAFT', projectId: targetId });
+    clearStoredDraft(targetId);
     const general = nextProjects.find(project => project.project_id === response.general_project_id);
-    if (deletingActiveSession && action === 'delete') showWorkspaceHome(true, true);
+    if (deletingActiveDraft) showWorkspaceHome(true, true);
+    else if (deletingActiveSession && action === 'delete') showWorkspaceHome(true, true);
     else if (deletingActiveProject) {
       if (general) await selectProject(general.project_id, nextProjects);
       else showWorkspaceHome(true, true);
@@ -771,12 +1014,11 @@ function App() {
   async function moveCurrentSession(projectId: string) {
     if (!moveSessionTarget) return;
     const oldProjectId = moveSessionTarget.project_id;
-    nextGraphVersion(moveSessionTarget.session_id);
+    const graphVersion = nextGraphVersion(moveSessionTarget.session_id);
     const response = await moveSession(moveSessionTarget.session_id, projectId);
     setSessions(current => current.map(session => session.session_id === moveSessionTarget.session_id ? { ...session, project_id: projectId, active_dataset_id: response.active_dataset_id, has_graph: false } : session));
     dispatchConversation({ type: 'PATCH_VIEW', sessionId: moveSessionTarget.session_id, patch: { activeDatasetId: response.active_dataset_id } });
-    const graphVersion = nextGraphVersion(moveSessionTarget.session_id);
-    dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: moveSessionTarget.session_id, requestVersion: graphVersion, graph: null });
+    dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: moveSessionTarget.session_id, requestVersion: graphVersion, graph: { status: 'empty', data: null } });
     setProjects(current => current.map(project => {
       if (project.project_id === oldProjectId) return { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) };
       if (project.project_id === projectId) return { ...project, conversation_count: (project.conversation_count || 0) + 1 };
@@ -784,7 +1026,208 @@ function App() {
     }));
     setMoveSessionTarget(null);
   }
+
+  function pendingFirstTurnSnapshot(
+    message: string,
+    attachments: AttachmentRef[],
+    pendingAttachments: DraftAttachment[],
+    modelValue: string,
+    projectId: string,
+    activeDatasetId: string | null,
+  ): PendingFirstTurn {
+    return {
+      message,
+      attachments,
+      pendingAttachments: pendingAttachments.map(attachment => ({
+        localId: attachment.localId,
+        filename: attachment.filename,
+        status: attachment.fileToken ? 'uploaded' : 'needs_reselect',
+        error: attachment.fileToken ? undefined : '刷新后需要重新选择文件',
+      })),
+      model: modelValue,
+      projectId,
+      activeDatasetId,
+    };
+  }
+
+  async function prepareAndStartFirstTurn(
+    sessionId: string,
+    generation: string,
+    message: string,
+    initialAttachments: AttachmentRef[],
+    initialPending: DraftAttachment[],
+    modelValue: string,
+    projectId: string,
+    activeDatasetId: string | null,
+  ) {
+    preparationControllersRef.current.get(sessionId)?.abort();
+    const preparationController = new AbortController();
+    preparationControllersRef.current.set(sessionId, preparationController);
+    let attachments = [...initialAttachments];
+    let pendingAttachments = [...initialPending];
+    persistPendingFirstTurn(sessionId, pendingFirstTurnSnapshot(message, attachments, pendingAttachments, modelValue, projectId, activeDatasetId));
+
+    for (const pending of initialPending) {
+      if (pending.fileToken) {
+        const attachment = { file_token: pending.fileToken, filename: pending.filename };
+        if (!attachments.some(item => item.file_token === attachment.file_token)) attachments.push(attachment);
+        pendingAttachments = pendingAttachments.filter(item => item.localId !== pending.localId);
+        dispatchConversation({ type: 'RESOLVE_PENDING_ATTACHMENT', sessionId, localId: pending.localId, attachment });
+        continue;
+      }
+      if (!pending.file) {
+        const errorMessage = `附件「${pending.filename}」需要重新选择后才能发送`;
+        dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'needs_reselect', error: errorMessage });
+        dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: errorMessage });
+        preparationControllersRef.current.delete(sessionId);
+        persistPendingFirstTurn(sessionId, pendingFirstTurnSnapshot(message, attachments, pendingAttachments, modelValue, projectId, activeDatasetId));
+        return;
+      }
+      dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'uploading' });
+      try {
+        const uploaded = await uploadFile(sessionId, pending.file, preparationController.signal);
+        const attachment = { file_token: uploaded.file_token, filename: uploaded.filename || pending.filename };
+        attachments = [...attachments.filter(item => item.file_token !== attachment.file_token), attachment];
+        pendingAttachments = pendingAttachments.filter(item => item.localId !== pending.localId);
+        dispatchConversation({ type: 'RESOLVE_PENDING_ATTACHMENT', sessionId, localId: pending.localId, attachment });
+        persistPendingFirstTurn(sessionId, pendingFirstTurnSnapshot(message, attachments, pendingAttachments, modelValue, projectId, activeDatasetId));
+      } catch (cause: any) {
+        if (requestWasAborted(cause)) return;
+        const errorMessage = cause.message || `附件「${pending.filename}」上传失败`;
+        dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'failed', error: errorMessage });
+        dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: errorMessage });
+        preparationControllersRef.current.delete(sessionId);
+        persistPendingFirstTurn(sessionId, pendingFirstTurnSnapshot(message, attachments, pendingAttachments, modelValue, projectId, activeDatasetId));
+        return;
+      }
+    }
+
+    if (preparationController.signal.aborted) return;
+
+    const retry = () => {
+      const run = conversationRef.current.viewsBySessionId[sessionId]?.activeRun;
+      if (run?.runId) openResumeConnection(sessionId, generation, { run_id: run.runId, status: run.status, last_event_index: run.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
+    };
+    const connection = connectionManagerRef.current.acquire({
+      sessionId,
+      generation,
+      foreground: conversationRef.current.activeSessionId === sessionId,
+      retry,
+      onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
+    });
+    if (!connection) {
+      dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: '当前会话仍有连接正在收尾，请稍后重试' });
+      preparationControllersRef.current.delete(sessionId);
+      return;
+    }
+    dispatchConversation({
+      type: 'START_PREPARED_RUN',
+      sessionId,
+      generation,
+      userMessage: { id: `user:${generation}`, role: 'user', content: message },
+      assistantMessage: { id: `assistant:${generation}`, role: 'assistant', content: '', streaming: true, tools: [] },
+    });
+    setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, preview: message, last_message: message } : session));
+    persistPendingFirstTurn(sessionId, pendingFirstTurnSnapshot(message, attachments, [], modelValue, projectId, activeDatasetId));
+    preparationControllersRef.current.delete(sessionId);
+    void consumeRunConnection(sessionId, generation, connection, 'start', { message, attachments }, undefined, undefined, undefined, undefined, true);
+  }
+
+  async function sendDraft() {
+    const selectedProjectId = conversationRef.current.activeDraftProjectId;
+    const draft = selectedProjectId ? conversationRef.current.draftsByProjectId[selectedProjectId] : null;
+    if (!draft || !['editing', 'failed'].includes(draft.phase)) return;
+    const projectId = draft.projectId;
+    const message = draft.text.trim();
+    if (!message) return;
+    if (draftCreationControllersRef.current.has(projectId)) return;
+    const creationController = new AbortController();
+    draftCreationControllersRef.current.set(projectId, creationController);
+    dispatchConversation({ type: 'PATCH_DRAFT', projectId, draftId: draft.draftId, patch: { phase: 'creating_session', error: undefined } });
+    try {
+      const response = await createSession({
+        clientSessionId: draft.draftId,
+        projectId,
+        model: draft.model,
+        activeDatasetId: draft.activeDatasetId,
+        initialMessagePreview: message,
+        signal: creationController.signal,
+      });
+      if (creationController.signal.aborted) return;
+      const selectedModel = response.model || draft.model;
+      const resolvedProjectId = response.project_id || projectId;
+      const generation = crypto.randomUUID();
+      const listedBefore = sessions.some(session => session.session_id === response.session_id);
+      const nextSession: Session = {
+        session_id: response.session_id,
+        project_id: resolvedProjectId,
+        active_dataset_id: response.active_dataset_id,
+        title: response.title || message.slice(0, 36),
+        preview: message,
+        last_message: message,
+        model: selectedModel,
+        has_graph: false,
+      };
+      const wasActive = conversationRef.current.activeDraftProjectId === projectId
+        && conversationRef.current.draftsByProjectId[projectId]?.draftId === draft.draftId;
+      setAvailableModels(current => normalizedModels(current, selectedModel));
+      setSessions(current => [nextSession, ...current.filter(item => item.session_id !== nextSession.session_id)]);
+      if (!listedBefore) {
+        setProjects(current => current.map(project => project.project_id === resolvedProjectId
+          ? { ...project, conversation_count: (project.conversation_count || 0) + 1 }
+          : project));
+      }
+      dispatchConversation({
+        type: 'MATERIALIZE_DRAFT',
+        projectId,
+        draftId: draft.draftId,
+        sessionId: response.session_id,
+        generation,
+        model: selectedModel,
+        activeDatasetId: response.active_dataset_id,
+        datasetView: response.dataset_view,
+        accessedAt: Date.now(),
+      });
+      clearStoredDraft(projectId);
+      if (wasActive) {
+        setActiveProject(null);
+        setGraphOpen(window.innerWidth > 900);
+        writeWorkspaceRoute({ kind: 'session', id: response.session_id }, true);
+      }
+      void prepareAndStartFirstTurn(
+        response.session_id,
+        generation,
+        message,
+        draft.attachments.filter(attachment => Boolean(attachment.fileToken)).map(attachment => ({ file_token: attachment.fileToken!, filename: attachment.filename })),
+        draft.attachments.filter(attachment => !attachment.fileToken),
+        selectedModel,
+        resolvedProjectId,
+        response.active_dataset_id ?? draft.activeDatasetId,
+      );
+    } catch (cause: any) {
+      if (requestWasAborted(cause)) return;
+      let activeDatasetId = draft.activeDatasetId;
+      if (cause instanceof ApiError && cause.code === 'DRAFT_DATASET_STALE') {
+        try {
+          const response = await listProjectDatasets(projectId);
+          updateProjectDatasets(projectId, response.datasets || []);
+          activeDatasetId = response.default_dataset_id || null;
+          setProjects(current => current.map(project => project.project_id === projectId ? { ...project, default_dataset_id: activeDatasetId } : project));
+        } catch { /* 保留服务端给出的原始冲突信息。 */ }
+      }
+      dispatchConversation({
+        type: 'PATCH_DRAFT',
+        projectId,
+        draftId: draft.draftId,
+        patch: { phase: 'failed', activeDatasetId, error: cause.message || '创建会话失败，请重试' },
+      });
+    } finally {
+      if (draftCreationControllersRef.current.get(projectId) === creationController) draftCreationControllersRef.current.delete(projectId);
+    }
+  }
+
   async function send() {
+    if (conversationRef.current.activeDraftProjectId) return sendDraft();
     if (!activeSession) return;
     const sessionId = activeSession.session_id;
     const targetView = conversationRef.current.viewsBySessionId[sessionId];
@@ -798,6 +1241,23 @@ function App() {
           ? '确认正在提交，请等待状态核对完成'
           : '当前会话已有活动任务，请等待其完成';
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: blockedMessage } });
+      return;
+    }
+    const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
+    if (targetView?.pendingAttachments.length || pendingFirstTurn) {
+      const generation = crypto.randomUUID();
+      dispatchConversation({ type: 'BEGIN_RUN_PREPARATION', sessionId, generation });
+      const sessionProjectId = activeSession.project_id || pendingFirstTurn?.projectId || '';
+      void prepareAndStartFirstTurn(
+        sessionId,
+        generation,
+        message,
+        targetView?.attachments || pendingFirstTurn?.attachments || [],
+        targetView?.pendingAttachments || [],
+        targetView?.model || pendingFirstTurn?.model || defaultModel,
+        sessionProjectId,
+        targetView?.activeDatasetId ?? pendingFirstTurn?.activeDatasetId ?? null,
+      );
       return;
     }
     const attachments = targetView?.attachments || [];
@@ -853,8 +1313,51 @@ function App() {
     void consumeRunConnection(sessionId, generation, connection, 'feedback', undefined, pending, decision, undefined, decisionId);
   }
   async function upload(file: File) {
+    const draftProjectId = conversationRef.current.activeDraftProjectId;
+    const currentDraft = draftProjectId ? conversationRef.current.draftsByProjectId[draftProjectId] : null;
+    if (currentDraft) {
+      if (!['editing', 'failed'].includes(currentDraft.phase)) return;
+      const replacement = currentDraft.attachments.find(attachment => attachment.filename === file.name && attachment.status === 'needs_reselect');
+      const attachment: DraftAttachment = replacement
+        ? { ...replacement, file, status: 'staged', error: undefined }
+        : { localId: crypto.randomUUID(), filename: file.name, file, status: 'staged' };
+      dispatchConversation({
+        type: 'PATCH_DRAFT',
+        projectId: currentDraft.projectId,
+        draftId: currentDraft.draftId,
+        patch: {
+          phase: 'editing',
+          error: undefined,
+          attachments: replacement
+            ? currentDraft.attachments.map(item => item.localId === replacement.localId ? attachment : item)
+            : [...currentDraft.attachments, attachment],
+        },
+      });
+      return;
+    }
     if (!activeSession || uploading) return;
     const sessionId = activeSession.session_id;
+    const currentView = conversationRef.current.viewsBySessionId[sessionId];
+    const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
+    if (currentView?.pendingAttachments.length || pendingFirstTurn) {
+      const replacement = currentView.pendingAttachments.find(attachment => attachment.filename === file.name && ['needs_reselect', 'failed'].includes(attachment.status));
+      const attachment: DraftAttachment = replacement
+        ? { ...replacement, file, status: 'staged', error: undefined }
+        : { localId: crypto.randomUUID(), filename: file.name, file, status: 'staged' };
+      const nextPendingAttachments = replacement
+        ? currentView.pendingAttachments.map(item => item.localId === replacement.localId ? attachment : item)
+        : [...(currentView?.pendingAttachments || []), attachment];
+      dispatchConversation({
+        type: 'PATCH_VIEW',
+        sessionId,
+        patch: {
+          pendingAttachments: nextPendingAttachments,
+          error: undefined,
+        },
+      });
+      if (pendingFirstTurn) persistPendingFirstTurn(sessionId, { ...pendingFirstTurn, pendingAttachments: nextPendingAttachments.map(item => ({ localId: item.localId, filename: item.filename, status: 'needs_reselect', error: '刷新后需要重新选择文件' })) });
+      return;
+    }
     dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
     try {
       const uploaded = await uploadFile(sessionId, file);
@@ -867,12 +1370,36 @@ function App() {
     } catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '上传失败' } }); }
     finally { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } }); }
   }
-  function removeAttachment(fileToken: string) {
+  function removeAttachment(attachmentId: string) {
+    const draftProjectId = conversationRef.current.activeDraftProjectId;
+    const currentDraft = draftProjectId ? conversationRef.current.draftsByProjectId[draftProjectId] : null;
+    if (currentDraft && ['editing', 'failed'].includes(currentDraft.phase)) {
+      dispatchConversation({ type: 'PATCH_DRAFT', projectId: currentDraft.projectId, draftId: currentDraft.draftId, patch: { attachments: currentDraft.attachments.filter(item => item.localId !== attachmentId) } });
+      return;
+    }
     if (!activeSession) return;
     const sessionId = activeSession.session_id;
-    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: (conversationRef.current.viewsBySessionId[sessionId]?.attachments || []).filter(item => item.file_token !== fileToken) } });
+    const currentView = conversationRef.current.viewsBySessionId[sessionId];
+    if (currentView?.pendingAttachments.some(item => item.localId === attachmentId)) {
+      const nextPendingAttachments = currentView.pendingAttachments.filter(item => item.localId !== attachmentId);
+      dispatchConversation({ type: 'REMOVE_PENDING_ATTACHMENT', sessionId, localId: attachmentId });
+      const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
+      if (pendingFirstTurn) persistPendingFirstTurn(sessionId, { ...pendingFirstTurn, pendingAttachments: nextPendingAttachments.map(item => ({ localId: item.localId, filename: item.filename, status: 'needs_reselect', error: '刷新后需要重新选择文件' })) });
+      return;
+    }
+    const nextAttachments = (currentView?.attachments || []).filter(item => item.file_token !== attachmentId);
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: nextAttachments } });
+    const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
+    if (pendingFirstTurn) persistPendingFirstTurn(sessionId, { ...pendingFirstTurn, attachments: nextAttachments });
   }
   async function changeModel(nextModel: string) {
+    const draftProjectId = conversationRef.current.activeDraftProjectId;
+    const currentDraft = draftProjectId ? conversationRef.current.draftsByProjectId[draftProjectId] : null;
+    if (currentDraft) {
+      if (!['editing', 'failed'].includes(currentDraft.phase) || nextModel === currentDraft.model) return;
+      dispatchConversation({ type: 'PATCH_DRAFT', projectId: currentDraft.projectId, draftId: currentDraft.draftId, patch: { model: nextModel, phase: 'editing', error: undefined } });
+      return;
+    }
     if (!activeSession || busy || nextModel === model) return;
     const sessionId = activeSession.session_id;
     if (selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
@@ -894,6 +1421,16 @@ function App() {
   }
   function openManagement(tab: 'memory' | 'skills') { setManagementTab(tab); setManagementOpen(true); }
   async function openDatasets() {
+    const currentDraftProjectId = conversationRef.current.activeDraftProjectId;
+    if (currentDraftProjectId) {
+      setDatasetOpen(true);
+      try { updateProjectDatasets(currentDraftProjectId, (await listProjectDatasets(currentDraftProjectId)).datasets || []); }
+      catch (cause: any) {
+        const draft = conversationRef.current.draftsByProjectId[currentDraftProjectId];
+        if (draft) dispatchConversation({ type: 'PATCH_DRAFT', projectId: currentDraftProjectId, draftId: draft.draftId, patch: { error: cause.message || '项目数据集加载失败' } });
+      }
+      return;
+    }
     if (!activeSession?.project_id) return setWorkspaceError('当前会话尚未关联项目');
     const projectId = activeSession.project_id;
     const sessionId = activeSession.session_id;
@@ -906,34 +1443,53 @@ function App() {
     catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '项目数据集加载失败' } }); }
   }
   async function chooseDataset(dataset: Dataset) {
-    if (!activeSession || dataset.dataset_id === activeSession.active_dataset_id) return setDatasetOpen(false);
+    const draftProjectId = conversationRef.current.activeDraftProjectId;
+    const currentDraft = draftProjectId ? conversationRef.current.draftsByProjectId[draftProjectId] : null;
+    if (currentDraft) {
+      dispatchConversation({ type: 'PATCH_DRAFT', projectId: currentDraft.projectId, draftId: currentDraft.draftId, patch: { activeDatasetId: dataset.dataset_id, phase: 'editing', error: undefined } });
+      setDatasetOpen(false);
+      return;
+    }
+    if (!activeSession || dataset.dataset_id === activeView?.activeDatasetId) return setDatasetOpen(false);
     const sessionId = activeSession.session_id;
     if (selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能切换数据集' } });
       setDatasetOpen(false);
       return;
     }
-    nextGraphVersion(sessionId);
+    const targetView = conversationRef.current.viewsBySessionId[sessionId];
+    const previousGraph = targetView?.graph || { status: 'empty' as const, data: null };
+    const previousSelected = targetView?.selectedNode || null;
+    const graphVersion = nextGraphVersion(sessionId);
     setBusy(true); dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: undefined } });
     try {
-      await setSessionDataset(sessionId, dataset.dataset_id);
+      const response = await setSessionDataset(sessionId, dataset.dataset_id);
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { activeDatasetId: dataset.dataset_id } });
-      const nextGraph = await refreshSessionGraph(sessionId, {}, true);
+      const unsupported = unsupportedGraphView(response.dataset_view);
+      let nextGraph: GraphData | null = null;
+      if (unsupported) dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: unsupported });
+      else nextGraph = await refreshSessionGraph(sessionId, {}, true, graphVersion);
       setDatasetOpen(false);
-      if (conversationRef.current.activeSessionId === sessionId) setGraphOpen(window.innerWidth > 900);
       setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: dataset.dataset_id, has_graph: Boolean(nextGraph) } : session));
-    } catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '数据集切换失败' } }); }
+    } catch (cause: any) {
+      dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: previousGraph });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { selectedNode: previousSelected, error: cause.message || '数据集切换失败' } });
+    }
     finally { setBusy(false); }
   }
   async function addProjectDataset(file: File, activateCurrentSession: boolean) {
-    const projectId = activeProject?.project_id || activeSession?.project_id;
+    const draftProjectId = conversationRef.current.activeDraftProjectId;
+    const projectId = activeProject?.project_id || draftProjectId || activeSession?.project_id;
     if (!projectId) return;
     const sessionId = activateCurrentSession ? activeSession?.session_id : undefined;
     if (sessionId && selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能激活新数据集' } });
       return;
     }
-    if (sessionId) nextGraphVersion(sessionId);
+    const targetView = sessionId ? conversationRef.current.viewsBySessionId[sessionId] : null;
+    const previousGraph = targetView?.graph || { status: 'empty' as const, data: null };
+    const previousSelected = targetView?.selectedNode || null;
+    const graphVersion = sessionId ? nextGraphVersion(sessionId) : undefined;
     if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
     else { setBusy(true); setWorkspaceError(''); }
     try {
@@ -943,14 +1499,23 @@ function App() {
       updateProjectDatasets(projectId, next);
       setProjects(current => current.map(project => project.project_id === projectId ? { ...project, default_dataset_id: response.default_dataset_id } : project));
       setActiveProject(current => current?.project_id === projectId ? { ...current, default_dataset_id: response.default_dataset_id } : current);
-      if (response.activated_session_id && sessionId) {
+      const currentDraft = conversationRef.current.draftsByProjectId[projectId];
+      if (draftProjectId === projectId && currentDraft) {
+        dispatchConversation({ type: 'PATCH_DRAFT', projectId, draftId: currentDraft.draftId, patch: { activeDatasetId: response.dataset.dataset_id, error: undefined } });
+      }
+      if (response.activated_session_id && sessionId && graphVersion !== undefined) {
         dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { activeDatasetId: response.dataset.dataset_id } });
-        const nextGraph = await refreshSessionGraph(sessionId, {}, true);
-        if (conversationRef.current.activeSessionId === sessionId) setGraphOpen(window.innerWidth > 900);
+        const unsupported = unsupportedGraphView(response.dataset_view);
+        let nextGraph: GraphData | null = null;
+        if (unsupported) dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: unsupported });
+        else nextGraph = await refreshSessionGraph(sessionId, {}, true, graphVersion);
         setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: response.dataset.dataset_id, has_graph: Boolean(nextGraph) } : session));
       }
     } catch (cause: any) {
-      if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '项目数据集上传失败' } });
+      if (sessionId && graphVersion !== undefined) {
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: previousGraph });
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { selectedNode: previousSelected, error: cause.message || '项目数据集上传失败' } });
+      }
       else setWorkspaceError(cause.message || '项目数据集上传失败');
     } finally {
       if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } });
@@ -984,7 +1549,7 @@ function App() {
       for (const session of sessions.filter(item => item.active_dataset_id === dataset.dataset_id)) {
         dispatchConversation({ type: 'PATCH_VIEW', sessionId: session.session_id, patch: { activeDatasetId: null } });
         const graphVersion = nextGraphVersion(session.session_id);
-        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: session.session_id, requestVersion: graphVersion, graph: null });
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: session.session_id, requestVersion: graphVersion, graph: { status: 'empty', data: null } });
       }
     } catch (cause: any) { setWorkspaceError(cause.message || '数据集删除失败'); }
   }
@@ -997,12 +1562,25 @@ function App() {
   }
   if (!ready) return null;
   if (!userId) return <div className="login-screen"><div className="login-box"><div className="brand-mark large"><Icon name="graph" size={24} /></div><h1>进入 iGraph</h1><p>登录后开始图谱分析</p><input autoFocus value={loginValue} onChange={event => setLoginValue(event.target.value)} onKeyDown={event => event.key === 'Enter' && login()} placeholder="用户 ID" /><button onClick={login}>登录</button>{loginError && <span className="login-error">{loginError}</span>}</div></div>;
-  const activeAttachments = activeView?.attachments || [];
+  const activeAttachments = activeDraft
+    ? activeDraft.attachments
+    : [...(activeView?.attachments || []), ...(activeView?.pendingAttachments || [])];
   const layoutStyle = { '--sidebar-width': `${sidebarWidth}px`, '--graph-width': `${graphWidth}px`, '--collapsed-panel-width': `${COLLAPSED_PANEL_WIDTH}px` } as CSSProperties;
-  const graphNodeCount = graph ? (graph.total_nodes ?? graph.num_nodes ?? graph.nodes.length) : 0;
-  const graphEdgeCount = graph ? (graph.total_edges ?? graph.num_edges ?? graph.edges.length) : 0;
+  const graphNodeCount = graphTotalNodes(graph);
+  const graphEdgeCount = graphTotalEdges(graph);
   const sessionProject = projects.find(project => project.project_id === activeSession?.project_id);
-  const activeDataset = datasets.find(dataset => dataset.dataset_id === activeSession?.active_dataset_id);
+  const workspaceProject = draftProject || sessionProject;
+  const activeDatasetId = activeDraft?.activeDatasetId ?? activeView?.activeDatasetId;
+  const activeDataset = datasets.find(dataset => dataset.dataset_id === activeDatasetId);
+  const graphSummary = graphView.status === 'unsupported'
+    ? `${Number(graphView.summary.num_graphs || 0).toLocaleString()} graphs`
+    : graphView.status === 'ready'
+      ? `${graphNodeCount.toLocaleString()} nodes · ${graphEdgeCount.toLocaleString()} edges`
+      : graphView.status === 'loading'
+        ? '正在加载图谱数据'
+        : graphView.status === 'failed'
+          ? '图谱加载失败'
+          : '等待加载图谱数据';
   const runStatuses = Object.fromEntries(Object.entries(conversation.viewsBySessionId)
     .filter(([, view]) => Boolean(view.activeRun))
     .map(([sessionId, view]) => [sessionId, view.activeRun!.status]));
@@ -1020,21 +1598,23 @@ function App() {
         </> : <>
           <div className="workspace-context">
             <div className="context-icon"><Icon name="graph" size={18} /></div>
-            <div>{sessionProject && <button className="project-breadcrumb" onClick={() => selectProject(sessionProject.project_id)}>{sessionProject.name} /</button>}<strong>{activeSession?.title || 'iGraph 工作台'}</strong><span>{activeSession ? (graph ? `${graphNodeCount.toLocaleString()} nodes · ${graphEdgeCount.toLocaleString()} edges` : '等待加载图谱数据') : '选择已有会话，或新建任务'}</span></div>
+            <div>{workspaceProject && <button className="project-breadcrumb" onClick={() => selectProject(workspaceProject.project_id)}>{workspaceProject.name} /</button>}<strong>{activeDraft ? '新对话' : activeSession?.title || 'iGraph 工作台'}</strong>{!activeDraft && <span>{activeSession ? graphSummary : '选择已有会话，或新建任务'}</span>}</div>
             <div className="context-actions">
               {activeSession && <button onClick={() => setMoveSessionTarget(activeSession)}><Icon name="move" size={14} /> 移动</button>}
               {activeSession && !graphOpen && <button onClick={() => setGraphOpen(true)}><Icon name="graph" size={14} /> 展开图谱</button>}
             </div>
           </div>
           <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
-          {activeSession
-            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={!!graph} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} />
+          {activeDraft
+            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} messages={[]} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
+            : activeSession
+            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
             : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><Icon name="graph" size={31} /></div><h1>开始新的图谱分析</h1><p>选择左侧已有会话，或创建一个新任务。</p><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button></div></div>}
         </>}
       </div>
-      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace data={graph} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
+      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} resetKey={`${activeSession.session_id}:${activeView?.activeDatasetId || 'none'}`} /></>}
     </div>
-    {datasetOpen && <DatasetPanel datasets={datasets} projectName={sessionProject?.name} activeDatasetId={activeSession?.active_dataset_id} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, true)} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
+    {datasetOpen && <DatasetPanel datasets={datasets} projectName={workspaceProject?.name} activeDatasetId={activeDatasetId} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, Boolean(activeSession))} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
     {projectEditor && <ProjectDialog key={`${projectEditor}-${projectEditorTarget?.project_id || 'new'}`} project={projectEditor === 'edit' ? projectEditorTarget : null} onClose={() => { setProjectEditor(null); setProjectEditorTarget(null); }} onSave={saveProject} />}
     {deleteProjectTarget && <DeleteProjectDialog project={deleteProjectTarget} onClose={() => setDeleteProjectTarget(null)} onConfirm={deleteCurrentProject} />}
@@ -1042,7 +1622,24 @@ function App() {
   </div>;
 }
 
-function ChatPaneWithState(props: any) { return <div className="chat-pane-shell"><div className="run-summary">{props.runGateReason === 'awaiting_feedback' ? '等待确认：请先批准或拒绝当前操作' : props.runGateReason === 'submitting_feedback' ? <><span className="loader" /> 正在提交确认并核对状态</> : props.loading ? <><span className="loader" /> Agent 正在分析图谱</> : props.hasGraph ? <><span className="status-dot" /> 图谱分析就绪</> : '输入问题或粘贴边列表开始任务'}{props.plan?.steps?.length ? <span className="run-count">{props.plan.steps.filter((step: any) => step.status === 'done').length}/{props.plan.steps.length} steps</span> : null}</div><div className="chat-pane-proxy"><ChatPane {...props} /></div></div>; }
+function ChatPaneWithState(props: any) {
+  const summary = props.runGateReason === 'awaiting_feedback'
+    ? '等待确认：请先批准或拒绝当前操作'
+    : props.runGateReason === 'submitting_feedback'
+      ? <><span className="loader" /> 正在提交确认并核对状态</>
+      : props.loading
+        ? <><span className="loader" /> Agent 正在分析图谱</>
+        : props.hasGraph
+          ? <><span className="status-dot" /> 图谱分析就绪</>
+          : null;
+  const planProgress = props.plan?.steps?.length
+    ? <span className="run-count">{props.plan.steps.filter((step: any) => step.status === 'done').length}/{props.plan.steps.length} steps</span>
+    : null;
+  return <div className="chat-pane-shell">
+    {(summary || planProgress) && <div className="run-summary">{summary}{planProgress}</div>}
+    <div className="chat-pane-proxy"><ChatPane {...props} /></div>
+  </div>;
+}
 
 export default App;
 

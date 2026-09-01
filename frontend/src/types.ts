@@ -66,6 +66,46 @@ export type GraphData = {
   truncated_to?: number;
 };
 
+export type GraphCollectionSummary = {
+  num_graphs?: number;
+  num_tasks?: number;
+  metric?: string;
+  split_sizes?: Record<string, number>;
+  node_vocab_size?: number;
+  edge_vocab_size?: number;
+  has_missing_labels?: boolean;
+  missing_label_rate?: number;
+  num_edgeless_graphs?: number;
+  uses_edge_features?: boolean;
+  semantic_type?: string;
+  storage_type?: string;
+};
+
+export type DatasetView =
+  | {
+      kind: 'single_graph';
+      visualization: { supported: true; code?: null };
+      summary?: Record<string, unknown>;
+    }
+  | {
+      kind: 'graph_collection';
+      visualization: { supported: false; code: 'NON_SINGLE_GRAPH' };
+      summary: GraphCollectionSummary;
+    };
+
+export type GraphViewState =
+  | { status: 'empty'; data: null }
+  | { status: 'loading'; data: null }
+  | { status: 'ready'; data: GraphData }
+  | { status: 'unsupported'; data: null; code: 'NON_SINGLE_GRAPH'; summary: GraphCollectionSummary }
+  | { status: 'failed'; data: null; error: string };
+
+export function isGraphData(value: unknown): value is GraphData {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const graph = value as Partial<GraphData>;
+  return graph.success !== false && Array.isArray(graph.nodes) && Array.isArray(graph.edges);
+}
+
 export type Dataset = {
   dataset_id: string;
   project_id: string;
@@ -79,6 +119,25 @@ export type Dataset = {
   updated_at?: string;
 };
 export type AttachmentRef = { file_token: string; filename: string };
+export type DraftPhase = 'editing' | 'creating_session' | 'uploading' | 'starting_run' | 'failed';
+export type DraftAttachment = {
+  localId: string;
+  filename: string;
+  file?: File;
+  fileToken?: string;
+  status: 'staged' | 'uploading' | 'uploaded' | 'failed' | 'needs_reselect';
+  error?: string;
+};
+export type NewConversationDraft = {
+  draftId: string;
+  projectId: string;
+  phase: DraftPhase;
+  text: string;
+  model: string;
+  activeDatasetId: string | null;
+  attachments: DraftAttachment[];
+  error?: string;
+};
 export type FeedbackRequest = {
   run_id?: string;
   request_id?: string;

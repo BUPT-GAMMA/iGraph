@@ -1,4 +1,5 @@
-import type { ActiveRun, AttachmentRef, Dataset, FeedbackRequest, GraphData, Message, Project, Session, StreamBatch, StreamEvent } from './types';
+import { isGraphData } from './types';
+import type { ActiveRun, AttachmentRef, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, Session, StreamBatch, StreamEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
@@ -56,10 +57,25 @@ export async function validateUser(userId: string) {
 }
 
 export async function listSessions() { return json<{ success?: boolean; sessions?: Session[] }>('/api/sessions'); }
-export async function createSession(model = 'qwen3.6-plus', projectId?: string) {
-  return json<{ success?: boolean; session_id: string; project_id?: string; active_dataset_id?: string | null; model?: string }>('/api/sessions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, project_id: projectId, reasoning_mode: 'direct', planning_mode: 'auto' }),
+export async function createSession(options: {
+  clientSessionId?: string;
+  model?: string;
+  projectId?: string;
+  activeDatasetId?: string | null;
+  initialMessagePreview?: string;
+  signal?: AbortSignal;
+} = {}) {
+  return json<{ success?: boolean; session_id: string; reused?: boolean; project_id?: string; active_dataset_id?: string | null; dataset_view?: DatasetView | null; model?: string; title?: string }>('/api/sessions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: options.signal,
+    body: JSON.stringify({
+      client_session_id: options.clientSessionId,
+      model: options.model,
+      project_id: options.projectId,
+      active_dataset_id: options.activeDatasetId,
+      initial_message_preview: options.initialMessagePreview,
+      reasoning_mode: 'direct',
+      planning_mode: 'auto',
+    }),
   });
 }
 export async function activateSession(id: string, signal?: AbortSignal) {
@@ -70,6 +86,7 @@ export async function activateSession(id: string, signal?: AbortSignal) {
     project_id?: string;
     active_dataset_id?: string | null;
     has_graph?: boolean;
+    dataset_view?: DatasetView | null;
     model?: string;
     default_model?: string;
     available_models?: string[];
@@ -113,7 +130,7 @@ export async function uploadProjectDataset(projectId: string, file: File, sessio
   const body = new FormData();
   body.append('file', file);
   if (sessionId) body.append('session_id', sessionId);
-  return json<{ success?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null }>(`/api/projects/${encodeURIComponent(projectId)}/datasets`, { method: 'POST', body });
+  return json<{ success?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(`/api/projects/${encodeURIComponent(projectId)}/datasets`, { method: 'POST', body });
 }
 export async function renameProjectDataset(projectId: string, datasetId: string, name: string) {
   return json<{ success?: boolean; dataset: Dataset }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}`, {
@@ -127,21 +144,32 @@ export async function deleteProjectDataset(projectId: string, datasetId: string)
   return json<{ success?: boolean; default_dataset_id?: string | null; cleared_conversations?: number }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}`, { method: 'DELETE' });
 }
 export async function setSessionDataset(sessionId: string, datasetId: string | null) {
-  return json<{ success?: boolean; session_id: string; project_id: string; active_dataset_id?: string | null }>(`/api/sessions/${encodeURIComponent(sessionId)}/dataset`, {
+  return json<{ success?: boolean; session_id: string; project_id: string; active_dataset_id?: string | null; dataset_view?: DatasetView | null }>(`/api/sessions/${encodeURIComponent(sessionId)}/dataset`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active_dataset_id: datasetId }),
   });
 }
-export async function uploadFile(sessionId: string, file: File) {
+export async function uploadFile(sessionId: string, file: File, signal?: AbortSignal) {
   const body = new FormData(); body.append('file', file);
-  return json<{ success: boolean; filename: string; file_token: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/upload`, { method: 'POST', body });
+  return json<{ success: boolean; filename: string; file_token: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/upload`, { method: 'POST', body, signal });
 }
 export async function visualizeGraph(sessionId: string, options: Record<string, unknown> = {}, signal?: AbortSignal): Promise<GraphData> {
-  return json<GraphData>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/visualize`, {
+  const value = await json<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/visualize`, {
     method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ include_community: true, ...options }),
   });
+  return parseGraphDataResponse(value);
+}
+
+export function parseGraphDataResponse(value: unknown): GraphData {
+  if (isGraphData(value)) return value;
+  const payload = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const message = payload.success === false
+    ? String(payload.error || '图谱可视化失败')
+    : '服务返回的图结构不完整';
+  throw new ApiError(502, message, value, null, null, 'INVALID_GRAPH_RESPONSE');
 }
 
 export type StreamHandlers = {
+  onOpen?: () => void;
   onEvent?: (event: StreamEvent) => void;
   onBatch?: (batch: StreamBatch) => void;
 };
@@ -179,6 +207,7 @@ export async function consumeSseResponse(response: Response, sessionId: string, 
     throw ApiError.fromResponse(response.status, data);
   }
   if (!response.body) throw new Error('服务器没有返回流式响应');
+  handlers.onOpen?.();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';

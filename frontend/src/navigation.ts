@@ -1,12 +1,14 @@
 export type WorkspaceRoute =
   | { kind: 'home' }
   | { kind: 'project'; id: string }
-  | { kind: 'session'; id: string };
+  | { kind: 'session'; id: string }
+  | { kind: 'new-session'; projectId: string };
 
 export function parseWorkspaceRoute(search: string): WorkspaceRoute {
   const query = new URLSearchParams(search);
   const projectId = query.get('project')?.trim();
   const sessionId = query.get('session')?.trim();
+  if (projectId && query.get('new') === '1') return { kind: 'new-session', projectId };
   if (projectId) return { kind: 'project', id: projectId };
   if (sessionId) return { kind: 'session', id: sessionId };
   return { kind: 'home' };
@@ -16,7 +18,11 @@ export function workspaceRouteUrl(href: string, route: WorkspaceRoute) {
   const url = new URL(href);
   url.searchParams.delete('project');
   url.searchParams.delete('session');
-  if (route.kind !== 'home') url.searchParams.set(route.kind, route.id);
+  url.searchParams.delete('new');
+  if (route.kind === 'new-session') {
+    url.searchParams.set('project', route.projectId);
+    url.searchParams.set('new', '1');
+  } else if (route.kind !== 'home') url.searchParams.set(route.kind, route.id);
   return `${url.pathname}${url.search}${url.hash}`;
 }
 

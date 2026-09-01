@@ -30,6 +30,7 @@ type Props = {
 };
 
 function runStatusLabel(status?: string) {
+  if (status === 'preparing') return '准备中';
   if (status === 'awaiting_feedback') return '等待确认';
   if (status === 'submitting_feedback') return '确认提交中';
   if (status === 'reconnecting') return '正在重连';
