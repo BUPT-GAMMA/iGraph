@@ -146,17 +146,29 @@ class ProcessSupervisor:
     def _stop_proc(proc: Optional[subprocess.Popen]) -> None:
         if proc is None or proc.poll() is not None:
             return
+        pid = getattr(proc, "pid", None)
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            return
         # Send SIGTERM to the entire process group so child workers
         # (ML job pool, etc.) are also terminated and release the port.
         try:
-            pgid = os.getpgid(proc.pid)
+            pgid = os.getpgid(pid)
+            if pgid <= 1:
+                raise ValueError(f"refusing to signal unsafe process group: {pgid}")
             os.killpg(pgid, signal.SIGTERM)
             proc.wait(timeout=5)
         except Exception:
             # Fallback: force-kill the whole process group first. A direct
             # proc.kill() can leave worker children holding the service port.
             try:
-                pgid = os.getpgid(proc.pid)
+                pgid = os.getpgid(pid)
+                if pgid <= 1:
+                    raise ValueError(f"refusing to signal unsafe process group: {pgid}")
                 os.killpg(pgid, signal.SIGKILL)
                 proc.wait(timeout=2)
             except Exception:
@@ -169,8 +181,12 @@ class ProcessSupervisor:
     @staticmethod
     def _stop_pid(pid: int) -> None:
         """向指定 PID 所在进程组发送 SIGTERM，等待退出。"""
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+            return
         try:
             pgid = os.getpgid(pid)
+            if pgid <= 1:
+                return
             os.killpg(pgid, signal.SIGTERM)
             for _ in range(50):
                 try:
@@ -190,6 +206,8 @@ class ProcessSupervisor:
             return
         try:
             pgid = os.getpgid(pid)
+            if pgid <= 1:
+                return
             os.killpg(pgid, signal.SIGKILL)
         except Exception:
             try:
