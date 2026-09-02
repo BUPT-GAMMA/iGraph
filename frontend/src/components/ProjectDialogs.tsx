@@ -43,8 +43,8 @@ export function DeleteProjectDialog({ project, onClose, onConfirm }: { project: 
     <div className="project-dialog delete-project-dialog">
       <div className="dialog-head"><div><span>Delete project</span><h2>删除“{project.name}”？</h2></div><button className="dialog-close" title="关闭" aria-label="关闭" onClick={onClose}><Icon name="close" size={17} /></button></div>
       <p className="dialog-description">该项目包含 {project.conversation_count || 0} 个会话。请选择这些会话的处理方式。</p>
-      <label className={`dialog-choice ${action === 'move_to_general' ? 'selected' : ''}`}><input type="radio" checked={action === 'move_to_general'} onChange={() => setAction('move_to_general')} /><span><strong>移动到 General</strong><small>保留全部会话、消息和图谱状态。</small></span></label>
-      <label className={`dialog-choice danger-choice ${action === 'delete' ? 'selected' : ''}`}><input type="radio" checked={action === 'delete'} onChange={() => setAction('delete')} /><span><strong>删除项目和全部会话</strong><small>会话历史与对应图谱状态都会被删除。</small></span></label>
+      <label className={`dialog-choice ${action === 'move_to_general' ? 'selected' : ''}`}><input type="radio" checked={action === 'move_to_general'} onChange={() => setAction('move_to_general')} /><span><strong>移动到 General</strong><small>保留全部会话、消息和图状态。</small></span></label>
+      <label className={`dialog-choice danger-choice ${action === 'delete' ? 'selected' : ''}`}><input type="radio" checked={action === 'delete'} onChange={() => setAction('delete')} /><span><strong>删除项目和全部会话</strong><small>会话历史与对应图状态都会被删除。</small></span></label>
       {error && <div className="dialog-error">{error}</div>}
       <div className="dialog-actions"><button className="secondary-command" onClick={onClose}>取消</button><button className={`primary-command ${action === 'delete' ? 'destructive-command' : ''}`} disabled={saving} onClick={confirm}>{saving ? '处理中…' : '继续'}</button></div>
     </div>

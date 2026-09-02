@@ -1,5 +1,5 @@
 import { isGraphData } from './types';
-import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphViewState, Message, NewConversationDraft, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
+import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
 
 export type RunStatus =
   | 'idle'
@@ -177,6 +177,47 @@ function indexMessages(sessionId: string, messages: Message[]) {
     messageOrder.push(id);
   });
   return { messagesById, messageOrder };
+}
+
+function normalizeGraph(graph: GraphSnapshot): GraphData | null {
+  if (!graph || !Array.isArray(graph.nodes)) return null;
+  const edges = (graph.edges || graph.links || []).map(link => ({
+    ...link,
+    source: link.source ?? link.src,
+    target: link.target ?? link.dst,
+    src: link.src ?? link.source,
+    dst: link.dst ?? link.target,
+  }));
+  const community = graph.community ?? graph.communities;
+  return {
+    ...graph,
+    nodes: graph.nodes,
+    edges,
+    community,
+    communities: community,
+  };
+}
+
+function latestMessageGraph(messages: Message[]): GraphData | null {
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const graphs = messages[messageIndex].graphs || [];
+    for (let graphIndex = graphs.length - 1; graphIndex >= 0; graphIndex -= 1) {
+      const graph = normalizeGraph(graphs[graphIndex]);
+      if (graph) return graph;
+    }
+  }
+  return null;
+}
+
+function mergeRefreshedGraph(current: GraphData | null, next: GraphData): GraphData {
+  const community = next.community ?? next.communities ?? current?.community ?? current?.communities;
+  return {
+    ...next,
+    community,
+    communities: community,
+    // The full-graph endpoint does not know which analysis result is highlighted.
+    highlights: next.highlights ?? current?.highlights,
+  };
 }
 
 export function selectMessages(view?: SessionViewState | null): Message[] {
@@ -358,6 +399,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
   if (eventType === 'plan_complete') run = { ...run, plan: { ...(run.plan || {}), completed: true } };
 
   if (eventType === 'graph_visualize' && view.graph.status !== 'unsupported' && isGraphData(event.data)) {
+    const community = event.data.community ?? event.data.communities;
     view = {
       ...view,
       graph: { status: 'ready', data: {
@@ -377,7 +419,11 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
         total_edges: event.data.total_edges,
         truncated: event.data.truncated,
         truncated_to: event.data.truncated_to,
-      } },
+        community,
+        communities: community,
+        highlights: event.data.highlights,
+      },
+      },
     };
   }
 
@@ -601,6 +647,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       view = {
         ...view,
         ...indexed,
+        graph: action.preserveMessages ? view.graph : latestMessageGraph(action.messages) ?? view.graph,
         hydration: 'ready',
         model: action.model,
         activeDatasetId: action.activeDatasetId,
@@ -770,7 +817,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'GRAPH_REQUEST_SUCCESS':
       if (action.requestVersion !== view.graphRequestVersion) return state;
-      view = { ...view, graph: action.graph };
+      view = { ...view, graph: action.graph ? mergeRefreshedGraph(view.graph, action.graph) : null };
       break;
     case 'REMOVE_SESSION': {
       const viewsBySessionId = { ...state.viewsBySessionId };

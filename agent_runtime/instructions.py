@@ -19,6 +19,8 @@ BASE_INSTRUCTIONS = """
 8. 最终回答使用中文，先给结论，再给依据和下一步建议。
 9. 用户明确要求训练模型时，该请求即视为本次训练授权；直接执行一次 train，并持续等待其完成。
    不要为 epoch、轮询、评估或紧随其后的只读 infer 重复请求用户批准。
+10. session_state.project_training_summary 是后端核验的同项目跨会话训练摘要。用户要求比较模型或实验时，
+    优先依据其中的配置、最终指标和模型 ID；没有对应数据时再说明缺少哪些实验，不得虚构对比结果。
 
 Skills 由 Agno 按需发现。遇到匹配任务时读取 Skill 指令和引用资料，不能臆造不存在的 Skill。
 Memory 与 Learning 由 Agno LearningMachine 管理；只有稳定的用户偏好、事实、会话进度和可复用经验

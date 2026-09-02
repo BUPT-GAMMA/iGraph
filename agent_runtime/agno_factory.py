@@ -10,6 +10,7 @@ from agno.factory import FactoryPermissionError, RequestContext
 from pydantic import BaseModel
 
 from agent_runtime.config import AgentRuntimeConfig
+from agent_runtime.custom_models import get_custom_model
 from agent_runtime.graph_tools import create_graph_tools
 from agent_runtime.instructions import instructions_for
 from agent_runtime.learning import create_learning_machine
@@ -47,16 +48,17 @@ def create_igraph_factory(
             raw_input["model"] = config.default_model
         options = IGraphFactoryInput.model_validate(raw_input)
         claims = dict(ctx.trusted.claims or {})
+        user_id = str(ctx.user_id or claims.get("sub") or "anonymous")
+        custom_model = get_custom_model(user_id, options.model)
         try:
-            model_id = allowed_model(options.model, claims, config)
+            model_id = allowed_model(options.model, claims, config, custom_model)
         except (PermissionError, ValueError) as exc:
             raise FactoryPermissionError(str(exc)) from exc
 
-        user_id = str(ctx.user_id or claims.get("sub") or "anonymous")
         return Agent(
             id=AGENT_ID,
             name="iGraph Agent",
-            model=create_model(model_id, config),
+            model=create_model(model_id, config, custom_model),
             db=db,
             tools=[create_graph_tools(config)],
             skills=build_skills(config, user_id),

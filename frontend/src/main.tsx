@@ -1,14 +1,14 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { activateSession, ApiError, createProject as addProject, createSession, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, resumeRun, setDefaultProjectDataset, setSessionDataset, setUserId, streamChat, streamFeedback, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph } from './api';
+import { activateSession, ApiError, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, resumeRun, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, streamChat, streamFeedback, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, StreamBatch, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { conversationReducer, createSessionView, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import { DatasetPanel } from './components/DatasetPanel';
 import { ChatPane } from './components/ChatPane';
 import { GraphWorkspace } from './components/GraphWorkspace';
-import { Icon } from './components/Icon';
+import { BrandLogo, Icon } from './components/Icon';
 import { ManagementPanel } from './components/ManagementPanel';
 import { DeleteProjectDialog, MoveConversationDialog, ProjectDialog } from './components/ProjectDialogs';
 import { ProjectWorkspace } from './components/ProjectWorkspace';
@@ -59,7 +59,7 @@ function storedWidth(key: string, fallback: number, minimum: number, maximum: nu
 }
 
 function ColumnDivider({ side, value, minimum, maximum, onPointerDown, onNudge, onReset }: { side: ResizeSide; value: number; minimum: number; maximum: number; onPointerDown: (side: ResizeSide, event: ReactPointerEvent<HTMLDivElement>) => void; onNudge: (side: ResizeSide, delta: number) => void; onReset: (side: ResizeSide) => void }) {
-  const label = side === 'sidebar' ? '调整左侧栏宽度' : '调整图谱工作台宽度';
+  const label = side === 'sidebar' ? '调整左侧栏宽度' : '调整图工作台宽度';
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -182,6 +182,7 @@ function App() {
   const [managementTab, setManagementTab] = useState<'memory' | 'skills'>('memory');
   const [defaultModel, setDefaultModel] = useState(DEFAULT_MODEL);
   const [availableModels, setAvailableModels] = useState<string[]>([DEFAULT_MODEL]);
+  const [customModels, setCustomModels] = useState<CustomModel[]>([]);
   const [projectEditor, setProjectEditor] = useState<'create' | 'edit' | null>(null);
   const [projectEditorTarget, setProjectEditorTarget] = useState<Project | null>(null);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<Project | null>(null);
@@ -745,6 +746,8 @@ function App() {
 
       if (response.has_graph && response.dataset_view?.kind !== 'graph_collection') {
         void refreshSessionGraph(id, { include_community: false }, false, graphVersion);
+      } else {
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: response.dataset_view?.kind === 'graph_collection' ? unsupportedGraphView(response.dataset_view) : null });
       }
       if (effectiveActiveRun) openResumeConnection(id, generation, effectiveActiveRun, true);
     } catch (cause: any) {
@@ -880,6 +883,14 @@ function App() {
   }, [activeSessionId, activeView?.activeRun?.generation, activeView?.activeRun?.runId, bottomInteraction.kind, bottomInteraction.kind === 'syncing_feedback' ? bottomInteraction.reason : 'ready']);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('igraph-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { setReady(true); }, []);
+  useEffect(() => {
+    if (!userId || demoMode) return;
+    listCustomModels().then(response => {
+      const rows = Array.isArray(response.models) ? response.models : [];
+      setCustomModels(rows);
+      setAvailableModels(current => normalizedModels([...current, ...rows.map(item => item.model_id)]));
+    }).catch(() => setCustomModels([]));
+  }, [userId]);
 
   async function login() {
     const value = loginValue.trim(); if (!value) return setLoginError('请输入用户 ID');
@@ -1424,6 +1435,18 @@ function App() {
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: previousModel, error: cause.message || '模型切换失败' } });
     } finally { setBusy(false); }
   }
+  async function addCustomModel(input: { model_id: string; display_name: string; base_url: string; api_key: string }) {
+    const response = await saveCustomModel(input);
+    const saved = response.model;
+    setCustomModels(current => [...current.filter(item => item.model_id !== saved.model_id), saved]);
+    setAvailableModels(current => normalizedModels([...current, saved.model_id], saved.model_id));
+    await changeModel(saved.model_id);
+  }
+  async function removeCustomModel(modelId: string) {
+    await deleteCustomModel(modelId);
+    setCustomModels(current => current.filter(item => item.model_id !== modelId));
+    setAvailableModels(current => current.filter(item => item !== modelId));
+  }
   function openManagement(tab: 'memory' | 'skills') { setManagementTab(tab); setManagementOpen(true); }
   async function openDatasets() {
     const currentDraftProjectId = conversationRef.current.activeDraftProjectId;
@@ -1566,7 +1589,7 @@ function App() {
     await refreshSessionGraph(sessionId, { node_names: [name], max_nodes: 200 }, true, undefined, true);
   }
   if (!ready) return null;
-  if (!userId) return <div className="login-screen"><div className="login-box"><div className="brand-mark large"><Icon name="graph" size={24} /></div><h1>进入 iGraph</h1><p>登录后开始图谱分析</p><input autoFocus value={loginValue} onChange={event => setLoginValue(event.target.value)} onKeyDown={event => event.key === 'Enter' && login()} placeholder="用户 ID" /><button onClick={login}>登录</button>{loginError && <span className="login-error">{loginError}</span>}</div></div>;
+  if (!userId) return <div className="login-screen"><div className="login-box"><div className="brand-mark large"><BrandLogo /></div><h1>进入 iGraph</h1><p>登录后开始图分析</p><input autoFocus value={loginValue} onChange={event => setLoginValue(event.target.value)} onKeyDown={event => event.key === 'Enter' && login()} placeholder="用户 ID" /><button onClick={login}>登录</button>{loginError && <span className="login-error">{loginError}</span>}</div></div>;
   const activeAttachments = activeDraft
     ? activeDraft.attachments
     : [...(activeView?.attachments || []), ...(activeView?.pendingAttachments || [])];
@@ -1602,22 +1625,22 @@ function App() {
           <ProjectWorkspace project={activeProject} datasets={datasets} busy={busy || uploading} onUpload={file => addProjectDataset(file, false)} onSetDefault={makeDefaultDataset} onRename={renameDataset} onDelete={removeDataset} />
         </> : <>
           <div className="workspace-context">
-            <div className="context-icon"><Icon name="graph" size={18} /></div>
+            <div className="context-icon"><BrandLogo /></div>
             <div>{workspaceProject && <button className="project-breadcrumb" onClick={() => selectProject(workspaceProject.project_id)}>{workspaceProject.name} /</button>}<strong>{activeDraft ? '新对话' : activeSession?.title || 'iGraph 工作台'}</strong>{!activeDraft && <span>{activeSession ? graphSummary : '选择已有会话，或新建任务'}</span>}</div>
             <div className="context-actions">
               {activeSession && <button onClick={() => setMoveSessionTarget(activeSession)}><Icon name="move" size={14} /> 移动</button>}
-              {activeSession && !graphOpen && <button onClick={() => setGraphOpen(true)}><Icon name="graph" size={14} /> 展开图谱</button>}
+              {activeSession && !graphOpen && <button onClick={() => setGraphOpen(true)}><Icon name="graph" size={14} /> 展开图</button>}
             </div>
           </div>
           <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
           {activeDraft
-            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} messages={[]} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
-            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
-            : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><Icon name="graph" size={31} /></div><h1>开始新的图谱分析</h1><p>选择左侧已有会话，或创建一个新任务。</p><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button></div></div>}
+            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
+            : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>开始新的图分析</h1><p>选择左侧已有会话，或创建一个新任务。</p><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button></div></div>}
         </>}
       </div>
-      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} resetKey={`${activeSession.session_id}:${activeView?.activeDatasetId || 'none'}`} /></>}
+      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace data={graph} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
     </div>
     {datasetOpen && <DatasetPanel datasets={datasets} projectName={workspaceProject?.name} activeDatasetId={activeDatasetId} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, Boolean(activeSession))} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
@@ -1633,9 +1656,9 @@ function ChatPaneWithState(props: any) {
     : props.runGateReason === 'submitting_feedback'
       ? <><span className="loader" /> 正在提交确认并核对状态</>
       : props.loading
-        ? <><span className="loader" /> Agent 正在分析图谱</>
+        ? <><span className="loader" /> Agent 正在分析图</>
         : props.hasGraph
-          ? <><span className="status-dot" /> 图谱分析就绪</>
+          ? <><span className="status-dot" /> 图分析就绪</>
           : null;
   const planProgress = props.plan?.steps?.length
     ? <span className="run-count">{props.plan.steps.filter((step: any) => step.status === 'done').length}/{props.plan.steps.length} steps</span>

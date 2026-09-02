@@ -46,7 +46,7 @@ test('both docked panel toggles remain reachable in the same screen position', a
   await page.waitForTimeout(220);
   const mainAfterRightCollapse = await page.locator('.main-column').boundingBox();
   expect(mainAfterRightCollapse!.width).toBeGreaterThan(mainDuringRightCollapse!.width);
-  await expect(page.getByLabel('关闭图谱工作台')).toHaveCount(0);
+await expect(page.getByLabel('关闭图工作台')).toHaveCount(0);
 });
 
 test('new conversations stay local until the first prompt is sent', async ({ page }) => {

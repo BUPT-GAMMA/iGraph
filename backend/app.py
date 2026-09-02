@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.config import BackendConfig
+from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, translate_sse
 from backend.identity import current_user, public_user, require_admin
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
@@ -118,6 +119,13 @@ class UserWriteReq(BaseModel):
     enabled: bool = True
     roles: list[str] = Field(default_factory=lambda: ["user"])
     allowed_models: list[str] = Field(default_factory=list)
+
+
+class CustomModelReq(BaseModel):
+    model_id: str = Field(min_length=1, max_length=120)
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(default="", max_length=500)
 
 
 class GenerateSkillReq(BaseModel):
@@ -331,6 +339,9 @@ def _merge_training_job_card(card: dict, status_result: dict) -> None:
         for item in (status_result.get("progress_updates") or [])
         if isinstance(item, dict)
     )
+    detail = job.get("detail") if isinstance(job.get("detail"), dict) else {}
+    if detail.get("epoch") is not None:
+        history.append(detail)
     by_epoch: dict[int, dict] = {}
     without_epoch: list[dict] = []
     for item in history:
@@ -351,7 +362,6 @@ def _merge_training_job_card(card: dict, status_result: dict) -> None:
     current_result["history"] = merged_history
     card["result"] = current_result
     card["history"] = merged_history
-    detail = job.get("detail") if isinstance(job.get("detail"), dict) else {}
     card["progress"] = {
         **detail,
         "job_id": job.get("job_id"),
@@ -359,7 +369,56 @@ def _merge_training_job_card(card: dict, status_result: dict) -> None:
         "progress": job.get("progress", detail.get("progress", 0)),
         "message": job.get("message", detail.get("message", "")),
     }
-    card["done"] = str(job.get("status") or "").lower() in {"done", "failed", "cancelled"}
+    card["done"] = str(job.get("status") or "").lower() in {"done", "failed", "cancelled", "unavailable"}
+
+
+def _training_cards_from_runs(runs: list[dict]) -> list[dict]:
+    """Restore normalized train tool cards from persisted AgentOS runs."""
+
+    cards: list[dict] = []
+    for message in _messages_from_runs(runs):
+        for tool in message.get("tools") or []:
+            if not isinstance(tool, dict) or str(tool.get("tool") or "") != "train":
+                continue
+            result = tool.get("result")
+            if isinstance(result, dict) and (result.get("success") is False or (result.get("error") and not result.get("async"))):
+                continue
+            if isinstance(result, str) and re.search(
+                r"validation errors?|error (?:from|executing) .*train|invalid (?:argument|input)",
+                result,
+                re.IGNORECASE,
+            ):
+                continue
+            cards.append(dict(tool))
+    return cards
+
+
+def _project_training_summary(cards: list[dict], limit: int = 30) -> list[dict]:
+    """Build a bounded, backend-verified context for cross-session comparisons."""
+
+    summary: list[dict] = []
+    for card in cards:
+        result = card.get("result") if isinstance(card.get("result"), dict) else {}
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        if not metrics or card.get("status_unavailable"):
+            continue
+        args = card.get("args") if isinstance(card.get("args"), dict) else {}
+        progress = card.get("progress") if isinstance(card.get("progress"), dict) else {}
+        summary.append({
+            "training_run_id": card.get("training_run_id"),
+            "session_id": card.get("session_id"),
+            "session_title": card.get("session_title"),
+            "dataset_id": card.get("dataset_id"),
+            "dataset_name": card.get("dataset_name"),
+            "task": result.get("task") or progress.get("task") or args.get("task"),
+            "model": result.get("display_model") or result.get("model") or args.get("model") or args.get("method"),
+            "model_id": result.get("model_id"),
+            "train_config": _decoded_result(args.get("train_config")),
+            "algo_config": _decoded_result(args.get("algo_config")),
+            "status": "done" if card.get("done") else "running",
+            "metrics": metrics,
+        })
+    return summary[:max(1, limit)]
 
 
 def _plan_from_run(run: dict) -> dict | None:
@@ -649,6 +708,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         settings.default_admin_model,
         settings.default_user_model,
     )
+    custom_models = CustomModelDirectory(settings.custom_models_file or Path("data/backend/custom_models.json").resolve())
     projects = ProjectDirectory(settings.projects_file)
     data_root = settings.projects_file.parent.parent if settings.projects_file.parent.name == "backend" else settings.projects_file.parent
     project_datasets = ProjectDatasetDirectory(
@@ -667,6 +727,30 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     feedback_attempt_ttl_seconds = 30 * 60
 
     app = FastAPI(title="iGraph Backend", version="3.0.0")
+
+    def available_models_for(user: UserRecord) -> list[str]:
+        custom_ids = [item.model_id for item in custom_models.list(user.user_id)]
+        return list(dict.fromkeys([*user.allowed_models, *custom_ids]))
+
+    def custom_model_for(user: UserRecord, model_id: str) -> CustomModelRecord | None:
+        return custom_models.get(user.user_id, model_id)
+
+    def custom_model_payload(user: UserRecord, model_id: str) -> dict[str, str] | None:
+        item = custom_model_for(user, model_id)
+        if item is None:
+            return None
+        return {"model_id": item.model_id, "base_url": item.base_url, "api_key": item.api_key, "provider": item.provider}
+
+    async def sync_custom_model(user: UserRecord, model_id: str, request: Request) -> None:
+        payload = custom_model_payload(user, model_id)
+        if payload is None:
+            return
+        await runtime.request(
+            "PUT",
+            "/internal/models/custom",
+            headers=forwarded_headers(request, user.user_id),
+            json_body={"user_id": user.user_id, **payload},
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -686,7 +770,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         record = users.get(user_id)
         if not record or not record.enabled:
             return {"valid": False, "reason": "user_not_supported" if user_id else "missing_user_id"}
-        models = record.allowed_models
+        models = available_models_for(record)
         return {
             "valid": True,
             "user_id": record.user_id,
@@ -694,6 +778,33 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "available_models": models,
             "default_model": models[0] if models else "qwen3.6-plus",
         }
+
+    @app.get("/api/models/custom")
+    def list_custom_models(request: Request):
+        user = current_user(request, users)
+        return {"success": True, "models": [public_custom_model(item) for item in custom_models.list(user.user_id)]}
+
+    @app.post("/api/models/custom")
+    async def save_custom_model(req: CustomModelReq, request: Request):
+        user = current_user(request, users)
+        try:
+            record = custom_models.save(CustomModelRecord(user_id=user.user_id, **req.model_dump()))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await sync_custom_model(user, record.model_id, request)
+        return {"success": True, "model": public_custom_model(record)}
+
+    @app.delete("/api/models/custom/{model_id:path}")
+    async def delete_custom_model(model_id: str, request: Request):
+        user = current_user(request, users)
+        if not custom_models.delete(user.user_id, model_id):
+            raise HTTPException(status_code=404, detail="自定义模型不存在")
+        await runtime.request(
+            "DELETE",
+            f"/internal/models/custom/{user.user_id}/{model_id}",
+            headers=forwarded_headers(request, user.user_id),
+        )
+        return {"success": True, "model_id": model_id}
 
     @app.get("/api/admin/users")
     def list_users(request: Request):
@@ -737,6 +848,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             if memory_id:
                 await runtime.request("DELETE", f"/memories/{memory_id}", headers=headers, params={"user_id": user_id})
         await runtime.request("DELETE", f"/internal/skills/users/{user_id}/all", headers=headers)
+        for item in custom_models.list(user_id):
+            custom_models.delete(user_id, item.model_id)
         project_datasets.delete_user(user_id)
         projects.delete_user(user_id)
         return {"success": users.delete(user_id), "user_id": user_id}
@@ -1389,7 +1502,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         project_or_404(project_id, user.user_id)
         rows = await user_sessions(request, user.user_id)
-        default_model = user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"
+        available_models = available_models_for(user)
+        default_model = available_models[0] if available_models else "qwen3.6-plus"
         default_project_id = projects.default_project_id(user.user_id)
         sessions = [
             _session_row(session, default_model, default_project_id)
@@ -1397,6 +1511,116 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             if session_project_id(session, user.user_id) == project_id
         ]
         return {"success": True, "project_id": project_id, "conversations": sessions}
+
+    @app.get("/api/projects/{project_id}/training-runs")
+    async def project_training_runs(project_id: str, request: Request):
+        user = current_user(request, users)
+        project_or_404(project_id, user.user_id)
+        rows = [
+            session
+            for session in await user_sessions(request, user.user_id)
+            if session_project_id(session, user.user_id) == project_id
+        ]
+        dataset_names = {
+            dataset.dataset_id: dataset.name
+            for dataset in project_datasets.list(project_id, user.user_id)
+        }
+        headers = forwarded_headers(request, user.user_id)
+
+        async def collect_session_training(session: dict) -> list[dict]:
+            session_id = str(session.get("session_id") or "")
+            if not session_id:
+                return []
+            runs = await get_session_runs(session_id, request, user.user_id)
+            cards = _training_cards_from_runs(runs)
+            state = _state(session)
+            stored = state.get("training_job_snapshots")
+            snapshots = dict(stored) if isinstance(stored, dict) else {}
+            has_active_agent_run = _active_run_record(runs) is not None
+            snapshots_changed = False
+
+            for card in cards:
+                initial_result = card.get("result") if isinstance(card.get("result"), dict) else {}
+                job_id = str(card.get("job_id") or initial_result.get("job_id") or "").strip()
+                saved = snapshots.get(job_id) if job_id else None
+                if isinstance(saved, dict) and isinstance(saved.get("job"), dict):
+                    _merge_training_job_card(card, {
+                        "job": saved["job"],
+                        "progress_updates": saved.get("history") or [],
+                    })
+                    if str(saved["job"].get("status") or "").lower() == "unavailable":
+                        card["status_unavailable"] = True
+
+                if not job_id or card.get("done") or has_active_agent_run:
+                    continue
+                try:
+                    status_result = await graph.request(
+                        "POST",
+                        f"/sessions/{session_id}/tools/get_job_status",
+                        headers=headers,
+                        json_body={"arguments": {"job_id": job_id}},
+                    )
+                except HTTPException as exc:
+                    card["sync_error"] = str(exc.detail)
+                    continue
+                if not isinstance(status_result, dict) or not isinstance(status_result.get("job"), dict):
+                    previous_progress = card.get("progress") if isinstance(card.get("progress"), dict) else {}
+                    unavailable_job = {
+                        "job_id": job_id,
+                        "tool_name": "train",
+                        "status": "unavailable",
+                        "progress": previous_progress.get("progress", 0),
+                        "message": "图引擎已重启，无法恢复该作业的最终状态",
+                        "detail": previous_progress,
+                    }
+                    _merge_training_job_card(card, {"job": unavailable_job, "progress_updates": []})
+                    card["status_unavailable"] = True
+                    snapshots[job_id] = {"job": unavailable_job, "history": card.get("history") or []}
+                    snapshots_changed = True
+                    continue
+                _merge_training_job_card(card, status_result)
+                snapshots[job_id] = {
+                    "job": status_result["job"],
+                    "history": card.get("history") or [],
+                }
+                snapshots_changed = True
+
+            if snapshots_changed:
+                await write_session_state(
+                    session_id,
+                    session,
+                    request,
+                    user.user_id,
+                    {"training_job_snapshots": snapshots},
+                )
+
+            dataset_id = str(state.get("active_dataset_id") or "")
+            session_title = str(session.get("session_name") or "新会话")
+            for index, card in enumerate(cards):
+                result = card.get("result") if isinstance(card.get("result"), dict) else {}
+                job_id = str(card.get("job_id") or result.get("job_id") or "")
+                card.update({
+                    "training_run_id": job_id or str(card.get("call_id") or f"{session_id}:{index}"),
+                    "session_id": session_id,
+                    "session_title": session_title,
+                    "dataset_id": dataset_id or None,
+                    "dataset_name": dataset_names.get(dataset_id),
+                    "session_updated_at": session.get("updated_at"),
+                })
+            return cards
+
+        groups = await asyncio.gather(*(collect_session_training(session) for session in rows))
+        training_runs = [card for group in groups for card in group]
+        training_runs.sort(
+            key=lambda card: str(card.get("session_updated_at") or ""),
+            reverse=True,
+        )
+        return {
+            "success": True,
+            "project_id": project_id,
+            "training_runs": training_runs,
+            "has_running": any(not bool(card.get("done")) for card in training_runs),
+        }
 
     @app.delete("/api/projects/{project_id}")
     async def delete_project(project_id: str, request: Request, req: DeleteProjectReq | None = None):
@@ -1448,15 +1672,17 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def list_sessions(request: Request):
         user = current_user(request, users)
         rows = await user_sessions(request, user.user_id, limit=200)
-        default_model = user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"
+        available_models = available_models_for(user)
+        default_model = available_models[0] if available_models else "qwen3.6-plus"
         default_project_id = projects.ensure_default(user.user_id).project_id
         return {"success": True, "sessions": [_session_row(row, default_model, default_project_id) for row in rows]}
 
     @app.post("/api/sessions")
     async def create_session(req: CreateSessionReq, request: Request):
         user = current_user(request, users)
-        model = req.model or (user.allowed_models[0] if user.allowed_models else "qwen3.6-plus")
-        if model not in user.allowed_models:
+        available_models = available_models_for(user)
+        model = req.model or (available_models[0] if available_models else "qwen3.6-plus")
+        if model not in available_models:
             raise HTTPException(status_code=403, detail=f"用户无权使用模型 {model}")
         project = project_or_404(
             req.project_id or projects.ensure_default(user.user_id).project_id,
@@ -1629,8 +1855,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "model": selected_model,
             "title": str(session.get("session_name") or title),
             "context_usage": {"used_tokens": 0, "limit_tokens": 0, "ratio": 0},
-            "available_models": user.allowed_models,
-            "default_model": user.allowed_models[0] if user.allowed_models else selected_model,
+            "available_models": available_models,
+            "default_model": available_models[0] if available_models else selected_model,
         }
 
     @app.post("/api/sessions/{session_id}/activate")
@@ -1661,12 +1887,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "project_id": session_project_id(session, user.user_id),
             "active_dataset_id": state.get("active_dataset_id"),
             "provider": state.get("provider", "openai-compatible"),
-            "model": state.get("model", user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"),
+            "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
             "reasoning_mode": state.get("reasoning_mode", "direct"),
             "planning_mode": state.get("planning_mode", "auto"),
             "context_usage": session.get("metrics") or {},
-            "available_models": user.allowed_models,
-            "default_model": user.allowed_models[0] if user.allowed_models else "qwen3.6-plus",
+            "available_models": available_models_for(user),
+            "default_model": available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus",
         }
 
     @app.get("/api/sessions/{session_id}/messages")
@@ -1702,12 +1928,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "project_id": session_project_id(session, user.user_id),
             "active_dataset_id": state.get("active_dataset_id"),
             "provider": state.get("provider", "openai-compatible"),
-            "model": state.get("model", user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"),
+            "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
             "reasoning_mode": state.get("reasoning_mode", "direct"),
             "planning_mode": state.get("planning_mode", "auto"),
             "context_usage": session.get("metrics") or {},
-            "available_models": user.allowed_models,
-            "default_model": user.allowed_models[0] if user.allowed_models else "qwen3.6-plus",
+            "available_models": available_models_for(user),
+            "default_model": available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus",
         }
 
     @app.get("/api/sessions/{session_id}/context-usage")
@@ -1726,7 +1952,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
         state = {**_state(session), **patch}
-        if state.get("model") and state["model"] not in user.allowed_models:
+        if state.get("model") and state["model"] not in available_models_for(user):
             raise HTTPException(status_code=403, detail=f"用户无权使用模型 {state['model']}")
         await write_session_state(session_id, session, request, user.user_id, patch)
         if "model" in patch and patch.get("model"):
@@ -1811,12 +2037,21 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
         state = _state(session)
         options = {
-            "model": state.get("model", user.allowed_models[0] if user.allowed_models else "qwen3.6-plus"),
+            "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
             "reasoning_mode": req.reasoning_mode or state.get("reasoning_mode", "direct"),
             "planning_mode": req.planning_mode or state.get("planning_mode", "auto"),
             "output_format": req.output_format,
         }
-        next_state = {**state, **options, "last_message_preview": req.message.strip()[:120]}
+        project_id = session_project_id(session, user.user_id)
+        training_payload = await project_training_runs(project_id, request)
+        training_summary = _project_training_summary(training_payload.get("training_runs") or [])
+        await sync_custom_model(user, str(options["model"]), request)
+        next_state = {
+            **state,
+            **options,
+            "last_message_preview": req.message.strip()[:120],
+            "project_training_summary": training_summary,
+        }
         session_name = str(session.get("session_name") or "").strip()
         session_patch: dict[str, Any] = {"session_state": next_state}
         if not session_name or session_name == "新会话":
@@ -2275,7 +2510,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             state = _state(session)
         else:
             state = {}
-        model = state.get("model", user.allowed_models[0] if user.allowed_models else "qwen3.6-plus")
+        available_models = available_models_for(user)
+        model = state.get("model", available_models[0] if available_models else "qwen3.6-plus")
+        await sync_custom_model(user, str(model), request)
         prompt = (
             f"请把下面来自当前用户 AgentOS Memory/Learned Knowledge 的 Playbook 生成一个可执行 Skill。\n\n"
             f"Playbook ID: {req.playbook_id}\nPlaybook 内容:\n{playbook_content[:12000]}\n\n"

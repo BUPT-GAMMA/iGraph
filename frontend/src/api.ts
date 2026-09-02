@@ -1,9 +1,19 @@
 import { isGraphData } from './types';
-import type { ActiveRun, AttachmentRef, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, Session, StreamBatch, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
 export const USER_KEY = 'igraph_user_id';
+
+export type CustomModel = {
+  model_id: string;
+  display_name: string;
+  provider?: string;
+  base_url: string;
+  has_api_key?: boolean;
+  created_at?: number;
+  updated_at?: number;
+};
 
 export function getUserId() { return localStorage.getItem(USER_KEY) || ''; }
 export function setUserId(value: string) { localStorage.setItem(USER_KEY, value); }
@@ -54,6 +64,20 @@ export async function validateUser(userId: string) {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-ID': userId },
   });
   return data;
+}
+
+export async function listCustomModels() {
+  return json<{ success?: boolean; models?: CustomModel[] }>('/api/models/custom');
+}
+
+export async function saveCustomModel(input: { model_id: string; display_name: string; base_url: string; api_key: string }) {
+  return json<{ success?: boolean; model: CustomModel }>('/api/models/custom', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  });
+}
+
+export async function deleteCustomModel(modelId: string) {
+  return json<{ success?: boolean; model_id: string }>(`/api/models/custom/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
 }
 
 export async function listSessions() { return json<{ success?: boolean; sessions?: Session[] }>('/api/sessions'); }
@@ -122,6 +146,9 @@ export async function deleteProject(id: string, action: 'move_to_general' | 'del
 }
 export async function listProjectConversations(id: string) {
   return json<{ success?: boolean; conversations?: Session[] }>(`/api/projects/${encodeURIComponent(id)}/conversations`);
+}
+export async function listProjectTrainingRuns(id: string, signal?: AbortSignal) {
+  return json<{ success?: boolean; project_id: string; training_runs?: ProjectTrainingRun[]; has_running?: boolean }>(`/api/projects/${encodeURIComponent(id)}/training-runs`, { signal });
 }
 export async function listProjectDatasets(projectId: string, signal?: AbortSignal) {
   return json<{ success?: boolean; project_id: string; default_dataset_id?: string | null; datasets?: Dataset[] }>(`/api/projects/${encodeURIComponent(projectId)}/datasets`, { signal });

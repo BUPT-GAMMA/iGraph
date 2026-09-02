@@ -22,6 +22,7 @@ class BackendConfig:
     admin_user_id: str
     default_admin_model: str
     default_user_model: str
+    custom_models_file: Path | None = None
 
     @classmethod
     def from_env(cls) -> "BackendConfig":
@@ -44,4 +45,5 @@ class BackendConfig:
             admin_user_id=os.getenv("IGRAPH_ADMIN_USER_ID", "admin").strip() or "admin",
             default_admin_model=os.getenv("IGRAPH_DEFAULT_ADMIN_MODEL", "qwen3.6-plus").strip(),
             default_user_model=os.getenv("IGRAPH_DEFAULT_USER_MODEL", "qwen3.6-plus").strip(),
+            custom_models_file=Path(os.getenv("BACKEND_CUSTOM_MODELS_FILE", str(data_root / "backend" / "custom_models.json"))).resolve(),
         )
