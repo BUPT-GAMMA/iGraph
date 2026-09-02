@@ -1,5 +1,9 @@
 type IconName = 'plus' | 'search' | 'project' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
 
+export function BrandLogo() {
+  return <><img className="brand-logo brand-logo-light" src="/figures/igraph_light.png" alt="" aria-hidden="true" /><img className="brand-logo brand-logo-dark" src="/figures/igraph_dark.png" alt="" aria-hidden="true" /></>;
+}
+
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true };
   const paths: Record<IconName, JSX.Element> = {

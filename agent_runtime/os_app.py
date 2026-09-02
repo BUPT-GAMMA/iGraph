@@ -4,10 +4,20 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from agno.os import AgentOS
+from pydantic import BaseModel, Field
 
 from agent_runtime.agno_factory import create_db, create_igraph_factory
 from agent_runtime.config import AgentRuntimeConfig
+from agent_runtime.custom_models import register_custom_model, remove_custom_model
 from agent_runtime.skill_api import create_skill_router
+
+
+class RuntimeCustomModelReq(BaseModel):
+    user_id: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    api_key: str = Field(min_length=1)
+    provider: str = "openai-compatible"
 
 
 def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
@@ -25,6 +35,16 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
             "agent_id": "igraph-agent",
         }
 
+    @base_app.put("/internal/models/custom")
+    def configure_custom_model(req: RuntimeCustomModelReq):
+        register_custom_model(req.user_id, req.model_dump())
+        return {"success": True, "model_id": req.model_id}
+
+    @base_app.delete("/internal/models/custom/{user_id}/{model_id:path}")
+    def forget_custom_model(user_id: str, model_id: str):
+        remove_custom_model(user_id, model_id)
+        return {"success": True, "model_id": model_id}
+
     agent_os = AgentOS(
         id="igraph-agent-os",
         name="iGraph Agent Runtime",
@@ -41,4 +61,3 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
 
 
 app = create_app()
-

@@ -282,6 +282,61 @@ describe('conversationReducer session/run isolation', () => {
     expect(state.viewsBySessionId.A.selectedNode).toBeNull();
   });
 
+  it('keeps visualization metadata when the full graph refresh completes', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'gen');
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+      batch: batch('A', 'run', 1, [{
+        type: 'graph_visualize',
+        data: {
+          nodes: [{ id: 'a' }, { id: 'b' }],
+          edges: [{ src: 'a', dst: 'b' }],
+          community: { num_communities: 2, node_community: { a: 0, b: 1 } },
+          highlights: { paths: [{ node_sequence: ['a', 'b'], color: '#f59e0b' }] },
+        },
+      }]),
+    });
+
+    expect(state.viewsBySessionId.A.graph?.community?.node_community).toEqual({ a: 0, b: 1 });
+    expect(state.viewsBySessionId.A.graph?.highlights).toEqual({ paths: [{ node_sequence: ['a', 'b'], color: '#f59e0b' }] });
+
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 1 });
+    state = conversationReducer(state, {
+      type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 1,
+      graph: {
+        nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+        edges: [{ src: 'a', dst: 'b' }],
+        community: { num_communities: 2, node_community: { a: 1, b: 0, c: 1 } },
+        highlights: null,
+      },
+    });
+
+    expect(state.viewsBySessionId.A.graph?.nodes).toHaveLength(3);
+    expect(state.viewsBySessionId.A.graph?.communities?.node_community).toEqual({ a: 1, b: 0, c: 1 });
+    expect(state.viewsBySessionId.A.graph?.highlights).toEqual({ paths: [{ node_sequence: ['a', 'b'], color: '#f59e0b' }] });
+  });
+
+  it('restores the latest graph artifact when hydrating a session', () => {
+    let state = session(initialConversationState, 'A');
+    state = conversationReducer(state, { type: 'HYDRATE_START', sessionId: 'A', requestVersion: 1 });
+    state = conversationReducer(state, {
+      type: 'HYDRATE_SUCCESS', sessionId: 'A', requestVersion: 1, model: 'qwen3.6-plus',
+      messages: [{
+        role: 'assistant', content: 'result',
+        graphs: [{
+          nodes: [{ id: 'a' }, { id: 'b' }],
+          links: [{ source: 'a', target: 'b' }],
+          communities: { num_communities: 2, node_community: { a: 0, b: 1 } },
+          highlights: [{ type: 'node', nodes: ['a'], color: '#22c55e' }],
+        }],
+      }],
+    });
+
+    expect(state.viewsBySessionId.A.graph?.edges[0]).toEqual(expect.objectContaining({ src: 'a', dst: 'b' }));
+    expect(state.viewsBySessionId.A.graph?.community?.node_community).toEqual({ a: 0, b: 1 });
+    expect(state.viewsBySessionId.A.graph?.highlights).toEqual([{ type: 'node', nodes: ['a'], color: '#22c55e' }]);
+  });
+
   it('rejects stale hydration responses and protects active/draft/running LRU entries', () => {
     let state = session(initialConversationState, 'A');
     state = conversationReducer(state, { type: 'HYDRATE_START', sessionId: 'A', requestVersion: 2 });

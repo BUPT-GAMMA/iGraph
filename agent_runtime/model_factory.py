@@ -8,6 +8,9 @@ from agno.models.openai.like import OpenAILike
 
 from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.model_registry import SUPPORTED_MODELS, normalize_model_name, provider_for_model
+import re
+
+CUSTOM_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
 
 
 def _first_env(*names: str, fallback: str = "") -> str:
@@ -40,9 +43,19 @@ def _endpoint(model_id: str, config: AgentRuntimeConfig) -> tuple[str, str]:
     return key, base
 
 
-def create_model(model_id: str, config: AgentRuntimeConfig) -> OpenAILike:
-    normalized = normalize_model_name(model_id, default=config.default_model)
-    api_key, base_url = _endpoint(normalized, config)
+def create_model(model_id: str, config: AgentRuntimeConfig, custom_model: dict | None = None) -> OpenAILike:
+    custom = custom_model if isinstance(custom_model, dict) else None
+    if custom:
+        normalized = str(custom.get("model_id") or model_id).strip()
+        base_url = str(custom.get("base_url") or "").strip().rstrip("/")
+        api_key = str(custom.get("api_key") or "").strip()
+        if not CUSTOM_MODEL_ID_RE.fullmatch(normalized):
+            raise ValueError("自定义模型 ID 格式无效")
+        if not base_url.startswith(("http://", "https://")) or not api_key:
+            raise ValueError("自定义模型必须配置有效的 Base URL 和 API Key")
+    else:
+        normalized = normalize_model_name(model_id, default=config.default_model)
+        api_key, base_url = _endpoint(normalized, config)
     return OpenAILike(
         id=normalized,
         api_key=api_key,
@@ -50,9 +63,14 @@ def create_model(model_id: str, config: AgentRuntimeConfig) -> OpenAILike:
     )
 
 
-def allowed_model(model_id: str, claims: dict, config: AgentRuntimeConfig) -> str:
+def allowed_model(model_id: str, claims: dict, config: AgentRuntimeConfig, custom_model: dict | None = None) -> str:
     """Validate the requested model against verified Backend claims when present."""
 
+    if custom_model:
+        normalized = str(custom_model.get("model_id") or model_id).strip()
+        if normalized != str(model_id or "").strip() or not CUSTOM_MODEL_ID_RE.fullmatch(normalized):
+            raise ValueError("自定义模型配置与模型 ID 不匹配")
+        return normalized
     normalized = normalize_model_name(model_id, default=config.default_model)
     claimed = claims.get("allowed_models") if isinstance(claims, dict) else None
     if claimed is not None:

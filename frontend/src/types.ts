@@ -32,6 +32,16 @@ export type ToolCall = {
   result?: unknown;
   history?: Array<Record<string, unknown>>;
 };
+export type ProjectTrainingRun = ToolCall & {
+  training_run_id: string;
+  session_id: string;
+  session_title?: string;
+  dataset_id?: string | null;
+  dataset_name?: string | null;
+  session_updated_at?: string | null;
+  sync_error?: string;
+  status_unavailable?: boolean;
+};
 export type Plan = { steps?: Array<{ step_id?: number; goal?: string; status?: string; result_summary?: string }>; completed?: boolean };
 export type GraphSnapshot = {
   nodes: Array<Record<string, unknown>>;
@@ -40,6 +50,13 @@ export type GraphSnapshot = {
   directed?: boolean;
   num_nodes?: number;
   num_edges?: number;
+  total_nodes?: number;
+  total_edges?: number;
+  truncated?: boolean;
+  truncated_to?: number;
+  community?: GraphCommunity | null;
+  communities?: GraphCommunity | null;
+  highlights?: GraphHighlights | null;
 };
 
 export type Message = {
@@ -53,6 +70,26 @@ export type Message = {
   streaming?: boolean;
 };
 
+export type GraphCommunity = {
+  num_communities?: number;
+  node_community?: Record<string, number | string>;
+};
+
+export type Highlight = {
+  id?: string;
+  type?: 'node' | 'path' | 'subgraph' | string;
+  nodes?: unknown[];
+  edges?: Array<Record<string, unknown> | unknown[]>;
+  color?: string;
+  label?: string;
+};
+
+export type GraphHighlights = Highlight[] | {
+  nodes?: Array<{ ids?: unknown[]; color?: string; label?: string }>;
+  paths?: Array<{ node_sequence?: unknown[]; edges?: unknown[]; color?: string; label?: string }>;
+  subgraphs?: Array<{ nodes?: unknown[]; edges?: unknown[]; color?: string; label?: string }>;
+};
+
 export type GraphData = {
   success?: boolean;
   nodes: Array<Record<string, unknown>>;
@@ -64,6 +101,9 @@ export type GraphData = {
   total_edges?: number;
   truncated?: boolean;
   truncated_to?: number;
+  community?: GraphCommunity | null;
+  communities?: GraphCommunity | null;
+  highlights?: GraphHighlights | null;
 };
 
 export type GraphCollectionSummary = {

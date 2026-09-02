@@ -83,12 +83,12 @@ describe('docked panel controls', () => {
     const onTab = vi.fn();
     const { rerender } = render(<GraphWorkspace {...graphProps} onTab={onTab} collapsed={false} onToggle={onToggle} />);
 
-    expect(screen.getByText('图谱工作台')).toBeTruthy();
+    expect(screen.getByText('图工作台')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Graph' }).getAttribute('aria-selected')).toBe('true');
     expect(document.querySelector('.workspace-tab-indicator')).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: 'Artifacts' }));
     expect(onTab).toHaveBeenCalledWith('Artifacts');
-    expect(screen.queryByLabelText('关闭图谱工作台')).toBeNull();
+    expect(screen.queryByLabelText('关闭图工作台')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '收起右侧栏' }));
     expect(onToggle).toHaveBeenCalledOnce();
 
@@ -96,7 +96,7 @@ describe('docked panel controls', () => {
     const expandRight = screen.getByRole('button', { name: '展开右侧栏' });
     expect(expandRight).toBeTruthy();
     expect(expandRight.querySelector('path')?.getAttribute('d')).toBe('M15 4v16M10 9l-3 3 3 3');
-    expect(screen.getByText('图谱工作台').classList.contains('workspace-title')).toBe(true);
+    expect(screen.getByText('图工作台').classList.contains('workspace-title')).toBe(true);
     expect(screen.getByText('Overview').closest('.workspace-panel-content')?.getAttribute('aria-hidden')).toBe('true');
   });
 

@@ -129,6 +129,40 @@ class RestoredTrainingMessageTest(unittest.TestCase):
         self.assertEqual(train_card["result"]["metrics"]["val_acc"], 0.6)
         self.assertEqual([row["epoch"] for row in train_card["history"]], [1, 2])
 
+    def test_terminal_job_detail_is_kept_when_progress_queue_is_empty(self) -> None:
+        runs = [{
+            "run_id": "run-train",
+            "status": "completed",
+            "tools": [
+                {
+                    "tool_name": "train",
+                    "tool_call_id": "call-train",
+                    "result": json.dumps({"success": True, "async": True, "job_id": "job-1"}),
+                },
+                {
+                    "tool_name": "get_job_status",
+                    "tool_call_id": "call-status",
+                    "result": json.dumps({
+                        "success": True,
+                        "job": {
+                            "job_id": "job-1",
+                            "tool_name": "train",
+                            "status": "done",
+                            "progress": 1,
+                            "detail": {"kind": "train_epoch", "epoch": 200, "epochs": 200, "val_acc": 0.773},
+                            "result": {"success": True, "metrics": {"trained_epochs": 200, "val_acc": 0.773}},
+                        },
+                        "progress_updates": [],
+                    }),
+                },
+            ],
+        }]
+
+        messages = _messages_from_runs(runs)
+        train_card = next(tool for message in messages for tool in message.get("tools", []) if tool.get("tool") == "train")
+        self.assertTrue(train_card["done"])
+        self.assertEqual(train_card["history"][-1]["epoch"], 200)
+
 
 if __name__ == "__main__":
     unittest.main()

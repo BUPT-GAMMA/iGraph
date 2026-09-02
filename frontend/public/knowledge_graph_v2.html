@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>知识图谱可视化</title>
+<title>知识图可视化</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         * { margin: 0; padding: 0; }
@@ -34,9 +34,9 @@
     </div>
     
     <script>
-        console.log("开始加载知识图谱...");
+console.log("开始加载知识图...");
         
-        // 知识图谱数据
+// 知识图数据
         const nodes = [
             {id: "China", type: "Country", label: "中国"}, {id: "USA", type: "Country", label: "美国"},
             {id: "Japan", type: "Country", label: "日本"}, {id: "Germany", type: "Country", label: "德国"},
@@ -216,7 +216,7 @@
                 .html(`<span style="display:inline-block;width:12px;height:12px;background:${v};border-radius:50%;margin-right:5px;"></span>${k} `);
         });
 
-        console.log("图谱渲染完成!");
+console.log("图渲染完成!");
         console.log("节点数:", nodes.length, "边数:", links.length);
     </script>
 </body>

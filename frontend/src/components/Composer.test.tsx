@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatPane } from './ChatPane';
 import { Composer } from './Composer';
@@ -65,6 +65,69 @@ describe('ConversationInputArea', () => {
     expect((screen.getByLabelText('上传图文件') as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it('opens custom model configuration in a separate dialog', async () => {
+    const onSaveCustomModel = vi.fn().mockResolvedValue(undefined);
+    render(<Composer
+      value=""
+      model="model-a"
+      models={['model-a', 'model-b']}
+      onChange={noop}
+      onModelChange={noop}
+      onDataset={noop}
+      onSend={noop}
+      onUpload={noop}
+      onRemoveAttachment={noop}
+      attachments={[]}
+      loading={false}
+      uploading={false}
+      disabled={false}
+      onSaveCustomModel={onSaveCustomModel}
+    />);
+
+    fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
+    fireEvent.click(screen.getByRole('button', { name: '配置自定义模型' }));
+
+    expect(screen.queryByRole('listbox', { name: '可用模型' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: '配置自定义模型' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'llama-3.1-8b' } });
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://api.example.com/v1' } });
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'test-key' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存模型' }));
+
+    await waitFor(() => expect(onSaveCustomModel).toHaveBeenCalledWith({
+      display_name: 'llama-3.1-8b',
+      model_id: 'llama-3.1-8b',
+      base_url: 'https://api.example.com/v1',
+      api_key: 'test-key',
+    }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '配置自定义模型' })).toBeNull());
+  });
+
+  it('shows the custom model ID instead of its display name', () => {
+    render(<Composer
+      value=""
+      model="Deepseek-v4-pro"
+      models={['model-a', 'Deepseek-v4-pro']}
+      customModels={[{ model_id: 'Deepseek-v4-pro', display_name: 'iGraph', base_url: 'https://api.deepseek.com' }]}
+      onChange={noop}
+      onModelChange={noop}
+      onDataset={noop}
+      onSend={noop}
+      onUpload={noop}
+      onRemoveAttachment={noop}
+      attachments={[]}
+      loading={false}
+      uploading={false}
+      disabled={false}
+    />);
+
+    expect(screen.getByRole('button', { name: '选择模型' }).textContent).toContain('Deepseek-v4-pro');
+    expect(screen.getByRole('button', { name: '选择模型' }).textContent).not.toContain('iGraph');
+    fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
+    expect(screen.getByRole('option', { name: 'Deepseek-v4-pro' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'iGraph' })).toBeNull();
+  });
+
   it('replaces Composer with approval controls and preserves a hidden draft and attachments', () => {
     const onFeedback = vi.fn();
     render(<ChatPane
@@ -81,7 +144,7 @@ describe('ConversationInputArea', () => {
     expect(screen.queryByLabelText('发送')).toBeNull();
     expect(screen.queryByLabelText('上传图文件')).toBeNull();
     expect(screen.queryByLabelText('选择模型')).toBeNull();
-    expect(screen.queryByText('检查图谱结构')).toBeNull();
+    expect(screen.queryByText('检查图结构')).toBeNull();
 
     const approve = screen.getByRole('button', { name: '批准并执行' });
     fireEvent.keyDown(approve, { key: 'Enter' });
