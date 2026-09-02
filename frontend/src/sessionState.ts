@@ -39,6 +39,7 @@ export type SessionViewState = {
   messagesById: Record<string, Message>;
   messageOrder: string[];
   graph: GraphViewState;
+  graphSnapshot?: GraphData | null;
   graphRequestVersion: number;
   selectedNode: Record<string, unknown> | null;
   draft: string;
@@ -151,6 +152,7 @@ export function createSessionView(sessionId: string, model = 'qwen3.6-plus', acc
     messagesById: {},
     messageOrder: [],
     graph: { status: 'empty', data: null },
+    graphSnapshot: null,
     graphRequestVersion: 0,
     selectedNode: null,
     draft: '',
@@ -644,15 +646,16 @@ export function conversationReducer(state: ConversationState, action: Conversati
         }
       } else if (!activeRun || !PROTECTED_RUN_STATUSES.has(activeRun.status)) activeRun = null;
       const graph = graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, action.hasGraph);
+      const latestGraph = action.preserveMessages ? null : latestMessageGraph(action.messages);
+      const hydratedGraph: GraphViewState = latestGraph ? { status: 'ready', data: latestGraph } : graph;
       view = {
         ...view,
         ...indexed,
-        graph: action.preserveMessages ? view.graph : latestMessageGraph(action.messages) ?? view.graph,
+        graph: hydratedGraph,
         hydration: 'ready',
         model: action.model,
         activeDatasetId: action.activeDatasetId,
-        graph,
-        selectedNode: graph.status === 'ready' ? view.selectedNode : null,
+        selectedNode: hydratedGraph.status === 'ready' ? view.selectedNode : null,
         activeRun,
         error: undefined,
       };
@@ -813,11 +816,20 @@ export function conversationReducer(state: ConversationState, action: Conversati
       if (action.requestVersion < view.graphRequestVersion) return state;
       view = action.preserveCurrent && view.graph.status === 'ready'
         ? { ...view, graphRequestVersion: action.requestVersion }
-        : { ...view, graphRequestVersion: action.requestVersion, graph: { status: 'loading', data: null }, selectedNode: null };
+        : { ...view, graphRequestVersion: action.requestVersion, graphSnapshot: view.graph.status === 'ready' ? view.graph.data : null, graph: { status: 'loading', data: null }, selectedNode: null };
       break;
     case 'GRAPH_REQUEST_SUCCESS':
       if (action.requestVersion !== view.graphRequestVersion) return state;
-      view = { ...view, graph: action.graph ? mergeRefreshedGraph(view.graph, action.graph) : null };
+      view = {
+        ...view,
+        graph: action.graph.status === 'ready'
+          ? {
+              status: 'ready',
+              data: mergeRefreshedGraph(view.graph.status === 'ready' ? view.graph.data : view.graphSnapshot || null, action.graph.data),
+            }
+          : action.graph,
+        graphSnapshot: null,
+      };
       break;
     case 'REMOVE_SESSION': {
       const viewsBySessionId = { ...state.viewsBySessionId };

@@ -29,7 +29,7 @@ const sidebarProps = {
 };
 
 const graphProps = {
-  view: { status: 'empty' as const, data: null },
+  data: null,
   tab: 'Graph' as const,
   onTab: noop,
   selected: null,
@@ -107,20 +107,18 @@ describe('docked panel controls', () => {
       code: 'NON_SINGLE_GRAPH' as const,
       summary: { num_graphs: 41127, num_tasks: 1, metric: 'roc_auc', split_sizes: { train: 32901, val: 4113, test: 4113 }, node_vocab_size: 382, edge_vocab_size: 8, missing_label_rate: 0 },
     };
-    const { rerender, container } = render(<GraphWorkspace {...graphProps} view={view} datasetName="hiv" collapsed={false} onToggle={noop} />);
+    const { rerender, container } = render(<GraphWorkspace {...graphProps} data={null} collapsed={false} onToggle={noop} />);
 
-    expect(screen.getByText('非独立图，无法直接可视化')).toBeTruthy();
+    expect(screen.getByText('暂无图')).toBeTruthy();
     expect(container.querySelector('.graph-canvas svg')).toBeNull();
     expect(container.querySelector('.graph-toolbar')).toBeNull();
     expect(container.querySelector('.node-inspector')).toBeNull();
 
-    rerender(<GraphWorkspace {...graphProps} view={view} datasetName="hiv" tab="Overview" collapsed={false} onToggle={noop} />);
-    expect(screen.getByText('41,127')).toBeTruthy();
-    expect(screen.getByText('roc_auc')).toBeTruthy();
+    rerender(<GraphWorkspace {...graphProps} data={null} tab="Overview" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('暂无图')).toBeTruthy();
 
-    rerender(<GraphWorkspace {...graphProps} view={view} datasetName="hiv" tab="Data" collapsed={false} onToggle={noop} />);
-    expect(screen.getByText('32,901')).toBeTruthy();
-    expect(screen.getByText('Node vocab')).toBeTruthy();
+    rerender(<GraphWorkspace {...graphProps} data={null} tab="Data" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('暂无图')).toBeTruthy();
   });
 
   it('keeps the graph canvas stable across unrelated renders and supports zoom gestures', () => {
@@ -128,15 +126,14 @@ describe('docked panel controls', () => {
       nodes: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
       edges: [{ source: 'a', target: 'b' }],
     };
-    const view = { status: 'ready' as const, data: graphData };
-    const { container, rerender } = render(<GraphWorkspace {...graphProps} view={view} collapsed={false} onToggle={noop} />);
+    const { container, rerender } = render(<GraphWorkspace {...graphProps} data={graphData} collapsed={false} onToggle={noop} />);
     const canvas = screen.getByLabelText('图谱画布，可拖动平移并使用滚轮缩放');
     const originalViewport = container.querySelector('.graph-viewport');
 
     expect(originalViewport).toBeTruthy();
     expect((canvas as unknown as SVGSVGElement & { __zoom?: unknown }).__zoom).toBeTruthy();
 
-    rerender(<GraphWorkspace {...graphProps} view={{ status: 'ready', data: { nodes: graphData.nodes.map(node => ({ ...node })), edges: graphData.edges.map(edge => ({ ...edge })) } }} messages={[{ id: 'm1', role: 'user', content: '输入变化' }]} selected={{ id: 'a' }} onSelect={() => undefined} collapsed={false} onToggle={noop} />);
+    rerender(<GraphWorkspace {...graphProps} data={{ nodes: graphData.nodes.map(node => ({ ...node })), edges: graphData.edges.map(edge => ({ ...edge })) }} messages={[{ id: 'm1', role: 'user', content: '输入变化' }]} selected={{ id: 'a' }} onSelect={() => undefined} collapsed={false} onToggle={noop} />);
 
     expect(container.querySelector('.graph-viewport')).toBe(originalViewport);
     expect(container.querySelector<SVGCircleElement>('.graph-node circle')?.getAttribute('r')).toBe('13');

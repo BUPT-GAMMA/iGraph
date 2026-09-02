@@ -747,7 +747,7 @@ function App() {
       if (response.has_graph && response.dataset_view?.kind !== 'graph_collection') {
         void refreshSessionGraph(id, { include_community: false }, false, graphVersion);
       } else {
-        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: response.dataset_view?.kind === 'graph_collection' ? unsupportedGraphView(response.dataset_view) : null });
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: unsupportedGraphView(response.dataset_view) || { status: 'empty', data: null } });
       }
       if (effectiveActiveRun) openResumeConnection(id, generation, effectiveActiveRun, true);
     } catch (cause: any) {
