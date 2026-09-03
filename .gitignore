@@ -64,6 +64,7 @@ backend/agent/memory/default_user/legacy_backup/
 
 node_modules/
 dist/
+coverage/
 .vite/
 .pnpm-store/
 *.tsbuildinfo

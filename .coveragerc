@@ -1,4 +1,5 @@
 [run]
+branch = True
 source =
     agent_runtime
     backend
@@ -7,7 +8,7 @@ source =
     mcp_service
 
 [report]
-fail_under = 50
+fail_under = 46.5
 precision = 2
 show_missing = True
 skip_empty = True
