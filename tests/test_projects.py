@@ -23,6 +23,7 @@ class FakeServiceClient:
     runtime_stream_error: HTTPException | None = None
     graph_job_status: dict[str, dict] = {}
     graph_status_calls: list[str] = []
+    custom_model_requests: list[dict] = []
 
     def __init__(self, base_url: str, *_args) -> None:
         self.is_runtime = "runtime" in base_url
@@ -59,6 +60,12 @@ class FakeServiceClient:
 
         if path == "/sessions" and method == "GET":
             return {"data": [item for item in self.runtime_sessions.values() if item.get("user_id") == user_id]}
+        if path == "/internal/models/custom" and method == "PUT":
+            self.custom_model_requests.append({"method": method, "path": path, "user_id": user_id, "body": json_body})
+            return {"success": True, "model_id": str((json_body or {}).get("model_id") or "")}
+        if path.startswith("/internal/models/custom/") and method == "DELETE":
+            self.custom_model_requests.append({"method": method, "path": path, "user_id": user_id})
+            return {"success": True}
         if path == "/sessions" and method == "POST":
             payload = dict(json_body or {})
             self.runtime_sessions[payload["session_id"]] = payload
@@ -115,6 +122,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     FakeServiceClient.runtime_stream_error = None
     FakeServiceClient.graph_job_status = {}
     FakeServiceClient.graph_status_calls = []
+    FakeServiceClient.custom_model_requests = []
     seed = tmp_path / "supported.txt"
     seed.write_text("admin\nalice\n", encoding="utf-8")
     config = BackendConfig(
@@ -131,6 +139,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         admin_user_id="admin",
         default_admin_model="qwen3.6-plus",
         default_user_model="qwen3.6-plus",
+        custom_models_file=tmp_path / "custom_models.json",
     )
     monkeypatch.setattr(backend_app, "ServiceClient", FakeServiceClient)
     with TestClient(backend_app.create_app(config)) as test_client:
@@ -151,6 +160,56 @@ def test_project_directory_has_stable_per_user_general(tmp_path: Path):
     assert first.project_id != other.project_id
     assert first.name == "General"
     assert first.is_default is True
+
+
+def test_custom_model_api_validates_isolates_syncs_updates_and_deletes(client: TestClient):
+    invalid = client.post(
+        "/api/models/custom",
+        headers=headers(),
+        json={"model_id": "team/model-v1", "display_name": "Team Model", "base_url": "ftp://models.example", "api_key": "secret"},
+    )
+    assert invalid.status_code == 400
+    assert "Base URL" in invalid.json()["detail"]
+
+    created = client.post(
+        "/api/models/custom",
+        headers=headers(),
+        json={"model_id": "team/model-v1", "display_name": "Team Model", "base_url": "https://models.example/v1/", "api_key": "secret"},
+    )
+    assert created.status_code == 200
+    assert created.json()["model"] == {
+        **{key: value for key, value in created.json()["model"].items() if key in {"created_at", "updated_at"}},
+        "model_id": "team/model-v1",
+        "display_name": "Team Model",
+        "provider": "openai-compatible",
+        "base_url": "https://models.example/v1",
+        "has_api_key": True,
+    }
+    assert "api_key" not in created.json()["model"]
+    assert FakeServiceClient.custom_model_requests[-1]["body"]["api_key"] == "secret"
+
+    listed = client.get("/api/models/custom", headers=headers()).json()["models"]
+    assert [item["model_id"] for item in listed] == ["team/model-v1"]
+    assert client.get("/api/models/custom", headers=headers("alice")).json()["models"] == []
+    assert "team/model-v1" in client.post("/api/auth/validate", headers=headers()).json()["available_models"]
+
+    updated = client.post(
+        "/api/models/custom",
+        headers=headers(),
+        json={"model_id": "team/model-v1", "display_name": "Renamed", "base_url": "https://new.example/v1", "api_key": ""},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["model"]["display_name"] == "Renamed"
+    assert FakeServiceClient.custom_model_requests[-1]["body"]["api_key"] == "secret"
+
+    missing = client.delete("/api/models/custom/missing", headers=headers())
+    assert missing.status_code == 404
+    deleted = client.delete("/api/models/custom/team/model-v1", headers=headers())
+    assert deleted.status_code == 200
+    assert deleted.json() == {"success": True, "model_id": "team/model-v1"}
+    assert FakeServiceClient.custom_model_requests[-1]["method"] == "DELETE"
+    assert FakeServiceClient.custom_model_requests[-1]["path"].endswith("/admin/team/model-v1")
+    assert client.get("/api/models/custom", headers=headers()).json()["models"] == []
 
 
 def test_project_crud_session_move_and_safe_delete(client: TestClient):

@@ -45,7 +45,7 @@ describe('GraphWorkspace visualization layers', () => {
     expect(container.querySelectorAll('.graph-node-halo[r="13"]')).toHaveLength(4);
     expect(container.querySelectorAll('.graph-link.is-path-highlight')).toHaveLength(2);
     expect(container.querySelectorAll('.graph-link.is-subgraph-highlight')).toHaveLength(2);
-    expect(container.querySelector('.graph-subgraph-hull')?.getAttribute('d')).toBeTruthy();
+    await waitFor(() => expect(container.querySelector('.graph-subgraph-hull')?.getAttribute('d')).toBeTruthy());
     expect(container.querySelector('.graph-legend')?.textContent).toContain('社区着色');
     expect(container.querySelector('.graph-legend')?.textContent).toContain('节点高亮');
     expect(container.querySelector('.graph-legend')?.textContent).toContain('路径高亮');

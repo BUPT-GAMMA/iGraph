@@ -217,15 +217,17 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     node.append('circle').attr('r', (item: any) => item.id === String(selected?.id ?? '') ? 13 : 8).attr('fill', (item: any) => item.id === String(selected?.id ?? '') ? 'var(--graph-node-selected-fill)' : communityColor(communityById.get(item.id))).attr('stroke', item => highlightByNode.get(item.id)?.[0]?.color || null).classed('is-highlighted', item => highlightByNode.has(item.id));
     node.append('circle').attr('class', 'graph-node-halo').attr('r', (item: any) => highlightByNode.has(item.id) ? 13 : 0).attr('fill', item => highlightByNode.get(item.id)?.[0]?.color || DEFAULT_HIGHLIGHT_COLORS.node).attr('opacity', .2);
     node.append('text').attr('dy', 20).text((item: any) => String(item.label ?? item.id).slice(0, 12));
-    simulation.on('tick', () => {
+    const renderFrame = () => {
       link.attr('x1', (edge: any) => edge.source.x).attr('y1', (edge: any) => edge.source.y).attr('x2', (edge: any) => edge.target.x).attr('y2', (edge: any) => edge.target.y);
       node.attr('transform', (item: any) => `translate(${item.x},${item.y})`);
       subgraphHulls.forEach(({ highlight, path }) => {
         const points = (highlight.nodes || []).map(id => nodes.find((item: any) => item.id === String(id))).filter(Boolean).map((item: any) => [item.x, item.y] as [number, number]);
         path.attr('d', paddedHullPath(points));
       });
-    });
+    };
+    simulation.on('tick', renderFrame);
     simulation.tick();
+    renderFrame();
     return () => { simulation.stop(); svg.on('.zoom', null); };
   }, [collapsed, renderedData, tab, layoutVersion, layout, visibleNodes, highlights, communityById, highlightByNode]);
   useEffect(() => {

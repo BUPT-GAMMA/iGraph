@@ -272,11 +272,14 @@ test('the approval dock stays inside a mobile viewport', async ({ page }) => {
   await expect(page.getByPlaceholder('今天帮你分析什么？粘贴边列表，或直接用自然语言提问')).toHaveCount(0);
   await expect(page.locator('.graph-workspace')).toBeHidden();
 
-  const panel = await page.locator('.confirmation-card').boundingBox();
-  expect(panel).not.toBeNull();
-  expect(panel!.x).toBeGreaterThanOrEqual(0);
-  expect(panel!.x + panel!.width).toBeLessThanOrEqual(390);
-  expect(panel!.y + panel!.height).toBeLessThanOrEqual(844);
+  const panel = page.locator('.confirmation-card');
+  await expect.poll(async () => panel.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.left >= 0
+      && bounds.right <= document.documentElement.clientWidth
+      && bounds.top >= 0
+      && bounds.bottom <= document.documentElement.clientHeight;
+  })).toBe(true);
   await expect(page.getByRole('button', { name: '拒绝' })).toBeVisible();
   await expect(page.getByRole('button', { name: '批准并执行' })).toBeVisible();
 });
