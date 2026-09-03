@@ -1,21 +1,73 @@
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Python cache and test artifacts
 __pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime outputs
+/data/
 logs/
 uploads/
-tests/
-.env
-.DS_Store
-*.json
-*.jsonl
 artifacts/
-!backend/agent/memory/.gitkeep
-!backend/agent/memory/default_user/.gitkeep
-backend/agent/memory/default_user/*.json
-backend/agent/memory/default_user/*.jsonl
-backend/agent/memory/default_user/legacy_backup/
-*.ipynb
-datasets/
 outputs/
-data/
+output/
+datasets/
+!graph_data_service/graph_ml/datasets/
+!graph_data_service/graph_ml/datasets/*.py
 *.log
-supported_ids.txt
-random_id.py
+
+# Local planning docs
+plan.md
+
+# Runtime memory and session state
+!backend/agent/memory/.gitkeep
+backend/agent/memory/default_user/*
+!backend/agent/memory/default_user/.gitkeep
+backend/agent/memory/default_user/legacy_backup/
+
+# Local AI / IDE configuration
+.agents/
+.codex/
+.cursor/
+.continue/
+.claude/
+.idea/
+.vscode/
+.windsurf/
+.zed/
+
+# Node.js and frontend build artifacts
+
+node_modules/
+dist/
+coverage/
+.vite/
+.pnpm-store/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*

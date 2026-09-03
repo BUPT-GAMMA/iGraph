@@ -72,6 +72,33 @@ class ContextManagerTests(unittest.TestCase):
         prompt = build_role_system_prompt("staged")
         self.assertIn("可以进一步考虑使用图机器学习相关工具进行建模与推断", prompt)
 
+    def test_role_system_prompt_contains_graph_analysis_reporting_rules(self) -> None:
+        prompt = build_role_system_prompt("direct", protocol="text")
+        self.assertIn("## 图分析报告原则", prompt)
+        self.assertIn("整体理解、统计总结、结构解释、模式发现、诊断判断、对比分析", prompt)
+        self.assertIn("图表化呈现", prompt)
+        self.assertIn("轻量文本答复", prompt)
+        self.assertIn("单个节点、单条边、单条路径、单个指标值", prompt)
+        self.assertIn("create_analysis_report", prompt)
+        self.assertIn("report_intent", prompt)
+        self.assertIn("analysis_goal", prompt)
+        self.assertIn("source_results", prompt)
+        self.assertIn("get_graph_info", prompt)
+        self.assertIn("visualize_subgraph", prompt)
+        self.assertIn("回退为普通文本总结", prompt)
+        self.assertIn("1-3 句简短结论", prompt)
+        self.assertIn("不在聊天区重复完整表格、完整图表数据或报告 JSON", prompt)
+
+    def test_native_role_system_prompt_contains_graph_analysis_reporting_rules(self) -> None:
+        prompt = build_role_system_prompt("direct", protocol="native")
+        self.assertIn("## 图分析报告原则", prompt)
+        self.assertIn("生成报告前必须先取得可靠工具结果", prompt)
+        self.assertIn("create_analysis_report", prompt)
+        self.assertIn("source_results", prompt)
+        self.assertIn("overview、analysis、diagnosis、comparison、custom", prompt)
+        self.assertIn("报告规则不覆盖图可视化规则", prompt)
+        self.assertIn("点击查看报告", prompt)
+
     def test_driver_is_none_without_provider_gateway(self) -> None:
         cm = ContextManager(session_id="s1")
         self.assertIsNone(cm._driver)
@@ -246,6 +273,85 @@ class ContextManagerTests(unittest.TestCase):
             self.assertEqual(chat[1]["tools"][0]["args"], {"source": "A", "target": "B"})
             self.assertEqual(chat[1]["tools"][0]["call_id"], "call-1")
 
+    def test_load_chat_messages_restores_visible_graphs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(tmp)
+            sid = "s1"
+            graph = {
+                "id": "ig-call-1",
+                "nodes": [{"id": "A", "label": "A"}, {"id": "B", "label": "B"}],
+                "edges": [{"src": "A", "dst": "B", "source": "A", "target": "B", "weight": 1.0}],
+                "directed": True,
+                "num_nodes": 2,
+                "num_edges": 1,
+                "activeHighlights": {},
+            }
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "user", "content": "可视化图"},
+                    "visible": True,
+                    "display_content": "可视化图",
+                    "include_in_context": True,
+                },
+            )
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "assistant", "content": "已生成图"},
+                    "visible": True,
+                    "display_content": "已生成图",
+                    "include_in_context": False,
+                    "graphs": [graph],
+                },
+            )
+
+            chat = store.load_chat_messages(sid)
+
+            self.assertEqual(chat[1]["graphs"], [graph])
+
+    def test_load_chat_messages_merges_visible_graphs_on_assistant_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(tmp)
+            sid = "s1"
+            graph_a = {"id": "ig-a", "nodes": [{"id": "A"}], "edges": [], "directed": True}
+            graph_b = {"id": "ig-b", "nodes": [{"id": "B"}], "edges": [], "directed": True}
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "user", "content": "可视化两张图"},
+                    "visible": True,
+                    "display_content": "可视化两张图",
+                    "include_in_context": True,
+                },
+            )
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "assistant", "content": "第一张"},
+                    "visible": True,
+                    "display_content": "第一张",
+                    "include_in_context": False,
+                    "graphs": [graph_a],
+                },
+            )
+            store.append_message_record(
+                sid,
+                {
+                    "message": {"role": "assistant", "content": "第二张"},
+                    "visible": True,
+                    "display_content": "第二张",
+                    "include_in_context": False,
+                    "graphs": [graph_b],
+                },
+            )
+
+            chat = store.load_chat_messages(sid)
+
+            self.assertEqual(len(chat), 2)
+            self.assertEqual(chat[1]["content"], "第一张\n\n第二张")
+            self.assertEqual(chat[1]["graphs"], [graph_a, graph_b])
+
     def test_skill_prompt_loads_matching_skill_files(self) -> None:
         prompt = build_skills_system_prompt(
             [
@@ -264,12 +370,60 @@ class ContextManagerTests(unittest.TestCase):
         self.assertIn("graph_ml_inference", prompt)
         self.assertNotIn("当用户请求与 GraphML 相关", prompt)
 
+    def test_skill_prompt_loads_statistical_reporting_skill_when_report_tool_available(self) -> None:
+        prompt = build_skills_system_prompt(
+            [
+                {"name": "create_analysis_report"},
+                {"name": "get_graph_info"},
+                {"name": "community_detection"},
+                {"name": "degree_analysis"},
+            ],
+            graph_state={"loaded": True},
+        )
+
+        self.assertIn("graph_statistical_reporting", prompt)
+        self.assertIn("图分析报告生成流程", prompt)
+
+        skill_body = handle_skill_tool_call("skill_view", {"name": "graph_statistical_reporting"})
+        self.assertIsInstance(skill_body, str)
+        self.assertIn("analysis_goal", skill_body)
+        self.assertIn("report_intent", skill_body)
+        self.assertIn("`report_intent` 选择策略", skill_body)
+        self.assertIn("`source_results` 组织规则", skill_body)
+        self.assertIn("`options` 建议", skill_body)
+        self.assertIn("失败回退", skill_body)
+        self.assertIn("overview", skill_body)
+        self.assertIn("analysis", skill_body)
+        self.assertIn("diagnosis", skill_body)
+        self.assertIn("comparison", skill_body)
+        self.assertIn("custom", skill_body)
+        self.assertIn("top_k: 10", skill_body)
+        self.assertIn("max_sections: 6", skill_body)
+        self.assertIn("include_narrative: true", skill_body)
+        self.assertIn("visualize_subgraph", skill_body)
+
+    def test_reporting_skill_is_not_active_without_report_tool(self) -> None:
+        prompt = build_skills_system_prompt(
+            [
+                {"name": "get_graph_info"},
+                {"name": "degree_analysis"},
+                {"name": "community_detection"},
+            ],
+            graph_state={"loaded": True},
+        )
+
+        self.assertNotIn("graph_statistical_reporting", prompt)
+        role_prompt = build_role_system_prompt("direct", protocol="text")
+        self.assertIn("create_analysis_report", role_prompt)
+        self.assertIn("回退为普通文本总结", role_prompt)
+
     def test_skill_view_loads_full_skill_body(self) -> None:
         result = handle_skill_tool_call("skill_view", {"name": "graph_ml_training"})
         self.assertIsInstance(result, str)
-        self.assertIn("GraphML Training", result)
-        self.assertIn("Rely on the `train` tool schema", result)
-        self.assertIn("confirmation/edit flow", result)
+        self.assertIn("GraphML 训练", result)
+        self.assertIn("依据 `train` 工具 schema 准备参数", result)
+        self.assertIn("用户发出的训练请求即为本次任务授权", result)
+        self.assertIn("不要重复提交同一训练任务", result)
 
 
 if __name__ == "__main__":

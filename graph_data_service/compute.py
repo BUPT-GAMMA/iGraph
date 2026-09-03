@@ -117,6 +117,15 @@ class GraphCompute:
             "loaded": True,
             "num_nodes": gd.num_nodes,
             "num_edges": gd.num_edges,
+            "num_edge_entries": gd.num_edge_entries,
+            "num_unique_edges": gd.num_unique_edges,
+            "num_unique_directed_edges": gd.num_unique_directed_edges,
+            "num_unique_undirected_edges": gd.num_unique_undirected_edges,
+            "semantic_type": gd.semantic_type,
+            "storage_type": gd.storage_type,
+            "is_symmetric": gd.is_symmetric,
+            "has_self_loops": gd.has_self_loops,
+            "has_duplicate_entries": gd.has_duplicate_entries,
             "directed": gd.directed,
             "has_node_names": gd.has_node_names,
             "has_edge_weight": gd.has_edge_weight,
@@ -185,6 +194,9 @@ class GraphCompute:
 
         in_deg = gd.in_degree(nid)
         out_deg = gd.out_degree(nid)
+        degree = gd.degree(nid)
+        total_deg = gd.total_degree(nid)
+        num_neighbors = gd.num_neighbors(nid)
         all_neighbors = [gd.id2node.get(n, str(n)) for n in gd.neighbors(nid)]
         all_predecessors = [gd.id2node.get(n, str(n)) for n in gd.predecessors(nid)] if gd.directed else []
         raw_edges = gd.get_incident_edges(nid)
@@ -206,14 +218,21 @@ class GraphCompute:
             "node": display_name,
             "node_id": nid,
             "directed": gd.directed,
+            "semantic_type": gd.semantic_type,
+            "storage_type": gd.storage_type,
             "label": self._serialize_label(
                 gd.get_node_label_by_id(nid) if gd.has_node_label else None
             ),
             "type": gd.get_node_type_by_id(nid) if gd.has_node_type else None,
             "text": gd.node_text[nid] if gd.has_node_text else None,
+            "degree": degree,
+            "num_neighbors": num_neighbors,
             "in_degree": in_deg,
             "out_degree": out_deg,
-            "total_degree": in_deg + out_deg,
+            "total_degree": total_deg,
+            "degree_mode": (
+                "logical_undirected" if gd.semantic_type == "undirected" else "directed_in_out"
+            ),
             "neighbors_preview": neighbors_preview,
             "neighbors_total": len(all_neighbors),
             "neighbors_truncated": neighbors_truncated,
@@ -1505,6 +1524,7 @@ class GraphCompute:
                 "label": node,
                 "in_degree": g.in_degree(node) if g.is_directed() else g.degree(node),
                 "out_degree": g.out_degree(node) if g.is_directed() else 0,
+                "total_degree": g.degree(node),
                 "attrs": attrs if attrs else None,
             })
 
@@ -1551,6 +1571,7 @@ class GraphCompute:
         if truncated:
             result["truncated"] = True
             result["total_nodes"] = g.number_of_nodes()
+            result["total_edges"] = g.number_of_edges()
             result["truncated_to"] = node_cap
         return result
 

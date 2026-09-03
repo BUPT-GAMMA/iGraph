@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
@@ -16,15 +17,14 @@ from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 from pydantic import BaseModel, Field
 
-import backend.data_paths as _dp
-from backend.logging.logger import close_service_loggers, get_service_logger
-from backend.agent.model_registry import DEFAULT_MODEL, normalize_model_name, provider_for_model
-from backend.agent.provider_gateway import ProviderGateway
-from backend.agent.sub_agents.file_format_classifier import FileFormatPreCheckSubAgent
-from backend.agent.sub_agents.text_graph_extractor import TextGraphExtractionSubAgent
+import graph_engine.paths as _dp
+from graph_engine.observability import close_service_loggers, get_service_logger
+from graph_engine.model_support import DEFAULT_MODEL, ProviderGateway, normalize_model_name, provider_for_model
+from graph_engine.extraction import FileFormatPreCheckSubAgent, TextGraphExtractionSubAgent
 from graph_data_service.data_pipeline import GraphBuilder
 from graph_data_service.dataset_registry import DatasetRegistry
-from graph_data_service.tool_catalog import GRAPH_ML_TOOLS, get_all_public_tools
+from graph_data_service.reporting import build_analysis_report
+from graph_data_service.tool_catalog import GRAPH_ML_TOOLS, REPORTING_TOOLS, get_all_public_tools
 from graph_data_service.codec import (
     edge_type_values_for_graph,
     graph_ml_readiness_for_graph,
@@ -40,10 +40,16 @@ from graph_data_service.compute import GraphCompute, NX_TOOL_NAMES, run_nx_tool
 from graph_data_service.embedding import default_provider
 from graph_data_service.graph_data import GraphData
 from graph_data_service.graph_ml import GraphMLModule
+from graph_data_service.graph_ml.datasets import graph_classification_sample_to_graph_data
+from graph_data_service.graph_ml.schemas import LoadGraphClassificationGraphRequest
 from graph_data_service.job_manager import JobManager
 from graph_data_service.rag import LightweightRAG
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
-from graph_data_service.session import GraphSession
+from graph_data_service.session import GraphSession, UploadFileRecord
+from graph_data_service.storage.nebula_backend import (
+    NebulaGraphRepository,
+    NebulaRepositoryError,
+)
 
 # 数据操作工具名集合（写入 graph_data.log）
 _DATA_TOOLS = {
@@ -51,11 +57,21 @@ _DATA_TOOLS = {
     "list_graph_versions", "load_graph_version", "discard_graph_version",
     "to_undirected", "get_graph_info", "list_datasets", "load_dataset",
     "save_as_dataset", "load_graph_from_text", "load_graph_from_triples",
-    "upload_document",
+    "upload_document", "nebula_status", "nebula_sync_graph",
 }
 
 _GRAPH_ML_TOOL_NAMES = {spec.get("name", "").strip() for spec in GRAPH_ML_TOOLS}
-_GRAPH_ML_HEAVY_TOOLS = {"train", "infer"}
+_GRAPH_ML_HEAVY_TOOLS = {
+    "load_graph_classification_dataset",
+    "train",
+    "infer",
+}
+_REPORTING_TOOL_NAMES = {spec.get("name", "").strip() for spec in REPORTING_TOOLS}
+_NEBULA_QUERY_TOOLS = {
+    "nebula_get_node_info",
+    "nebula_get_neighbors",
+    "nebula_shortest_path",
+}
 
 
 class LoadGraphTextReq(BaseModel):
@@ -83,6 +99,17 @@ class _NullTraceLogger:
         return None
 
 
+class _GraphMLSessionView:
+    """Read-only session view used for bounded Nebula materialisation."""
+
+    def __init__(self, graph_version: int, graph: GraphData) -> None:
+        self.graph_version = int(graph_version)
+        self._graph = graph
+
+    def get_graph(self) -> GraphData:
+        return self._graph
+
+
 def _service_logger(session_id: str, service: str, user_id: str = ""):
     logs_dir = str(_dp.user_sessions_dir(user_id)) if user_id else None
     return get_service_logger(session_id, service, logs_dir=logs_dir)
@@ -97,6 +124,15 @@ def _sanitize_filename(filename: str) -> str:
 def _graph_data_upload_root() -> str:
     root = os.getenv("GRAPH_DATA_UPLOAD_DIR", "uploads/graph_data")
     return os.path.abspath(root)
+
+
+def _graph_classification_profile_hint(filename: str) -> str | None:
+    stem = os.path.splitext(os.path.basename(filename or ""))[0].lower()
+    if "pcba" in stem:
+        return "pcba"
+    if "hiv" in stem:
+        return "hiv"
+    return None
 
 
 def _required_str(arguments: Dict[str, Any], key: str) -> str:
@@ -217,14 +253,17 @@ class GraphDataService:
         self,
         *,
         text_graph_llm_factory: Callable[[str], Awaitable[str]] | None = None,
+        nebula_repository: NebulaGraphRepository | None = None,
+        storage_backend: str | None = None,
     ) -> None:
         self._sessions: Dict[str, GraphSession] = {}
         self._compute = GraphCompute()
-        self._graph_ml = GraphMLModule(get_session=self.get_required)
-        # Migrate legacy datasets/ → data/global/datasets/ on first startup.
+        self._graph_ml = GraphMLModule(get_session=self._get_graph_ml_session)
+        # Copy legacy datasets and per-user graph snapshots into the
+        # Graph Engine-owned layout. Sources are deliberately retained.
         try:
-            from backend.migration import migrate_global_datasets
-            migrate_global_datasets()
+            from graph_engine.migration import migrate_legacy_graph_storage
+            migrate_legacy_graph_storage()
         except Exception:
             pass
         self._dataset_registry = DatasetRegistry(str(_dp.global_datasets_dir()))
@@ -240,6 +279,11 @@ class GraphDataService:
             provider_gateway=_pg,
         )
         self._job_manager = JobManager()
+        self._nebula = nebula_repository or NebulaGraphRepository()
+        backend = str(storage_backend or os.getenv("GRAPH_STORAGE_BACKEND", "local")).strip().lower()
+        if backend not in {"local", "nebula"}:
+            raise ValueError("GRAPH_STORAGE_BACKEND 必须是 local 或 nebula")
+        self._storage_backend = backend
         self._embedding_provider: Any = None  # lazy-initialized on first search/rag use
         _workers = max(1, int(os.getenv("GRAPH_COMPUTE_CONCURRENCY", str(min(4, (os.cpu_count() or 2))))))
         self._process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=_workers)
@@ -247,6 +291,8 @@ class GraphDataService:
         self._search_index_cache: Dict[str, EntitySearchIndex] = {}
         self._graph_ml_inflight: Dict[tuple[str, str, str], asyncio.Task] = {}
         self._graph_ml_inflight_lock = asyncio.Lock()
+        self._graph_write_locks: dict[str, threading.RLock] = {}
+        self._graph_write_locks_guard = threading.Lock()
         self._compute_global_sem = asyncio.Semaphore(_env_int("GRAPH_COMPUTE_GLOBAL_CONCURRENCY", _workers))
         self._compute_per_user_limit = _env_int("GRAPH_COMPUTE_PER_USER_CONCURRENCY", 1)
         self._compute_user_sems: dict[str, asyncio.Semaphore] = {}
@@ -264,9 +310,12 @@ class GraphDataService:
         except ValueError:
             return None
 
-        if provider in {"openai", "anthropic"}:
-            api_key = os.getenv("LLM_API_KEY")
-            base_url = os.getenv("LLM_BASE_URL")
+        if provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
+            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL")
+        elif provider == "anthropic":
+            api_key = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("LLM_API_KEY")
+            base_url = os.getenv("CLAUDE_BASE_URL") or os.getenv("ANTHROPIC_BASE_URL") or os.getenv("LLM_BASE_URL")
         elif provider == "qwen":
             api_key = os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("LLM_API_KEY")
             base_url = os.getenv("QWEN_BASE_URL") or os.getenv("DASHSCOPE_BASE_URL") or os.getenv("LLM_BASE_URL")
@@ -358,9 +407,32 @@ class GraphDataService:
 
     def delete_session(self, session_id: str, user_id: str = "") -> None:
         key = self._session_key(session_id, user_id)
-        self._sessions.pop(key, None)
+        self._graph_ml.release_session(key)
+        session = self._sessions.pop(key, None)
+        if session is None:
+            session = GraphSession(session_id=session_id, user_id=user_id)
+        session.delete_storage()
         self._rag_cache.pop(key, None)
         self._search_index_cache.pop(key, None)
+
+    def _get_graph_ml_session(self, runtime_session_id: str):
+        session = self._sessions.get(str(runtime_session_id))
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        graph = session.get_graph()
+        if graph is not None:
+            return session
+        if not session.is_remote:
+            return session
+        max_nodes, max_edges = self._primary_materialize_limits()
+        graph = self._nebula.materialize_subgraph(
+            user_id=session.user_id,
+            session_id=session.session_id,
+            graph_version=session.graph_version,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
+        return _GraphMLSessionView(session.graph_version, graph)
 
     def _get_embedding_provider(self):
         if self._embedding_provider is None:
@@ -409,38 +481,485 @@ class GraphDataService:
         for user_dir in users_root.iterdir():
             if not user_dir.is_dir():
                 continue
-            for root_name in ("sessions", "uploads"):
+            for root_name in ("graph_sessions",):
                 root = user_dir / root_name
                 if not root.exists():
                     continue
                 for session_dir in root.iterdir():
-                    if not session_dir.is_dir() or not (session_dir / "graph_current.npz").exists():
+                    if not session_dir.is_dir():
+                        continue
+                    has_local = (session_dir / "graph_current.npz").exists()
+                    has_remote = False
+                    meta_path = session_dir / "session_meta.json"
+                    if meta_path.exists():
+                        try:
+                            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                            remote = meta.get("remote_graph") if isinstance(meta, dict) else None
+                            has_remote = isinstance(remote, dict) and bool(remote.get("graph_key"))
+                        except Exception:
+                            has_remote = False
+                    if not has_local and not has_remote:
                         continue
                     restore_one(session_dir.name, user_id=user_dir.name)
+
+    @property
+    def nebula_primary(self) -> bool:
+        return self._storage_backend == "nebula"
+
+    @staticmethod
+    def _primary_materialize_limits() -> tuple[int, int]:
+        return (
+            _env_int("NEBULA_MAX_MATERIALIZE_NODES", 50_000),
+            _env_int("NEBULA_MAX_MATERIALIZE_EDGES", 200_000),
+        )
 
     def _require_graph(self, session_id: str, user_id: str = ""):
         session = self.get_required(session_id, user_id=user_id)
         gd = session.get_graph()
+        if gd is None and session.is_remote:
+            max_nodes, max_edges = self._primary_materialize_limits()
+            gd = self._nebula.materialize_subgraph(
+                user_id=user_id,
+                session_id=session_id,
+                graph_version=session.graph_version,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
+            )
         if gd is None:
             raise ValueError("尚未加载任何图数据。")
         nx_graph = self._compute.resolve_graph(self._cache_key(session_id, user_id), session.graph_version, gd)
         return session, gd, nx_graph
 
+    def _graph_write_lock(self, session_id: str, user_id: str) -> threading.RLock:
+        key = self._cache_key(session_id, user_id)
+        with self._graph_write_locks_guard:
+            lock = self._graph_write_locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                self._graph_write_locks[key] = lock
+            return lock
+
+    def _commit_graph(
+        self,
+        session: GraphSession,
+        graph: GraphData,
+        *,
+        user_id: str,
+        description: str,
+        progress_callback=None,
+    ) -> dict[str, Any]:
+        """Commit a graph to the configured source of truth."""
+        cache_key = self._cache_key(session.session_id, user_id)
+        with self._graph_write_lock(session.session_id, user_id):
+            if not self.nebula_primary:
+                session.set_graph(graph, description=description)
+                self._compute.invalidate(cache_key)
+                self._search_index_cache.pop(cache_key, None)
+                return {
+                    "backend": "local",
+                    "graph_version": session.graph_version,
+                    "graph_key": "",
+                    "features_omitted": [],
+                    "warnings": [],
+                }
+            if not self._nebula.enabled:
+                raise NebulaRepositoryError(
+                    "NEBULA_DISABLED",
+                    "GRAPH_STORAGE_BACKEND=nebula 时必须设置 NEBULA_ENABLED=1",
+                )
+            graph.ensure_node_names()
+            base_version = session.graph_version
+            version = session.next_graph_version()
+            result = self._nebula.sync_graph(
+                graph,
+                user_id=user_id,
+                session_id=session.session_id,
+                graph_version=version,
+                current_version_getter=lambda: session.graph_version,
+                expected_current_version=base_version,
+                progress_callback=progress_callback,
+                retain_previous=True,
+            )
+            session.set_remote_graph(
+                graph_key=str(result.get("graph_key") or ""),
+                graph_version=version,
+                node_count=graph.num_nodes,
+                edge_count=graph.num_edges,
+                directed=graph.directed,
+                graph_name=graph.name,
+                graph_desc=graph.graph_desc or "",
+                has_weights=graph.has_edge_weight,
+                description=description,
+            )
+            self._compute.invalidate(cache_key)
+            self._search_index_cache.pop(cache_key, None)
+            return result
+
+    def _activate_remote_session(
+        self,
+        session: GraphSession,
+        meta: dict[str, Any],
+        *,
+        description: str = "",
+        record_version: bool = False,
+    ) -> None:
+        session.set_remote_graph(
+            graph_key=str(meta.get("graph_key") or ""),
+            graph_version=int(meta.get("graph_version", 0) or 0),
+            node_count=int(meta.get("node_count", 0) or 0),
+            edge_count=int(meta.get("edge_count", 0) or 0),
+            directed=bool(meta.get("directed", True)),
+            graph_name=str(meta.get("graph_name") or ""),
+            graph_desc=str(meta.get("graph_desc") or ""),
+            has_weights=True,
+            description=description,
+            record_version=record_version,
+        )
+        cache_key = self._cache_key(session.session_id, session.user_id)
+        self._compute.invalidate(cache_key)
+        self._search_index_cache.pop(cache_key, None)
+
+    def _current_graph_for_update(self, session: GraphSession, user_id: str) -> Optional[GraphData]:
+        graph = session.get_graph()
+        if graph is not None:
+            return graph
+        if not session.is_remote:
+            return None
+        max_nodes, max_edges = self._primary_materialize_limits()
+        return self._nebula.materialize_subgraph(
+            user_id=user_id,
+            session_id=session.session_id,
+            graph_version=session.graph_version,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
+
+    @staticmethod
+    def _graph_from_edgelist(text: str, existing: Optional[GraphData] = None) -> GraphData:
+        node2id: dict[str, int] = dict(existing.node2id) if existing is not None else {}
+        id2node: dict[int, str] = dict(existing.id2node) if existing is not None else {}
+        pairs: list[tuple[int, int]] = list(existing.all_edges()) if existing is not None else []
+        weights: list[float] = []
+        if existing is not None:
+            weights = [
+                float(existing.edge_weight[i]) if existing.edge_weight is not None else 1.0
+                for i in range(existing.num_edges)
+            ]
+        next_id = len(id2node)
+        for raw_line in str(text or "").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.replace("\t", " ").replace(",", " ").split()
+            if len(parts) < 2:
+                continue
+            src, dst = parts[0], parts[1]
+            try:
+                weight = float(parts[2]) if len(parts) >= 3 else 1.0
+            except ValueError:
+                weight = 1.0
+            for name in (src, dst):
+                if name not in node2id:
+                    node2id[name] = next_id
+                    id2node[next_id] = name
+                    next_id += 1
+            pairs.append((node2id[src], node2id[dst]))
+            weights.append(weight)
+        edge_index = np.asarray(pairs, dtype=np.int64).T if pairs else np.empty((2, 0), dtype=np.int64)
+        return GraphData(
+            num_nodes=next_id,
+            edge_index=edge_index,
+            id2node=id2node or None,
+            node2id=node2id or None,
+            edge_weight=np.asarray(weights, dtype=np.float32) if weights else None,
+        )
+
+    # ── NebulaGraph 混合/主存储 ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _nebula_error_result(exc: NebulaRepositoryError) -> dict:
+        return exc.to_dict()
+
+    def do_nebula_status(self, session_id: str, user_id: str = "") -> dict:
+        session = self.get_or_create(session_id, user_id=user_id)
+        return self._nebula.session_status(user_id, session_id, session.graph_version)
+
+    def _do_nebula_sync_job(
+        self,
+        session: GraphSession,
+        graph: GraphData,
+        graph_version: int,
+        user_id: str,
+        progress_callback=None,
+    ) -> dict:
+        try:
+            return self._nebula.sync_graph(
+                graph,
+                user_id=user_id,
+                session_id=session.session_id,
+                graph_version=graph_version,
+                current_version_getter=lambda: session.graph_version,
+                progress_callback=progress_callback,
+            )
+        except NebulaRepositoryError as exc:
+            return self._nebula_error_result(exc)
+
+    async def submit_nebula_sync(self, session_id: str, user_id: str = "") -> dict:
+        session = self.get_required(session_id, user_id=user_id)
+        graph = session.get_graph()
+        if graph is None and session.is_remote:
+            return {
+                "success": True,
+                "backend": "nebula",
+                "already_primary": True,
+                "session_id": session_id,
+                "graph_version": session.graph_version,
+                "graph_key": (session.remote_graph or {}).get("graph_key", ""),
+                "message": "当前图已经以 NebulaGraph 为主存储，无需再次同步。",
+            }
+        if graph is None:
+            return {
+                "success": False,
+                "backend": "nebula",
+                "code": "NOT_SYNCED",
+                "error": "尚未加载任何图数据，无法同步到 NebulaGraph。",
+            }
+        if not self._nebula.enabled:
+            return NebulaRepositoryError(
+                "NEBULA_DISABLED", "NebulaGraph 未启用，请设置 NEBULA_ENABLED=1"
+            ).to_dict()
+        graph_version = session.graph_version
+        job_id = await self._job_manager.submit(
+            session_id,
+            "nebula_sync_graph",
+            self._do_nebula_sync_job,
+            session,
+            graph,
+            graph_version,
+            user_id,
+            _progress_kwarg="progress_callback",
+        )
+        return {
+            "success": True,
+            "backend": "nebula",
+            "async": True,
+            "job_id": job_id,
+            "status": "queued",
+            "session_id": session_id,
+            "graph_version": graph_version,
+            "message": "NebulaGraph 同步任务已提交。",
+        }
+
+    def _dispatch_nebula_query(
+        self,
+        session_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user_id: str = "",
+    ) -> dict:
+        session = self.get_required(session_id, user_id=user_id)
+        graph = session.get_graph()
+        if graph is None and not session.is_remote:
+            return {
+                "success": False,
+                "backend": "nebula",
+                "code": "NOT_SYNCED",
+                "error": "尚未加载任何图数据。",
+            }
+        try:
+            if session.is_remote:
+                if tool_name == "nebula_get_node_info":
+                    return self._nebula.get_node_info_primary(
+                        user_id=user_id, session_id=session_id,
+                        graph_version=session.graph_version,
+                        node_name=_required_str(arguments, "node_name"),
+                    )
+                if tool_name == "nebula_get_neighbors":
+                    return self._nebula.get_neighbors_primary(
+                        user_id=user_id, session_id=session_id,
+                        graph_version=session.graph_version,
+                        node_name=_required_str(arguments, "node_name"),
+                        direction=str(arguments.get("direction") or "out"),
+                        limit=int(arguments.get("limit", 20)),
+                    )
+                if tool_name == "nebula_shortest_path":
+                    return self._nebula.shortest_path_primary(
+                        user_id=user_id, session_id=session_id,
+                        graph_version=session.graph_version,
+                        source=_required_str(arguments, "source"),
+                        target=_required_str(arguments, "target"),
+                        direction=str(arguments.get("direction") or "out"),
+                        max_steps=int(arguments.get("max_steps", 10)),
+                    )
+            if tool_name == "nebula_get_node_info":
+                return self._nebula.get_node_info(
+                    graph,
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    node_name=_required_str(arguments, "node_name"),
+                )
+            if tool_name == "nebula_get_neighbors":
+                return self._nebula.get_neighbors(
+                    graph,
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    node_name=_required_str(arguments, "node_name"),
+                    direction=str(arguments.get("direction") or "out"),
+                    limit=int(arguments.get("limit", 20)),
+                )
+            if tool_name == "nebula_shortest_path":
+                return self._nebula.shortest_path(
+                    graph,
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    source=_required_str(arguments, "source"),
+                    target=_required_str(arguments, "target"),
+                    direction=str(arguments.get("direction") or "out"),
+                    max_steps=int(arguments.get("max_steps", 10)),
+                )
+            return {
+                "success": False,
+                "backend": "nebula",
+                "code": "QUERY_FAILED",
+                "error": f"未知 NebulaGraph 工具: {tool_name}",
+            }
+        except NebulaRepositoryError as exc:
+            return self._nebula_error_result(exc)
+        except (TypeError, ValueError) as exc:
+            return NebulaRepositoryError(
+                "QUERY_FAILED", f"NebulaGraph 查询参数无效: {exc}"
+            ).to_dict()
+
     # ── 数据操作 ──────────────────────────────────────────────────
 
     def do_load_graph_text(self, session_id: str, edge_text: str, append: bool, user_id: str = "") -> dict:
         session = self.get_required(session_id, user_id=user_id)
-        session._parse_edgelist(edge_text, append=append)
-        self._compute.invalidate(self._cache_key(session_id, user_id))
+        existing = self._current_graph_for_update(session, user_id) if append else None
+        graph = self._graph_from_edgelist(edge_text, existing=existing)
+        commit = self._commit_graph(
+            session,
+            graph,
+            user_id=user_id,
+            description="从边列表文本加载图" + ("（追加）" if append else ""),
+        )
         return {
             "success": True,
+            "backend": commit.get("backend", self._storage_backend),
             "session_id": session_id,
             "graph_version": session.graph_version,
+            "num_nodes": graph.num_nodes,
+            "num_edges": graph.num_edges,
+            "features_omitted": commit.get("features_omitted", []),
+            "warnings": commit.get("warnings", []),
             "message": (
                 f"图加载成功（已{('追加' if append else '覆盖')}当前图）。"
                 " 如需查看图规模与结构摘要，请调用 get_graph_info。"
             ),
         }
+
+    def _do_load_graph_from_upload_binary_job(
+        self,
+        session: GraphSession,
+        saved_path: str,
+        original_filename: str,
+        file_token: str,
+        append: bool,
+        user_id: str,
+        progress_callback=None,
+    ) -> dict:
+        svc_log = _service_logger(session.session_id, "graph_data", user_id=user_id)
+        try:
+            if progress_callback:
+                progress_callback(
+                    {"progress": 0.01, "message": "正在解析上传的图文件"}
+                )
+            loaded_graph = GraphData.load(saved_path)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "progress": 0.04,
+                        "message": (
+                            f"图文件解析完成：{loaded_graph.num_nodes} 个节点，"
+                            f"{loaded_graph.num_edges} 条边"
+                        ),
+                    }
+                )
+            existing = self._current_graph_for_update(session, user_id) if append else None
+            if existing is not None:
+                loaded_graph = self._merge_graphs(
+                    existing, loaded_graph, directed=loaded_graph.directed
+                )
+            commit = self._commit_graph(
+                session,
+                loaded_graph,
+                user_id=user_id,
+                description=f"从上传文件加载图: {os.path.basename(saved_path)}",
+                progress_callback=progress_callback,
+            )
+            session.mark_version_upload_source(
+                session.graph_version,
+                UploadFileRecord(
+                    file_token=file_token,
+                    original_filename=original_filename,
+                    saved_path=saved_path,
+                ),
+            )
+            svc_log.event(
+                "UPLOAD_LOAD_SUCCESS",
+                filename=original_filename,
+                format="binary_json",
+                graph_version=session.graph_version,
+                import_method=commit.get("import_method", "client"),
+            )
+            return {
+                "success": True,
+                "session_id": session.session_id,
+                "graph_version": session.graph_version,
+                "filename": original_filename,
+                "backend": commit.get("backend", self._storage_backend),
+                "import_method": commit.get("import_method", "client"),
+                "num_nodes": loaded_graph.num_nodes,
+                "num_edges": loaded_graph.num_edges,
+                "features_omitted": commit.get("features_omitted", []),
+                "warnings": commit.get("warnings", []),
+                "message": (
+                    f"从上传文件 '{original_filename}' 加载成功。"
+                    " 如需查看图规模与结构摘要，请调用 get_graph_info。"
+                ),
+            }
+        except NebulaRepositoryError as exc:
+            svc_log.event(
+                "UPLOAD_LOAD_ERROR",
+                filename=original_filename,
+                format="binary_json",
+                error=exc.message,
+                code=exc.code,
+            )
+            return {
+                **exc.to_dict(),
+                "session_id": session.session_id,
+                "graph_version": session.graph_version,
+                "filename": original_filename,
+            }
+        except Exception as exc:
+            svc_log.event(
+                "UPLOAD_LOAD_ERROR",
+                filename=original_filename,
+                format="binary_json",
+                error=str(exc),
+            )
+            return {
+                "success": False,
+                "backend": self._storage_backend,
+                "code": "QUERY_FAILED",
+                "session_id": session.session_id,
+                "graph_version": session.graph_version,
+                "filename": original_filename,
+                "error": f"加载上传文件失败: {exc}",
+            }
 
     async def do_load_graph_from_upload(self, session_id: str, filename: str, append: bool, user_id: str = "") -> dict:
         svc_log = _service_logger(session_id, "graph_data", user_id=user_id)
@@ -463,25 +982,153 @@ class GraphDataService:
         )
 
         lower_path = record.saved_path.lower()
-
-        # 二进制或结构化 JSON：由 session 层按扩展名处理
-        if lower_path.endswith((".npz", ".pt", ".json")):
-            svc_log.event("UPLOAD_FORMAT_DETECTED", filename=record.original_filename, format="binary_json")
-            try:
-                session.load_graph_from_upload_path(record.saved_path, append=append)
-                self._compute.invalidate(self._cache_key(session_id, user_id))
-            except FileNotFoundError as e:
-                svc_log.event("UPLOAD_LOAD_ERROR", filename=record.original_filename, format="binary_json", error=str(e))
+        lower_filename = str(record.original_filename or filename).lower()
+        graph_classification_profile = _graph_classification_profile_hint(
+            record.original_filename or filename
+        )
+        if (
+            (lower_path.endswith(".pt") or lower_filename.endswith(".pt"))
+            and graph_classification_profile is not None
+        ):
+            if append:
                 return {
                     "success": False,
                     "session_id": session_id,
                     "graph_version": session.graph_version,
                     "filename": record.original_filename,
-                    "error": str(e),
+                    "format_detected": "graph_classification_dataset",
+                    "error": (
+                        "HIV/PCBA multi-graph .pt datasets cannot be appended to the "
+                        "current single-graph state; load with append=false."
+                    ),
                 }
-            except Exception as e:
-                svc_log.event("UPLOAD_LOAD_ERROR", filename=record.original_filename, format="binary_json", error=str(e))
-                raise HTTPException(status_code=500, detail=f"加载上传文件失败: {e}")
+            svc_log.event(
+                "UPLOAD_FORMAT_DETECTED",
+                filename=record.original_filename,
+                format="graph_classification_dataset",
+                dataset_profile=graph_classification_profile,
+            )
+            result = await self._submit_graph_ml_tool_job(
+                session_id,
+                "load_graph_classification_dataset",
+                {
+                    "filename": filename,
+                    "dataset_profile": graph_classification_profile,
+                },
+                user_id=user_id,
+            )
+            result["filename"] = record.original_filename
+            result["format_detected"] = "graph_classification_dataset"
+            result["dataset_profile"] = graph_classification_profile
+            return result
+
+        # Nebula 主存储下，二进制图的解析、CSV 生成和导入都在后台线程执行。
+        if lower_path.endswith((".npz", ".pt", ".json")) and self.nebula_primary:
+            svc_log.event(
+                "UPLOAD_FORMAT_DETECTED",
+                filename=record.original_filename,
+                format="binary_json",
+            )
+            if not append:
+                for loaded in session.nebula_versions_for_upload(record):
+                    try:
+                        active = self._nebula.activate_graph_key(
+                            user_id,
+                            session_id,
+                            str(loaded["graph_key"]),
+                            graph_version_override=int(loaded["graph_version"]),
+                        )
+                    except NebulaRepositoryError as exc:
+                        svc_log.event(
+                            "UPLOAD_REUSE_SKIPPED",
+                            filename=record.original_filename,
+                            graph_version=loaded.get("graph_version"),
+                            code=exc.code,
+                            error=exc.message,
+                        )
+                        continue
+                    self._activate_remote_session(session, active)
+                    svc_log.event(
+                        "UPLOAD_LOAD_REUSED",
+                        filename=record.original_filename,
+                        graph_version=session.graph_version,
+                        graph_key=active.get("graph_key"),
+                    )
+                    return {
+                        "success": True,
+                        "backend": "nebula",
+                        "async": False,
+                        "already_loaded": True,
+                        "reused_graph_version": int(loaded["graph_version"]),
+                        "session_id": session_id,
+                        "graph_version": session.graph_version,
+                        "filename": record.original_filename,
+                        "num_nodes": int(active.get("node_count", 0) or 0),
+                        "num_edges": int(active.get("edge_count", 0) or 0),
+                        "directed": bool(active.get("directed", True)),
+                        "has_edge_weight": bool(loaded.get("has_weights", False)),
+                        "warnings": [],
+                        "message": (
+                            "该上传文件已经加载，已直接切换到已有 "
+                            "NebulaGraph 图版本。"
+                        ),
+                    }
+            job_id = await self._job_manager.submit(
+                session_id,
+                "load_graph_from_upload",
+                self._do_load_graph_from_upload_binary_job,
+                session,
+                record.saved_path,
+                record.original_filename,
+                record.file_token,
+                append,
+                user_id,
+                _progress_kwarg="progress_callback",
+            )
+            return {
+                "success": True,
+                "backend": "nebula",
+                "async": True,
+                "job_id": job_id,
+                "status": "queued",
+                "session_id": session_id,
+                "graph_version": session.graph_version,
+                "filename": record.original_filename,
+                "message": "图文件加载与 NebulaGraph 导入任务已提交。",
+            }
+
+        # 本地存储仍保持二进制文件的同步加载行为。
+        if lower_path.endswith((".npz", ".pt", ".json")):
+            svc_log.event(
+                "UPLOAD_FORMAT_DETECTED",
+                filename=record.original_filename,
+                format="binary_json",
+            )
+            try:
+                session.load_graph_from_upload_path(record.saved_path, append=append)
+                self._compute.invalidate(self._cache_key(session_id, user_id))
+            except FileNotFoundError as exc:
+                svc_log.event(
+                    "UPLOAD_LOAD_ERROR",
+                    filename=record.original_filename,
+                    format="binary_json",
+                    error=str(exc),
+                )
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "graph_version": session.graph_version,
+                    "filename": record.original_filename,
+                    "error": str(exc),
+                }
+            except Exception as exc:
+                svc_log.event(
+                    "UPLOAD_LOAD_ERROR",
+                    filename=record.original_filename,
+                    format="binary_json",
+                    error=str(exc),
+                )
+                raise HTTPException(status_code=500, detail=f"加载上传文件失败: {exc}")
             svc_log.event(
                 "UPLOAD_LOAD_SUCCESS",
                 filename=record.original_filename,
@@ -493,6 +1140,9 @@ class GraphDataService:
                 "session_id": session_id,
                 "graph_version": session.graph_version,
                 "filename": record.original_filename,
+                "backend": "local",
+                "features_omitted": [],
+                "warnings": [],
                 "message": (
                     f"从上传文件 '{record.original_filename}' 加载成功。"
                     " 如需查看图规模与结构摘要，请调用 get_graph_info。"
@@ -521,7 +1171,10 @@ class GraphDataService:
             session_gateway = self._create_text_graph_provider_gateway(session_model)
             if session_gateway is not None:
                 classifier = FileFormatPreCheckSubAgent(provider_gateway=session_gateway)
-        use_heuristic = not classifier.available()
+        # Obvious row-structured files are deterministic and should not be
+        # reclassified by an LLM. Only ambiguous/free text needs pre-check.
+        fmt_raw, fmt_detail = _detect_text_format_verbose(text)
+        use_heuristic = fmt_raw != "freetext" or not classifier.available()
         if not use_heuristic:
             svc_log.event("PRE_CHECK_START", filename=record.original_filename)
             precheck = await classifier.classify(
@@ -539,11 +1192,9 @@ class GraphDataService:
                 reason=fmt_reason,
             )
             if fmt_source == "fallback":
-                # LLM 调用失败，降级到启发式
                 use_heuristic = True
 
         if use_heuristic:
-            fmt_raw, fmt_detail = _detect_text_format_verbose(text)
             fmt = {"edgelist": "edge_list", "triples": "triple"}.get(fmt_raw, "freetext")
             fmt_source = "heuristic"
             fmt_reason = str(fmt_detail)
@@ -561,8 +1212,15 @@ class GraphDataService:
 
         if fmt == "edge_list":
             try:
-                n, e = session._parse_edgelist(text, append=append)
-                self._compute.invalidate(self._cache_key(session_id, user_id))
+                existing = self._current_graph_for_update(session, user_id) if append else None
+                graph = self._graph_from_edgelist(text, existing=existing)
+                commit = self._commit_graph(
+                    session,
+                    graph,
+                    user_id=user_id,
+                    description=f"从上传边列表加载图: {record.original_filename}",
+                )
+                n, e = graph.num_nodes, graph.num_edges
             except Exception as exc:
                 svc_log.event("UPLOAD_LOAD_ERROR", filename=record.original_filename, format="edge_list", error=str(exc))
                 raise HTTPException(status_code=500, detail=f"边列表解析失败: {exc}")
@@ -580,6 +1238,9 @@ class GraphDataService:
                 "graph_version": session.graph_version,
                 "filename": record.original_filename,
                 "format_detected": "edge_list",
+                "backend": commit.get("backend", self._storage_backend),
+                "features_omitted": commit.get("features_omitted", []),
+                "warnings": commit.get("warnings", []),
                 "message": (
                     f"从上传文件 '{record.original_filename}' 以边列表格式加载成功。"
                     " 如需查看图规模与结构摘要，请调用 get_graph_info。"
@@ -637,8 +1298,14 @@ class GraphDataService:
 
     def do_clear_graph(self, session_id: str, user_id: str = "") -> dict:
         session = self.get_required(session_id, user_id=user_id)
-        session.clear_graph()
-        self._compute.invalidate(self._cache_key(session_id, user_id))
+        if session.is_remote or self.nebula_primary:
+            self._nebula.clear_active(user_id, session_id)
+            session.clear_remote_graph()
+        else:
+            session.clear_graph()
+        cache_key = self._cache_key(session_id, user_id)
+        self._compute.invalidate(cache_key)
+        self._search_index_cache.pop(cache_key, None)
         return {
             "success": True,
             "session_id": session_id,
@@ -648,6 +1315,41 @@ class GraphDataService:
 
     def do_undo_graph(self, session_id: str, user_id: str = "") -> dict:
         session = self.get_required(session_id, user_id=user_id)
+        if session.is_remote:
+            candidates = [
+                row for row in session.list_versions()
+                if row.get("loaded")
+                and row.get("backend") == "nebula"
+                and int(row.get("graph_version", 0)) < session.graph_version
+                and row.get("graph_key")
+            ]
+            if not candidates:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "graph_version": session.graph_version,
+                    "error": "没有可回退的 NebulaGraph 历史版本。",
+                }
+            target = candidates[-1]
+            try:
+                meta = self._nebula.activate_graph_key(
+                    user_id,
+                    session_id,
+                    str(target["graph_key"]),
+                    graph_version_override=int(target["graph_version"]),
+                )
+            except NebulaRepositoryError as exc:
+                return exc.to_dict()
+            self._activate_remote_session(session, meta)
+            return {
+                "success": True,
+                "backend": "nebula",
+                "session_id": session_id,
+                "graph_version": session.graph_version,
+                "num_nodes": int(meta.get("node_count", 0) or 0),
+                "num_edges": int(meta.get("edge_count", 0) or 0),
+                "message": "已将 NebulaGraph 活动指针回滚到上一版本。",
+            }
         if not session.undo():
             return {
                 "success": False,
@@ -661,14 +1363,13 @@ class GraphDataService:
             "success": True,
             "session_id": session_id,
             "graph_version": session.graph_version,
-            "num_nodes": gd.num_nodes if gd is not None else 0,
-            "num_edges": gd.num_edges if gd is not None else 0,
+            **self._graph_counts_payload(gd),
             "message": "图已回滚到上一版本。",
         }
 
     def do_to_undirected(self, session_id: str, user_id: str = "") -> dict:
         session = self.get_required(session_id, user_id=user_id)
-        gd = session.get_graph()
+        gd = self._current_graph_for_update(session, user_id)
         if gd is None:
             return {
                 "success": False,
@@ -676,7 +1377,7 @@ class GraphDataService:
                 "graph_version": session.graph_version,
                 "error": "尚未加载任何图数据。",
             }
-        if not gd.directed:
+        if gd.semantic_type == "undirected" and gd.storage_type == "bidirectional" and not gd.has_duplicate_entries:
             return {
                 "success": False,
                 "session_id": session_id,
@@ -684,15 +1385,21 @@ class GraphDataService:
                 "message": "当前图已经是无向图，无需转换。",
             }
         new_gd = gd.to_undirected()
-        session.set_graph(new_gd, description="转换为无向图")
-        self._compute.invalidate(self._cache_key(session_id, user_id))
+        commit = self._commit_graph(
+            session,
+            new_gd,
+            user_id=user_id,
+            description="转换为无向图",
+        )
         return {
             "success": True,
+            "backend": commit.get("backend", self._storage_backend),
             "session_id": session_id,
             "graph_version": session.graph_version,
+            "features_omitted": commit.get("features_omitted", []),
+            "warnings": commit.get("warnings", []),
             "message": "图已转换为无向图。如需查看结构摘要，请调用 get_graph_info。",
-            "num_nodes": new_gd.num_nodes,
-            "num_edges": new_gd.num_edges,
+            **self._graph_counts_payload(new_gd),
         }
 
     def do_list_datasets(self, user_id: str = "") -> dict:
@@ -718,28 +1425,187 @@ class GraphDataService:
                 registry = user_reg
         if registry is None:
             registry = self._dataset_registry
+        meta = registry.get(dataset_id)
+        actual_version = version if version != "latest" else meta.versions[-1]
+        if meta.storage_backend == "nebula":
+            if not self.nebula_primary:
+                return {
+                    "success": False,
+                    "code": "NEBULA_PRIMARY_REQUIRED",
+                    "error": "该数据集存储在 NebulaGraph 中，请设置 GRAPH_STORAGE_BACKEND=nebula。",
+                }
+            graph_ref = meta.graph_ref or {}
+            graph_key = str(graph_ref.get("graph_key") or "")
+            if not graph_key:
+                return {"success": False, "code": "QUERY_FAILED", "error": "数据集缺少 NebulaGraph 图引用。"}
+            new_version = session.next_graph_version()
+            try:
+                active = self._nebula.activate_graph_key(
+                    user_id,
+                    session_id,
+                    graph_key,
+                    graph_version_override=new_version,
+                )
+            except NebulaRepositoryError as exc:
+                return exc.to_dict()
+            self._activate_remote_session(
+                session,
+                active,
+                description=f"加载 Nebula 数据集 {dataset_id}@{actual_version}",
+                record_version=True,
+            )
+            session.bind_dataset(dataset_id, actual_version)
+            return {
+                "success": True,
+                "backend": "nebula",
+                "session_id": session_id,
+                "dataset_id": dataset_id,
+                "dataset_version": actual_version,
+                "graph_version": session.graph_version,
+                "num_nodes": int(active.get("node_count", 0) or 0),
+                "num_edges": int(active.get("edge_count", 0) or 0),
+            }
+
         graph = registry.load_graph(dataset_id, version=version)
-        actual_version = version if version != "latest" else registry.get(dataset_id).versions[-1]
-        session.set_graph(graph, description=f"加载数据集 {dataset_id}@{actual_version}")
+        commit = self._commit_graph(
+            session,
+            graph,
+            user_id=user_id,
+            description=f"加载数据集 {dataset_id}@{actual_version}",
+        )
         session.bind_dataset(dataset_id, actual_version)
-        self._compute.invalidate(self._cache_key(session_id, user_id))
         return {
             "success": True,
+            "backend": commit.get("backend", self._storage_backend),
             "session_id": session_id,
             "dataset_id": dataset_id,
             "dataset_version": actual_version,
             "graph_version": session.graph_version,
+            **self._graph_counts_payload(graph),
+            "features_omitted": commit.get("features_omitted", []),
+            "warnings": commit.get("warnings", []),
+        }
+
+    def do_load_graph_classification_graph(
+        self,
+        session_id: str,
+        arguments: Dict[str, Any],
+        user_id: str = "",
+    ) -> dict:
+        req = LoadGraphClassificationGraphRequest.model_validate(arguments or {})
+        session = self.get_required(session_id, user_id=user_id)
+        runtime_session_id = self._cache_key(session_id, user_id)
+        bundle = self._graph_ml.resolve_graph_classification_dataset(
+            runtime_session_id,
+            req.dataset_id,
+        )
+        graph = graph_classification_sample_to_graph_data(bundle, req.graph_index)
+        session.set_graph(
+            graph,
+            description=(
+                f"从图分类数据集 {bundle.dataset_id} 导出 graph_index={req.graph_index}"
+            ),
+        )
+        self._compute.invalidate(runtime_session_id)
+        split_name = next(
+            (
+                split
+                for split, indices in bundle.split_indices.items()
+                if req.graph_index in indices
+            ),
+            None,
+        )
+        label_stats = node_label_stats_for_graph(graph)
+        label_values = node_label_values_for_graph(graph)
+        label_classes = node_label_class_mapping_for_graph(graph)
+        node_types = node_type_values_for_graph(graph)
+        edge_types = edge_type_values_for_graph(graph)
+        preview_payload = self._graph_preview(graph)
+        ml_readiness = graph_ml_readiness_for_graph(graph)
+        graph_label = self._json_safe_value(graph.graph_label)
+        graph_info_payload = {
             "num_nodes": graph.num_nodes,
             "num_edges": graph.num_edges,
+            "num_edge_entries": graph.num_edge_entries,
+            "num_unique_edges": graph.num_unique_edges,
+            "num_unique_directed_edges": graph.num_unique_directed_edges,
+            "num_unique_undirected_edges": graph.num_unique_undirected_edges,
+            "semantic_type": graph.semantic_type,
+            "storage_type": graph.storage_type,
+            "is_symmetric": graph.is_symmetric,
+            "has_self_loops": graph.has_self_loops,
+            "has_duplicate_entries": graph.has_duplicate_entries,
+            "directed": graph.directed,
+            "has_node_names": graph.has_node_names,
+            "has_edge_weight": graph.has_edge_weight,
+            "has_node_feat": graph.has_node_feat,
+            "node_feat_dim": graph.node_feat_dim,
+            "has_edge_feat": graph.has_edge_feat,
+            "edge_feat_dim": graph.edge_feat_dim,
+            "has_node_label": graph.has_node_label,
+            "node_label_stats": label_stats,
+            "node_label_values": label_values,
+            "node_label_classes": label_classes,
+            "has_node_type": graph.has_node_type,
+            "node_type_values": node_types,
+            "has_edge_type": graph.has_edge_type,
+            "edge_type_values": edge_types,
+            "has_graph_label": graph.has_graph_label,
+            "graph_label": graph_label,
+            "has_node_text": graph.has_node_text,
+            "has_split_masks": graph.has_split_masks,
+            "split_stats": None,
+            "label_names": graph.label_names,
+            "graph_desc": graph.graph_desc,
+        }
+        return {
+            "success": True,
+            "session_id": session_id,
+            "dataset_id": bundle.dataset_id,
+            "dataset_name": bundle.name,
+            "graph_index": req.graph_index,
+            "split": split_name,
+            "graph_version": session.graph_version,
+            "num_nodes": graph.num_nodes,
+            "num_edges": graph.num_edges,
+            "num_edge_entries": graph.num_edge_entries,
+            "num_unique_edges": graph.num_unique_edges,
+            "num_unique_directed_edges": graph.num_unique_directed_edges,
+            "num_unique_undirected_edges": graph.num_unique_undirected_edges,
+            "semantic_type": graph.semantic_type,
+            "storage_type": graph.storage_type,
+            "is_symmetric": graph.is_symmetric,
+            "has_self_loops": graph.has_self_loops,
+            "has_duplicate_entries": graph.has_duplicate_entries,
+            "directed": graph.directed,
+            "has_node_names": graph.has_node_names,
+            "has_edge_weight": graph.has_edge_weight,
+            "node_label_stats": label_stats,
+            "nodes": preview_payload["nodes"],
+            "edges": preview_payload["edges"],
+            "preview": preview_payload["preview"],
+            "graph_info": graph_info_payload,
+            "graph_ml_readiness": ml_readiness,
+            "message": (
+                f"已将图分类数据集 {bundle.dataset_id} 的 graph_index={req.graph_index} "
+                "导出为当前会话图。现在可以继续使用 get_graph_info、get_node_info、"
+                "visualize_subgraph 和 subgraph_extraction。"
+            ),
         }
 
     def do_save_as_dataset(self, session_id: str, name: str, description: str, user_id: str = "") -> dict:
         session = self.get_required(session_id, user_id=user_id)
-        graph = session.get_graph()
-        if graph is None:
-            return {"success": False, "error": "尚未加载任何图数据。"}
         registry = self._get_user_dataset_registry(user_id) if user_id else self._dataset_registry
-        meta = registry.create(name, description, graph)
+        if session.is_remote:
+            graph_ref = session.remote_graph
+            if graph_ref is None:
+                return {"success": False, "error": "当前 NebulaGraph 图引用不可用。"}
+            meta = registry.create_remote(name, description, graph_ref=graph_ref)
+        else:
+            graph = session.get_graph()
+            if graph is None:
+                return {"success": False, "error": "尚未加载任何图数据。"}
+            meta = registry.create(name, description, graph)
         session.bind_dataset(meta.dataset_id, meta.versions[-1])
         return {"success": True, "dataset": dict(meta.to_dict(), scope="user" if user_id else "global")}
 
@@ -755,6 +1621,38 @@ class GraphDataService:
 
     def do_load_graph_version(self, session_id: str, graph_version: int, user_id: str = "") -> dict:
         session = self.get_required(session_id, user_id=user_id)
+        if session.is_remote or self.nebula_primary:
+            loaded = next(
+                (
+                    row for row in session.list_versions()
+                    if int(row.get("graph_version", -1)) == int(graph_version)
+                    and row.get("backend") == "nebula"
+                    and row.get("graph_key")
+                ),
+                None,
+            )
+            if loaded is not None:
+                try:
+                    meta = self._nebula.activate_graph_key(
+                        user_id,
+                        session_id,
+                        str(loaded["graph_key"]),
+                        graph_version_override=int(graph_version),
+                    )
+                except NebulaRepositoryError as exc:
+                    return exc.to_dict()
+                self._activate_remote_session(session, meta)
+                return {
+                    "success": True,
+                    "backend": "nebula",
+                    "session_id": session_id,
+                    "graph_version": session.graph_version,
+                    "loaded_version": int(graph_version),
+                    "num_nodes": int(meta.get("node_count", 0) or 0),
+                    "num_edges": int(meta.get("edge_count", 0) or 0),
+                    "description": loaded.get("description", ""),
+                    "message": f"已切换到 NebulaGraph 图版本 {graph_version}。",
+                }
         loaded = session.load_version(int(graph_version))
         if loaded is None:
             return {
@@ -771,8 +1669,7 @@ class GraphDataService:
             "session_id": session_id,
             "graph_version": session.graph_version,
             "loaded_version": int(graph_version),
-            "num_nodes": loaded.get("num_nodes", loaded.get("node_count", 0)),
-            "num_edges": loaded.get("num_edges", loaded.get("edge_count", 0)),
+            **self._graph_counts_payload(session.get_graph()),
             "description": loaded.get("description", ""),
             "message": f"已切换到图版本 {graph_version}。",
         }
@@ -785,6 +1682,53 @@ class GraphDataService:
         user_id: str = "",
     ) -> dict:
         session = self.get_required(session_id, user_id=user_id)
+        remote_target = next(
+            (
+                row for row in session.list_versions()
+                if int(row.get("graph_version", -1)) == int(graph_version)
+                and row.get("backend") == "nebula"
+                and row.get("graph_key")
+            ),
+            None,
+        )
+        if remote_target is not None:
+            if int(graph_version) == session.graph_version:
+                candidates = [
+                    row for row in session.list_versions()
+                    if row.get("backend") == "nebula"
+                    and row.get("graph_key")
+                    and int(row.get("graph_version", -1)) != int(graph_version)
+                ]
+                if fallback_graph_version is not None:
+                    candidates = [
+                        row for row in candidates
+                        if int(row.get("graph_version", -1)) == int(fallback_graph_version)
+                    ]
+                if not candidates:
+                    return {"success": False, "error": "删除当前远程版本前需要可用回退版本"}
+                fallback = candidates[-1]
+                meta = self._nebula.activate_graph_key(
+                    user_id,
+                    session_id,
+                    str(fallback["graph_key"]),
+                    graph_version_override=int(fallback["graph_version"]),
+                )
+                self._activate_remote_session(session, meta)
+            self._nebula.delete_graph_key(str(remote_target["graph_key"]))
+            records = [
+                row for row in session._load_version_records()
+                if int(row.get("graph_version", -1)) != int(graph_version)
+            ]
+            session._write_version_records(records)
+            return {
+                "success": True,
+                "backend": "nebula",
+                "session_id": session_id,
+                "discarded_graph_version": int(graph_version),
+                "graph_version": session.graph_version,
+                "versions": session.list_versions(),
+                "message": f"已删除 NebulaGraph 图版本 {graph_version}。",
+            }
         discarded = session.discard_version(
             int(graph_version),
             int(fallback_graph_version) if fallback_graph_version is not None else None,
@@ -849,24 +1793,26 @@ class GraphDataService:
                 "skipped": skipped,
                 "error": "没有可用于建图的有效三元组。",
             }
-        if append and session.get_graph() is not None:
-            graph = self._merge_graphs(session.get_graph(), graph, directed=directed)
-        session.set_graph(
+        if append:
+            existing = self._current_graph_for_update(session, user_id)
+            if existing is not None:
+                graph = self._merge_graphs(existing, graph, directed=directed)
+        commit = self._commit_graph(
+            session,
             graph,
+            user_id=user_id,
             description="从结构化三元组构建图" + ("（追加）" if append else ""),
         )
-        cache_key = self._cache_key(session_id, user_id)
-        self._compute.invalidate(cache_key)
-        self._search_index_cache.pop(cache_key, None)
         return {
             "success": True,
+            "backend": commit.get("backend", self._storage_backend),
             "session_id": session_id,
             "graph_version": session.graph_version,
+            "features_omitted": commit.get("features_omitted", []),
+            "warnings": commit.get("warnings", []),
             "nodes": graph.num_nodes,
             "edges": graph.num_edges,
-            "num_nodes": graph.num_nodes,
-            "num_edges": graph.num_edges,
-            "directed": graph.directed,
+            **self._graph_counts_payload(graph),
             "raw_triples": len(triples),
             "valid_triples": valid_count,
             "materialized_edges": graph.num_edges,
@@ -921,7 +1867,7 @@ class GraphDataService:
         if session_model:
             call_gateway = self._create_text_graph_provider_gateway(session_model)
             if call_gateway is not None:
-                from backend.agent.sub_agents.text_graph_extractor import TextGraphExtractionSubAgent
+                from graph_engine.extraction import TextGraphExtractionSubAgent
                 extractor = TextGraphExtractionSubAgent(provider_gateway=call_gateway)
         svc_log = _service_logger(session_id, "graph_data", user_id=user_id)
         svc_log.event(
@@ -976,24 +1922,26 @@ class GraphDataService:
             }
 
         graph = GraphBuilder.build_from_triples(extraction.triples, directed=directed)
-        if append and session.get_graph() is not None:
-            graph = self._merge_graphs(session.get_graph(), graph, directed=directed)
-        session.set_graph(
+        if append:
+            existing = self._current_graph_for_update(session, user_id)
+            if existing is not None:
+                graph = self._merge_graphs(existing, graph, directed=directed)
+        commit = self._commit_graph(
+            session,
             graph,
+            user_id=user_id,
             description="从文本构建图" + (f": {filename}" if filename else ""),
         )
-        cache_key = self._cache_key(session_id, user_id)
-        self._compute.invalidate(cache_key)
-        self._search_index_cache.pop(cache_key, None)
         return {
             "success": True,
+            "backend": commit.get("backend", self._storage_backend),
             "session_id": session_id,
             "graph_version": session.graph_version,
+            "features_omitted": commit.get("features_omitted", []),
+            "storage_warnings": commit.get("warnings", []),
             "nodes": graph.num_nodes,
             "edges": graph.num_edges,
-            "num_nodes": graph.num_nodes,
-            "num_edges": graph.num_edges,
-            "directed": graph.directed,
+            **self._graph_counts_payload(graph),
             "chunks_processed": extraction.chunk_count,
             "raw_triples": extraction.raw_triple_count,
             "deduped_triples": extraction.deduped_triple_count,
@@ -1139,8 +2087,41 @@ class GraphDataService:
         rag = self._get_rag(session_id, user_id=user_id)
         return rag.retrieve(query, top_k=top_k)
 
+    def _primary_search_graph(
+        self,
+        session: GraphSession,
+        *,
+        user_id: str,
+        seed_names: Optional[list[str]] = None,
+    ) -> GraphData:
+        candidate_nodes = max(1, _env_int("NEBULA_SEARCH_CANDIDATE_NODES", 2_000))
+        candidate_edges = max(1, _env_int("NEBULA_SEARCH_CANDIDATE_EDGES", 10_000))
+        if seed_names:
+            try:
+                return self._nebula.materialize_subgraph(
+                    user_id=user_id,
+                    session_id=session.session_id,
+                    graph_version=session.graph_version,
+                    seed_names=seed_names,
+                    hops=1,
+                    direction="both",
+                    max_nodes=candidate_nodes,
+                    max_edges=candidate_edges,
+                )
+            except NebulaRepositoryError as exc:
+                if exc.code not in {"QUERY_FAILED"}:
+                    raise
+        return self._nebula.materialize_subgraph(
+            user_id=user_id,
+            session_id=session.session_id,
+            graph_version=session.graph_version,
+            max_nodes=candidate_nodes,
+            max_edges=candidate_edges,
+            allow_truncate=True,
+        )
+
     def do_search_node(self, session_id: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
-        index = self._get_search_index(session_id, user_id=user_id)
+        session = self.get_required(session_id, user_id=user_id)
         req = NodeSearchRequest(
             query=str(arguments.get("query") or ""),
             top_k=int(arguments.get("top_k", 8)),
@@ -1148,10 +2129,26 @@ class GraphDataService:
             sort=arguments.get("sort") if isinstance(arguments.get("sort"), dict) else None,
             rerank=_optional_bool(arguments, "rerank", True),
         )
-        return index.search_nodes(req)
+        if session.is_remote:
+            graph = self._primary_search_graph(
+                session,
+                user_id=user_id,
+                seed_names=[req.query] if req.query else None,
+            )
+            index = EntitySearchIndex(graph, session.graph_version, self._get_embedding_provider())
+            result = index.search_nodes(req)
+            result.update(
+                {
+                    "backend": "nebula",
+                    "candidate_node_count": graph.num_nodes,
+                    "candidate_scope": "exact_seed_neighborhood_or_bounded_scan",
+                }
+            )
+            return result
+        return self._get_search_index(session_id, user_id=user_id).search_nodes(req)
 
     def do_search_edge(self, session_id: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
-        index = self._get_search_index(session_id, user_id=user_id)
+        session = self.get_required(session_id, user_id=user_id)
         req = EdgeSearchRequest(
             query=str(arguments.get("query") or ""),
             src_query=arguments.get("src_query"),
@@ -1161,10 +2158,33 @@ class GraphDataService:
             sort=arguments.get("sort") if isinstance(arguments.get("sort"), dict) else None,
             rerank=_optional_bool(arguments, "rerank", True),
         )
-        return index.search_edges(req)
+        if session.is_remote:
+            seeds = [
+                str(value) for value in (req.src_query, req.dst_query)
+                if isinstance(value, str) and value.strip()
+            ]
+            graph = self._primary_search_graph(session, user_id=user_id, seed_names=seeds or None)
+            index = EntitySearchIndex(graph, session.graph_version, self._get_embedding_provider())
+            result = index.search_edges(req)
+            result.update(
+                {
+                    "backend": "nebula",
+                    "candidate_node_count": graph.num_nodes,
+                    "candidate_edge_count": graph.num_edges,
+                    "candidate_scope": "exact_endpoint_neighborhood_or_bounded_scan",
+                }
+            )
+            return result
+        return self._get_search_index(session_id, user_id=user_id).search_edges(req)
 
     def do_get_graph_info(self, session_id: str, user_id: str = "") -> dict:
         session = self.get_required(session_id, user_id=user_id)
+        if session.is_remote:
+            return self._nebula.graph_info_primary(
+                user_id=user_id,
+                session_id=session_id,
+                graph_version=session.graph_version,
+            )
         summary = session.graph_summary()
         gd = session.get_graph()
         if not summary.loaded:
@@ -1184,6 +2204,15 @@ class GraphDataService:
         graph_info_payload = {
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
+            "num_edge_entries": summary.num_edge_entries,
+            "num_unique_edges": summary.num_unique_edges,
+            "num_unique_directed_edges": summary.num_unique_directed_edges,
+            "num_unique_undirected_edges": summary.num_unique_undirected_edges,
+            "semantic_type": summary.semantic_type,
+            "storage_type": summary.storage_type,
+            "is_symmetric": summary.is_symmetric,
+            "has_self_loops": summary.has_self_loops,
+            "has_duplicate_entries": summary.has_duplicate_entries,
             "directed": summary.directed,
             "has_node_names": summary.has_node_names,
             "has_edge_weight": summary.has_edge_weight,
@@ -1200,6 +2229,7 @@ class GraphDataService:
             "has_edge_type": gd.has_edge_type,
             "edge_type_values": edge_types,
             "has_graph_label": gd.has_graph_label,
+            "graph_label": self._json_safe_value(gd.graph_label),
             "has_node_text": gd.has_node_text,
             "has_split_masks": gd.has_split_masks,
             "split_stats": {
@@ -1215,6 +2245,15 @@ class GraphDataService:
             "graph_version": summary.graph_version,
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
+            "num_edge_entries": summary.num_edge_entries,
+            "num_unique_edges": summary.num_unique_edges,
+            "num_unique_directed_edges": summary.num_unique_directed_edges,
+            "num_unique_undirected_edges": summary.num_unique_undirected_edges,
+            "semantic_type": summary.semantic_type,
+            "storage_type": summary.storage_type,
+            "is_symmetric": summary.is_symmetric,
+            "has_self_loops": summary.has_self_loops,
+            "has_duplicate_entries": summary.has_duplicate_entries,
             "directed": summary.directed,
             "has_node_names": summary.has_node_names,
             "has_edge_weight": summary.has_edge_weight,
@@ -1224,6 +2263,71 @@ class GraphDataService:
             "preview": preview_payload["preview"],
             "graph_info": graph_info_payload,
             "graph_ml_readiness": ml_readiness,
+        }
+
+    def do_create_analysis_report(self, session_id: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
+        source_arg = arguments.get("source_results")
+        source_results_valid = isinstance(source_arg, dict)
+        source_results = dict(source_arg) if source_results_valid else {}
+        if source_results_valid and "get_graph_info" not in source_results and "graph_info" not in source_results:
+            try:
+                session = self.get_required(session_id, user_id=user_id)
+                if session.get_graph() is not None:
+                    source_results["get_graph_info"] = self.do_get_graph_info(session_id, user_id=user_id)
+            except HTTPException:
+                pass
+
+        options_arg = arguments.get("options")
+        return build_analysis_report(
+            report_intent=str(arguments.get("report_intent") or ""),
+            analysis_goal=str(arguments.get("analysis_goal") or ""),
+            title=str(arguments.get("title") or ""),
+            source_results=source_results,
+            options=options_arg if isinstance(options_arg, dict) else None,
+        )
+
+    @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            if value.ndim == 0:
+                return GraphDataService._json_safe_value(value.item())
+            return [GraphDataService._json_safe_value(item) for item in value.tolist()]
+        if isinstance(value, np.generic):
+            return GraphDataService._json_safe_value(value.item())
+        if isinstance(value, float) and not np.isfinite(value):
+            return None
+        return value
+
+    @staticmethod
+    def _graph_counts_payload(graph: GraphData | None) -> Dict[str, Any]:
+        if graph is None:
+            return {
+                "num_nodes": 0,
+                "num_edges": 0,
+                "num_edge_entries": 0,
+                "num_unique_edges": 0,
+                "num_unique_directed_edges": 0,
+                "num_unique_undirected_edges": 0,
+                "semantic_type": "unknown",
+                "storage_type": "mixed",
+                "is_symmetric": False,
+                "has_self_loops": False,
+                "has_duplicate_entries": False,
+                "directed": False,
+            }
+        return {
+            "num_nodes": graph.num_nodes,
+            "num_edges": graph.num_edges,
+            "num_edge_entries": graph.num_edge_entries,
+            "num_unique_edges": graph.num_unique_edges,
+            "num_unique_directed_edges": graph.num_unique_directed_edges,
+            "num_unique_undirected_edges": graph.num_unique_undirected_edges,
+            "semantic_type": graph.semantic_type,
+            "storage_type": graph.storage_type,
+            "is_symmetric": graph.is_symmetric,
+            "has_self_loops": graph.has_self_loops,
+            "has_duplicate_entries": graph.has_duplicate_entries,
+            "directed": graph.directed,
         }
 
     @staticmethod
@@ -1269,6 +2373,200 @@ class GraphDataService:
                 "edge_truncated": len(candidate_edges) > len(preview_edges),
                 "sample_strategy": "first_n_node_ids",
             },
+        }
+
+    @staticmethod
+    def _subgraph_payload(graph: GraphData, method: str, limit: int = 20) -> dict[str, Any]:
+        limit = max(1, min(int(limit), 200))
+        names = [graph.id2node.get(i, str(i)) for i in range(graph.num_nodes)]
+        src, dst = graph.edge_index
+        edges = [
+            {
+                "from": graph.id2node.get(int(src[i]), str(int(src[i]))),
+                "to": graph.id2node.get(int(dst[i]), str(int(dst[i]))),
+                "weight": float(graph.edge_weight[i]) if graph.edge_weight is not None else 1.0,
+            }
+            for i in range(min(graph.num_edges, limit))
+        ]
+        return {
+            "success": True,
+            "backend": "nebula",
+            "method": method,
+            "num_nodes": graph.num_nodes,
+            "num_edges": graph.num_edges,
+            "nodes_preview": names[:limit],
+            "nodes_truncated": graph.num_nodes > limit,
+            "edges_preview": edges,
+            "edges_truncated": graph.num_edges > limit,
+        }
+
+    def _do_primary_subgraph_extraction(
+        self,
+        session_id: str,
+        arguments: Dict[str, Any],
+        user_id: str,
+    ) -> dict:
+        session = self.get_required(session_id, user_id=user_id)
+        method = str(arguments.get("method") or "")
+        k = max(1, int(arguments.get("k", 2)))
+        direction = str(arguments.get("direction") or "out")
+        max_nodes = int(arguments.get("max_nodes", _env_int("NEBULA_MAX_MATERIALIZE_NODES", 50_000)))
+        max_edges = int(arguments.get("max_edges", _env_int("NEBULA_MAX_MATERIALIZE_EDGES", 200_000)))
+        limit_raw = arguments.get("limit", 20)
+        limit = 200 if str(limit_raw).lower() == "all" else max(1, min(int(limit_raw), 200))
+        try:
+            if method == "ego_graph":
+                node = _required_str(arguments, "node")
+                subgraph = self._nebula.materialize_subgraph(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    seed_names=[node],
+                    hops=k,
+                    direction=direction,
+                    max_nodes=max_nodes,
+                    max_edges=max_edges,
+                )
+                result = self._subgraph_payload(subgraph, method, limit)
+            elif method == "node_subset":
+                nodes = arguments.get("nodes")
+                if not isinstance(nodes, list) or not nodes:
+                    return {"success": False, "error": "node_subset 需要非空 nodes"}
+                subgraph = self._nebula.materialize_subgraph(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    seed_names=[str(name) for name in nodes],
+                    hops=0,
+                    max_nodes=max_nodes,
+                    max_edges=max_edges,
+                )
+                result = self._subgraph_payload(subgraph, method, limit)
+            elif method in {"k_core", "k_truss", "k_corona"}:
+                source = self._nebula.materialize_subgraph(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    max_nodes=max_nodes,
+                    max_edges=max_edges,
+                )
+                computed = self._compute.subgraph_extraction(
+                    source.to_networkx(),
+                    method,
+                    k=k,
+                    limit=limit,
+                    include_full_nodes=True,
+                )
+                full_nodes = computed.pop("_full_nodes", [])
+                if not computed.get("success"):
+                    computed["current_graph_replaced"] = False
+                    return computed
+                subgraph = source.subgraph_by_names([str(name) for name in full_nodes])
+                result = {**computed, "backend": "nebula"}
+            else:
+                return {"success": False, "error": f"未知方法 '{method}'"}
+        except NebulaRepositoryError as exc:
+            return exc.to_dict()
+
+        create_version = _optional_bool(arguments, "create_version", True)
+        if not create_version:
+            result["current_graph_replaced"] = False
+            result["graph_version"] = session.graph_version
+            return result
+        previous_version = session.graph_version
+        description = str(arguments.get("description") or "").strip() or (
+            f"Nebula 子图版本: {method} ({subgraph.num_nodes} nodes, {subgraph.num_edges} edges)"
+        )
+        commit = self._commit_graph(
+            session,
+            subgraph,
+            user_id=user_id,
+            description=description,
+        )
+        result.update(
+            {
+                "current_graph_replaced": True,
+                "previous_graph_version": previous_version,
+                "graph_version": session.graph_version,
+                "version_description": description,
+                "features_omitted": commit.get("features_omitted", []),
+                "warnings": commit.get("warnings", []),
+                "message": "已在 NebulaGraph 中创建子图版本并切换为当前图。",
+            }
+        )
+        return result
+
+    def _primary_bounded_nx_graph(
+        self,
+        session: GraphSession,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user_id: str,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Materialise only the traversal scope required by a P1 NX tool."""
+        max_nodes = int(arguments.get("max_nodes", _env_int("NEBULA_MAX_MATERIALIZE_NODES", 50_000)))
+        max_edges = int(arguments.get("max_edges", _env_int("NEBULA_MAX_MATERIALIZE_EDGES", 200_000)))
+        seed_names: Optional[list[str]] = None
+        hops = 0
+        direction = "both"
+        scope = "bounded_full_graph"
+
+        if tool_name == "all_shortest_paths":
+            seed_names = [_required_str(arguments, "source")]
+            hops = max(1, min(int(arguments.get("max_steps", 10)), 20))
+            direction = str(arguments.get("direction") or "out")
+            scope = "source_hop_neighborhood"
+        elif tool_name == "path_analysis":
+            method = str(arguments.get("method") or "")
+            if method != "average_shortest_path_length":
+                seed_names = [_required_str(arguments, "source")]
+                default_steps = int(arguments.get("cutoff", 5)) if method == "all_simple_paths" else 10
+                hops = max(1, min(int(arguments.get("max_steps", default_steps)), 20))
+                direction = str(arguments.get("direction") or "out")
+                scope = "source_hop_neighborhood"
+        elif tool_name == "reachability":
+            method = str(arguments.get("method") or "")
+            if method != "transitive_closure":
+                seed_names = [_required_str(arguments, "node")]
+                hops = max(1, min(int(arguments.get("max_steps", 10)), 20))
+                direction = "in" if method == "ancestors" else "out"
+                scope = "node_hop_neighborhood"
+
+        graph = self._nebula.materialize_subgraph(
+            user_id=user_id,
+            session_id=session.session_id,
+            graph_version=session.graph_version,
+            seed_names=seed_names,
+            hops=hops,
+            direction=direction,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
+        nx_graph = graph.to_networkx()
+        target = str(arguments.get("target") or "").strip()
+        target_in_scope: Optional[bool] = None
+        if target and scope != "bounded_full_graph":
+            target_in_scope = target in nx_graph
+            if not target_in_scope:
+                # Validate that the target exists; absence from this materialised
+                # scope then means only "not reachable within max_steps".
+                self._nebula.materialize_subgraph(
+                    user_id=user_id,
+                    session_id=session.session_id,
+                    graph_version=session.graph_version,
+                    seed_names=[target],
+                    hops=0,
+                    max_nodes=1,
+                    max_edges=1,
+                )
+        return nx_graph, {
+            "backend": "nebula",
+            "materialized_scope": scope,
+            "materialized_nodes": graph.num_nodes,
+            "materialized_edges": graph.num_edges,
+            "max_steps": hops or None,
+            "target_in_scope": target_in_scope,
+            "complete_for_query": scope == "bounded_full_graph",
         }
 
     def _dispatch_graph_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
@@ -1363,6 +2661,86 @@ class GraphDataService:
             job_id = _required_str(arguments, "job_id")
             return {"success": self._job_manager.cancel(job_id), "job_id": job_id}
 
+        if tool_name == "create_analysis_report":
+            return self.do_create_analysis_report(session_id, arguments, user_id=user_id)
+
+        session = self.get_required(session_id, user_id=user_id)
+        if session.is_remote:
+            try:
+                if tool_name == "get_node_info":
+                    return self._nebula.get_node_info_primary(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_version=session.graph_version,
+                        node_name=_required_str(arguments, "node_name"),
+                    )
+                if tool_name == "get_edge_info":
+                    return self._nebula.get_edge_info_primary(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_version=session.graph_version,
+                        src_name=_required_str(arguments, "src_name"),
+                        dst_name=_required_str(arguments, "dst_name"),
+                    )
+                if tool_name == "check_edge_exists":
+                    return self._nebula.check_edge_exists_primary(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_version=session.graph_version,
+                        src_name=_required_str(arguments, "src_name"),
+                        dst_name=_required_str(arguments, "dst_name"),
+                    )
+                if tool_name == "get_neighbors":
+                    return self._nebula.get_neighbors_primary(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_version=session.graph_version,
+                        node_name=_required_str(arguments, "node_name"),
+                        direction=str(arguments.get("direction") or "out"),
+                        limit=int(arguments.get("limit", 20)),
+                    )
+                if tool_name == "subgraph_extraction":
+                    return self._do_primary_subgraph_extraction(session_id, arguments, user_id)
+                if tool_name == "visualize_subgraph":
+                    node_names = arguments.get("node_names")
+                    return self.do_visualize_subgraph(
+                        session_id,
+                        list(node_names) if isinstance(node_names, list) else None,
+                        bool(arguments.get("include_community", False)),
+                        arguments.get("highlights"),
+                        max_nodes=arguments.get("max_nodes"),
+                        user_id=user_id,
+                    )
+                if tool_name == "shortest_path" and not _optional_bool(arguments, "use_weight", True):
+                    return self._nebula.shortest_path_primary(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_version=session.graph_version,
+                        source=_required_str(arguments, "source"),
+                        target=_required_str(arguments, "target"),
+                        direction=str(arguments.get("direction") or "out"),
+                        max_steps=int(arguments.get("max_steps", 10)),
+                    )
+                if tool_name == "degree_analysis" and arguments.get("node"):
+                    info = self._nebula.get_node_info_primary(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_version=session.graph_version,
+                        node_name=_required_str(arguments, "node"),
+                    )
+                    return {
+                        "success": True,
+                        "backend": "nebula",
+                        "mode": "single_node",
+                        "node": info.get("node_name"),
+                        "in_degree": info.get("in_degree"),
+                        "out_degree": info.get("out_degree"),
+                        "total_degree": info.get("degree"),
+                        "degree_truncated": info.get("degree_truncated", False),
+                    }
+            except NebulaRepositoryError as exc:
+                return exc.to_dict()
+
         _, gd, nx_graph = self._require_graph(session_id, user_id=user_id)
 
         if tool_name == "get_node_info":
@@ -1378,6 +2756,29 @@ class GraphDataService:
             src_name = _required_str(arguments, "src_name")
             dst_name = _required_str(arguments, "dst_name")
             return self._compute.check_edge_exists(gd, src_name, dst_name)
+
+        if tool_name == "get_neighbors":
+            node_name = _required_str(arguments, "node_name")
+            direction = str(arguments.get("direction") or "out").lower()
+            if direction not in {"out", "in", "both"}:
+                return {"success": False, "error": "direction 必须是 out、in 或 both"}
+            limit = max(1, min(int(arguments.get("limit", 20)), 200))
+            if not gd.has_node_name(node_name):
+                return {"success": False, "error": f"节点 '{node_name}' 不存在"}
+            outgoing = gd.neighbors_by_name(node_name) if direction in {"out", "both"} else []
+            incoming = gd.predecessors_by_name(node_name) if direction in {"in", "both"} else []
+            names = list(dict.fromkeys(outgoing + incoming))[:limit]
+            return {
+                "success": True,
+                "backend": "local",
+                "session_id": session_id,
+                "graph_version": session.graph_version,
+                "node_name": node_name,
+                "direction": direction,
+                "neighbors": [{"node_name": name} for name in names],
+                "count": len(names),
+                "limit": limit,
+            }
 
         if tool_name == "search_node":
             return self.do_search_node(session_id, arguments, user_id=user_id)
@@ -1538,7 +2939,67 @@ class GraphDataService:
         return {"success": False, "error": f"未知工具: {tool_name}"}
 
     def do_visualize_subgraph(self, session_id: str, node_names: Optional[list], include_community: bool, highlights: Optional[dict] = None, max_nodes: Optional[int] = None, user_id: str = "") -> dict:
-        """获取图的完整结构用于可视化渲染。"""
+        """获取图的结构用于可视化；远程图只物化有界子图。"""
+        session = self.get_required(session_id, user_id=user_id)
+        if session.is_remote:
+            cap = max(1, min(int(max_nodes or 200), 2_000))
+            requested_nodes = [str(name) for name in (node_names or []) if str(name)]
+            requested_nodes = list(dict.fromkeys(requested_nodes))
+            seeds: list[str] = []
+            if not requested_nodes and isinstance(highlights, dict):
+                for item in highlights.get("nodes", []):
+                    seeds.extend(str(name) for name in item.get("ids", []) if str(name))
+                for item in highlights.get("paths", []):
+                    seeds.extend(str(name) for name in item.get("node_sequence", []) if str(name))
+                for item in highlights.get("subgraphs", []):
+                    seeds.extend(str(name) for name in item.get("nodes", []) if str(name))
+            seeds = list(dict.fromkeys(seeds))
+            summary = session.graph_summary()
+            show_full_graph = not requested_nodes and summary.num_nodes <= cap
+            expand_to_limit = not requested_nodes and not show_full_graph
+            if expand_to_limit and not seeds:
+                try:
+                    seed = self._nebula.visualization_seed_name_primary(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_version=session.graph_version,
+                    )
+                except NebulaRepositoryError as exc:
+                    return exc.to_dict()
+                if seed:
+                    seeds = [seed]
+            try:
+                gd = self._nebula.materialize_subgraph(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    seed_names=requested_nodes or (seeds if expand_to_limit else None),
+                    hops=0,
+                    direction="both",
+                    max_nodes=cap,
+                    max_edges=max(int(summary.num_edges), cap * 10, 200),
+                    allow_truncate=expand_to_limit,
+                    expand_to_limit=expand_to_limit,
+                )
+            except NebulaRepositoryError as exc:
+                return exc.to_dict()
+            result = self._compute.visualize_subgraph(
+                gd.to_networkx(),
+                gd,
+                list(gd.node2id) if requested_nodes else None,
+                include_community,
+                highlights,
+                max_nodes=cap,
+            )
+            total_nodes = summary.num_nodes
+            if total_nodes > gd.num_nodes:
+                result["truncated"] = True
+                result["total_nodes"] = total_nodes
+                result["total_edges"] = summary.num_edges
+                result["truncated_to"] = gd.num_nodes
+            result["backend"] = "nebula"
+            result["graph_version"] = session.graph_version
+            return result
         try:
             _, gd, nx_graph = self._require_graph(session_id, user_id=user_id)
         except ValueError:
@@ -1553,7 +3014,19 @@ class GraphDataService:
         progress_callback=None,
         user_id: str = "",
     ) -> dict:
+        if tool_name == "load_graph_classification_graph":
+            return self.do_load_graph_classification_graph(
+                session_id,
+                arguments,
+                user_id=user_id,
+            )
         runtime_session_id = self._cache_key(session_id, user_id)
+        if tool_name == "load_graph_classification_dataset":
+            return self._graph_ml.load_graph_classification_dataset(
+                runtime_session_id,
+                arguments,
+                progress_callback=progress_callback,
+            )
         if tool_name == "train":
             return self._graph_ml.train(runtime_session_id, arguments, progress_callback=progress_callback)
         if tool_name == "infer":
@@ -1578,7 +3051,11 @@ class GraphDataService:
             user_id,
             tool_name,
             clean_arguments,
-            _progress_kwarg="progress_callback" if tool_name == "train" else None,
+            _progress_kwarg=(
+                "progress_callback"
+                if tool_name in {"load_graph_classification_dataset", "train"}
+                else None
+            ),
         )
         return {
             "success": True,
@@ -1632,17 +3109,25 @@ class GraphDataService:
         async with self._graph_ml_inflight_lock:
             task = self._graph_ml_inflight.get(key)
             if task is None:
-                task = asyncio.create_task(
-                    self._run_with_heavy_limits(
-                        user_id,
-                        lambda: asyncio.to_thread(
-                            self._dispatch_graph_ml_tool,
-                            session_id,
-                            tool_name,
-                            arguments,
-                            user_id=user_id,
-                        ),
+                if user_id:
+                    invoke = lambda: asyncio.to_thread(
+                        self._dispatch_graph_ml_tool,
+                        session_id,
+                        tool_name,
+                        arguments,
+                        user_id=user_id,
                     )
+                else:
+                    # Preserve compatibility with injected/test dispatchers
+                    # that implement the original three-argument contract.
+                    invoke = lambda: asyncio.to_thread(
+                        self._dispatch_graph_ml_tool,
+                        session_id,
+                        tool_name,
+                        arguments,
+                    )
+                task = asyncio.create_task(
+                    self._run_with_heavy_limits(user_id, invoke)
                 )
                 self._graph_ml_inflight[key] = task
 
@@ -1691,6 +3176,18 @@ class GraphDataService:
 
     async def dispatch_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
         """统一工具分发入口。"""
+        if tool_name == "nebula_status":
+            return await asyncio.to_thread(self.do_nebula_status, session_id, user_id)
+        if tool_name == "nebula_sync_graph":
+            return await self.submit_nebula_sync(session_id, user_id=user_id)
+        if tool_name in _NEBULA_QUERY_TOOLS:
+            return await asyncio.to_thread(
+                self._dispatch_nebula_query,
+                session_id,
+                tool_name,
+                arguments,
+                user_id,
+            )
         if tool_name == "load_graph_from_upload":
             filename = _required_str(arguments, "filename")
             append = _optional_bool(arguments, "append", False)
@@ -1732,26 +3229,81 @@ class GraphDataService:
             if tool_name in _GRAPH_ML_HEAVY_TOOLS:
                 return await self._dispatch_heavy_graph_ml_tool_once(session_id, tool_name, arguments, user_id=user_id)
             return self._dispatch_graph_ml_tool(session_id, tool_name, arguments, user_id=user_id)
-        if tool_name == "subgraph_extraction" and _optional_bool(arguments, "create_version", True):
-            return await self._run_with_compute_limits(
-                user_id,
-                lambda: asyncio.to_thread(
+        if tool_name == "shortest_path" and not _optional_bool(arguments, "use_weight", True):
+            session = self.get_required(session_id, user_id=user_id)
+            if session.is_remote:
+                return await asyncio.to_thread(
                     self._dispatch_graph_tool,
                     session_id,
                     tool_name,
                     arguments,
                     user_id,
-                ),
-            )
+                )
+        if tool_name == "subgraph_extraction":
+            session = self.get_required(session_id, user_id=user_id)
+            if session.is_remote or _optional_bool(arguments, "create_version", True):
+                return await self._run_with_compute_limits(
+                    user_id,
+                    lambda: asyncio.to_thread(
+                        self._dispatch_graph_tool,
+                        session_id,
+                        tool_name,
+                        arguments,
+                        user_id,
+                    ),
+                )
         if tool_name in NX_TOOL_NAMES:
-            _, _, nx_graph = self._require_graph(session_id, user_id=user_id)
+            session = self.get_required(session_id, user_id=user_id)
+            scope_meta: dict[str, Any] = {}
+            if session.is_remote and tool_name == "degree_analysis" and arguments.get("node"):
+                return await asyncio.to_thread(
+                    self._dispatch_graph_tool, session_id, tool_name, arguments, user_id
+                )
+            if session.is_remote and tool_name in {"all_shortest_paths", "path_analysis", "reachability"}:
+                try:
+                    nx_graph, scope_meta = await asyncio.to_thread(
+                        self._primary_bounded_nx_graph,
+                        session,
+                        tool_name,
+                        arguments,
+                        user_id,
+                    )
+                except NebulaRepositoryError as exc:
+                    return exc.to_dict()
+            else:
+                _, _, nx_graph = self._require_graph(session_id, user_id=user_id)
+            if scope_meta.get("target_in_scope") is False:
+                if tool_name == "all_shortest_paths":
+                    return {
+                        "success": True,
+                        "count_returned": 0,
+                        "paths": [],
+                        "message": f"在 {scope_meta.get('max_steps')} 跳范围内不存在路径",
+                        **scope_meta,
+                    }
+                if tool_name == "path_analysis":
+                    method = str(arguments.get("method") or "")
+                    base = {
+                        "success": True,
+                        "method": method,
+                        "message": f"在 {scope_meta.get('max_steps')} 跳范围内不存在路径",
+                        **scope_meta,
+                    }
+                    if method == "has_path":
+                        base["has_path"] = False
+                    else:
+                        base.update({"count": 0, "paths": [], "truncated": False})
+                    return base
             loop = asyncio.get_running_loop()
-            return await self._run_with_compute_limits(
+            result = await self._run_with_compute_limits(
                 user_id,
                 lambda: loop.run_in_executor(
                     self._process_pool, run_nx_tool, tool_name, nx_graph, arguments
                 ),
             )
+            if scope_meta and isinstance(result, dict):
+                result.update(scope_meta)
+            return result
         return await asyncio.to_thread(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id)
 
 
@@ -1768,6 +3320,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             await asyncio.sleep(0)
         # 不等待 ProcessPool worker 进程自然结束，直接让 OS 回收
         svc._process_pool.shutdown(wait=False, cancel_futures=True)
+        svc._nebula.close()
 
     app = FastAPI(title="GraphDataServer", version="2.1.0", lifespan=lifespan)
     app.add_middleware(
@@ -1821,12 +3374,20 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "sessions": svc.session_count}
+        return {
+            "status": "ok",
+            "sessions": svc.session_count,
+            "graph_storage_backend": svc._storage_backend,
+            "nebula_enabled": bool(svc._nebula.enabled),
+        }
 
     @app.get("/tools")
-    def list_tools(include_graph_ml: bool = True):
+    def list_tools(include_graph_ml: bool = True, include_reporting: bool | None = None):
         """返回工具规格列表（tool_catalog 唯一真相源）。"""
-        return get_all_public_tools(include_graph_ml=include_graph_ml)
+        return get_all_public_tools(
+            include_graph_ml=include_graph_ml,
+            include_reporting=include_reporting,
+        )
 
     @app.post("/sessions/{session_id}/uploads/register")
     def register_upload(session_id: str, req: RegisterUploadReq, request: Request):
@@ -1931,6 +3492,25 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         user_id = _get_user_id(request)
         session = svc.get_required(session_id, user_id=user_id)
         gd = session.get_graph()
+        if gd is None and session.is_remote:
+            max_nodes, max_edges = svc._primary_materialize_limits()
+            try:
+                gd = svc._nebula.materialize_subgraph(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_version=session.graph_version,
+                    max_nodes=max_nodes,
+                    max_edges=max_edges,
+                )
+            except NebulaRepositoryError as exc:
+                return {
+                    "loaded": True,
+                    "backend": "nebula",
+                    "session_id": session_id,
+                    "graph_version": session.graph_version,
+                    "graph": None,
+                    **exc.to_dict(),
+                }
         if gd is None:
             return {
                 "loaded": False,
@@ -1941,6 +3521,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             }
         return {
             "loaded": True,
+            "backend": "nebula" if session.is_remote else "local",
             "session_id": session_id,
             "graph_version": session.graph_version,
             "graph": graph_data_to_document(gd),
@@ -1957,6 +3538,8 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             svc_name = "graph_data"
         elif tool_name in _GRAPH_ML_TOOL_NAMES:
             svc_name = "graph_ml"
+        elif tool_name in _REPORTING_TOOL_NAMES:
+            svc_name = "graph_compute"
         else:
             svc_name = "graph_compute"
         svc_log = _service_logger(session_id, svc_name, user_id=user_id)
@@ -1971,6 +3554,9 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         except ValueError as e:
             svc_log.error(tool_name, str(e))
             return {"success": False, "error": str(e)}
+        except NebulaRepositoryError as e:
+            svc_log.error(tool_name, str(e))
+            return e.to_dict()
         except HTTPException:
             raise
         except Exception as e:

@@ -26,7 +26,7 @@ _svc_logger_cache: dict[str, "ServiceLogger"] = {}
 
 def _ensure_session_dir(session_id: str, logs_dir: str) -> str:
     """确保 logs/{session_id}/ 目录存在，返回其绝对路径。"""
-    path = os.path.join(logs_dir, session_id)
+    path = os.path.join(logs_dir, _dp.safe_path_component(session_id))
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -415,6 +415,8 @@ class SessionLogger:
         solver_steps: Optional[list[dict[str, Any]]] = None,
         feedback_request: Optional[dict[str, Any]] = None,
         progress_items: Optional[list[dict[str, Any]]] = None,
+        graphs: Optional[list[dict[str, Any]]] = None,
+        reports: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         # 仅记录用户可见最终答复，不参与上下文恢复。
         self._append_message_record(
@@ -430,6 +432,8 @@ class SessionLogger:
                 "solver_steps": solver_steps if isinstance(solver_steps, list) else [],
                 "feedback_request": feedback_request if isinstance(feedback_request, dict) else None,
                 "progress_items": progress_items if isinstance(progress_items, list) else [],
+                "graphs": graphs if isinstance(graphs, list) else [],
+                "reports": reports if isinstance(reports, list) else [],
             },
         )
 

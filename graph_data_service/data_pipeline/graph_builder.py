@@ -59,7 +59,13 @@ class GraphBuilder:
                 weights.append(weight)
 
         if not pairs:
-            return GraphData(num_nodes=len(node2id), id2node=id2node or None, node2id=dict(node2id) or None, directed=directed)
+            return GraphData(
+                num_nodes=len(node2id),
+                id2node=id2node or None,
+                node2id=dict(node2id) or None,
+                directed=directed,
+                semantic_type="undirected" if not directed else "directed",
+            )
 
         edge_index = np.asarray(pairs, dtype=np.int64).T
         edge_weight = np.asarray(weights, dtype=np.float32)
@@ -70,6 +76,7 @@ class GraphBuilder:
             id2node=id2node,
             node2id=dict(node2id),
             directed=directed,
+            semantic_type="undirected" if not directed else "directed",
         )
 
     @staticmethod
@@ -143,6 +150,7 @@ class GraphBuilder:
                 id2node=id2node or None,
                 node2id=dict(node2id) or None,
                 directed=directed,
+                semantic_type="undirected" if not directed else "directed",
             )
 
         pairs: list[tuple[int, int]] = []
@@ -172,4 +180,5 @@ class GraphBuilder:
             edge_type=np.asarray(edge_types, dtype=object),
             edge_text=edge_texts if any_edge_text else None,
             directed=directed,
+            semantic_type="undirected" if not directed else "directed",
         )

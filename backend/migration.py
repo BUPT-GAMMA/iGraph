@@ -80,11 +80,12 @@ def migrate_global_skills() -> None:
 
 
 def migrate_bundled_skills() -> None:
-    """Copy backend/agent/skills/*/SKILL.md → data/global/skills/.
+    """Copy agent_runtime/resources/skills/*/SKILL.md → data/global/skills/.
 
     Uses dirs_exist_ok=True so code updates propagate to global on restart.
     """
-    src_root = Path(__file__).resolve().parent / "agent" / "skills"
+    project_root = Path(__file__).resolve().parent.parent
+    src_root = project_root / "agent_runtime" / "resources" / "skills"
     target = _dp.global_skills_dir()
     target.mkdir(parents=True, exist_ok=True)
     moved = 0

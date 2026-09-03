@@ -1,6 +1,10 @@
-# Skills / Memory / Tools 机制详解
+# Skills / Memory / Tools 机制详解（重构前基线）
 
-本文描述 iGraph 当前的知识层与工具披露机制。设计目标：**事实可控、流程可复用、上下文按需、风险可审计**。
+> 当前 Agent Runtime 已改用 Agno AgentOS 的 LearningMachine、UserProfile、UserMemory、
+> SessionContext、LearnedKnowledge、DecisionLog 与 LocalSkills。本文只用于旧数据迁移和
+> 行为对照；当前设计请参阅 [`AGENTOS_FOUR_MODULE_REFACTOR.md`](AGENTOS_FOUR_MODULE_REFACTOR.md)。
+
+本文描述 iGraph 重构前的知识层与工具披露机制。设计目标：**事实可控、流程可复用、上下文按需、风险可审计**。
 
 ---
 
@@ -50,7 +54,7 @@ backend/agent/skills/
 
 | 来源 | 路径 | 说明 |
 |------|------|------|
-| `bundled` | `backend/agent/skills/*/SKILL.md` | 随代码发布的内置技能（只读） |
+| `bundled` | `agent_runtime/resources/skills/*/SKILL.md` | 随代码发布的内置技能（只读，启动时初始化到运行数据目录） |
 | `user` | `~/.igraph/skills/user/*/SKILL.md` | 用户自定义技能 |
 | `review_queue` | `~/.igraph/skills/.review_queue/*/SKILL.md` | 等待审批的候选技能（playbook 自动生成） |
 

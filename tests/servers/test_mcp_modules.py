@@ -61,9 +61,60 @@ from mcp_service.config import MCPConfig
 from mcp_service.graph_data_client import GraphDataClient
 from mcp_service.raw_client import RawMCPClient
 from mcp_service.session_registry import SessionRegistry
+from mcp_service.tool_forwarding import forwarded_graph_tool_arguments
 
 
 class MCPModulesTest(unittest.TestCase):
+    def test_train_json_object_arguments_are_decoded_before_forwarding(self) -> None:
+        original = {
+            "task": "node_classification",
+            "data": '{"feature_source":"graph"}',
+            "train_config": '{"epochs":12,"lr":0.01}',
+            "algo_config": '{"hidden_dim":64}',
+        }
+
+        forwarded = forwarded_graph_tool_arguments("train", original)
+
+        self.assertEqual(original["train_config"], '{"epochs":12,"lr":0.01}')
+        self.assertEqual(forwarded["data"], {"feature_source": "graph"})
+        self.assertEqual(forwarded["train_config"], {"epochs": 12, "lr": 0.01})
+        self.assertEqual(
+            forwarded["algo_config"],
+            {"hidden_dim": 64, "__igraph_async_job": True},
+        )
+
+    def test_infer_json_object_arguments_are_decoded_before_forwarding(self) -> None:
+        forwarded = forwarded_graph_tool_arguments(
+            "infer",
+            {"model_id": "model-1", "query": '{"nodes":["1"]}', "infer_config": '{"topk":5}'},
+        )
+
+        self.assertEqual(forwarded["query"], {"nodes": ["1"]})
+        self.assertEqual(forwarded["infer_config"], {"topk": 5})
+
+    def test_graph_classification_dataset_load_gets_private_async_marker(self) -> None:
+        original = {"filename": "hiv.pt", "dataset_profile": "hiv"}
+        forwarded = forwarded_graph_tool_arguments(
+            "load_graph_classification_dataset",
+            original,
+        )
+
+        self.assertEqual(original, {"filename": "hiv.pt", "dataset_profile": "hiv"})
+        self.assertTrue(forwarded["__async"])
+        self.assertNotIn("algo_config", forwarded)
+
+    def test_graph_classification_dataset_load_uses_heavy_timeouts(self) -> None:
+        self.assertEqual(
+            graph_data_client._request_timeout(
+                "/sessions/sid/tools/load_graph_classification_dataset"
+            ),
+            graph_data_client.GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            raw_client._tool_timeout("load_graph_classification_dataset", 30.0),
+            raw_client.MCP_HEAVY_TOOL_TIMEOUT_SECONDS,
+        )
+
     def test_session_registry(self) -> None:
         reg = SessionRegistry()
         self.assertEqual(reg.count, 0)
@@ -179,7 +230,7 @@ class GraphDataClientRetryTest(unittest.IsolatedAsyncioTestCase):
             _TimeoutAsyncClient.timeouts,
             [graph_data_client.GRAPH_DATA_HEAVY_TOOL_TIMEOUT_SECONDS],
         )
-        self.assertIn("未重试以避免重复执行训练/推理", result["error"])
+        self.assertIn("未重试以避免重复执行重型工具", result["error"])
 
 
 class RawMCPClientTimeoutTest(unittest.IsolatedAsyncioTestCase):
@@ -192,27 +243,17 @@ class RawMCPClientTimeoutTest(unittest.IsolatedAsyncioTestCase):
 
             async def post(self, url: str, **kwargs):
                 _FakeAsyncClient.posts.append(kwargs)
-                request = httpx.Request("POST", url)
-                # Real httpx prefers ``content``/``text`` over ``json`` for
-                # the body, while the fake module in this test file uses
-                # ``json``. Build a Response that works with both: the body
-                # is the JSON-encoded text.
-                body = '{"jsonrpc":"2.0","result":{"success":true}}'
-                try:
-                    return httpx.Response(
-                        200,
-                        text=body,
-                        request=request,
-                        headers={"content-type": "application/json"},
-                    )
-                except TypeError:
-                    return httpx.Response(
-                        200,
-                        json={"jsonrpc": "2.0", "result": {"success": True}},
-                        text=body,
-                        request=request,
-                        headers={"content-type": "application/json"},
-                    )
+
+                class _JSONResponse:
+                    status_code = 200
+                    text = '{"jsonrpc":"2.0","result":{"success":true}}'
+                    headers = {"content-type": "application/json"}
+
+                    @staticmethod
+                    def json():
+                        return {"jsonrpc": "2.0", "result": {"success": True}}
+
+                return _JSONResponse()
 
             async def aclose(self) -> None:
                 return

@@ -1,0 +1,3 @@
+# Deprecated compatibility alias. The former Application process is now the
+# standalone Backend/BFF and must use the same dependency boundary.
+-r backend.txt

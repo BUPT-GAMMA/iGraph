@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.runtime.env_required import require_env, require_int_env
+from graph_engine.env import require_env, require_int_env
 
 
 @dataclass(frozen=True)

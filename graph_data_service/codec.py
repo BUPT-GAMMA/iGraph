@@ -162,7 +162,8 @@ def graph_ml_readiness_for_graph(graph: GraphData) -> Dict[str, Any]:
         node_cls_reason = "满足节点分类最小数据条件"
         node_cls_supported = True
 
-    if graph.num_edges < 2:
+    positive_edges = int(graph.num_unique_edges)
+    if positive_edges < 2:
         link_reason = "边数量不足（至少需要 2 条）"
         link_supported = False
     else:
@@ -186,7 +187,7 @@ def graph_ml_readiness_for_graph(graph: GraphData) -> Dict[str, Any]:
         "link_prediction": {
             "supported": link_supported,
             "reason": link_reason,
-            "positive_edges": int(graph.num_edges),
+            "positive_edges": positive_edges,
         },
         "pretrain": {
             "supported": pretrain_supported,
@@ -201,8 +202,19 @@ def graph_data_to_document(graph: GraphData) -> Dict[str, Any]:
         "schema_version": GRAPH_DATA_SCHEMA_VERSION,
         "num_nodes": graph.num_nodes,
         "directed": graph.directed,
+        "semantic_type": graph.semantic_type,
+        "storage_type": graph.storage_type,
+        "num_edge_entries": graph.num_edge_entries,
+        "num_unique_edges": graph.num_unique_edges,
+        "num_unique_directed_edges": graph.num_unique_directed_edges,
+        "num_unique_undirected_edges": graph.num_unique_undirected_edges,
+        "is_symmetric": graph.is_symmetric,
+        "has_self_loops": graph.has_self_loops,
+        "has_duplicate_entries": graph.has_duplicate_entries,
         "name": graph.name,
         "graph_desc": graph.graph_desc,
+        "graph_metadata": graph.graph_metadata,
+        "transform_log": graph.transform_log,
         "id2node": {str(k): v for k, v in graph.id2node.items()} if graph.id2node else None,
         "node2id": graph.node2id if graph.node2id else None,
         "edge_index": graph.edge_index.tolist(),
@@ -264,6 +276,10 @@ def graph_data_from_document(doc: Dict[str, Any]) -> GraphData:
         ),
         graph_desc=doc.get("graph_desc"),
         directed=bool(doc.get("directed", True)),
+        semantic_type=doc.get("semantic_type"),
+        storage_type=doc.get("storage_type"),
+        graph_metadata=doc.get("graph_metadata") if isinstance(doc.get("graph_metadata"), dict) else None,
+        transform_log=doc.get("transform_log") if isinstance(doc.get("transform_log"), list) else None,
         name=str(doc.get("name", "")),
         node_label=doc.get("node_label"),
         node_type=doc.get("node_type"),

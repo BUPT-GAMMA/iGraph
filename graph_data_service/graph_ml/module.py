@@ -15,8 +15,14 @@ from graph_data_service.session import GraphSession
 
 from .artifact_store import ArtifactStore
 from .config_catalog import model_architecture_view
+from .datasets import (
+    GraphClassificationDatasetBundle,
+    GraphMLDatasetStore,
+    graph_classification_readiness_for_dataset,
+)
 from .schemas import (
     InferRequest,
+    LoadGraphClassificationDatasetRequest,
     TrainRequest,
     VisualizeArchitectureRequest,
 )
@@ -33,8 +39,10 @@ class GraphMLModule:
         self,
         get_session: Callable[[str], GraphSession],
         artifact_root: str | None = None,
+        dataset_store: GraphMLDatasetStore | None = None,
     ) -> None:
         self._get_session = get_session
+        self._dataset_store = dataset_store or GraphMLDatasetStore()
         store = ArtifactStore(artifact_root or os.getenv("GRAPH_ML_ARTIFACT_ROOT", "artifacts/graph_ml"))
         self._store = store
         self._trainer = None
@@ -46,8 +54,16 @@ class GraphMLModule:
         from .infer import GraphMLInferencer
         from .trainer import GraphMLTrainer
 
-        self._trainer = GraphMLTrainer(graph_loader=self._load_graph_snapshot, store=self._store)
-        self._inferencer = GraphMLInferencer(graph_loader=self._load_graph_snapshot, store=self._store)
+        self._trainer = GraphMLTrainer(
+            graph_loader=self._load_graph_snapshot,
+            store=self._store,
+            dataset_store=self._dataset_store,
+        )
+        self._inferencer = GraphMLInferencer(
+            graph_loader=self._load_graph_snapshot,
+            store=self._store,
+            dataset_store=self._dataset_store,
+        )
 
     def _load_graph_snapshot(self, session_id: str) -> Tuple[int, GraphData]:
         session = self._get_session(session_id)
@@ -62,10 +78,42 @@ class GraphMLModule:
         payload: Dict[str, Any],
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
+        req = TrainRequest.model_validate(payload)
         self._ensure_runtime()
         assert self._trainer is not None
-        req = TrainRequest.model_validate(payload)
         return self._trainer.train(session_id, req, progress_callback=progress_callback)
+
+    def load_graph_classification_dataset(
+        self,
+        session_id: str,
+        payload: Dict[str, Any],
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict:
+        req = LoadGraphClassificationDatasetRequest.model_validate(payload)
+        session = self._get_session(session_id)
+        bundle = self._dataset_store.load(
+            session_id,
+            session,
+            req.filename,
+            req.dataset_profile,
+            progress_callback=progress_callback,
+        )
+        return {
+            "success": True,
+            "dataset": bundle.to_summary(),
+            "readiness": graph_classification_readiness_for_dataset(bundle),
+        }
+
+    def resolve_graph_classification_dataset(
+        self,
+        session_id: str,
+        dataset_id: str | None = None,
+    ) -> GraphClassificationDatasetBundle:
+        """Shared resolution entry point for graph-classification train/infer."""
+        return self._dataset_store.resolve_for_session(session_id, dataset_id)
+
+    def release_session(self, session_id: str) -> bool:
+        return self._dataset_store.release_session(session_id)
 
     def infer(self, session_id: str, payload: Dict[str, Any]) -> dict:
         self._ensure_runtime()
@@ -80,7 +128,12 @@ class GraphMLModule:
             raise ValueError(f"模型不存在: {req.model_id}")
         meta = self._store.load_json(ref.model_dir, "meta.json")
         task = str(meta.get("task", "")).strip()
-        if task not in {"node_classification", "link_prediction", "pretrain"}:
+        if task not in {
+            "node_classification",
+            "link_prediction",
+            "graph_classification",
+            "pretrain",
+        }:
             raise ValueError(f"模型 task 不支持结构可视化: {task}")
         return model_architecture_view(
             task=task,
