@@ -1,0 +1,45 @@
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    client_max_body_size 512m;
+
+    location = /health {
+        access_log off;
+        default_type application/json;
+        return 200 '{"status":"ok","service":"frontend"}';
+    }
+
+    location /api/ {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Backend 是前端唯一公共 API 入口。
+    location = /openapi.json {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+    }
+
+    location = /docs {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+    }
+
+    location = /redoc {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+    }
+
+    location = /favicon.ico {
+        alias /usr/share/nginx/html/figures/igraph_light.png;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

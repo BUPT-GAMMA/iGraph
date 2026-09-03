@@ -1,0 +1,14 @@
+[run]
+branch = True
+source =
+    agent_runtime
+    backend
+    graph_data_service
+    graph_engine
+    mcp_service
+
+[report]
+fail_under = 46.5
+precision = 2
+show_missing = True
+skip_empty = True

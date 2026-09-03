@@ -1,4 +1,7 @@
-# iGraph 运行与测试指南
+# iGraph 运行与测试指南（历史版本）
+
+> 本文保留重构前的启动与测试命令用于行为对照。当前四模块入口和部署方式请参阅
+> [`AGENTOS_FOUR_MODULE_REFACTOR.md`](AGENTOS_FOUR_MODULE_REFACTOR.md)。本次重构按要求未在本机运行测试。
 
 本文档覆盖：
 
@@ -142,6 +145,23 @@ python main.py
 ```
 
 CLI 启动本地 supervisor，在控制台直接对话（同步模式）。
+
+### 2.4 Docker Compose 启动
+
+Docker 模式复用同一份 `.env`，无需把其中的本地 `127.0.0.1` 服务 URL 改成容器名；Compose 会仅在容器内部覆盖监听地址与服务 URL。
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+访问：`http://localhost:21108`。停止服务：
+
+```bash
+docker compose stop
+```
+
+默认运行四个容器：Frontend、Application（Backend + Agent Runtime 同进程）、MCP、GraphData。只发布 Frontend 端口；`FRONTEND_PORT` 可覆盖默认的 `21108`。
 
 ---
 

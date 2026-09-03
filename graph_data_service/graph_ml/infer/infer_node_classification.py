@@ -15,7 +15,7 @@ from graph_data_service.labels import class_mapping, display_label, label_key
 from ..artifact_store import ArtifactRef, ArtifactStore
 from ..models import build_backbone, parse_gnn_options
 from ..schemas import InferRequest
-from ..tasks import edge_index_tensor, node_names
+from ..tasks import message_passing_edge_index, node_names
 
 
 class NodeClassificationInfer:
@@ -33,7 +33,7 @@ class NodeClassificationInfer:
         device: torch.device,
     ) -> Dict[str, Any]:
         x = x.to(device)
-        eidx = edge_index_tensor(gd).to(device)
+        eidx = message_passing_edge_index(gd).to(device)
 
         cfg = meta.get("model_config", {}) or {}
         emb_dim = int(cfg.get("embedding_dim", 64))

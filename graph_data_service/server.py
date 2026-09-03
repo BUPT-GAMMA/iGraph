@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import uvicorn
 
-from backend.runtime.dotenv_compat import load_dotenv_compat
-from backend.runtime.env_required import require_env, require_int_env
+from graph_engine.env import load_environment, require_env, require_int_env
 from .app import GraphDataService, create_app
 
-load_dotenv_compat()
+load_environment()
 
 _service = GraphDataService()
 app = create_app(_service)

@@ -1,4 +1,8 @@
-# iGraph 系统设计文档
+# iGraph 系统设计文档（重构前基线）
+
+> 当前架构已拆分为 Frontend、Backend、Agent Runtime（Agno AgentOS）与 Graph Engine。
+> 最新边界请参阅 [`AGENTOS_FOUR_MODULE_REFACTOR.md`](AGENTOS_FOUR_MODULE_REFACTOR.md)；
+> 本文保留作为原有功能与实现细节的迁移基线。
 
 > 本文档详细描述 iGraph 系统的整体架构、各服务模块的设计与实现细节、数据流转、协议约定、以及关键设计决策的背景与取舍。
 
@@ -48,7 +52,7 @@ iGraph 是一个基于 LLM + MCP（Model Context Protocol）的交互式图论�
 | 经典图算法 | 最短路径（含 Yen K-shortest）、全最短路径、最大流、最小割、最小生成树、社区检测（7 种算法）、节点中心性（10 种类型）、连通性分析、环检测、拓扑排序、度分布分析、子图提取（ego/k-core/k-truss/k-corona）、链路预测评分、路径分析、团分析、可达性分析、全局图指标 |
 | 任务规划 | 查询复杂度自动判断、LLM 生成结构化分析计划、按步执行 + 结果汇总 |
 | 轻量 RAG | 文档上传分块 + 向量检索（零外部数据库依赖） |
-| 图机器学习 | 节点分类（GCN/GAT/SAGE）、链接预测（GCN/GAT/SAGE）、预训练（Node2Vec/对比学习/掩码自编码） |
+| 图机器学习 | 节点分类、链接预测、HIV/PCBA 整图分类（GCN/GAT/SAGE）、预训练（Node2Vec/对比学习/掩码自编码） |
 | 多 LLM 后端 | Claude Opus 4-6 / Claude Sonnet 4-6 / GPT-5-4 / GPT-5-2 / Qwen3.6 Plus / Qwen3.7 Max |
 | 交互模式 | Web UI（流式 SSE）、CLI（同步对话）、Claude Desktop（MCP stdio） |
 
@@ -424,7 +428,7 @@ class RawMCPClient:
 3. `call_tool(name, arguments)` → `tools/call` RPC → 返回工具执行结果
 4. `close()` → 关闭 httpx 客户端
 
-`call_tool()` 对 train/infer 使用长超时（默认 900s，可通过 `MCP_HEAVY_TOOL_TIMEOUT_SECONDS` 调整），避免 GraphML 长训练在 Agent→MCP 这一跳被 30s 默认超时截断。
+`call_tool()` 对多图数据加载、train/infer 使用长超时（默认 900s，可通过 `MCP_HEAVY_TOOL_TIMEOUT_SECONDS` 调整），避免 GraphML 重型任务在 Agent→MCP 这一跳被 30s 默认超时截断。
 
 **SSE 兼容**: MCP Server 有时以 `text/event-stream` 返回响应，`_parse_sse_json()` 从 SSE `data:` 行中提取最后一个有效 JSON payload。
 
@@ -483,11 +487,15 @@ graph_data_service/graph_ml/
 ├── config_catalog.py    # 模型结构可视化辅助
 ├── schemas.py           # Pydantic 请求/响应 schema
 ├── artifact_store.py    # 模型产物存储（GRAPH_ML_ARTIFACT_ROOT）
+├── metrics.py           # 图分类 masked BCE、ROC-AUC、逐任务 AP
+├── datasets/            # 安全多图 Loader、batching、会话级 DatasetStore
 ├── models/              # GNN Backbone 模型
 │   ├── __init__.py      # 模型工厂 build_backbone()
 │   ├── GCN.py           # GCNBackbone (GCNConv)
 │   ├── GAT.py           # GATBackbone (GATConv)
-│   └── SAGE.py          # SAGEBackbone (SAGEConv)
+│   ├── SAGE.py          # SAGEBackbone (SAGEConv)
+│   ├── node_encoder.py  # 类别节点 ID Embedding
+│   └── graph_classifier.py # Backbone + mean pool + graph head
 ├── tasks/               # 任务定义层
 │   ├── __init__.py
 │   ├── node_classification.py
@@ -497,11 +505,13 @@ graph_data_service/graph_ml/
 │   ├── __init__.py      # GraphMLTrainer 编排入口
 │   ├── trainer_node_classification.py
 │   ├── trainer_link_prediction.py
+│   ├── trainer_graph_classification.py
 │   └── trainer_pre_train.py
 └── infer/               # 推理器
     ├── __init__.py      # GraphMLInferencer 编排入口
     ├── infer_node_classification.py
     ├── infer_link_prediction.py
+    ├── infer_graph_classification.py
     └── infer_pre_train.py
 ```
 
@@ -511,6 +521,7 @@ graph_data_service/graph_ml/
 
 | MCP 工具名 | GraphData 路由 | 功能 |
 |------------|---------------|------|
+| `load_graph_classification_dataset` | `POST /sessions/{sid}/tools/load_graph_classification_dataset` | 异步安全加载并绑定 HIV/PCBA 多图数据 |
 | `train` | `POST /sessions/{sid}/tools/train` | 训练 GNN 模型（带 `__async=true` 时提交异步作业，返回 `job_id`） |
 | `infer` | `POST /sessions/{sid}/tools/infer` | 推理 |
 | `visualize_model_architecture` | `POST /sessions/{sid}/tools/visualize_model_architecture` | 模型结构可视化 |
@@ -522,6 +533,7 @@ graph_data_service/graph_ml/
 3. **参数 schema 随工具暴露**：训练/推理参数规格直接写入 `train` / `infer` 工具 schema，由确认/修改流程复核后执行。
 4. **产物路径**：模型存储由 `ArtifactStore` 管理，路径由 `GRAPH_ML_ARTIFACT_ROOT` 配置（默认 `artifacts/graph_ml`）。
 5. **训练进度实时推送**：Agent 侧 `_execute_train_tool_with_progress` 以异步作业方式调用 `train`，每 0.5s 轮询 `get_job_status` 并将 `job.detail`（每 epoch 的 `loss`/`val_acc`/`progress` 等）转为 `tool_progress` SSE 事件实时推送到前端；前端渲染进度条（进行中蓝色 / 正常完成绿色 / 早停黄色）。
+6. **单图/多图状态隔离**：节点、链路和预训练读取当前 `GraphData`；整图分类只读取 `GraphMLDatasetStore`。`clear_graph` 不清理多图 bundle，删除 session 会统一释放。
 
 ### 6.5 GNN Backbone 模型
 
@@ -558,6 +570,14 @@ graph_data_service/graph_ml/
 - **Node2Vec**: 基于随机游走生成节点嵌入
 - **对比学习 / 掩码自编码**: 使用 GNN Backbone 进行自监督预训练
 
+#### 整图分类 (`graph_classification`)
+
+- **数据入口**：只接受 `load_graph_classification_dataset` 安全校验并绑定的 HIV/PCBA `.pt`，不经过单图 `GraphData`。
+- **模型结构**：类别节点 Embedding → GCN/GAT/SAGE → Global Mean Pool → Linear graph head；`xe` 校验保留但第一版不参与消息传递。
+- **HIV**：单任务 masked BCE，验证/测试 ROC-AUC。
+- **PCBA**：128 个独立二分类任务，NaN 标签 mask；逐任务 AP 跳过退化任务后宏平均。
+- **划分隔离**：固定使用文件自带 train/valid/test；测试集仅在最佳验证模型恢复后评估。
+
 ### 6.7 特征构建
 
 `base_node_features(gd)` 生成节点特征张量：
@@ -576,10 +596,10 @@ graph_data_service/graph_ml/
 训练流程（`GraphMLTrainer.train()`）：
 1. **参数校验** (`validate_train_request`)：检查 model / method 是否必填
 2. **设置随机种子**: `random` / `numpy` / `torch` / `torch.cuda`
-3. **加载图数据**: 直接从 `GraphDataService` 会话内存读取 `GraphData`（无 HTTP 跨进程）
+3. **早分发**：`graph_classification` 在读取单图前解析 session 内多图 bundle；其他任务继续读取 `GraphDataService` 会话内存单图
 4. **图版本校验**: 如果请求指定了 `graph_version` 则校验一致性
 5. **特征构建**: `graph` 或 `embedding` 两种来源
-6. **分发到具体 Trainer** + 注入 `progress_callback`: `NodeClassificationTrainer` / `LinkPredictionTrainer` / `PreTrainTrainer`
+6. **分发到具体 Trainer** + 注入 `progress_callback`: `NodeClassificationTrainer` / `LinkPredictionTrainer` / `GraphClassificationTrainer` / `PreTrainTrainer`
 7. **训练循环**: 每个 epoch 末调用 `progress_callback({kind: "train_epoch", epoch, epochs, progress, loss, ...})`；早停时额外调用一次 `{kind: "train_early_stop", stopped_early: true, ...}`
 8. **保存产物**: 模型权重 + meta.json + node_names.json + embedding.npy 等
 9. **返回结果**: model_id, metrics, graph_version 等
@@ -589,9 +609,9 @@ graph_data_service/graph_ml/
 推理流程：
 1. **解析模型**: 通过 `ArtifactStore.resolve_model()` 定位模型目录
 2. **读取 meta.json**: 获取 task、graph_version、feature_source 等
-3. **图版本校验**: 默认不允许版本不一致（除非 `allow_version_mismatch=true`）
+3. **身份校验**: 单图任务校验 graph_version；图分类在读取单图前早分发并严格校验 dataset fingerprint、任务数、词表、metric 和 split size
 4. **加载图 + 特征 + 模型权重**
-5. **分发到具体 Inferencer**: 按 task 类型执行推理
+5. **分发到具体 Inferencer**: 按 task 类型执行推理；图分类支持完整 split 或指定 graph_indices，预测明细独立分页
 6. **返回结果**: predictions / embeddings / scores
 
 ### 6.10 ArtifactStore — 模型产物存储
@@ -612,9 +632,11 @@ artifacts/graph_ml/
         └── embedding.npy       # 节点嵌入（pretrain 产出）
 ```
 
+图分类目录固定为 `checkpoint.pt`、`meta.json`、`metrics.json` 和 `per_task_metrics.json`；checkpoint 只保存 tensor state_dict，并由专用 `weights_only=True` 路径读取。
+
 **model_id 格式**: `mdl_{task}_{unix_timestamp}_{6_hex_chars}`，如 `mdl_node_classification_1711234567_a3f2c1`
 
-**跨 session 查找**: `resolve_model()` 会在所有 session 目录中查找 model_id，支持上游 embedding 模型跨 session 复用。
+**会话隔离**: `resolve_model()` 只解析当前 session 目录中的 model_id，避免跨会话读取模型产物。
 
 ---
 
@@ -2049,6 +2071,21 @@ GraphCompute.shortest_path(nx_graph, "A", "F", True)
 
 预训练产生的嵌入可作为下游任务的输入特征（`feature_source="embedding"` + `upstream_model_id`）。
 
+### 17.4 整图分类
+
+**数据流程**：
+
+1. 当前会话上传并注册 `hiv.pt` 或 `pcba.pt`。
+2. `load_graph_classification_dataset` 使用安全白名单反序列化，生成 fingerprint，并绑定独立多图 bundle。
+3. `train(task="graph_classification", model="GCN|GAT|SAGE")` 在读取单图前早分发。
+4. PyG mini-batch 将不同大小的图拼接；节点类别 ID 经 Embedding 后进入 GNN，Global Mean Pool 生成 graph embedding。
+5. HIV 按 `val_roc_auc`、PCBA 按 `val_ap` 选择最佳 epoch，恢复最佳权重后才评估 test。
+6. artifact 用 dataset fingerprint 替代 graph_version 表示数据身份；推理前必须重新绑定完全相同的数据集。
+
+**状态边界**：多图 bundle 不写入 `GraphData`，不会令 Agent `_has_graph=true`，也不会出现在单图 `get_graph_info.graph_ml_readiness`。加载工具单独返回 dataset readiness。
+
+**推理响应**：split 查询总是计算完整指标，但预测明细按 offset/limit 分页；PCBA 默认只返回 top-k 任务，完整 128 维数组需要显式开启。
+
 ---
 
 ## 19. 多 LLM 后端支持
@@ -2376,7 +2413,7 @@ GraphML 训练和推理都支持 `graph_version` 校验：
 5. **native FC 不适合数据采集**：native 模式工具描述在 API tools 参数中而非 system prompt，对话日志不包含工具 prompt 结构，不适合直接用于 SFT/RL 数据构造。
 6. **TextExtractor 建图**：`TextGraphExtractor` sub-agent（`text_graph_extractor.py`）已集成 LLM 辅助三元组抽取，支持长文本分块、去重与置信度过滤；但 `build_graph_from_text` 直接调用路径与 LLM 辅助路径的选择逻辑仍需完善。
 7. **Neo4j 后端为骨架**：`storage/neo4j_backend.py` 尚未接入 `GraphSession`，图数据仍为内存态。
-8. **Memory 单作用域**：当前 `MemoryScope` 仍硬编码为 `default_user`，多用户/多工作区的作用域隔离是计划中的后续迭代（见 `plans/hermes_skills_memory_plan_opus.md` P3.3）。
+8. **Memory 单作用域**：当前 `MemoryScope` 仍硬编码为 `default_user`，多用户/多工作区的作用域隔离是计划中的后续迭代（见 `docs/archive/plans/hermes_skills_memory_plan_opus.md` P3.3）。
 9. **记忆仅在下次会话生效**：Frozen Snapshot 模式下，本会话写入的记忆下次启动才生效；当前会话内无法反映最新写入。
 10. **LLM Selector 延迟**：每 turn 新增一次小模型调用（约 300-500ms），通过 per-turn 缓存（`set_turn_id()`）控制总量；若延迟不可接受，可改为关键词匹配模式（无 LLM）。
 
@@ -2388,7 +2425,7 @@ GraphML 训练和推理都支持 `graph_version` 校验：
 iGraph/
 ├── main.py                              # CLI 入口
 ├── agent_server.py                      # Web 入口（委托 api_gateway.__main__）
-├── index.html                           # 前端单页应用（含分析计划面板）
+├── frontend/public/index.html           # 前端单页应用（含分析计划面板）
 ├── backend/
 │   ├── agent/
 │   │   ├── igraph.py               # Agent 核心（Plan-aware 推理 + virtual tool 截获）
@@ -2492,7 +2529,7 @@ iGraph/
 ├── tests/                               # 测试
 │   ├── servers/                         # 服务级集成测试
 │   └── test_*.py                        # 单元测试
-├── plans/                               # 迭代计划与 review 文档
+├── docs/archive/plans/                  # 已完成迭代计划与 review 文档
 ├── docs/                                # 项目文档
 └── logs/                                # 运行时日志（自动创建）
 ```

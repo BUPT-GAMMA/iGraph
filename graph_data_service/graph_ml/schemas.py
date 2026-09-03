@@ -6,17 +6,26 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-TaskType = Literal["node_classification", "link_prediction", "pretrain"]
+TaskType = Literal[
+    "node_classification",
+    "link_prediction",
+    "graph_classification",
+    "pretrain",
+]
 FeatureSource = Literal["graph", "embedding"]
+GraphClassificationDatasetProfile = Literal["auto", "hiv", "pcba"]
 
 
 class TrainDataConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     feature_source: FeatureSource = "graph"
     target_nodes: Optional[List[str]] = None
     target_edges: Optional[List[List[str]]] = None
+    dataset_id: Optional[str] = None
 
 
 class TrainSplitConfig(BaseModel):
@@ -36,6 +45,9 @@ class TrainConfig(BaseModel):
     early_stop_patience: int = 0
     # 指标提升阈值（严格大于 best + min_delta 才视为提升）。
     early_stop_min_delta: float = 0.0
+    # 多图 mini-batch 参数；现有单图任务保持原有行为并忽略这两个字段。
+    batch_size: int = Field(default=64, ge=1)
+    num_workers: int = Field(default=0, ge=0)
 
 
 class TrainRequest(BaseModel):
@@ -58,3 +70,35 @@ class InferRequest(BaseModel):
 
 class VisualizeArchitectureRequest(BaseModel):
     model_id: str
+
+
+class LoadGraphClassificationDatasetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str = Field(min_length=1)
+    dataset_profile: GraphClassificationDatasetProfile = "auto"
+
+    @field_validator("filename")
+    @classmethod
+    def _strip_filename(cls, value: str) -> str:
+        filename = value.strip()
+        if not filename:
+            raise ValueError("filename 不能为空")
+        return filename
+
+
+class LoadGraphClassificationGraphRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    graph_index: int = Field(ge=0)
+    dataset_id: Optional[str] = None
+
+    @field_validator("dataset_id")
+    @classmethod
+    def _strip_dataset_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        dataset_id = value.strip()
+        if not dataset_id:
+            return None
+        return dataset_id

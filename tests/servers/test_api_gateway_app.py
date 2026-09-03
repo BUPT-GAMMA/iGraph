@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 import backend.api_gateway.app as gateway_app
-from backend.api_gateway.app import ApiGatewayConfig, create_server
+from backend.api_gateway.app import AttachmentRef, ApiGatewayConfig, create_server
 
 ADMIN_HEADERS = {"X-User-ID": "admin"}
 ALICE_HEADERS = {"X-User-ID": "alice"}
@@ -86,8 +88,118 @@ class _FakeAgent:
         return {"current_tokens": 0, "token_limit": 1024, "percent": 0.0, "status": "ok"}
 
 
+class _ReportFakeAgent(_FakeAgent):
+    async def chat_stream(self, message: str):
+        yield {
+            "type": "analysis_report",
+            "call_id": "report-call",
+            "data": {
+                "report": {
+                    "version": "analysis_report.v1",
+                    "id": "rpt-gateway-test",
+                    "intent": "analysis",
+                    "title": "Gateway 报告",
+                    "sections": [],
+                }
+            },
+        }
+        yield {"type": "token", "content": f"echo:{message}"}
+
+
+class _StrictRuntime:
+    """Protocol-only Runtime with no IGraph private fields."""
+
+    def __init__(self, **kwargs) -> None:
+        self.session_id = kwargs["session_logger"].session_id
+        self.user_id = kwargs.get("user_id", "")
+        self.provider = "strict-runtime"
+        self.model = kwargs.get("model") or "fake-model"
+        self.reasoning_mode = kwargs.get("reasoning_mode", "direct")
+        self.planning_mode = kwargs.get("planning_mode", "auto")
+        self.last_active = 1.0
+        self._has_public_graph_state = False
+
+    def set_model(self, model: str) -> None:
+        self.model = model
+
+    def set_reasoning_mode(self, mode: str) -> None:
+        self.reasoning_mode = mode
+
+    def set_planning_mode(self, mode: str) -> None:
+        self.planning_mode = mode
+
+    def chat(self, message: str) -> str:
+        return f"strict:{message}"
+
+    async def chat_stream(self, message: str):
+        yield {"type": "token", "content": f"strict:{message}"}
+
+    async def resume_feedback_stream(self, **_kwargs):
+        if False:
+            yield {}
+
+    async def rollback_last_user_turn(self) -> None:
+        return
+
+    def pending_feedback(self):
+        return None
+
+    def context_usage(self) -> dict:
+        return {"current_tokens": 0, "token_limit": 1024, "percent": 0.0, "status": "ok"}
+
+    def has_graph(self) -> bool:
+        return self._has_public_graph_state
+
+    def apply_graph_load_result(self, _result) -> None:
+        self._has_public_graph_state = True
+
+    def clear_graph_state(self) -> None:
+        self._has_public_graph_state = False
+
+    def inject_synthetic_turn(self, _user_text: str, _assistant_text: str) -> None:
+        return
+
+    def log_error(self, _error: str) -> None:
+        return
+
+    def stream_skill_generation(self, _playbook_item, _model=None):
+        async def _empty():
+            if False:
+                yield ""
+
+        return _empty()
+
+    def cleanup(self) -> None:
+        return
+
+
 class ApiGatewayAppTest(unittest.TestCase):
     def setUp(self) -> None:
+        self._supported_ids_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._supported_ids_dir.cleanup)
+        supported_ids_file = Path(self._supported_ids_dir.name) / "supported_ids.txt"
+        supported_ids_file.write_text("admin\nalice\n", encoding="utf-8")
+        self._supported_ids_patch = patch.object(
+            gateway_app,
+            "_SUPPORTED_IDS_FILE",
+            str(supported_ids_file),
+        )
+        self._admin_model_patch = patch.object(
+            gateway_app,
+            "_DEFAULT_ADMIN_MODEL",
+            gateway_app.DEFAULT_MODEL,
+        )
+        self._user_model_patch = patch.object(
+            gateway_app,
+            "_DEFAULT_NON_ADMIN_MODEL",
+            "qwen3.6-plus",
+        )
+        self._supported_ids_patch.start()
+        self._admin_model_patch.start()
+        self._user_model_patch.start()
+        self.addCleanup(self._supported_ids_patch.stop)
+        self.addCleanup(self._admin_model_patch.stop)
+        self.addCleanup(self._user_model_patch.stop)
         self.server = create_server(
             config=_test_config(),
             manage_subprocesses=False,
@@ -95,6 +207,15 @@ class ApiGatewayAppTest(unittest.TestCase):
             agent_factory=_FakeAgent,
         )
         self.client = TestClient(self.server.app)
+
+    def test_frontend_assets_are_served_from_frontend_public(self) -> None:
+        page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("iGraph", page.text)
+
+        favicon = self.client.get("/favicon.ico")
+        self.assertEqual(favicon.status_code, 200)
+        self.assertEqual(favicon.headers["content-type"], "image/png")
 
     def test_create_session_and_chat(self) -> None:
         created = self.client.post(
@@ -116,6 +237,23 @@ class ApiGatewayAppTest(unittest.TestCase):
         chat_body = chatted.json()
         self.assertTrue(chat_body["success"])
         self.assertEqual(chat_body["response"], "echo:hello")
+
+    def test_pt_attachment_hint_distinguishes_multigraph_and_single_graph(self) -> None:
+        key = self.server._agent_key("alice", "session-attachment")
+        self.server._uploaded_files[key] = {
+            "token-hiv": {"original": "hiv.pt"},
+        }
+
+        resolved = self.server._resolve_attachments(
+            "session-attachment",
+            "请加载数据",
+            [AttachmentRef(file_token="token-hiv", filename="hiv.pt")],
+            user_id="alice",
+        )
+
+        self.assertIn("load_graph_classification_dataset", resolved)
+        self.assertIn("load_graph_from_upload", resolved)
+        self.assertIn("HIV/PCBA", resolved)
 
     def test_auth_validate_returns_model_access(self) -> None:
         resp = self.client.post("/api/auth/validate", headers=ADMIN_HEADERS)
@@ -149,6 +287,60 @@ class ApiGatewayAppTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertIn("无权使用模型", resp.json()["detail"])
+
+    def test_chat_stream_passes_analysis_report_event_through(self) -> None:
+        server = create_server(
+            config=_test_config(),
+            manage_subprocesses=False,
+            logger=_FakeLogger(),
+            agent_factory=_ReportFakeAgent,
+        )
+        client = TestClient(server.app)
+        created = client.post(
+            "/api/sessions",
+            json={"model": "gpt-5-2"},
+            headers=ADMIN_HEADERS,
+        )
+        sid = created.json()["session_id"]
+
+        response = client.post(
+            f"/api/sessions/{sid}/chat/stream",
+            json={"message": "report"},
+            headers=ADMIN_HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"type": "analysis_report"', response.text)
+        self.assertIn('"id": "rpt-gateway-test"', response.text)
+
+    def test_backend_accepts_protocol_runtime_without_igraph_internals(self) -> None:
+        server = create_server(
+            config=_test_config(),
+            manage_subprocesses=False,
+            logger=_FakeLogger(),
+            runtime_factory=_StrictRuntime,
+        )
+        client = TestClient(server.app)
+        created = client.post(
+            "/api/sessions",
+            json={"model": "gpt-5-2"},
+            headers=ADMIN_HEADERS,
+        )
+        sid = created.json()["session_id"]
+
+        chatted = client.post(
+            f"/api/sessions/{sid}/chat",
+            json={"message": "hello"},
+            headers=ADMIN_HEADERS,
+        )
+
+        self.assertEqual(chatted.status_code, 200)
+        self.assertEqual(chatted.json()["response"], "strict:hello")
+        runtime = server._get_live_agent(sid, user_id="admin")
+        self.assertIsInstance(runtime, _StrictRuntime)
+        self.assertFalse(hasattr(runtime, "context_manager"))
+        self.assertFalse(hasattr(runtime, "logger"))
+        self.assertFalse(hasattr(runtime, "_provider_gateway"))
 
 
 class ApiGatewayGraphDataRetryTest(unittest.IsolatedAsyncioTestCase):

@@ -12,7 +12,11 @@
 
 from __future__ import annotations
 
+import os
 from typing import List
+
+_REPORTING_TOOLS_ENV = "MCP_ENABLE_REPORTING_TOOLS"
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 
 # ─────────────────────────────────────────────────────────────────
 # 图分析工具（对外暴露给 LLM）
@@ -54,16 +58,19 @@ GRAPH_TOOLS: List[dict] = [
         "description": (
             "从当前会话已注册的上传文件中加载图数据，**自动检测格式**并路由处理：\n"
             "- 二进制/JSON 图文件（.npz / .pt / .json graph_data.v1）→ 结构化直接加载；\n"
+            "- HIV/PCBA 等多图 .pt 文件 → 自动路由到 load_graph_classification_dataset 异步加载；\n"
             "- 边列表（每行 `src dst [weight]`，空格/Tab/逗号分隔）→ 直接解析；\n"
             "- 三元组（每行 `source relation target`）→ 直接解析；\n"
-            "- 自然语言文本（散文、文章、文档）→ LLM 预检提取 extraction_goal 后提交异步 text2graph 作业，返回 job_id，需用 job_status/job_result 轮询。\n\n"
+            "- 自然语言文本（散文、文章、文档）→ LLM 预检提取 extraction_goal 后提交异步 text2graph 作业；\n"
+            "- GRAPH_STORAGE_BACKEND=nebula 时，NPZ/PT/JSON 解析及大图 Importer 导入也作为后台作业执行。\n\n"
             "格式由 LLM 预检（FileFormatPreCheckSubAgent）自动判断，无需手动指定；LLM 不可用时降级为启发式检测。\n\n"
             "参数:\n"
             "- filename: 会话中已注册的上传文件名。\n"
             "- append(可选, 默认 false): false 覆盖当前图；true 追加到当前图。\n\n"
             "返回:\n"
-            "- 同步格式（binary/edge_list/triple）：加载状态、检测格式、图版本；\n"
-            "- 异步格式（freetext）：async=true、job_id、status='queued'；\n"
+            "- local 模式的 binary/edge_list/triple：加载状态、检测格式、图版本；\n"
+            "- freetext、graph_classification_dataset 或 nebula 模式的 binary："
+            "async=true、job_id、status='queued'；Agent 会在后端自动监控，直接 API 调用方可低频使用 get_job_status/get_job_result 查询，模型无需反复调用；\n"
             "- 图规模/结构详情请调用 `get_graph_info`。"
         ),
         "inputSchema": {
@@ -236,6 +243,31 @@ GRAPH_TOOLS: List[dict] = [
         "category": "compute",
     },
     {
+        "name": "get_neighbors",
+        "description": (
+            "查询指定节点的一跳邻居。Nebula 主存储模式使用原生 GO 查询，"
+            "本地模式读取当前 GraphData。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node_name": {"type": "string", "description": "节点名称或 ID"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "返回上限，服务端限制为 1 到 200",
+                },
+            },
+            "required": ["node_name"],
+        },
+        "category": "compute",
+    },
+    {
         "name": "search_node",
         "description": (
             "根据节点名称、文本内容、属性约束或自然语言描述搜索图中的节点，返回可用于其他工具的精确 node_name。"
@@ -354,6 +386,17 @@ GRAPH_TOOLS: List[dict] = [
                     "description": "仅 algorithm=yen_k_shortest 时生效，返回的候选路径数",
                     "default": 3,
                 },
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                    "description": "Nebula 主存储且 use_weight=false 时的遍历方向。",
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Nebula 原生非加权查询的最大跳数，限制为 1 到 20。",
+                },
             },
             "required": ["source", "target"],
         },
@@ -374,6 +417,10 @@ GRAPH_TOOLS: List[dict] = [
             "properties": {
                 "source": {"type": "string", "description": "起点节点"},
                 "target": {"type": "string", "description": "终点节点"},
+                "direction": {"type": "string", "enum": ["out", "in", "both"], "default": "out"},
+                "max_steps": {"type": "integer", "default": 10, "description": "Nebula 模式物化的最大跳数，限制为 1 到 20。"},
+                "max_nodes": {"type": "integer", "description": "Nebula 子图物化节点上限。"},
+                "max_edges": {"type": "integer", "description": "Nebula 子图物化边上限。"},
             },
             "required": ["source", "target"],
         },
@@ -668,9 +715,13 @@ GRAPH_TOOLS: List[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "可选；Nebula 主存储下指定节点时直接查询该节点入度/出度，不物化整图。",
+                },
                 "limit": {
                     "type": ["integer", "string"],
-                    "description": "返回的 top/low 度节点数上限，默认 20，最大 200；传 \"all\" 返回全部节点。",
+                    "description": "返回的 top/low 度节点数上限，默认 20，最大 200；传 'all' 返回全部节点。",
                     "default": 20,
                 },
             },
@@ -721,7 +772,10 @@ GRAPH_TOOLS: List[dict] = [
                     "type": "string",
                     "description": "新图版本描述；create_version=true 时生效。",
                 },
-                "limit": {"type": ["integer", "string"], "description": "返回的节点/边预览条数上限，默认 20，最大 200；传 \"all\" 返回全部。", "default": 20},
+                "direction": {"type": "string", "enum": ["out", "in", "both"], "default": "out", "description": "ego_graph 在 Nebula 中的遍历方向。"},
+                "max_nodes": {"type": "integer", "description": "Nebula 子图物化节点上限。"},
+                "max_edges": {"type": "integer", "description": "Nebula 子图物化边上限。"},
+                "limit": {"type": ["integer", "string"], "description": "返回的节点/边预览条数上限，默认 20，最大 200；传 'all' 返回全部。", "default": 20},
             },
             "required": ["method"],
         },
@@ -791,7 +845,11 @@ GRAPH_TOOLS: List[dict] = [
                 "source": {"type": "string", "description": "起点节点（all_simple_paths 和 has_path 必填）"},
                 "target": {"type": "string", "description": "终点节点（all_simple_paths 和 has_path 必填）"},
                 "cutoff": {"type": "integer", "default": 5, "description": "仅 all_simple_paths 生效，路径最大长度"},
-                "limit": {"type": ["integer", "string"], "description": "all_simple_paths 返回路径数上限，默认 10，最大 200；传 \"all\" 返回全部路径（慎用，可能指数级）。", "default": 10},
+                "direction": {"type": "string", "enum": ["out", "in", "both"], "default": "out"},
+                "max_steps": {"type": "integer", "default": 10, "description": "Nebula 模式物化的最大跳数，限制为 1 到 20。"},
+                "max_nodes": {"type": "integer", "description": "Nebula 子图物化节点上限。"},
+                "max_edges": {"type": "integer", "description": "Nebula 子图物化边上限。"},
+                "limit": {"type": ["integer", "string"], "description": "all_simple_paths 返回路径数上限，默认 10，最大 200；传 'all' 返回全部路径（慎用，可能指数级）。", "default": 10},
             },
             "required": ["method"],
         },
@@ -863,7 +921,10 @@ GRAPH_TOOLS: List[dict] = [
                     "type": "string",
                     "description": "descendants 和 ancestors 必填，transitive_closure 不需要",
                 },
-                "limit": {"type": ["integer", "string"], "description": "返回节点/边数上限，默认 20，最大 200；传 \"all\" 返回全部（transitive_closure 慎用）。", "default": 20},
+                "max_steps": {"type": "integer", "default": 10, "description": "descendants/ancestors 在 Nebula 中遍历的最大跳数，限制为 1 到 20。"},
+                "max_nodes": {"type": "integer", "description": "Nebula 子图物化节点上限。"},
+                "max_edges": {"type": "integer", "description": "Nebula 子图物化边上限。"},
+                "limit": {"type": ["integer", "string"], "description": "返回节点/边数上限，默认 20，最大 200；传 'all' 返回全部（transitive_closure 慎用）。", "default": 20},
             },
             "required": ["method"],
         },
@@ -1146,6 +1207,85 @@ GRAPH_TOOLS: List[dict] = [
         },
         "category": "data",
     },
+    {
+        "name": "nebula_status",
+        "description": (
+            "检查 NebulaGraph 配置、连接、Schema 以及当前会话图的同步状态。"
+            "该工具不会修改图数据。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "category": "data",
+    },
+    {
+        "name": "nebula_sync_graph",
+        "description": (
+            "本地存储模式下，将当前 GraphData 显式同步到 NebulaGraph 并返回异步 job_id。"
+            "GRAPH_STORAGE_BACKEND=nebula 时当前图已经原生存储在 NebulaGraph，该工具直接返回 already_primary=true。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "category": "data",
+    },
+    {
+        "name": "nebula_get_node_info",
+        "description": "使用 NebulaGraph FETCH PROP 原生查询当前已同步图中的节点属性。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node_name": {"type": "string", "description": "当前图中的节点名称"},
+            },
+            "required": ["node_name"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "nebula_get_neighbors",
+        "description": "使用 NebulaGraph GO 原生查询当前已同步图中的一跳邻居。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "node_name": {"type": "string", "description": "当前图中的节点名称"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                    "description": "出边、入边或双向遍历",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "返回上限，服务端限制为 1 到 200",
+                },
+            },
+            "required": ["node_name"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "nebula_shortest_path",
+        "description": (
+            "使用 NebulaGraph FIND SHORTEST PATH 查询按跳数计算的最短路径。"
+            "该工具不计算加权最短路径；加权场景继续使用现有 shortest_path 工具。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "起点节点名称"},
+                "target": {"type": "string", "description": "终点节点名称"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "最大跳数，服务端限制为 1 到 20",
+                },
+            },
+            "required": ["source", "target"],
+        },
+        "category": "compute",
+    },
 ]
 
 # ─────────────────────────────────────────────────────────────────
@@ -1163,6 +1303,11 @@ _GNN_ALGO_CONFIG_SCHEMA: dict = {
             "default": "auto",
         },
         "hidden_dim": {"type": "integer", "description": "GNN 隐藏层维度。", "default": 64},
+        "node_embedding_dim": {
+            "type": "integer",
+            "description": "图分类节点类别 Embedding 维度。",
+            "default": 64,
+        },
         "embedding_dim": {"type": "integer", "description": "输出 embedding 维度。", "default": 64},
         "num_layers": {"type": "integer", "description": "GNN 层数，最少 2。", "default": 2},
         "dropout": {"type": "number", "description": "dropout 比例。", "default": 0.2},
@@ -1229,8 +1374,15 @@ _TRAIN_DATA_CONFIG_SCHEMA: dict = {
                 "maxItems": 2,
             },
         },
+        "dataset_id": {
+            "type": "string",
+            "description": (
+                "图分类数据集 ID；未传时使用当前会话通过 "
+                "load_graph_classification_dataset 绑定的数据集。"
+            ),
+        },
     },
-    "additionalProperties": True,
+    "additionalProperties": False,
 }
 
 _TRAIN_CONFIG_SCHEMA: dict = {
@@ -1264,6 +1416,18 @@ _TRAIN_CONFIG_SCHEMA: dict = {
             "description": "早停最小提升阈值。",
             "default": 0.0,
         },
+        "batch_size": {
+            "type": "integer",
+            "description": "图分类 mini-batch 大小；现有单图任务忽略。",
+            "default": 64,
+            "minimum": 1,
+        },
+        "num_workers": {
+            "type": "integer",
+            "description": "图分类 DataLoader worker 数，默认 0。",
+            "default": 0,
+            "minimum": 0,
+        },
     },
     "additionalProperties": True,
 }
@@ -1280,7 +1444,12 @@ _INFER_QUERY_SCHEMA: dict = {
         "split": {
             "type": "string",
             "enum": ["train", "val", "test"],
-            "description": "节点分类按划分集合推理。",
+            "description": "节点分类或图分类按划分集合推理。",
+        },
+        "graph_indices": {
+            "type": "array",
+            "description": "图分类指定数据集内的图索引。",
+            "items": {"type": "integer", "minimum": 0},
         },
         "edges": {
             "type": "array",
@@ -1308,6 +1477,36 @@ _INFER_CONFIG_SCHEMA: dict = {
     "description": "推理配置。不同任务使用不同字段，未使用字段可省略。",
     "properties": {
         "return_prob": {"type": "boolean", "description": "是否返回概率。", "default": True},
+        "batch_size": {
+            "type": "integer",
+            "description": "图分类推理 mini-batch 大小。",
+            "default": 128,
+            "minimum": 1,
+        },
+        "device": {
+            "type": "string",
+            "enum": ["auto", "cpu", "cuda"],
+            "description": "图分类推理设备，默认 auto。",
+            "default": "auto",
+        },
+        "threshold": {
+            "type": "number",
+            "description": "图分类二分类概率阈值。",
+            "default": 0.5,
+            "minimum": 0.0,
+            "maximum": 1.0,
+        },
+        "top_k_tasks": {
+            "type": "integer",
+            "description": "PCBA 每张图默认返回的最高概率任务数。",
+            "default": 5,
+            "minimum": 1,
+        },
+        "return_all_task_probs": {
+            "type": "boolean",
+            "description": "PCBA 是否返回完整 128 维概率、预测和真实标签数组。",
+            "default": False,
+        },
         "allow_version_mismatch": {
             "type": "boolean",
             "description": "是否允许模型图版本与当前图版本不一致。",
@@ -1323,11 +1522,13 @@ _INFER_CONFIG_SCHEMA: dict = {
             "type": "integer",
             "description": "指定节点或 split 推理时最多返回的预测明细数。",
             "default": 20,
+            "minimum": 0,
         },
         "result_offset": {
             "type": "integer",
             "description": "指定节点或 split 推理时的分页偏移量。",
             "default": 0,
+            "minimum": 0,
         },
         "topk": {
             "type": "integer",
@@ -1349,6 +1550,71 @@ _INFER_CONFIG_SCHEMA: dict = {
 }
 
 GRAPH_ML_TOOLS: List[dict] = [
+    {
+        "name": "load_graph_classification_dataset",
+        "description": (
+            "从当前会话已注册的上传文件中加载多图图分类数据集。\n\n"
+            "该工具专用于 HIV/PCBA 等多图 `.pt` 文件；普通单图仍使用 "
+            "`load_graph_from_upload`。\n\n"
+            "参数:\n"
+            "- filename: 当前会话中已注册的上传文件名，不接受任意路径。\n"
+            "- dataset_profile: auto / hiv / pcba，默认 auto。\n\n"
+            "返回:\n"
+            "- 异步 job_id；完成后结果包含数据集摘要和图分类 readiness。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "当前会话中已注册的多图 .pt 文件名",
+                    "minLength": 1,
+                },
+                "dataset_profile": {
+                    "type": "string",
+                    "enum": ["auto", "hiv", "pcba"],
+                    "description": "数据集契约，默认自动识别。",
+                    "default": "auto",
+                },
+            },
+            "required": ["filename"],
+            "additionalProperties": False,
+        },
+        "category": "graph_ml",
+    },
+    {
+        "name": "load_graph_classification_graph",
+        "description": (
+            "从当前会话已加载的 HIV/PCBA 多图图分类数据集中按索引导出一张图，"
+            "并设置为当前会话单图。\n\n"
+            "典型用法：用户要求查看/可视化/分析某个 graph_index（例如 5）时，"
+            "先调用本工具，然后继续调用 get_graph_info、get_node_info、"
+            "visualize_subgraph 或 subgraph_extraction。\n\n"
+            "参数:\n"
+            "- graph_index: 0-based 图索引，范围为 [0, num_graphs-1]。\n"
+            "- dataset_id: 可选；默认使用当前会话绑定的图分类数据集。\n\n"
+            "返回:\n"
+            "- 导出的单图摘要、graph_version、split、graph_label、节点/边预览，"
+            "以及当前图分析 readiness。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "graph_index": {
+                    "type": "integer",
+                    "description": "0-based 图索引，例如 5 表示第 6 张图。",
+                    "minimum": 0,
+                },
+                "dataset_id": {
+                    "type": "string",
+                    "description": "可选；指定当前会话中已绑定的图分类数据集 ID。",
+                },
+            },
+            "required": ["graph_index"],
+            "additionalProperties": False,
+        },
+        "category": "graph_ml",
+    },
     {
         "name": "visualize_model_architecture",
         "description": (
@@ -1372,7 +1638,8 @@ GRAPH_ML_TOOLS: List[dict] = [
         "description": (
             "发起图机器学习训练任务（GraphML）。\n\n"
             "参数:\n"
-            "- task: 任务类型，可选 `node_classification` / `link_prediction` / `pretrain`。\n"
+            "- task: 任务类型，可选 `node_classification` / `link_prediction` / "
+            "`graph_classification` / `pretrain`。\n"
             "- model(可选): 模型名称。\n"
             "- method(可选): 训练方法或 pipeline 名称。\n"
             "- graph_version(可选): 指定图版本；不传则由服务端决定默认版本。\n"
@@ -1381,14 +1648,21 @@ GRAPH_ML_TOOLS: List[dict] = [
             "- train_config(可选): 训练超参配置（字典）。\n"
             "- algo_config(可选): 算法特定配置（字典）。\n\n"
             "返回:\n"
-            "- JSON 字符串，包含任务提交结果、模型信息、状态或错误详情。"
+            "- JSON 字符串，包含任务提交结果、模型信息、状态或错误详情。\n"
+            "图分类必须先调用 load_graph_classification_dataset，不能把多图 .pt "
+            "交给 load_graph_from_upload，也不接受自定义 split/metric。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "task": {
                     "type": "string",
-                    "enum": ["node_classification", "link_prediction", "pretrain"],
+                    "enum": [
+                        "node_classification",
+                        "link_prediction",
+                        "graph_classification",
+                        "pretrain",
+                    ],
                     "description": "任务类型",
                 },
                 "model": {"type": "string", "description": "模型名称（可选）"},
@@ -1416,6 +1690,9 @@ GRAPH_ML_TOOLS: List[dict] = [
             "- 节点分类若 query 指定 nodes/split，返回该集合 evaluation 指标，并最多返回 20 条 predictions；超出会给出截断提示。\n"
             "- 链接预测若 query 指定 edges/source_node，返回指定对象的 predictions。\n"
             "- 若 query 为空，返回 evaluation 指标摘要和少量 sample/top 预测结果。"
+            "\n- 图分类支持 query.split 或 query.graph_indices；完整 split 指标不受"
+            " result_limit 分页影响，PCBA 完整 128 维概率需显式开启"
+            " return_all_task_probs。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1428,6 +1705,69 @@ GRAPH_ML_TOOLS: List[dict] = [
             "required": ["model_id"],
         },
         "category": "graph_ml",
+    },
+]
+
+# ─────────────────────────────────────────────────────────────────
+# 报告生成工具（默认不暴露，待执行逻辑接入后开启）
+# ─────────────────────────────────────────────────────────────────
+
+REPORTING_TOOLS: List[dict] = [
+    {
+        "name": "create_analysis_report",
+        "description": (
+            "基于前序图分析工具结果生成图分析可视化报告规格。"
+            "适用于整体理解、统计总结、结构解释、模式发现、对比分析、诊断判断或报告生成等请求。"
+            "报告图表数据必须来自 source_results、图状态或用户明确提供的数据。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "report_intent": {
+                    "type": "string",
+                    "enum": ["overview", "analysis", "diagnosis", "comparison", "custom"],
+                    "description": "报告意图。",
+                    "default": "analysis",
+                },
+                "analysis_goal": {
+                    "type": "string",
+                    "description": "用户原始分析目标或 Agent 归纳后的分析目标。",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "报告标题。",
+                },
+                "source_results": {
+                    "type": "object",
+                    "description": "前序工具结果，按工具名组织，例如 get_graph_info、degree_analysis、node_centrality 或 global_metrics。",
+                    "additionalProperties": True,
+                },
+                "options": {
+                    "type": "object",
+                    "description": "报告生成选项。",
+                    "properties": {
+                        "top_k": {
+                            "type": "integer",
+                            "description": "图表和表格展示上限。",
+                            "default": 10,
+                        },
+                        "include_narrative": {
+                            "type": "boolean",
+                            "description": "是否生成规则化文字洞察。",
+                            "default": True,
+                        },
+                        "max_sections": {
+                            "type": "integer",
+                            "description": "报告 section 数量上限。",
+                            "default": 6,
+                        },
+                    },
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["report_intent", "analysis_goal", "source_results"],
+        },
+        "category": "reporting",
     },
 ]
 
@@ -1461,9 +1801,23 @@ INTERNAL_TOOLS: List[dict] = [
 ]
 
 
-def get_all_public_tools(include_graph_ml: bool = True) -> List[dict]:
+def _reporting_tools_enabled_from_env() -> bool:
+    value = os.getenv(_REPORTING_TOOLS_ENV, "").strip().lower()
+    if value in _FALSE_ENV_VALUES:
+        return False
+    return True
+
+
+def get_all_public_tools(
+    include_graph_ml: bool = True,
+    include_reporting: bool | None = None,
+) -> List[dict]:
     """返回对 LLM 暴露的工具规格列表。"""
     tools = list(GRAPH_TOOLS)
+    if include_reporting is None:
+        include_reporting = _reporting_tools_enabled_from_env()
+    if include_reporting:
+        tools.extend(REPORTING_TOOLS)
     if include_graph_ml:
         tools.extend(GRAPH_ML_TOOLS)
     return tools

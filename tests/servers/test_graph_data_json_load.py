@@ -83,17 +83,20 @@ class GraphDataJsonLoadTest(unittest.TestCase):
         old_cwd = os.getcwd()
         try:
             with tempfile.TemporaryDirectory() as td:
-                os.chdir(td)
-                session = GraphSession(session_id="s-relative-upload")
-                n, e = session.load_graph_from_upload_path(rel_path, append=False)
-                self.assertEqual(n, 3)
-                self.assertEqual(e, 2)
+                try:
+                    os.chdir(td)
+                    session = GraphSession(session_id="s-relative-upload")
+                    n, e = session.load_graph_from_upload_path(rel_path, append=False)
+                    self.assertEqual(n, 3)
+                    self.assertEqual(e, 2)
+                finally:
+                    os.chdir(old_cwd)
         finally:
             os.chdir(old_cwd)
             if os.path.exists(abs_path):
                 os.remove(abs_path)
 
-    def test_user_session_graph_state_uses_sessions_dir(self) -> None:
+    def test_user_session_graph_state_uses_graph_sessions_dir(self) -> None:
         old_root = os.environ.get("IGRAPH_DATA_ROOT")
         try:
             with tempfile.TemporaryDirectory() as td:
@@ -101,7 +104,7 @@ class GraphDataJsonLoadTest(unittest.TestCase):
                 session = GraphSession(session_id="s-user-graph", user_id="alice")
                 session._parse_edgelist("A B\nB C\n", append=False)
 
-                session_dir = os.path.join(td, "users", "alice", "sessions", "s-user-graph")
+                session_dir = os.path.join(td, "users", "alice", "graph_sessions", "s-user-graph")
                 self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_current.npz")))
                 self.assertTrue(os.path.exists(os.path.join(session_dir, "snapshots", "v001.npz")))
                 self.assertFalse(
@@ -136,7 +139,7 @@ class GraphDataJsonLoadTest(unittest.TestCase):
                 self.assertTrue(session.load_snapshot())
                 self.assertEqual(session.graph_version, 3)
 
-                session_dir = os.path.join(td, "users", "alice", "sessions", "s-legacy-graph")
+                session_dir = os.path.join(td, "users", "alice", "graph_sessions", "s-legacy-graph")
                 self.assertTrue(os.path.exists(os.path.join(session_dir, "graph_current.npz")))
                 self.assertTrue(os.path.exists(os.path.join(session_dir, "snapshots", "v003.npz")))
         finally:
@@ -161,7 +164,7 @@ class GraphDataJsonLoadTest(unittest.TestCase):
                 self.assertIsNotNone(result)
                 self.assertEqual(session.graph_version, 1)
                 self.assertEqual([r["graph_version"] for r in session.list_versions()], [1])
-                session_dir = os.path.join(td, "users", "alice", "sessions", "s-discard-version")
+                session_dir = os.path.join(td, "users", "alice", "graph_sessions", "s-discard-version")
                 self.assertTrue(os.path.exists(os.path.join(session_dir, "snapshots", "v001.npz")))
                 self.assertFalse(os.path.exists(os.path.join(session_dir, "snapshots", "v002.npz")))
         finally:

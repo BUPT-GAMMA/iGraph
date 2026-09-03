@@ -2,7 +2,7 @@
 
 > 审查日期：2026-04-28  
 > 分支：`codex/search-entity-tools`  
-> 审查范围：基于 `plans/text_graph_extraction_subagent_plan.md` 的全量实现
+> 审查范围：基于 `docs/archive/plans/text_graph_extraction_subagent_plan.md` 的全量实现
 
 ---
 

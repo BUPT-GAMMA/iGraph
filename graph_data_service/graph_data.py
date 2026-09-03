@@ -7,6 +7,15 @@ import numpy as np
 from typing import Optional, Dict, List, Any, Tuple, Union, Sequence
 
 from graph_data_service.adapters import graph_to_networkx
+from graph_data_service.graph_structure import (
+    GraphStructureInfo,
+    compute_node_degrees,
+    inspect_graph_structure,
+    logical_edge_pairs,
+    normalize_storage_type,
+    resolve_semantic_type,
+    structure_metadata_dict,
+)
 from graph_data_service.io import load_graph_data, save_graph_data
 
 
@@ -70,6 +79,10 @@ class GraphData:
         edge_feat: Optional[np.ndarray] = None,
         graph_desc: Optional[str] = None,
         directed: bool = True,
+        semantic_type: Optional[str] = None,
+        storage_type: Optional[str] = None,
+        graph_metadata: Optional[Dict[str, Any]] = None,
+        transform_log: Optional[List[str]] = None,
         name: str = "",
         # ── 图学习 ──────────────────────────────────────────────────
         node_label: Optional[Union[List, np.ndarray]] = None,
@@ -86,8 +99,26 @@ class GraphData:
         test_mask: Optional[np.ndarray] = None,
     ):
         self._num_nodes: int = int(num_nodes)
-        self._directed: bool = directed
+        self._graph_metadata: Dict[str, Any] = dict(graph_metadata or {})
+        self._transform_log: List[str] = list(transform_log or [])
         self.name: str = name
+        resolved_semantic, semantic_source = resolve_semantic_type(
+            explicit_semantic_type=semantic_type,
+            directed=directed,
+            metadata=self._graph_metadata,
+            dataset_name=name,
+        )
+        self._semantic_type: str = resolved_semantic
+        self._semantic_source: str = semantic_source
+        if resolved_semantic == "directed":
+            self._directed = True
+        elif resolved_semantic == "undirected":
+            self._directed = False
+        else:
+            self._directed = bool(directed)
+        self._storage_type: Optional[str] = normalize_storage_type(storage_type)
+        self._structure_info: Optional[GraphStructureInfo] = None
+        self._degree_cache: Optional[dict[str, Any]] = None
 
         # --------------------------------------------------------------
         # 边索引
@@ -150,6 +181,37 @@ class GraphData:
         self._edge_type: Optional[np.ndarray] = (
             np.asarray(edge_type, dtype=object) if edge_type is not None else None
         )
+        self._structure_info = inspect_graph_structure(
+            self._edge_index,
+            num_nodes=self._num_nodes,
+            semantic_type=self._semantic_type,
+            storage_type=self._storage_type,
+            edge_type=self._edge_type,
+            semantic_source=self._semantic_source,
+        )
+        if self._semantic_type == "unknown":
+            resolved_semantic, semantic_source = resolve_semantic_type(
+                explicit_semantic_type=semantic_type,
+                directed=directed,
+                metadata=self._graph_metadata,
+                dataset_name=name,
+                structure_is_symmetric=self._structure_info.is_symmetric,
+            )
+            if resolved_semantic != "unknown":
+                self._semantic_type = resolved_semantic
+                self._semantic_source = semantic_source
+                self._directed = resolved_semantic == "directed"
+                self._structure_info = inspect_graph_structure(
+                    self._edge_index,
+                    num_nodes=self._num_nodes,
+                    semantic_type=self._semantic_type,
+                    storage_type=self._storage_type,
+                    edge_type=self._edge_type,
+                    semantic_source=self._semantic_source,
+                )
+        if self._storage_type is None:
+            self._storage_type = self._structure_info.storage_type
+        self._degree_cache = None
         # graph_label: list/ndarray → float32 one-hot；str/int → 原样存储
         if graph_label is None:
             self._graph_label: Optional[Union[str, int, np.ndarray]] = None
@@ -213,7 +275,10 @@ class GraphData:
         N = self._num_nodes
 
         if self._edge_index.size > 0:
+            min_id = int(self._edge_index.min())
             max_id = int(self._edge_index.max())
+            if min_id < 0:
+                raise ValueError("edge_index contains negative node ids")
             if max_id >= N:
                 raise ValueError(
                     f"edge_index 包含节点 ID {max_id}，超出节点总数 {N}"
@@ -368,11 +433,69 @@ class GraphData:
         return self._edge_index.shape[1]
 
     @property
+    def num_edge_entries(self) -> int:
+        return self.num_edges
+
+    @property
     def directed(self) -> bool:
         return self._directed
 
     @property
+    def semantic_type(self) -> str:
+        return self._semantic_type
+
+    @property
+    def storage_type(self) -> str:
+        return self._storage_type or "mixed"
+
+    @property
+    def is_symmetric(self) -> bool:
+        return bool(self._structure_info.is_symmetric) if self._structure_info is not None else False
+
+    @property
+    def has_self_loops(self) -> bool:
+        return bool(self._structure_info.has_self_loops) if self._structure_info is not None else False
+
+    @property
+    def has_duplicate_entries(self) -> bool:
+        return bool(self._structure_info.has_duplicate_entries) if self._structure_info is not None else False
+
+    @property
+    def num_unique_directed_edges(self) -> int:
+        return int(self._structure_info.num_unique_directed_edges) if self._structure_info is not None else self.num_edges
+
+    @property
+    def num_unique_undirected_edges(self) -> int:
+        return int(self._structure_info.num_unique_undirected_edges) if self._structure_info is not None else self.num_edges
+
+    @property
+    def num_unique_edges(self) -> int:
+        if self._structure_info is None:
+            return self.num_edges
+        return int(self._structure_info.num_unique_edges)
+
+    @property
+    def structure_info(self) -> Dict[str, Any]:
+        if self._structure_info is None:
+            return {}
+        return structure_metadata_dict(self._structure_info)
+
+    @property
+    def graph_metadata(self) -> Dict[str, Any]:
+        payload = dict(self._graph_metadata)
+        payload.update(self.structure_info)
+        return payload
+
+    @property
+    def transform_log(self) -> List[str]:
+        return list(self._transform_log)
+
+    @property
     def edge_index(self) -> np.ndarray:
+        return self._edge_index
+
+    @property
+    def raw_edge_index(self) -> np.ndarray:
         return self._edge_index
 
     @property
@@ -815,6 +938,13 @@ class GraphData:
         src, dst = self._edge_index
         return [(int(src[i]), int(dst[i])) for i in range(self.num_edges)]
 
+    def logical_edges(self) -> List[Tuple[int, int]]:
+        return logical_edge_pairs(
+            self._edge_index,
+            self._semantic_type,
+            edge_type=self._edge_type,
+        )
+
     def all_edges_by_name(self) -> List[Tuple[str, str]]:
         return [
             (
@@ -824,13 +954,51 @@ class GraphData:
             for s, d in self.all_edges()
         ]
 
+    def logical_edges_by_name(self) -> List[Tuple[str, str]]:
+        return [
+            (
+                self._id2node.get(s, str(s)),
+                self._id2node.get(d, str(d)),
+            )
+            for s, d in self.logical_edges()
+        ]
+
     # ------------------------------------------------------------------
     # 图拓扑查询
     # ------------------------------------------------------------------
 
+    def _degree_data(self) -> dict[str, Any]:
+        if self._degree_cache is None:
+            self._degree_cache = compute_node_degrees(
+                self._edge_index,
+                self._num_nodes,
+                self._semantic_type,
+                edge_type=self._edge_type,
+            )
+        return self._degree_cache
+
     def neighbors(self, node_id: int) -> List[int]:
         src, dst = self._edge_index
-        return dst[src == node_id].tolist()
+        neighbors: List[int] = []
+        seen: set[int] = set()
+        if self._semantic_type == "undirected":
+            for s, d in zip(src.tolist(), dst.tolist()):
+                s_i = int(s)
+                d_i = int(d)
+                if s_i == node_id and d_i not in seen:
+                    seen.add(d_i)
+                    neighbors.append(d_i)
+                elif d_i == node_id and s_i not in seen:
+                    seen.add(s_i)
+                    neighbors.append(s_i)
+            return neighbors
+        mask = src == node_id
+        for dst_id in dst[mask].tolist():
+            d_i = int(dst_id)
+            if d_i not in seen:
+                seen.add(d_i)
+                neighbors.append(d_i)
+        return neighbors
 
     def neighbors_by_name(self, node_name: str) -> List[str]:
         return [
@@ -839,8 +1007,17 @@ class GraphData:
         ]
 
     def predecessors(self, node_id: int) -> List[int]:
+        if self._semantic_type == "undirected":
+            return self.neighbors(node_id)
         src, dst = self._edge_index
-        return src[dst == node_id].tolist()
+        preds: List[int] = []
+        seen: set[int] = set()
+        for src_id in src[dst == node_id].tolist():
+            s_i = int(src_id)
+            if s_i not in seen:
+                seen.add(s_i)
+                preds.append(s_i)
+        return preds
 
     def predecessors_by_name(self, node_name: str) -> List[str]:
         return [
@@ -849,17 +1026,24 @@ class GraphData:
         ]
 
     def out_degree(self, node_id: int) -> int:
-        src, _ = self._edge_index
-        return int(np.sum(src == node_id))
+        degrees = self._degree_data()
+        return int(degrees["out_degree"][node_id])
 
     def in_degree(self, node_id: int) -> int:
-        _, dst = self._edge_index
-        return int(np.sum(dst == node_id))
+        degrees = self._degree_data()
+        return int(degrees["in_degree"][node_id])
 
     def degree(self, node_id: int) -> int:
-        if self._directed:
-            return self.out_degree(node_id) + self.in_degree(node_id)
-        return self.out_degree(node_id)
+        degrees = self._degree_data()
+        return int(degrees["degree"][node_id])
+
+    def total_degree(self, node_id: int) -> int:
+        degrees = self._degree_data()
+        return int(degrees["total_degree"][node_id])
+
+    def num_neighbors(self, node_id: int) -> int:
+        degrees = self._degree_data()
+        return int(degrees["num_neighbors"][node_id])
 
     def out_degree_by_name(self, node_name: str) -> int:
         return self.out_degree(self.name_to_id(node_name))
@@ -870,14 +1054,30 @@ class GraphData:
     def degree_by_name(self, node_name: str) -> int:
         return self.degree(self.name_to_id(node_name))
 
+    def total_degree_by_name(self, node_name: str) -> int:
+        return self.total_degree(self.name_to_id(node_name))
+
+    def num_neighbors_by_name(self, node_name: str) -> int:
+        return self.num_neighbors(self.name_to_id(node_name))
+
     def get_incident_edges(self, node_id: int) -> List[Dict[str, Any]]:
         src_arr, dst_arr = self._edge_index
-        if self._directed:
-            mask = (src_arr == node_id) | (dst_arr == node_id)
-        else:
-            mask = src_arr == node_id
-
         results = []
+        if self._semantic_type == "undirected":
+            seen: set[Tuple[int, int, Any]] = set()
+            for i in np.where((src_arr == node_id) | (dst_arr == node_id))[0]:
+                s, d = int(src_arr[i]), int(dst_arr[i])
+                rel = self._edge_type[i] if self._edge_type is not None and len(self._edge_type) > i else None
+                key = tuple(sorted((s, d))) + (rel,)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entry = self._edge_lookup.get((s, d)) or self._edge_lookup.get((d, s))
+                if entry is not None:
+                    results.append({"src": s, "dst": d, **entry})
+            return results
+
+        mask = (src_arr == node_id) | (dst_arr == node_id)
         for i in np.where(mask)[0]:
             s, d = int(src_arr[i]), int(dst_arr[i])
             entry = self._edge_lookup.get((s, d))
@@ -962,6 +1162,10 @@ class GraphData:
                 else None
             ),
             graph_label=self._graph_label,
+            semantic_type=self._semantic_type,
+            storage_type=self._storage_type,
+            graph_metadata=dict(self._graph_metadata),
+            transform_log=list(self._transform_log),
             node_text=(
                 [self._node_text[i] for i in node_ids_arr]
                 if self._node_text is not None
@@ -982,90 +1186,122 @@ class GraphData:
         return self.subgraph([self.name_to_id(n) for n in node_names])
 
     def to_undirected(self) -> "GraphData":
+        """Return a processed copy with bidirectional undirected storage.
+
+        The raw graph is left untouched. Exact duplicate directed records are
+        removed, while reverse records are preserved or added for undirected
+        message passing. Edge attributes are copied with the edge record they
+        belong to so edge_index and edge-level fields stay aligned.
         """
-        转换为无向图并返回新对象（不修改当前实例）。
-        反向边沿用正向边的所有属性（权重、特征、名称、标签、类型）。
-        """
-        if not self._directed:
-            return GraphData(
-                num_nodes=self._num_nodes,
-                edge_index=self._edge_index.copy(),
-                id2node=dict(self._id2node) if self._id2node else None,
-                node2id=dict(self._node2id) if self._node2id else None,
-                edge_names=self._edge_names.tolist() if self._edge_names is not None else None,
-                edge_weight=self._edge_weight.copy() if self._edge_weight is not None else None,
-                node_feat=self._node_feat.copy() if self._node_feat is not None else None,
-                edge_feat=self._edge_feat.copy() if self._edge_feat is not None else None,
-                graph_desc=self._graph_desc,
-                directed=False,
-                name=self.name,
-                node_label=self._node_label.copy() if self._node_label is not None else None,
-                node_type=self._node_type.tolist() if self._node_type is not None else None,
-                edge_label=self._edge_label.copy() if self._edge_label is not None else None,
-                edge_type=self._edge_type.tolist() if self._edge_type is not None else None,
-                graph_label=(
-                    self._graph_label.copy()
-                    if isinstance(self._graph_label, np.ndarray)
-                    else self._graph_label
-                ),
-                node_text=list(self._node_text) if self._node_text is not None else None,
-                edge_text=list(self._edge_text) if self._edge_text is not None else None,
-                label_names=self._label_names,
-                train_mask=self._train_mask.copy() if self._train_mask is not None else None,
-                val_mask=self._val_mask.copy() if self._val_mask is not None else None,
-                test_mask=self._test_mask.copy() if self._test_mask is not None else None,
+        def _freeze(value: Any) -> Any:
+            if value is None:
+                return None
+            if isinstance(value, np.generic):
+                return value.item()
+            if isinstance(value, np.ndarray):
+                return tuple(np.asarray(value, dtype=object).reshape(-1).tolist())
+            if isinstance(value, (list, tuple)):
+                return tuple(_freeze(item) for item in value)
+            return value
+
+        def _storage_key(src_id: int, dst_id: int, relation: Any) -> tuple[Any, ...]:
+            return int(src_id), int(dst_id), _freeze(relation)
+
+        def _exact_signature(record: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                int(record["src"]),
+                int(record["dst"]),
+                _freeze(record["type"]),
+                _freeze(record["label"]),
+                _freeze(record["weight"]),
+                _freeze(record["feat"]),
+                _freeze(record["text"]),
             )
 
-        src, dst = self._edge_index
-        combined = np.concatenate(
-            [self._edge_index, np.stack([dst, src], axis=0)], axis=1
-        )
+        def _record_at(idx: int) -> dict[str, Any]:
+            return {
+                "src": int(self._edge_index[0, idx]),
+                "dst": int(self._edge_index[1, idx]),
+                "weight": float(self._edge_weight[idx]) if self._edge_weight is not None else None,
+                "feat": self._edge_feat[idx].tolist() if self._edge_feat is not None else None,
+                "name": str(self._edge_names[idx]) if self._edge_names is not None else None,
+                "label": self._label_entry(self._edge_label, idx),
+                "type": self._edge_type[idx] if self._edge_type is not None else None,
+                "text": self._edge_text[idx] if self._edge_text is not None else None,
+            }
 
-        seen: set = set()
-        unique_idx: List[int] = []
-        for i, pair in enumerate(map(tuple, combined.T)):
-            if pair not in seen:
-                seen.add(pair)
-                unique_idx.append(i)
-        idx = np.array(unique_idx, dtype=np.int64)
+        edge_records: list[dict[str, Any]] = []
+        seen_exact: set[tuple[Any, ...]] = set()
+        removed_duplicate_entries = 0
+        for idx in range(self.num_edges):
+            record = _record_at(idx)
+            signature = _exact_signature(record)
+            if signature in seen_exact:
+                removed_duplicate_entries += 1
+                continue
+            seen_exact.add(signature)
+            edge_records.append(record)
 
-        def _extend_select(arr: Optional[np.ndarray]) -> Optional[np.ndarray]:
-            if arr is None:
-                return None
-            return np.concatenate([arr, arr], axis=0)[idx]
+        present_storage_keys = {
+            _storage_key(record["src"], record["dst"], record["type"])
+            for record in edge_records
+        }
+        added_reverse_edges = 0
+        for record in list(edge_records):
+            if record["src"] == record["dst"]:
+                continue
+            reverse_key = _storage_key(record["dst"], record["src"], record["type"])
+            if reverse_key in present_storage_keys:
+                continue
+            reverse = dict(record)
+            reverse["src"], reverse["dst"] = record["dst"], record["src"]
+            present_storage_keys.add(reverse_key)
+            edge_records.append(reverse)
+            added_reverse_edges += 1
 
-        new_edge_index = combined[:, idx]
-        new_edge_weight = _extend_select(self._edge_weight)
-        new_edge_feat = _extend_select(self._edge_feat)
-        new_edge_label = _extend_select(self._edge_label)
-        new_edge_type = _extend_select(self._edge_type)
-        new_edge_names = (
-            np.concatenate([self._edge_names, self._edge_names])[idx]
-            if self._edge_names is not None
-            else None
+        new_edge_index = (
+            np.asarray(
+                [[r["src"] for r in edge_records], [r["dst"] for r in edge_records]],
+                dtype=np.int64,
+            )
+            if edge_records
+            else np.empty((2, 0), dtype=np.int64)
         )
-        doubled_edge_text = (
-            (self._edge_text + self._edge_text) if self._edge_text is not None else None
-        )
-        new_edge_text = (
-            [doubled_edge_text[i] for i in idx] if doubled_edge_text is not None else None
-        )
+        new_edge_names = [r["name"] for r in edge_records] if self._edge_names is not None else None
+        new_edge_weight = [r["weight"] for r in edge_records] if self._edge_weight is not None else None
+        new_edge_feat = [r["feat"] for r in edge_records] if self._edge_feat is not None else None
+        new_edge_label = [r["label"] for r in edge_records] if self._edge_label is not None else None
+        new_edge_type = [r["type"] for r in edge_records] if self._edge_type is not None else None
+        new_edge_text = [r["text"] for r in edge_records] if self._edge_text is not None else None
+
+        transform_log = list(self._transform_log)
+        if removed_duplicate_entries:
+            transform_log.append("Removed duplicate directed edge entries")
+        if added_reverse_edges:
+            transform_log.append("Added reverse edges for undirected message passing")
+        else:
+            transform_log.append("Validated bidirectional storage for undirected message passing")
+
         return GraphData(
             num_nodes=self._num_nodes,
             edge_index=new_edge_index,
             id2node=dict(self._id2node) if self._id2node else None,
             node2id=dict(self._node2id) if self._node2id else None,
-            edge_names=new_edge_names.tolist() if new_edge_names is not None else None,
+            edge_names=new_edge_names,
             edge_weight=new_edge_weight,
             node_feat=self._node_feat.copy() if self._node_feat is not None else None,
             edge_feat=new_edge_feat,
             graph_desc=self._graph_desc,
             directed=False,
+            semantic_type="undirected",
+            storage_type="bidirectional",
+            graph_metadata=dict(self._graph_metadata),
+            transform_log=transform_log,
             name=self.name + "_undirected",
             node_label=self._node_label.copy() if self._node_label is not None else None,
             node_type=self._node_type.tolist() if self._node_type is not None else None,
             edge_label=new_edge_label,
-            edge_type=new_edge_type.tolist() if new_edge_type is not None else None,
+            edge_type=new_edge_type,
             graph_label=(
                 self._graph_label.copy()
                 if isinstance(self._graph_label, np.ndarray)
@@ -1078,10 +1314,6 @@ class GraphData:
             val_mask=self._val_mask.copy() if self._val_mask is not None else None,
             test_mask=self._test_mask.copy() if self._test_mask is not None else None,
         )
-
-    # ------------------------------------------------------------------
-    # 转换：NetworkX
-    # ------------------------------------------------------------------
 
     def to_networkx(self, feat_as_attr: bool = True, use_node_names: bool = True):
         return graph_to_networkx(
@@ -1106,12 +1338,12 @@ class GraphData:
     # ------------------------------------------------------------------
 
     def summary(self) -> str:
-        nf  = str(self._node_feat.shape)  if self._node_feat  is not None else "无"
-        ef  = str(self._edge_feat.shape)  if self._edge_feat  is not None else "无"
-        nl  = str(self._node_label.shape) if self._node_label is not None else "无"
-        el  = str(self._edge_label.shape) if self._edge_label is not None else "无"
-        ntypes = ", ".join(self.node_types) if self._node_type is not None else "无"
-        etypes = ", ".join(self.edge_types) if self._edge_type is not None else "无"
+        nf = str(self._node_feat.shape) if self._node_feat is not None else "none"
+        ef = str(self._edge_feat.shape) if self._edge_feat is not None else "none"
+        nl = str(self._node_label.shape) if self._node_label is not None else "none"
+        el = str(self._edge_label.shape) if self._edge_label is not None else "none"
+        ntypes = ", ".join(self.node_types) if self._node_type is not None else "none"
+        etypes = ", ".join(self.edge_types) if self._edge_type is not None else "none"
         gl = (
             self._graph_label.tolist()
             if isinstance(self._graph_label, np.ndarray)
@@ -1119,45 +1351,52 @@ class GraphData:
         )
         mask_info = (
             f"train={int(self._train_mask.sum())}"
-            if self._train_mask is not None else "无"
+            if self._train_mask is not None
+            else "none"
         )
         lines = [
             f"GraphData(name='{self.name}')",
-            f"  节点数      : {self.num_nodes}",
-            f"  边数        : {self.num_edges}",
-            f"  有向图      : {self._directed}",
-            f"  已命名节点  : {len(self._id2node)} / {self.num_nodes}",
-            f"  边名称      : {'有' if self._edge_names is not None else '无'}",
-            f"  节点特征    : {nf}",
-            f"  边特征      : {ef}",
-            f"  边权重      : {'有' if self._edge_weight is not None else '无'}",
-            f"  图描述      : {self._graph_desc or '无'}",
-            f"  ── 异质图 ──────────────────────────────",
-            f"  节点标签    : {nl}",
-            f"  节点类型    : {ntypes}",
-            f"  边标签      : {el}",
-            f"  边类型      : {etypes}",
-            f"  图标签      : {gl if gl is not None else '无'}",
-            f"  ── 文本图 (TAG) ─────────────────────────",
-            f"  节点文本    : {'有 (' + str(len(self._node_text)) + ' 条)' if self._node_text is not None else '无'}",
-            f"  边文本      : {'有 (' + str(len(self._edge_text)) + ' 条)' if self._edge_text is not None else '无'}",
-            f"  类别名称    : {', '.join(self._label_names) if self._label_names else '无'}",
-            f"  划分掩码    : {mask_info}",
+            f"  num_nodes              : {self.num_nodes}",
+            f"  num_edge_entries       : {self.num_edge_entries}",
+            f"  num_unique_edges       : {self.num_unique_edges}",
+            f"  num_unique_directed    : {self.num_unique_directed_edges}",
+            f"  num_unique_undirected  : {self.num_unique_undirected_edges}",
+            f"  semantic_type          : {self.semantic_type}",
+            f"  storage_type           : {self.storage_type}",
+            f"  is_symmetric           : {self.is_symmetric}",
+            f"  has_self_loops         : {self.has_self_loops}",
+            f"  has_duplicate_entries  : {self.has_duplicate_entries}",
+            f"  named_nodes            : {len(self._id2node)} / {self.num_nodes}",
+            f"  edge_names             : {'yes' if self._edge_names is not None else 'no'}",
+            f"  node_feat              : {nf}",
+            f"  edge_feat              : {ef}",
+            f"  edge_weight            : {'yes' if self._edge_weight is not None else 'no'}",
+            f"  graph_desc              : {self._graph_desc or 'none'}",
+            f"  node_label              : {nl}",
+            f"  node_type               : {ntypes}",
+            f"  edge_label              : {el}",
+            f"  edge_type               : {etypes}",
+            f"  graph_label             : {gl if gl is not None else 'none'}",
+            f"  node_text               : {'yes(' + str(len(self._node_text)) + ')' if self._node_text is not None else 'no'}",
+            f"  edge_text               : {'yes(' + str(len(self._edge_text)) + ')' if self._edge_text is not None else 'no'}",
+            f"  label_names             : {', '.join(self._label_names) if self._label_names else 'none'}",
+            f"  split_masks             : {mask_info}",
         ]
         return "\n".join(lines)
 
     def __repr__(self) -> str:
         return (
             f"GraphData(name='{self.name}', nodes={self.num_nodes}, "
-            f"edges={self.num_edges}, directed={self._directed}, "
-            f"named_nodes={len(self._id2node)}, "
-            f"node_feat={'yes' if self._node_feat  is not None else 'no'}, "
-            f"edge_feat={'yes' if self._edge_feat  is not None else 'no'}, "
+            f"edge_entries={self.num_edge_entries}, unique_edges={self.num_unique_edges}, "
+            f"semantic_type='{self.semantic_type}', storage_type='{self.storage_type}', "
+            f"symmetric={self.is_symmetric}, named_nodes={len(self._id2node)}, "
+            f"node_feat={'yes' if self._node_feat is not None else 'no'}, "
+            f"edge_feat={'yes' if self._edge_feat is not None else 'no'}, "
             f"edge_weight={'yes' if self._edge_weight is not None else 'no'}, "
             f"node_label={'yes' if self._node_label is not None else 'no'}, "
-            f"node_type={'yes' if self._node_type  is not None else 'no'}, "
+            f"node_type={'yes' if self._node_type is not None else 'no'}, "
             f"edge_label={'yes' if self._edge_label is not None else 'no'}, "
-            f"edge_type={'yes' if self._edge_type  is not None else 'no'}, "
+            f"edge_type={'yes' if self._edge_type is not None else 'no'}, "
             f"graph_label={'yes' if self._graph_label is not None else 'no'}, "
             f"node_text={'yes' if self._node_text is not None else 'no'}, "
             f"label_names={'yes' if self._label_names is not None else 'no'}, "
