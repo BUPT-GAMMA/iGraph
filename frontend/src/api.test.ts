@@ -12,6 +12,14 @@ function responseFromChunks(chunks: string[]) {
 }
 
 describe('SSE parser', () => {
+  it('formats FastAPI validation details instead of showing a generic 422', () => {
+    const error = ApiError.fromResponse(422, {
+      detail: [{ loc: ['body', 'name'], msg: 'String should have at most 80 characters' }],
+    });
+
+    expect(error.message).toBe('name: String should have at most 80 characters');
+  });
+
   it('keeps structured run and feedback conflict details', () => {
     const error = ApiError.fromResponse(409, {
       detail: {

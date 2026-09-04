@@ -61,10 +61,20 @@ from mcp_service.config import MCPConfig
 from mcp_service.graph_data_client import GraphDataClient
 from mcp_service.raw_client import RawMCPClient
 from mcp_service.session_registry import SessionRegistry
-from mcp_service.tool_forwarding import forwarded_graph_tool_arguments
+from mcp_service.tool_forwarding import (
+    forwarded_graph_tool_arguments,
+    schema_parameter_type,
+)
 
 
 class MCPModulesTest(unittest.TestCase):
+    def test_object_schema_accepts_dict_or_json_string_at_mcp_boundary(self) -> None:
+        annotation = schema_parameter_type("object")
+
+        self.assertTrue(annotation.__args__)
+        self.assertIn(dict, annotation.__args__)
+        self.assertIn(str, annotation.__args__)
+
     def test_train_json_object_arguments_are_decoded_before_forwarding(self) -> None:
         original = {
             "task": "node_classification",

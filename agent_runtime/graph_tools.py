@@ -16,10 +16,12 @@ if TYPE_CHECKING:
 
 
 def graph_identity_headers(
-    run_context: RunContext,
+    run_context: Optional[RunContext],
     agent: Optional["Agent"] = None,
     team: Optional["Team"] = None,
 ) -> dict[str, str]:
+    if run_context is None:
+        return {}
     return {
         "X-User-ID": str(run_context.user_id or ""),
         "X-Session-ID": str(run_context.session_id or ""),

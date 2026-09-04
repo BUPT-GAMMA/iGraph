@@ -86,6 +86,7 @@ export type ConversationAction =
   | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
   | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string; restoreDraft?: string; restoreAttachments?: AttachmentRef[] }
   | { type: 'ADOPT_RUN'; sessionId: string; generation: string; activeRun: ActiveRun; feedback?: FeedbackRequest | null }
+  | { type: 'SET_RUN_ID'; sessionId: string; generation: string; runId: string; lastEventIndex?: number }
   | { type: 'BEGIN_FEEDBACK_SUBMISSION'; sessionId: string; generation: string; runId: string; callId: string; decisionId: string; decision: 'approve' | 'reject' }
   | { type: 'CLEAR_ACTIVE_RUN'; sessionId: string; generation: string }
   | { type: 'APPLY_BATCH'; sessionId: string; generation: string; batch: StreamBatch }
@@ -770,6 +771,20 @@ export function conversationReducer(state: ConversationState, action: Conversati
           lastEventIndex: Number(action.activeRun.last_event_index ?? -1),
           assistantMessageId: `assistant:${action.activeRun.run_id}`,
           toolsById: {}, toolOrder: [], plan: null, feedback: action.feedback || null,
+        },
+      };
+      break;
+    case 'SET_RUN_ID':
+      if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
+      if (view.activeRun.runId && view.activeRun.runId !== action.runId) return state;
+      view = {
+        ...view,
+        activeRun: {
+          ...view.activeRun,
+          runId: action.runId,
+          lastEventIndex: action.lastEventIndex == null
+            ? view.activeRun.lastEventIndex
+            : Math.max(view.activeRun.lastEventIndex, action.lastEventIndex),
         },
       };
       break;

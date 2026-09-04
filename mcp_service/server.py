@@ -25,7 +25,10 @@ from graph_engine.env import load_environment
 from mcp_service.config import MCPConfig
 from mcp_service.graph_data_client import GraphDataClient
 from mcp_service.session_registry import SessionRegistry
-from mcp_service.tool_forwarding import forwarded_graph_tool_arguments
+from mcp_service.tool_forwarding import (
+    forwarded_graph_tool_arguments,
+    schema_parameter_type,
+)
 
 load_environment()
 
@@ -141,17 +144,6 @@ async def _invoke_graph_tool(tool_name: str, ctx: Context, arguments: dict) -> s
 # 动态工具注册
 # ──────────────────────────────────────────────────────────────────────────────
 
-# JSON Schema type → Python type 映射
-_SCHEMA_TYPE_MAP: Dict[str, type] = {
-    "string": str,
-    "boolean": bool,
-    "integer": int,
-    "number": float,
-    "object": dict,
-    "array": list,
-}
-
-
 def _build_handler_with_signature(
     tool_name: str,
     input_schema: dict,
@@ -176,7 +168,7 @@ def _build_handler_with_signature(
     for pname, pschema in properties.items():
         raw_type = pschema.get("type", "string")
         type_key = raw_type[0] if isinstance(raw_type, list) else raw_type
-        py_type = _SCHEMA_TYPE_MAP.get(type_key, Any)
+        py_type = schema_parameter_type(type_key)
         if pname in required_fields:
             p = inspect.Parameter(
                 pname,

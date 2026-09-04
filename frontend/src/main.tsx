@@ -192,6 +192,7 @@ function App() {
   const [graphWidth, setGraphWidth] = useState(() => storedWidth('igraph-layout-graph-width', window.innerWidth <= 1280 ? 330 : GRAPH_DEFAULT, GRAPH_MIN, GRAPH_MAX));
   const [graphLayoutVersion, setGraphLayoutVersion] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const [watchPausedBySession, setWatchPausedBySession] = useState<Record<string, boolean>>({});
   const conversationRef = useRef(conversation);
   const connectionManagerRef = useRef(new RunConnectionManager(4));
   const hydrationVersionsRef = useRef(new Map<string, number>());
@@ -222,6 +223,7 @@ function App() {
   const runTools = selectRunTools(activeView);
   const plan = activeView?.activeRun?.plan || null;
   const runGate = selectRunGate(activeView);
+  const watchPaused = Boolean(activeSessionId && watchPausedBySession[activeSessionId]);
   const bottomInteraction = selectBottomInteraction(activeView);
   const sendBlockedReason = activeDraft && activeDraft.phase !== 'editing' && activeDraft.phase !== 'failed'
     ? activeDraft.phase === 'creating_session'
@@ -354,6 +356,19 @@ function App() {
 
   function runStorageKey(sessionId: string) { return `igraph-active-run:v2:${userId}:${sessionId}`; }
 
+  function watchPauseStorageKey(sessionId: string) { return `igraph-run-watch-paused:v1:${userId}:${sessionId}`; }
+
+  function isWatchPausePersisted(sessionId: string) {
+    return Boolean(userId && sessionStorage.getItem(watchPauseStorageKey(sessionId)) === '1');
+  }
+
+  function setWatchPaused(sessionId: string, paused: boolean) {
+    setWatchPausedBySession(current => ({ ...current, [sessionId]: paused }));
+    if (!userId) return;
+    if (paused) sessionStorage.setItem(watchPauseStorageKey(sessionId), '1');
+    else sessionStorage.removeItem(watchPauseStorageKey(sessionId));
+  }
+
   function persistRun(sessionId: string, runId: string, lastEventIndex: number) {
     if (!userId || !runId) return;
     sessionStorage.setItem(runStorageKey(sessionId), JSON.stringify({ runId, lastEventIndex }));
@@ -451,6 +466,7 @@ function App() {
       if (!response.active_run) {
         dispatchConversation({ type: 'CLEAR_ACTIVE_RUN', sessionId, generation });
         clearPersistedRun(sessionId);
+        setWatchPaused(sessionId, false);
       }
       setAvailableModels(normalizedModels(response.available_models, selectedModel));
       setSessions(current => current.map(session => session.session_id === sessionId ? {
@@ -481,6 +497,22 @@ function App() {
       connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => {
         const restarted = connectionManagerRef.current.restart(sessionId, generation);
         if (restarted) void reconcileFeedbackOutcome(sessionId, generation);
+      });
+    }
+  }
+
+  async function reconcileResumeOutcome(sessionId: string, generation: string) {
+    try {
+      const snapshot = await reconcileAuthoritativeRun(sessionId, generation);
+      connectionManagerRef.current.release(sessionId, generation);
+      if (snapshot?.activeRun && snapshot.activeRun.status.toLowerCase() !== 'paused') {
+        openResumeConnection(sessionId, generation, snapshot.activeRun, conversationRef.current.activeSessionId === sessionId);
+      }
+    } catch {
+      dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting', error: '续传状态暂时无法核对，系统会自动重试' });
+      connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => {
+        const restarted = connectionManagerRef.current.restart(sessionId, generation);
+        if (restarted) void reconcileResumeOutcome(sessionId, generation);
       });
     }
   }
@@ -572,6 +604,9 @@ function App() {
       if (requestWasAborted(cause)) return;
       if (operation === 'feedback') {
         feedbackSubmitFailed = true;
+      } else if (operation === 'resume') {
+        void reconcileResumeOutcome(sessionId, generation);
+        return;
       } else if (operation === 'start' && cause instanceof ApiError && cause.status === 409) {
         dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: startPayload?.message, restoreAttachments: startPayload?.attachments });
         connectionManagerRef.current.release(sessionId, generation);
@@ -617,6 +652,7 @@ function App() {
 
     if (terminal) {
       clearPersistedRun(sessionId);
+      setWatchPaused(sessionId, false);
       if (clearPendingOnOpen) clearPendingFirstTurn(sessionId);
       connectionManagerRef.current.release(sessionId, generation);
       if (startPayload?.attachments.length) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [] } });
@@ -632,6 +668,10 @@ function App() {
       connectionManagerRef.current.release(sessionId, generation);
       return;
     }
+    if (operation === 'resume') {
+      void reconcileResumeOutcome(sessionId, generation);
+      return;
+    }
     persistRun(sessionId, runId, lastEventIndex);
     dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting' });
     connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => {
@@ -642,6 +682,11 @@ function App() {
 
   function openResumeConnection(sessionId: string, generation: string, activeRun: ActiveRun, foreground = conversationRef.current.activeSessionId === sessionId) {
     if (!activeRun.run_id || activeRun.status.toLowerCase() === 'paused' || connectionManagerRef.current.get(sessionId)) return;
+    if (isWatchPausePersisted(sessionId)) {
+      setWatchPaused(sessionId, true);
+      dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' });
+      return;
+    }
     const retry = () => {
       const viewRun = conversationRef.current.viewsBySessionId[sessionId]?.activeRun;
       if (viewRun?.runId) openResumeConnection(sessionId, generation, { run_id: viewRun.runId, status: viewRun.status, last_event_index: viewRun.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
@@ -658,6 +703,43 @@ function App() {
     persistRun(sessionId, activeRun.run_id, activeRun.last_event_index);
     dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting' });
     void consumeRunConnection(sessionId, generation, connection, 'resume', undefined, undefined, undefined, activeRun.last_event_index);
+  }
+
+  async function pauseRunWatching() {
+    if (!activeSessionId) return;
+    const run = conversationRef.current.viewsBySessionId[activeSessionId]?.activeRun;
+    if (!run) return;
+    const connection = connectionManagerRef.current.get(activeSessionId);
+    let runId = run.runId || connection?.runId || '';
+    let lastEventIndex = run.lastEventIndex;
+    if (!runId) {
+      try {
+        const response = await activateSession(activeSessionId);
+        if (!response.active_run) return;
+        runId = response.active_run.run_id;
+        lastEventIndex = Math.max(lastEventIndex, Number(response.active_run.last_event_index ?? -1));
+        dispatchConversation({ type: 'SET_RUN_ID', sessionId: activeSessionId, generation: run.generation, runId, lastEventIndex });
+      } catch (cause: any) {
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSessionId, patch: { error: cause.message || '暂时无法确认当前 Run，未暂停接收' } });
+        return;
+      }
+    }
+    persistRun(activeSessionId, runId, lastEventIndex);
+    setWatchPaused(activeSessionId, true);
+    connectionManagerRef.current.abort(activeSessionId);
+    dispatchConversation({ type: 'SET_RUN_STATUS', sessionId: activeSessionId, generation: run.generation, status: 'detached' });
+  }
+
+  function resumeRunWatching() {
+    if (!activeSessionId) return;
+    const run = conversationRef.current.viewsBySessionId[activeSessionId]?.activeRun;
+    if (!run?.runId) return setWatchPaused(activeSessionId, false);
+    setWatchPaused(activeSessionId, false);
+    openResumeConnection(activeSessionId, run.generation, {
+      run_id: run.runId,
+      status: 'running',
+      last_event_index: run.lastEventIndex,
+    }, true);
   }
 
   const selectSession = async (id: string, source = sessions, updateUrl = true, allowUnlisted = false) => {
@@ -749,7 +831,12 @@ function App() {
       } else {
         dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: unsupportedGraphView(response.dataset_view) || { status: 'empty', data: null } });
       }
-      if (effectiveActiveRun) openResumeConnection(id, generation, effectiveActiveRun, true);
+      if (effectiveActiveRun) {
+        if (isWatchPausePersisted(id)) {
+          setWatchPaused(id, true);
+          dispatchConversation({ type: 'SET_RUN_STATUS', sessionId: id, generation, status: 'detached' });
+        } else openResumeConnection(id, generation, effectiveActiveRun, true);
+      } else setWatchPaused(id, false);
     } catch (cause: any) {
       if (!requestWasAborted(cause) && cause instanceof ApiError && cause.status === 404) {
         connectionManagerRef.current.abort(id);
@@ -1636,7 +1723,7 @@ function App() {
           {activeDraft
             ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
-            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} watchPaused={watchPaused} canPauseWatching={Boolean(activeView?.activeRun && ['starting', 'streaming', 'reconnecting'].includes(activeView.activeRun.status))} onPauseWatching={pauseRunWatching} onResumeWatching={resumeRunWatching} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
             : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>开始新的图分析</h1><p>选择左侧已有会话，或创建一个新任务。</p><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button></div></div>}
         </>}
       </div>
@@ -1651,7 +1738,9 @@ function App() {
 }
 
 function ChatPaneWithState(props: any) {
-  const summary = props.runGateReason === 'awaiting_feedback'
+  const summary = props.watchPaused
+    ? '已暂停接收 · Agent 仍在服务器运行'
+    : props.runGateReason === 'awaiting_feedback'
     ? '等待确认：请先批准或拒绝当前操作'
     : props.runGateReason === 'submitting_feedback'
       ? <><span className="loader" /> 正在提交确认并核对状态</>

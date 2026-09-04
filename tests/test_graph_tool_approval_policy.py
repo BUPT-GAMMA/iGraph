@@ -49,9 +49,21 @@ class GraphToolApprovalPolicyTest(unittest.TestCase):
             },
         ):
             sys.modules.pop("agent_runtime.graph_tools", None)
-            from agent_runtime.graph_tools import create_graph_tools
+            from agent_runtime.graph_tools import create_graph_tools, graph_identity_headers
 
             create_graph_tools(config)
+            self.assertEqual(graph_identity_headers(None), {})
+            self.assertEqual(
+                graph_identity_headers(
+                    SimpleNamespace(user_id="user-1", session_id="session-1", run_id="run-1"),
+                ),
+                {
+                    "X-User-ID": "user-1",
+                    "X-Session-ID": "session-1",
+                    "X-Run-ID": "run-1",
+                    "X-Agent-ID": "",
+                },
+            )
 
         self.assertEqual(
             calls[0]["requires_confirmation_tools"],

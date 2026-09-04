@@ -16,9 +16,13 @@ export function ProjectDialog({ project, onClose, onSave }: EditorProps) {
   const [saving, setSaving] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!name.trim()) return setError('请输入项目名称');
+    const normalizedName = name.trim();
+    const normalizedDescription = description.trim();
+    if (!normalizedName) return setError('请输入项目名称');
+    if (Array.from(normalizedName).length > 80) return setError('项目名称不能超过 80 个字符');
+    if (Array.from(normalizedDescription).length > 500) return setError('项目描述不能超过 500 个字符');
     setSaving(true); setError('');
-    try { await onSave(name.trim(), description.trim()); } catch (cause: any) { setError(cause.message || '保存项目失败'); setSaving(false); }
+    try { await onSave(normalizedName, normalizedDescription); } catch (cause: any) { setError(cause.message || '保存项目失败'); setSaving(false); }
   }
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <form className="project-dialog" onSubmit={submit}>

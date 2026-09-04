@@ -103,6 +103,31 @@ describe('ConversationInputArea', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '配置自定义模型' })).toBeNull());
   });
 
+  it('pauses and resumes only run event watching while keeping the composer locked', () => {
+    const onPauseWatching = vi.fn();
+    const onResumeWatching = vi.fn();
+    const props = {
+      value: '', model: 'model-a', models: ['model-a'], onChange: noop,
+      onModelChange: noop, onDataset: noop, onSend: noop, onUpload: noop,
+      onRemoveAttachment: noop, attachments: [], uploading: false, disabled: true,
+      sendBlocked: true, sendBlockedReason: '当前会话已有活动任务',
+      canPauseWatching: true, onPauseWatching, onResumeWatching,
+    };
+    const { rerender } = render(<Composer {...props} loading />);
+
+    const pause = screen.getByRole('button', { name: '暂停接收（Agent 将继续运行）' }) as HTMLButtonElement;
+    expect(pause.disabled).toBe(false);
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true);
+    fireEvent.click(pause);
+    expect(onPauseWatching).toHaveBeenCalledOnce();
+
+    rerender(<Composer {...props} loading={false} watchPaused />);
+    expect(screen.getByText('接收已暂停 · Agent 仍在运行')).toBeTruthy();
+    expect(screen.getByText(/仅暂停本页接收/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '继续接收' }));
+    expect(onResumeWatching).toHaveBeenCalledOnce();
+  });
+
   it('shows the custom model ID instead of its display name', () => {
     render(<Composer
       value=""
