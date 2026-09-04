@@ -52,9 +52,16 @@ export class ApiError extends Error {
   static fromResponse(status: number, data: any) {
     const detail = data?.detail ?? data?.error;
     const body = detail && typeof detail === 'object' ? detail : data;
+    const validationMessage = Array.isArray(detail)
+      ? detail.map(item => {
+          if (!item || typeof item !== 'object') return String(item);
+          const location = Array.isArray(item.loc) ? item.loc.filter((part: unknown) => part !== 'body').join('.') : '';
+          return `${location ? `${location}: ` : ''}${String(item.msg || item.message || '参数无效')}`;
+        }).filter(Boolean).join('；')
+      : '';
     const message = typeof detail === 'string'
       ? detail
-      : String(body?.message || body?.error || `请求失败 (${status})`);
+      : validationMessage || String(body?.message || body?.error || `请求失败 (${status})`);
     return new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
   }
 }

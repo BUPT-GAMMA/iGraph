@@ -217,6 +217,9 @@ class GraphClassificationContractTest(unittest.TestCase):
         self.assertEqual(infer_props["infer_config"]["properties"]["batch_size"]["default"], 128)
         self.assertIn("top_k_tasks", infer_props["infer_config"]["properties"])
         self.assertIn("return_all_task_probs", infer_props["infer_config"]["properties"])
+        infer_description = by_name["infer"]["description"]
+        self.assertIn('{"edges":[["0","8"],["1","344"]]}', infer_description)
+        self.assertIn("不接受 `{source,target}` 对象", infer_description)
 
 
 if __name__ == "__main__":

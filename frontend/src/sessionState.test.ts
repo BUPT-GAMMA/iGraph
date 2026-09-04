@@ -83,6 +83,24 @@ describe('conversationReducer session/run isolation', () => {
     expect(lastMessage(state, 'B')?.content).toBe('');
   });
 
+  it('adopts an authoritative run id without discarding live tools or messages', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'gen');
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+      batch: batch('A', '', 2, [{ type: 'tool_call', tool: 'degree_analysis', call_id: 'call-1' }]),
+    });
+    const messageOrder = state.viewsBySessionId.A.messageOrder;
+
+    state = conversationReducer(state, {
+      type: 'SET_RUN_ID', sessionId: 'A', generation: 'gen', runId: 'run-authoritative', lastEventIndex: 4,
+    });
+
+    expect(state.viewsBySessionId.A.activeRun?.runId).toBe('run-authoritative');
+    expect(state.viewsBySessionId.A.activeRun?.lastEventIndex).toBe(4);
+    expect(state.viewsBySessionId.A.activeRun?.toolOrder).toEqual(['call-1']);
+    expect(state.viewsBySessionId.A.messageOrder).toEqual(messageOrder);
+  });
+
   it('ignores events from an older generation in the same session', () => {
     let state = session(initialConversationState, 'A');
     state = start(state, 'A', 'old');
