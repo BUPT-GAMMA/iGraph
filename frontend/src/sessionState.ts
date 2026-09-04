@@ -1,5 +1,8 @@
 import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
+import type { RunSnapshot } from './api';
+
+export type ReceptionStatus = 'connecting' | 'receiving' | 'retrying' | 'user_paused' | 'capacity_suspended' | 'snapshot_sync' | 'idle';
 
 export type RunStatus =
   | 'idle'
@@ -8,8 +11,6 @@ export type RunStatus =
   | 'streaming'
   | 'awaiting_feedback'
   | 'submitting_feedback'
-  | 'reconnecting'
-  | 'detached'
   | 'completed'
   | 'failed'
   | 'cancelled';
@@ -18,7 +19,12 @@ export type SessionRunState = {
   runId?: string;
   generation: string;
   status: RunStatus;
-  lastEventIndex: number;
+  lastAppliedEventIndex: number;
+  reception?: ReceptionStatus;
+  synchronized?: boolean;
+  snapshotOnly?: boolean;
+  recoveryRequired?: boolean;
+  replay?: Pick<SessionViewState, 'messagesById' | 'messageOrder' | 'graph'>;
   assistantMessageId?: string;
   toolsById: Record<string, ToolCall>;
   toolOrder: string[];
@@ -86,17 +92,22 @@ export type ConversationAction =
   | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
   | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string; restoreDraft?: string; restoreAttachments?: AttachmentRef[] }
   | { type: 'ADOPT_RUN'; sessionId: string; generation: string; activeRun: ActiveRun; feedback?: FeedbackRequest | null }
-  | { type: 'SET_RUN_ID'; sessionId: string; generation: string; runId: string; lastEventIndex?: number }
+  | { type: 'SET_RUN_ID'; sessionId: string; generation: string; runId: string; lastAppliedEventIndex?: number }
   | { type: 'BEGIN_FEEDBACK_SUBMISSION'; sessionId: string; generation: string; runId: string; callId: string; decisionId: string; decision: 'approve' | 'reject' }
+  | { type: 'FEEDBACK_NOT_ACCEPTED'; sessionId: string; generation: string; decisionId: string }
   | { type: 'CLEAR_ACTIVE_RUN'; sessionId: string; generation: string }
   | { type: 'APPLY_BATCH'; sessionId: string; generation: string; batch: StreamBatch }
+  | { type: 'SET_RECEPTION'; sessionId: string; generation: string; reception: ReceptionStatus; synchronized?: boolean; snapshotOnly?: boolean; error?: string }
+  | { type: 'BEGIN_REPLAY'; sessionId: string; generation: string }
+  | { type: 'REPLAY_CAUGHT_UP'; sessionId: string; generation: string }
+  | { type: 'APPLY_SNAPSHOT'; sessionId: string; generation: string; snapshot: RunSnapshot }
   | { type: 'SET_RUN_STATUS'; sessionId: string; generation: string; status: RunStatus; error?: string }
   | { type: 'GRAPH_REQUEST_START'; sessionId: string; requestVersion: number; preserveCurrent?: boolean }
   | { type: 'GRAPH_REQUEST_SUCCESS'; sessionId: string; requestVersion: number; graph: GraphViewState }
   | { type: 'REMOVE_SESSION'; sessionId: string };
 
 export const SESSION_VIEW_CACHE_LIMIT = 12;
-const PROTECTED_RUN_STATUSES = new Set<RunStatus>(['preparing', 'starting', 'streaming', 'awaiting_feedback', 'submitting_feedback', 'reconnecting', 'detached']);
+const PROTECTED_RUN_STATUSES = new Set<RunStatus>(['preparing', 'starting', 'streaming', 'awaiting_feedback', 'submitting_feedback']);
 const TERMINAL_RUN_STATUSES = new Set<RunStatus>(['completed', 'failed', 'cancelled']);
 
 export type RunGateReason = 'preparing' | 'run_active' | 'awaiting_feedback' | 'submitting_feedback' | 'reconnecting' | 'detached' | null;
@@ -108,29 +119,27 @@ export type BottomInteraction =
 
 export function selectRunGate(view?: SessionViewState | null) {
   const status = view?.activeRun?.status;
-  const reason: RunGateReason = status === 'preparing'
+  const unverified = view?.activeRun?.synchronized === false || view?.hydration === 'loading' || view?.hydration === 'failed';
+  const reason: RunGateReason = unverified ? 'reconnecting' : status === 'preparing'
     ? 'preparing'
     : status === 'awaiting_feedback'
     ? 'awaiting_feedback'
     : status === 'submitting_feedback'
       ? 'submitting_feedback'
-      : status === 'reconnecting'
-        ? 'reconnecting'
-        : status === 'detached'
-          ? 'detached'
-          : status === 'starting' || status === 'streaming'
+      : status === 'starting' || status === 'streaming'
             ? 'run_active'
             : null;
   return {
     reason,
     canStartRun: reason === null,
-    canSubmitFeedback: status === 'awaiting_feedback' && Boolean(view?.activeRun?.feedback),
+    canSubmitFeedback: !unverified && status === 'awaiting_feedback' && Boolean(view?.activeRun?.feedback),
     blocksSessionMutation: reason !== null,
   };
 }
 
 export function selectBottomInteraction(view?: SessionViewState | null): BottomInteraction {
   const run = view?.activeRun;
+  if (run?.synchronized === false && (run.status === 'awaiting_feedback' || run.status === 'submitting_feedback')) return { kind: 'syncing_feedback', reason: 'session_hydration' };
   if (run?.status === 'awaiting_feedback' || run?.status === 'submitting_feedback') {
     if (!run.feedback) return { kind: 'syncing_feedback', reason: 'missing_feedback' };
     return {
@@ -312,7 +321,10 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     };
   }
   if (eventType === 'stream_status') {
-    return { view, run: { ...run, status: run.status === 'reconnecting' ? 'streaming' : run.status } };
+    return { view, run };
+  }
+  if (eventType === 'run_continued') {
+    return { view, run: { ...run, status: 'streaming', feedback: null, feedbackSubmission: undefined } };
   }
 
   if (run.status === 'submitting_feedback') {
@@ -386,7 +398,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     }
   }
 
-  if (eventType === 'plan_analyzing') run = { ...run, plan: { completed: false, steps: [] } };
+  if (eventType === 'plan_analyzing' && !run.plan) run = { ...run, plan: { completed: false, steps: [] } };
   if (eventType === 'plan_ready') run = { ...run, plan: { completed: false, steps: event.steps || [] } };
   if (eventType === 'plan_step') {
     const currentSteps = run.plan?.steps || [];
@@ -430,6 +442,19 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     };
   }
 
+  if (eventType === 'analysis_report' || (eventType === 'graph_visualize' && isGraphData(event.data))) {
+    const messageId = `assistant:${run.runId || run.generation}`;
+    const renamed = renameAssistantMessage(view, run, messageId);
+    view = renamed.view; run = renamed.run;
+    const message = view.messagesById[messageId] || { id: messageId, role: 'assistant' as const, content: '' };
+    const id = String(event.data?.report?.report_id || event.data?.report?.id || event.data?.id || `run-${run.runId}-${event.call_id || event.event_index}`);
+    const updated = eventType === 'graph_visualize'
+      ? { ...message, graphs: [...(message.graphs || []).filter(graph => graph.id !== id), { ...event.data, id }] }
+      : { ...message, reports: [...(message.reports || []).filter(report => String(report.report_id || report.id) !== id), { ...event.data?.report, id }] };
+    view = { ...view, messagesById: { ...view.messagesById, [messageId]: updated },
+      messageOrder: view.messageOrder.includes(messageId) ? view.messageOrder : [...view.messageOrder, messageId] };
+  }
+
   if (eventType === 'await_user_feedback' || eventName.includes('runpaused') || eventName.includes('confirmation_required')) {
     run = { ...run, feedback: normalizeFeedbackRequest(event), status: 'awaiting_feedback' };
     view = {
@@ -439,16 +464,16 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
   }
 
   if (eventType === 'done') {
-    const messageId = String(event.message_id || run.assistantMessageId || '');
+    const messageId = String(event.message_id || run.assistantMessageId || `assistant:${run.runId || run.generation}`);
+    const renamed = renameAssistantMessage(view, run, messageId);
+    view = renamed.view;
+    run = renamed.run;
     const current = messageId ? view.messagesById[messageId] : undefined;
-    const content = current?.content || String(event.content || '');
-    view = {
-      ...view,
-      messagesById: Object.fromEntries(Object.entries(view.messagesById).map(([id, message]) => [
-        id,
-        id === messageId ? { ...message, content, streaming: false } : { ...message, streaming: false },
-      ])),
-    };
+    const content = typeof event.content === 'string' ? event.content : current?.content || '';
+    view = { ...view,
+      messagesById: { ...view.messagesById, [messageId]: { ...current, id: messageId, role: 'assistant', content, streaming: false,
+        tools: run.toolOrder.map(id => run.toolsById[id]), plan: run.plan } },
+      messageOrder: view.messageOrder.includes(messageId) ? view.messageOrder : [...view.messageOrder, messageId] };
     run = { ...run, status: 'completed', feedback: null };
   }
 
@@ -463,29 +488,53 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
         id === messageId && !message.content ? { ...message, content: error, streaming: false } : { ...message, streaming: false },
       ])),
     };
-    run = { ...run, status: eventName.includes('cancel') ? 'cancelled' : 'failed', feedback: null, error };
+    run = { ...run, status: event.cancelled || eventName.includes('cancel') ? 'cancelled' : 'failed', feedback: null, error };
   }
 
   return { view, run };
 }
 
-function applyBatch(view: SessionViewState, generation: string, batch: StreamBatch): SessionViewState {
+function applicableEvent(event: StreamEvent) {
+  if (!event || typeof event.type !== 'string') return false;
+  if (event.type === 'token') return typeof event.content === 'string';
+  if (event.type === 'done') return !('content' in event) || typeof event.content === 'string';
+  if (event.type === 'plan_step') return event.step && typeof event.step === 'object' && event.step.step_id != null;
+  if (event.type === 'plan_ready') return Array.isArray(event.steps) && event.steps.every((step: any) => step && step.step_id != null);
+  if (event.type === 'analysis_report') return event.data?.report && typeof event.data.report === 'object' && !Array.isArray(event.data.report);
+  if (event.type === 'graph_visualize') return isGraphData(event.data);
+  return true; // Unrecognized extension events remain forward compatible.
+}
+
+export function applyBatch(view: SessionViewState, generation: string, batch: StreamBatch): SessionViewState {
   if (batch.session_id && batch.session_id !== view.sessionId) return view;
   let run = view.activeRun;
   if (!run || run.generation !== generation) return view;
   if (run.runId && batch.run_id && run.runId !== batch.run_id) return view;
   if (TERMINAL_RUN_STATUSES.has(run.status) && batch.events.every(event => event.type !== 'done' && event.type !== 'error')) return view;
   const eventIndex = batch.event_index == null ? null : Number(batch.event_index);
-  if (batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex) && eventIndex <= run.lastEventIndex) return view;
+  if (batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex) && eventIndex <= run.lastAppliedEventIndex) return view;
+  const control = batch.events.every(event => ['stream_status', 'stream_recovery_required', 'feedback_accepted', 'feedback_submit_error'].includes(event.type || ''));
+  if (run.recoveryRequired || run.snapshotOnly) return view;
+  if (batch.events.some(event => event.type === 'stream_recovery_required') || (!control && batch.protocol_version === 2 && (
+    !Number.isSafeInteger(eventIndex) || eventIndex !== run.lastAppliedEventIndex + 1
+    || batch.events.some(event => !applicableEvent(event))
+  ))) return { ...view, activeRun: { ...run, recoveryRequired: true, synchronized: false, reception: 'snapshot_sync' } };
+  const visible = view;
+  if (run.replay) view = { ...view, ...run.replay };
   run = { ...run, runId: batch.run_id || run.runId };
-  for (const event of batch.events) {
-    const applied = applyStreamEvent(view, run, event);
-    view = applied.view;
-    run = applied.run;
+  try {
+    for (const event of batch.events) {
+      const applied = applyStreamEvent(view, run, event);
+      view = applied.view;
+      run = applied.run;
+    }
+  } catch {
+    return { ...visible, activeRun: { ...visible.activeRun!, recoveryRequired: true, synchronized: false, reception: 'snapshot_sync' } };
   }
-  if (batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex)) {
-    run = { ...run, lastEventIndex: eventIndex };
+  if (!control && batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex)) {
+    run = { ...run, lastAppliedEventIndex: eventIndex };
   }
+  if (run.replay) return { ...visible, activeRun: { ...run, replay: { messagesById: view.messagesById, messageOrder: view.messageOrder, graph: view.graph } } };
   return { ...view, activeRun: run };
 }
 
@@ -579,7 +628,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       activeRun: {
         generation: action.generation,
         status: 'preparing',
-        lastEventIndex: -1,
+        lastAppliedEventIndex: -1,
         toolsById: {}, toolOrder: [], plan: null, feedback: null,
       },
     };
@@ -625,13 +674,14 @@ export function conversationReducer(state: ConversationState, action: Conversati
         : indexMessages(view.sessionId, action.messages);
       let activeRun = view.activeRun;
       if (action.activeRun) {
-        const status = action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'reconnecting';
+        const status = action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'streaming';
         if (!activeRun || activeRun.runId !== action.activeRun.run_id) {
           activeRun = {
             runId: action.activeRun.run_id,
             generation: action.generation || `resume:${action.activeRun.run_id}`,
             status,
-            lastEventIndex: Number(action.activeRun.last_event_index ?? -1),
+            lastAppliedEventIndex: -1,
+            reception: 'connecting', synchronized: false,
             assistantMessageId: `assistant:${action.activeRun.run_id}`,
             toolsById: {}, toolOrder: [], plan: null,
             feedback: action.feedback || null,
@@ -640,12 +690,13 @@ export function conversationReducer(state: ConversationState, action: Conversati
           activeRun = {
             ...activeRun,
             status,
-            lastEventIndex: Math.max(activeRun.lastEventIndex, Number(action.activeRun.last_event_index ?? -1)),
+            reception: 'connecting', synchronized: false,
+            lastAppliedEventIndex: activeRun.lastAppliedEventIndex,
             feedback: status === 'awaiting_feedback' ? action.feedback || activeRun.feedback : null,
             feedbackSubmission: undefined,
           };
         }
-      } else if (!activeRun || !PROTECTED_RUN_STATUSES.has(activeRun.status)) activeRun = null;
+      } else activeRun = null;
       const graph = graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, action.hasGraph);
       const latestGraph = action.preserveMessages ? null : latestMessageGraph(action.messages);
       const hydratedGraph: GraphViewState = latestGraph ? { status: 'ready', data: latestGraph } : graph;
@@ -680,7 +731,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
         activeRun: {
           generation: action.generation,
           status: 'preparing',
-          lastEventIndex: -1,
+          lastAppliedEventIndex: -1,
           toolsById: {}, toolOrder: [], plan: null, feedback: null,
         },
       };
@@ -736,7 +787,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
         activeRun: {
           generation: action.generation,
           status: 'starting',
-          lastEventIndex: -1,
+          lastAppliedEventIndex: -1,
           assistantMessageId: action.assistantMessage.id,
           toolsById: {}, toolOrder: [], plan: null, feedback: null,
         },
@@ -767,8 +818,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
         activeRun: {
           runId: action.activeRun.run_id,
           generation: action.generation,
-          status: action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'reconnecting',
-          lastEventIndex: Number(action.activeRun.last_event_index ?? -1),
+          status: action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'streaming',
+          lastAppliedEventIndex: -1,
+          reception: 'connecting', synchronized: false,
           assistantMessageId: `assistant:${action.activeRun.run_id}`,
           toolsById: {}, toolOrder: [], plan: null, feedback: action.feedback || null,
         },
@@ -782,9 +834,6 @@ export function conversationReducer(state: ConversationState, action: Conversati
         activeRun: {
           ...view.activeRun,
           runId: action.runId,
-          lastEventIndex: action.lastEventIndex == null
-            ? view.activeRun.lastEventIndex
-            : Math.max(view.activeRun.lastEventIndex, action.lastEventIndex),
         },
       };
       break;
@@ -809,9 +858,62 @@ export function conversationReducer(state: ConversationState, action: Conversati
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
       view = { ...view, activeRun: null };
       break;
+    case 'FEEDBACK_NOT_ACCEPTED':
+      if (!view.activeRun || view.activeRun.generation !== action.generation || view.activeRun.feedbackSubmission?.decisionId !== action.decisionId) return state;
+      view = { ...view, activeRun: { ...view.activeRun, feedbackSubmission: undefined, synchronized: false } };
+      break;
     case 'APPLY_BATCH':
       view = applyBatch(view, action.generation, action.batch);
       break;
+    case 'SET_RECEPTION':
+      if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
+      view = { ...view, error: action.error ?? view.error, activeRun: { ...view.activeRun,
+        reception: action.reception, synchronized: action.synchronized ?? view.activeRun.synchronized,
+        snapshotOnly: action.snapshotOnly ?? view.activeRun.snapshotOnly } };
+      break;
+    case 'BEGIN_REPLAY': {
+      const run = view.activeRun;
+      if (!run || run.generation !== action.generation || run.snapshotOnly) return state;
+      const ids = new Set([run.assistantMessageId, `assistant:${run.runId}`]);
+      view = { ...view, activeRun: { ...run, lastAppliedEventIndex: -1, recoveryRequired: false, synchronized: false,
+        toolsById: {}, toolOrder: [], plan: null, feedback: null,
+        replay: { messagesById: Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !ids.has(id))),
+          messageOrder: view.messageOrder.filter(id => !ids.has(id)), graph: view.graph } } };
+      break;
+    }
+    case 'REPLAY_CAUGHT_UP': {
+      const run = view.activeRun;
+      if (!run || run.generation !== action.generation || run.recoveryRequired || run.snapshotOnly) return state;
+      view = { ...view, ...run.replay, error: undefined,
+        activeRun: { ...run, replay: undefined, synchronized: true, reception: TERMINAL_RUN_STATUSES.has(run.status) || run.status === 'awaiting_feedback' ? 'idle' : 'receiving' } };
+      break;
+    }
+    case 'APPLY_SNAPSHOT': {
+      const run = view.activeRun;
+      const snapshot = action.snapshot;
+      if (!run || run.generation !== action.generation || run.runId !== snapshot.run_id || snapshot.session_id !== view.sessionId || !snapshot.snapshot_complete) return state;
+      const active = snapshot.active_run;
+      const sameRun = active?.run_id === run.runId;
+      const status = active ? (active.status === 'paused' ? 'awaiting_feedback' : 'streaming')
+        : snapshot.status === 'completed' ? 'completed' : snapshot.status === 'cancelled' ? 'cancelled' : 'failed';
+      const indexed = indexMessages(view.sessionId, snapshot.messages);
+      const assistant = indexed.messagesById[`assistant:${active?.run_id || run.runId}`];
+      const tools = assistant?.tools || [];
+      view = { ...view, ...indexed, error: undefined, hydration: 'ready',
+        graph: latestMessageGraph(snapshot.messages) ? { status: 'ready', data: latestMessageGraph(snapshot.messages)! } : view.graph,
+        activeRun: { ...run, runId: active?.run_id || run.runId,
+          generation: active && !sameRun ? `resume:${active.run_id}` : run.generation,
+          status, reception: active && !sameRun ? 'connecting' : 'idle', synchronized: !active || sameRun,
+          snapshotOnly: sameRun && snapshot.resume_cursor == null,
+          recoveryRequired: false, replay: undefined,
+          lastAppliedEventIndex: sameRun && snapshot.resume_cursor != null ? snapshot.resume_cursor : -1,
+          assistantMessageId: `assistant:${active?.run_id || run.runId}`,
+          toolsById: Object.fromEntries(tools.map((tool, index) => [tool.call_id || `snapshot:${index}`, tool])),
+          toolOrder: tools.map((tool, index) => tool.call_id || `snapshot:${index}`), plan: assistant?.plan || null,
+          feedback: active?.status === 'paused' ? snapshot.pending_feedback : null, feedbackSubmission: undefined,
+        } };
+      break;
+    }
     case 'SET_RUN_STATUS':
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
       if (TERMINAL_RUN_STATUSES.has(view.activeRun.status) && !TERMINAL_RUN_STATUSES.has(action.status)) return state;

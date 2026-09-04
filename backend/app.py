@@ -11,6 +11,7 @@ import json
 import os
 import re
 import uuid
+from contextlib import AsyncExitStack
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from backend.config import BackendConfig
@@ -28,6 +30,7 @@ from backend.identity import current_user, public_user, require_admin
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
 from backend.projects import ProjectDirectory, ProjectRecord
 from backend.service_client import ServiceClient, forwarded_headers
+from backend.stream_recovery import close_observation, observation_events
 from backend.users import UserDirectory, UserRecord
 
 
@@ -525,7 +528,7 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
         assistant_text = _run_output_text(run)
         reasoning_text = str(run.get("reasoning_content") or "").strip()
         plan = _plan_from_run(run)
-        if assistant_text or tool_cards or graphs or reports or feedback_requests:
+        if assistant_text or tool_cards or graphs or reports or feedback_requests or status in {"completed", "error", "failed", "cancelled"}:
             messages.append({
                 "id": f"assistant:{run_id}",
                 "role": "assistant",
@@ -757,6 +760,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Retry-After", "X-iGraph-Stream-Version", "X-iGraph-Feedback-Accepted"],
     )
 
     @app.get("/")
@@ -2099,21 +2103,30 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             await release_run_reservation(reservation)
             raise
         protocol_version = 2 if request.headers.get("X-iGraph-Stream-Version") == "2" else 1
+        stack = AsyncExitStack()
+        try:
+            response = await stack.enter_async_context(runtime.stream("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form))
+        except BaseException:
+            await close_observation(stack)
+            await release_run_reservation(reservation)
+            raise
 
         async def events():
             try:
-                async with runtime.stream("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form) as response:
-                    async for chunk in translate_sse(
-                        response.aiter_lines(),
-                        protocol_version=protocol_version,
-                        session_id=session_id,
-                    ):
-                        yield chunk
+                async for chunk in observation_events(response, protocol_version=protocol_version, session_id=session_id):
+                    yield chunk
+            finally:
+                await cleanup()
+
+        async def cleanup():
+            try:
+                await close_observation(stack)
             finally:
                 await release_run_reservation(reservation)
 
         return StreamingResponse(
             events(),
+            background=BackgroundTask(cleanup),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -2122,27 +2135,52 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             },
         )
 
+    @app.get("/api/sessions/{session_id}/runs/{run_id}/snapshot")
+    async def run_snapshot(session_id: str, run_id: str, request: Request):
+        user = current_user(request, users)
+        await get_session(session_id, request, user.user_id)
+        runs = await get_session_runs(session_id, request, user.user_id)
+        target = next((run for run in runs if str(run.get('run_id')) == run_id), None)
+        if target is None:
+            raise HTTPException(404, 'Run not found')
+        status = str(target.get('status') or '').lower()
+        phase = await runtime.request('GET', f'/internal/sessions/{session_id}/runs/{run_id}/recovery-status',
+                                      headers=forwarded_headers(request, user.user_id))
+        active_run, pending, _ = _active_run_snapshot(runs)
+        return {
+            'session_id': session_id, 'run_id': run_id, 'status': status,
+            'messages': _messages_from_runs(runs), 'active_run': active_run, 'pending_feedback': pending,
+            'snapshot_complete': status in {'completed', 'error', 'failed', 'cancelled', 'paused'} and phase.get('status') == status,
+            # Agno's persisted events omit content deltas and their original indices.
+            # A DB last_event_index is not an atomic snapshot watermark. Fail closed.
+            'resume_cursor': None,
+        }
+
     @app.post("/api/sessions/{session_id}/runs/{run_id}/resume")
     async def resume_stream(session_id: str, run_id: str, request: Request, last_event_index: int = -1):
         user = current_user(request, users)
         await get_session(session_id, request, user.user_id)
         headers = forwarded_headers(request, user.user_id)
-        data = {"session_id": session_id, "last_event_index": str(last_event_index)}
+        data = {"last_event_index": str(last_event_index)}
         protocol_version = 2 if request.headers.get("X-iGraph-Stream-Version") == "2" else 1
+        stack = AsyncExitStack()
+        try:
+            response = await stack.enter_async_context(runtime.stream(
+                "POST", f"/internal/sessions/{session_id}/runs/{run_id}/resume", headers=headers, data=data))
+        except BaseException:
+            await close_observation(stack)
+            raise
 
         async def events():
-            path = f"/agents/{settings.agent_id}/runs/{run_id}/resume"
-            async with runtime.stream("POST", path, headers=headers, data=data) as response:
-                async for chunk in translate_sse(
-                    response.aiter_lines(),
-                    protocol_version=protocol_version,
-                    session_id=session_id,
-                    run_id=run_id,
-                ):
+            try:
+                async for chunk in observation_events(response, protocol_version=protocol_version, session_id=session_id, run_id=run_id):
                     yield chunk
+            finally:
+                await close_observation(stack)
 
         return StreamingResponse(
             events(),
+            background=BackgroundTask(close_observation, stack),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -2234,71 +2272,59 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         confirmed = req.decision in {"approve", "modify"}
         authoritative_args = authoritative.get("proposed_args")
         tool_args = req.patched_args if req.decision == "modify" else authoritative_args
-        tools = [{
+        decision_fields = {
             "tool_call_id": call_id,
             "tool_name": tool_name,
             "tool_args": tool_args if isinstance(tool_args, dict) else {},
+            # Agno's continuation dispatch executes/rejects an approved tool
+            # only when its original confirmation requirement is preserved.
+            "requires_confirmation": True,
             "confirmed": confirmed,
             "confirmation_note": req.comment,
-        }]
-        data = {"tools": json.dumps(tools), "session_id": session_id, "user_id": user.user_id, "stream": "true"}
+        }
+        # Agno replaces run_response.tools with the submitted list. Preserve
+        # completed tools/artifacts and the target's original execution metadata.
+        stored_tools = [dict(tool) for tool in (active_record.get("tools") or []) if isinstance(tool, dict)]
+        tools = [{**tool, **decision_fields} if str(tool.get("tool_call_id")) == call_id else tool for tool in stored_tools]
+        if not any(str(tool.get("tool_call_id")) == call_id for tool in tools):
+            requirement = next((item.get("tool_execution") for item in requirements
+                                if isinstance(item.get("tool_execution"), dict)
+                                and str(item["tool_execution"].get("tool_call_id")) == call_id), {})
+            tools.append({**requirement, **decision_fields})
+        data = {"tools": json.dumps(tools), "session_id": session_id, "user_id": user.user_id, "stream": "true", "background": "true"}
         protocol_version = 2 if request.headers.get("X-iGraph-Stream-Version") == "2" else 1
+        stack = AsyncExitStack()
+        try:
+            response = await stack.enter_async_context(runtime.stream(
+                "POST", f"/agents/{settings.agent_id}/runs/{run_id}/continue",
+                headers=forwarded_headers(request, user.user_id), data=data))
+        except BaseException as exc:
+            await close_observation(stack)
+            # Only an explicit upstream HTTP rejection proves non-acceptance.
+            # A transport failure may have lost an accepted response.
+            if isinstance(exc, HTTPException):
+                attempt = feedback_attempts.get(attempt_key)
+                if attempt and attempt.get("decision_id") == decision_id:
+                    feedback_attempts.pop(attempt_key, None)
+                exc.headers = {**(exc.headers or {}), "X-iGraph-Feedback-Accepted": "false"}
+            raise
+        attempt = feedback_attempts.get(attempt_key)
+        if attempt and attempt.get("decision_id") == decision_id:
+            attempt.update({"state": "accepted", "updated_at": asyncio.get_running_loop().time()})
 
         async def events():
-            accepted = False
             try:
-                path = f"/agents/{settings.agent_id}/runs/{run_id}/continue"
-                async with runtime.stream("POST", path, headers=forwarded_headers(request, user.user_id), data=data) as response:
-                    accepted = True
-                    # Mark accepted before the next await. If the browser disconnects
-                    # immediately after AgentOS returns 2xx, a duplicate decision must
-                    # still be rejected while the durable Run state catches up.
-                    attempt = feedback_attempts.get(attempt_key)
-                    if attempt and attempt.get("decision_id") == decision_id:
-                        attempt.update({"state": "accepted", "updated_at": asyncio.get_running_loop().time()})
-                    yield _stream_event_frame(
-                        {
-                            "type": "feedback_accepted",
-                            "session_id": session_id,
-                            "run_id": run_id,
-                            "decision_id": decision_id,
-                        },
-                        protocol_version=protocol_version,
-                        session_id=session_id,
-                        run_id=run_id,
-                    )
-                    async for chunk in translate_sse(
-                        response.aiter_lines(),
-                        protocol_version=protocol_version,
-                        session_id=session_id,
-                        run_id=run_id,
-                    ):
-                        yield chunk
-            except Exception as exc:
-                if not accepted:
-                    attempt_lock = await run_lock(user.user_id, session_id)
-                    async with attempt_lock:
-                        attempt = feedback_attempts.get(attempt_key)
-                        if attempt and attempt.get("decision_id") == decision_id:
-                            feedback_attempts.pop(attempt_key, None)
-                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-                message = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
                 yield _stream_event_frame(
-                    {
-                        "type": "feedback_submit_error",
-                        "session_id": session_id,
-                        "run_id": run_id,
-                        "decision_id": decision_id,
-                        "accepted": accepted,
-                        "error": message,
-                    },
-                    protocol_version=protocol_version,
-                    session_id=session_id,
-                    run_id=run_id,
-                )
+                    {"type": "feedback_accepted", "session_id": session_id, "run_id": run_id, "decision_id": decision_id},
+                    protocol_version=protocol_version, session_id=session_id, run_id=run_id)
+                async for chunk in observation_events(response, protocol_version=protocol_version, session_id=session_id, run_id=run_id):
+                    yield chunk
+            finally:
+                await close_observation(stack)
 
         return StreamingResponse(
             events(),
+            background=BackgroundTask(close_observation, stack),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

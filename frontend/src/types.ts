@@ -44,6 +44,7 @@ export type ProjectTrainingRun = ToolCall & {
 };
 export type Plan = { steps?: Array<{ step_id?: number; goal?: string; status?: string; result_summary?: string }>; completed?: boolean };
 export type GraphSnapshot = {
+  id?: string;
   nodes: Array<Record<string, unknown>>;
   edges?: Array<Record<string, unknown>>;
   links?: Array<Record<string, unknown>>;

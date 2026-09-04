@@ -9,6 +9,8 @@
 ## 文档列表
 
 - `AGENTOS_FOUR_MODULE_REFACTOR.md`：**当前主文档**。四模块职责、AgentOS 映射、迁移阶段和依赖方向。
+- [CI_QUALITY_POLICY.md](CI_QUALITY_POLICY.md)：当前 CI 强制检查、覆盖率过渡底线、改善目标和 PR 补测约定。
+- [STREAM_RECOVERY.md](STREAM_RECOVERY.md)：断流续传、完整快照、审批安全、依赖契约、故障测试与排障。
 - `DESIGN.md`：重构前完整系统设计，作为兼容行为参考。
 - `SKILLS_MEMORY.md`：重构前自研 Skills / Memory / Tools Selector 机制，保留用于数据映射和行为对照。
 - `RUN_AND_TEST.md`：环境准备、`.env` 配置、启动方式、API 联调、测试命令与常见问题。

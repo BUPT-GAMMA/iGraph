@@ -10,6 +10,7 @@ from agent_runtime.agno_factory import create_db, create_igraph_factory
 from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.custom_models import register_custom_model, remove_custom_model
 from agent_runtime.skill_api import create_skill_router
+from agent_runtime.recovery import create_recovery_router
 
 
 class RuntimeCustomModelReq(BaseModel):
@@ -25,6 +26,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     db = create_db(settings)
     base_app = FastAPI(title="iGraph Agent Runtime", version="3.0.0")
     base_app.include_router(create_skill_router(settings))
+    base_app.include_router(create_recovery_router(db))
 
     @base_app.get("/internal/health")
     def internal_health():

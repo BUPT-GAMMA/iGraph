@@ -7,6 +7,9 @@ const sessions = [
 ];
 const deletedSessions = new Set();
 const sessionsByClientId = new Map();
+const runs = new Map();
+const feedbackRequests = new Map();
+const pendingFeedback = { run_id: 'run-paused', request_id: 'run-paused', call_id: 'call-train', tool_name: 'train', proposed_args: { epochs: 2 }, description: '确认训练任务' };
 let projectDeleted = false;
 const activeDatasetBySession = new Map([
   ['session-a', 'dataset-cora'],
@@ -61,17 +64,22 @@ function eventEnvelope(sessionId, runId, events) {
 function streamRun(response, sessionId) {
   const runId = `run-${sessionId}`;
   const prefix = sessionId === 'session-a' ? 'A' : 'B';
+  const run = { run_id: runId, status: 'running', content: '', events: [] };
+  runs.set(sessionId, run);
+  const send = (index, events) => { const frame = envelope(sessionId, runId, index, events); run.events.push(frame); if (!response.destroyed) response.write(frame); };
   response.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
   });
-  response.write(envelope(sessionId, runId, 0, [{ type: 'model_turn_start', run_id: runId }]));
-  setTimeout(() => response.write(envelope(sessionId, runId, 1, [{ type: 'token', message_id: `assistant:${runId}`, content: `${prefix}-response-` }])), 50);
-  setTimeout(() => response.write(envelope(sessionId, runId, 2, [{ type: 'token', message_id: `assistant:${runId}`, content: 'complete' }])), sessionId === 'session-a' ? 650 : 180);
+  send(0, [{ type: 'model_turn_start', run_id: runId }]);
+  setTimeout(() => { run.content = `${prefix}-response-`; send(1, [{ type: 'token', message_id: `assistant:${runId}`, content: run.content }]); }, 50);
+  setTimeout(() => { run.content += 'complete'; send(2, [{ type: 'token', message_id: `assistant:${runId}`, content: 'complete' }]); }, sessionId === 'session-a' ? 650 : 180);
   setTimeout(() => {
-    response.end(envelope(sessionId, runId, 3, [{ type: 'done', message_id: `assistant:${runId}` }]));
+    run.status = 'completed';
+    send(3, [{ type: 'done', message_id: `assistant:${runId}` }]);
+    response.end();
   }, sessionId === 'session-a' ? 800 : 260);
 }
 
@@ -113,12 +121,14 @@ const server = http.createServer(async (request, response) => {
     return json(response, 200, { success: true, project_id: 'project-1', affected_conversations: sessions.length, general_project_id: 'general' });
   }
   const activate = /^\/api\/sessions\/([^/]+)\/activate$/.exec(url.pathname);
+  // Each explicit activation of this fixture starts its approval scenario.
+  if (activate?.[1] === 'session-c') runs.set('session-c', { run_id: 'run-paused', status: 'paused', content: '', events: [] });
   if (activate && (!sessions.some(session => session.session_id === activate[1]) || deletedSessions.has(activate[1]))) return json(response, 404, { detail: '会话不存在' });
   if (activate) return json(response, 200, {
     success: true,
     session_id: activate[1],
-    messages: [],
-    active_run: activate[1] === 'session-c' ? { run_id: 'run-paused', status: 'paused', last_event_index: 8 } : null,
+    messages: runs.has(activate[1]) ? [{ id: `assistant:${runs.get(activate[1]).run_id}`, role: 'assistant', content: runs.get(activate[1]).content }] : [],
+    active_run: runs.has(activate[1]) && runs.get(activate[1]).status !== 'completed' ? { run_id: runs.get(activate[1]).run_id, status: runs.get(activate[1]).status, last_event_index: 8 } : null,
     pending_feedback: activate[1] === 'session-c' ? { run_id: 'run-paused', request_id: 'run-paused', call_id: 'call-train', tool_name: 'train', proposed_args: { epochs: 2 }, description: '确认训练任务' } : null,
     project_id: 'project-1',
     active_dataset_id: activeDatasetBySession.get(activate[1]) || null,
@@ -146,6 +156,9 @@ const server = http.createServer(async (request, response) => {
   }
   const feedback = /^\/api\/sessions\/([^/]+)\/feedback\/stream$/.exec(url.pathname);
   if (feedback) {
+    feedbackRequests.set(feedback[1], (feedbackRequests.get(feedback[1]) || 0) + 1);
+    const run = { run_id: 'run-paused', status: 'running', content: '', events: [] };
+    runs.set(feedback[1], run);
     response.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -153,11 +166,34 @@ const server = http.createServer(async (request, response) => {
       'Access-Control-Allow-Origin': '*',
     });
     response.write(eventEnvelope(feedback[1], 'run-paused', [{ type: 'feedback_accepted', run_id: 'run-paused' }]));
-    setTimeout(() => response.end(envelope(feedback[1], 'run-paused', 9, [{ type: 'done', message_id: 'assistant:run-paused', content: '确认处理完成' }])), 120);
+    setTimeout(() => {
+      run.content = '确认处理完成'; run.status = 'completed';
+      response.end(envelope(feedback[1], 'run-paused', 9, [{ type: 'done', message_id: 'assistant:run-paused', content: run.content }]));
+    }, 120);
     return;
   }
   const chat = /^\/api\/sessions\/([^/]+)\/chat\/stream$/.exec(url.pathname);
   if (chat) return streamRun(response, chat[1]);
+  const snapshot = /^\/api\/sessions\/([^/]+)\/runs\/([^/]+)\/snapshot$/.exec(url.pathname);
+  if (snapshot) {
+    const run = runs.get(snapshot[1]);
+    if (!run || run.run_id !== snapshot[2]) return json(response, 404, { detail: 'Run not found' });
+    return json(response, 200, { session_id: snapshot[1], run_id: run.run_id, status: run.status,
+      messages: [{ id: `assistant:${run.run_id}`, role: 'assistant', content: run.content }],
+      active_run: run.status === 'completed' ? null : { run_id: run.run_id, status: run.status, last_event_index: run.events.length - 1 },
+      pending_feedback: run.status === 'paused' ? pendingFeedback : null,
+      snapshot_complete: ['completed', 'paused'].includes(run.status), resume_cursor: null });
+  }
+  const resume = /^\/api\/sessions\/([^/]+)\/runs\/([^/]+)\/resume$/.exec(url.pathname);
+  if (resume) {
+    const run = runs.get(resume[1]);
+    if (!run || !run.events.length) return json(response, 409, { detail: { code: 'REPLAY_UNAVAILABLE', reason: 'buffer_missing' } });
+    response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Access-Control-Allow-Origin': '*' });
+    const cursor = Number(url.searchParams.get('last_event_index'));
+    for (const frame of run.events.slice(cursor + 1)) response.write(frame);
+    response.end();
+    return;
+  }
   const graph = /^\/api\/sessions\/([^/]+)\/graph\/visualize$/.exec(url.pathname);
   if (graph && activeDatasetBySession.get(graph[1]) === 'dataset-hiv') return json(response, 409, { detail: { code: 'GRAPH_NOT_VISUALIZABLE', message: '非独立图，无法直接可视化', dataset_view: datasetView('dataset-hiv') } });
   if (graph) return json(response, 200, { success: true, nodes: [{ id: 'A', label: 'A' }, { id: 'B', label: 'B' }], edges: [{ src: 'A', dst: 'B' }], num_nodes: 2708, num_edges: 10556, total_nodes: 2708, total_edges: 10556, truncated: true, truncated_to: 2 });

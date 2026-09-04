@@ -144,6 +144,8 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
                 common[key] = value
     if event in {"RunStarted", "TeamRunStarted"}:
         return {"type": "model_turn_start", **common}
+    if event in {"RunContinued", "TeamRunContinued"}:
+        return {"type": "run_continued", **common}
     if event in {"RunContent", "TeamRunContent"}:
         run_id = str(common.get("run_id") or "")
         message_id = str(_first_value(variants, "message_id", "messageId") or f"assistant:{run_id}")
@@ -205,14 +207,17 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "type": "done",
             "message_id": message_id,
-            "content": payload.get("content") or "",
+            **({"content": payload["content"]} if isinstance(payload.get("content"), str) else {}),
             "context_usage": payload.get("metrics") or {},
             **common,
         }
     if event in {"RunError", "RunCancelled", "TeamRunError", "TeamRunCancelled", "error"}:
-        return {"type": "error", "error": str(payload.get("content") or payload.get("error") or event), **common}
+        return {"type": "error", "cancelled": 'Cancelled' in event, "error": str(payload.get("content") or payload.get("error") or event), **common}
+    if event == "stream_recovery_required":
+        return {"type": event, "reason": payload.get("reason"), "code": payload.get("code"), **common}
     if event in {"catch_up", "replay", "subscribed"}:
-        return {"type": "stream_status", "status": event, **common}
+        return {"type": "stream_status", "status": event, "run_status": payload.get("status"),
+                "remaining_events": payload.get("missed_events", payload.get("total_events")), **common}
     return {"type": "agent_event", "event": event, "payload": payload, **common}
 
 
@@ -306,7 +311,8 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if name == "visualize_subgraph":
         graph = result.get("data") if isinstance(result.get("data"), dict) else result
         if isinstance(graph.get("nodes"), list) and isinstance(graph.get("links", graph.get("edges")), list):
-            graph = {**graph, "links": graph.get("links", graph.get("edges", []))}
+            graph = {**graph, "links": graph.get("links", graph.get("edges", [])),
+                     "edges": graph.get("edges", graph.get("links", []))}
             return [{"type": "graph_visualize", "data": graph, "call_id": tool.get("tool_call_id") or "", **common}]
     if name == "create_analysis_report" and isinstance(result.get("report"), dict):
         return [{
@@ -368,6 +374,9 @@ async def translate_sse(
     planning_step_id = 0
     current_run_id = run_id
     async for line in lines:
+        if line.startswith(":"):
+            yield line + "\n\n"
+            continue
         if not line.startswith("data:"):
             continue
         raw = line[5:].strip()
@@ -394,7 +403,7 @@ async def translate_sse(
                 plan_events.append({
                     "type": "plan_step",
                     "plan_id": plan_id,
-                    "step": _native_reasoning_step(event_payload, planning_step_id),
+                    "step": _native_reasoning_step(event_payload, event_payload.get("event_index", planning_step_id)),
                 })
             elif event_name in {"ReasoningCompleted", "TeamReasoningCompleted"} and planning_started:
                 plan_events.append({

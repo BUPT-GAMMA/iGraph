@@ -41,6 +41,11 @@ export function ConversationInputArea({ interaction, onFeedback, ...composerProp
           <div><strong>{missingFeedback ? '正在同步确认信息' : '正在加载会话状态'}</strong><span>{missingFeedback ? '输入区已安全锁定，正在从服务端恢复待确认操作' : '正在确认当前会话是否存在运行中或待确认的任务'}</span></div>
         </div>
         <div className="confirmation-saved-state"><Icon name="file" size={13} /> {savedLabel}</div>
+        {(composerProps.watchPaused || composerProps.canPauseWatching) && <button type="button"
+          onClick={composerProps.watchPaused ? composerProps.onResumeWatching : composerProps.onPauseWatching}
+          aria-label={composerProps.watchPaused ? '继续接收' : '暂停接收（Agent 将继续运行）'}>
+          {composerProps.watchPaused ? '继续接收' : '暂停接收'}
+        </button>}
       </section>
     </div>;
   }

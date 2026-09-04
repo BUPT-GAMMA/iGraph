@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 import httpx
+import anyio
 from fastapi import HTTPException, Request
 
 
@@ -55,7 +56,8 @@ class ServiceClient:
                 detail = response.json()
             except ValueError:
                 detail = response.text
-            raise HTTPException(status_code=response.status_code, detail=detail)
+            raise HTTPException(status_code=response.status_code, detail=detail.get("detail", detail) if isinstance(detail, dict) else detail,
+                                headers={"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else None)
         if response.status_code == 204 or not response.content:
             return None
         try:
@@ -81,8 +83,13 @@ class ServiceClient:
             async with client.stream(method, path, headers=headers, data=data) as response:
                 if response.status_code >= 400:
                     body = await response.aread()
-                    raise HTTPException(status_code=response.status_code, detail=body.decode("utf-8", "replace"))
+                    try:
+                        detail = response.json()
+                    except ValueError:
+                        detail = body.decode("utf-8", "replace")
+                    raise HTTPException(status_code=response.status_code, detail=detail.get("detail", detail) if isinstance(detail, dict) else detail,
+                                        headers={"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else None)
                 yield response
         finally:
-            await client.aclose()
-
+            with anyio.CancelScope(shield=True):
+                await client.aclose()

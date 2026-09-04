@@ -1,4 +1,5 @@
 import { isGraphData } from './types';
+import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -28,7 +29,7 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
 async function json<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await apiFetch(path, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw ApiError.fromResponse(response.status, data);
+  if (!response.ok) throw ApiError.fromResponse(response.status, data, response.headers.get('Retry-After'));
   return data as T;
 }
 
@@ -38,6 +39,8 @@ export class ApiError extends Error {
   code?: string;
   activeRun?: ActiveRun | null;
   pendingFeedback?: FeedbackRequest | null;
+  retryAfterMs?: number;
+  feedbackAccepted?: boolean;
 
   constructor(status: number, message: string, detail?: unknown, activeRun?: ActiveRun | null, pendingFeedback?: FeedbackRequest | null, code?: string) {
     super(message);
@@ -49,7 +52,7 @@ export class ApiError extends Error {
     this.pendingFeedback = pendingFeedback;
   }
 
-  static fromResponse(status: number, data: any) {
+  static fromResponse(status: number, data: any, retryAfter?: string | null) {
     const detail = data?.detail ?? data?.error;
     const body = detail && typeof detail === 'object' ? detail : data;
     const validationMessage = Array.isArray(detail)
@@ -62,7 +65,13 @@ export class ApiError extends Error {
     const message = typeof detail === 'string'
       ? detail
       : validationMessage || String(body?.message || body?.error || `请求失败 (${status})`);
-    return new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
+    const error = new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
+      if (Number.isFinite(delay)) error.retryAfterMs = Math.max(0, delay);
+    }
+    return error;
   }
 }
 
@@ -204,25 +213,31 @@ export function parseGraphDataResponse(value: unknown): GraphData {
 
 export type StreamHandlers = {
   onOpen?: () => void;
+  onActivity?: () => void;
   onEvent?: (event: StreamEvent) => void;
   onBatch?: (batch: StreamBatch) => void;
 };
 
+export class StreamProtocolError extends Error {}
+
 function deliverStreamPayload(payload: unknown, sessionId: string, handlers: StreamHandlers) {
-  if (!payload || typeof payload !== 'object') return;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new StreamProtocolError('无效的流事件');
   const value = payload as Record<string, any>;
   if (value.protocol_version === 2 && Array.isArray(value.events)) {
+    if (!value.events.every((event: unknown) => event && typeof event === 'object' && typeof (event as StreamEvent).type === 'string')
+      || (value.event_index != null && (!Number.isSafeInteger(value.event_index) || value.event_index < 0))) throw new StreamProtocolError('无效的 V2 事件批次');
     const batch: StreamBatch = {
       protocol_version: 2,
       session_id: String(value.session_id || sessionId),
       run_id: String(value.run_id || ''),
       event_index: value.event_index != null && Number.isFinite(Number(value.event_index)) ? Number(value.event_index) : null,
-      events: value.events.filter((event: unknown): event is StreamEvent => Boolean(event && typeof event === 'object')),
+      events: value.events,
     };
     if (handlers.onBatch) handlers.onBatch(batch);
     else for (const event of batch.events) handlers.onEvent?.(event);
     return;
   }
+  if (value.protocol_version === 2 || typeof value.type !== 'string') throw new StreamProtocolError('无效的流事件');
   const event = value as StreamEvent;
   if (handlers.onBatch) {
     handlers.onBatch({
@@ -238,36 +253,47 @@ function deliverStreamPayload(payload: unknown, sessionId: string, handlers: Str
 export async function consumeSseResponse(response: Response, sessionId: string, handlers: StreamHandlers) {
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw ApiError.fromResponse(response.status, data);
+    const error = ApiError.fromResponse(response.status, data, response.headers.get('Retry-After'));
+    if (response.headers.get('X-iGraph-Feedback-Accepted') === 'false') error.feedbackAccepted = false;
+    throw error;
   }
   if (!response.body) throw new Error('服务器没有返回流式响应');
   handlers.onOpen?.();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = '';
-  const consumeFrames = (complete: boolean) => {
-    buffer = buffer.replace(/\r\n/g, '\n');
-    const frames = buffer.split('\n\n');
-    buffer = complete ? '' : (frames.pop() || '');
-    for (const frame of frames) {
-      const data = frame.split('\n')
-        .filter(line => line.startsWith('data:'))
-        .map(line => line.slice(5).trimStart())
-        .join('\n');
-      if (!data) continue;
-      try { deliverStreamPayload(JSON.parse(data), sessionId, handlers); } catch { /* Ignore malformed keep-alive frames. */ }
+  const parser = createParser({
+    onEvent: ({ data }) => {
+      let payload: unknown;
+      try { payload = JSON.parse(data); } catch { throw new StreamProtocolError('流事件 JSON 无效'); }
+      deliverStreamPayload(payload, sessionId, handlers);
+    },
+    onError: error => { if (error.type === 'max-buffer-size-exceeded') throw new StreamProtocolError('流事件超过缓冲限制'); },
+    maxBufferSize: 16 * 1024 * 1024,
+  });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      handlers.onActivity?.();
+      parser.feed(decoder.decode(value, { stream: true }));
     }
-  };
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    consumeFrames(false);
+    parser.feed(decoder.decode());
+  } finally {
+    // EOF is not a frame delimiter. Replay any incomplete final event.
+    parser.reset();
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
-  buffer += decoder.decode();
-  consumeFrames(false);
-  // An unterminated tail may be half of a JSON frame. Do not dispatch it or
-  // advance the resume cursor; the server will replay it on reconnect.
+}
+
+export type RunSnapshot = {
+  session_id: string; run_id: string; status: string; messages: Message[];
+  active_run: ActiveRun | null; pending_feedback: FeedbackRequest | null;
+  snapshot_complete: boolean; resume_cursor: number | null;
+};
+
+export function getRunSnapshot(sessionId: string, runId: string, signal?: AbortSignal) {
+  return json<RunSnapshot>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/snapshot`, { signal });
 }
 
 export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal) {
