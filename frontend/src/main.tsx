@@ -1,9 +1,10 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { activateSession, ApiError, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, resumeRun, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, streamChat, streamFeedback, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
-import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, StreamBatch, ToolCall } from './types';
+import { activateSession, ApiError, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
+import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
+import { RunRecovery } from './RunRecovery';
 import { conversationReducer, createSessionView, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import { DatasetPanel } from './components/DatasetPanel';
 import { ChatPane } from './components/ChatPane';
@@ -194,7 +195,27 @@ function App() {
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [watchPausedBySession, setWatchPausedBySession] = useState<Record<string, boolean>>({});
   const conversationRef = useRef(conversation);
+  const identityRef = useRef(userId);
+  identityRef.current = userId;
+  const pausedRef = useRef(new Map<string, boolean>());
   const connectionManagerRef = useRef(new RunConnectionManager(4));
+  const committedCursorsRef = useRef(new Map<string, { generation: string; index: number }>());
+  const recoveryRef = useRef<RunRecovery | null>(null);
+  const recoveryOptions = {
+    manager: connectionManagerRef.current,
+    view: (id: string) => conversationRef.current.viewsBySessionId[id],
+    identity: () => identityRef.current,
+    paused: (id: string) => isWatchPausePersisted(id),
+    foreground: (id: string) => conversationRef.current.activeSessionId === id,
+    dispatch: dispatchConversation,
+    accepted: (id: string) => clearPendingFirstTurn(id),
+    settled: (id: string) => {
+      clearPersistedRun(id); setWatchPaused(id, false);
+      void refreshSessionGraph(id, { include_community: false }, false, undefined, true);
+    },
+  };
+  if (!recoveryRef.current) recoveryRef.current = new RunRecovery(recoveryOptions);
+  else recoveryRef.current.configure(recoveryOptions);
   const hydrationVersionsRef = useRef(new Map<string, number>());
   const hydrationControllersRef = useRef(new Map<string, AbortController>());
   const draftCreationControllersRef = useRef(new Map<string, AbortController>());
@@ -359,43 +380,38 @@ function App() {
   function watchPauseStorageKey(sessionId: string) { return `igraph-run-watch-paused:v1:${userId}:${sessionId}`; }
 
   function isWatchPausePersisted(sessionId: string) {
-    return Boolean(userId && sessionStorage.getItem(watchPauseStorageKey(sessionId)) === '1');
+    if (pausedRef.current.has(sessionId)) return pausedRef.current.get(sessionId)!;
+    try { return Boolean(userId && sessionStorage.getItem(watchPauseStorageKey(sessionId)) === '1'); } catch { return false; }
   }
 
   function setWatchPaused(sessionId: string, paused: boolean) {
+    pausedRef.current.set(sessionId, paused);
     setWatchPausedBySession(current => ({ ...current, [sessionId]: paused }));
     if (!userId) return;
-    if (paused) sessionStorage.setItem(watchPauseStorageKey(sessionId), '1');
-    else sessionStorage.removeItem(watchPauseStorageKey(sessionId));
+    try {
+      if (paused) sessionStorage.setItem(watchPauseStorageKey(sessionId), '1');
+      else sessionStorage.removeItem(watchPauseStorageKey(sessionId));
+    } catch { /* Storage is optional; the in-memory pause remains authoritative. */ }
   }
 
-  function persistRun(sessionId: string, runId: string, lastEventIndex: number) {
+  function persistRun(sessionId: string, runId: string, lastAppliedEventIndex: number) {
     if (!userId || !runId) return;
-    sessionStorage.setItem(runStorageKey(sessionId), JSON.stringify({ runId, lastEventIndex }));
+    try { sessionStorage.setItem(runStorageKey(sessionId), JSON.stringify({ runId, lastAppliedEventIndex })); } catch { /* Current reception remains usable. */ }
   }
 
-  function clearPersistedRun(sessionId: string) { sessionStorage.removeItem(runStorageKey(sessionId)); }
+  function clearPersistedRun(sessionId: string) { try { sessionStorage.removeItem(runStorageKey(sessionId)); } catch { /* optional storage */ } }
 
   function persistPendingFirstTurn(sessionId: string, value: PendingFirstTurn) {
     if (!userId) return;
-    localStorage.setItem(pendingFirstTurnStorageKey(userId, sessionId), JSON.stringify(value));
+    try { localStorage.setItem(pendingFirstTurnStorageKey(userId, sessionId), JSON.stringify(value)); } catch { /* Refresh recovery is optional. */ }
   }
 
   function clearPendingFirstTurn(sessionId: string) {
-    if (userId) localStorage.removeItem(pendingFirstTurnStorageKey(userId, sessionId));
+    try { if (userId) localStorage.removeItem(pendingFirstTurnStorageKey(userId, sessionId)); } catch { /* optional storage */ }
   }
 
   function clearStoredDraft(projectId: string) {
     if (userId) localStorage.removeItem(draftStorageKey(userId, projectId));
-  }
-
-  function persistedRun(sessionId: string) {
-    try {
-      const value = JSON.parse(sessionStorage.getItem(runStorageKey(sessionId)) || 'null');
-      return value && typeof value.runId === 'string'
-        ? { runId: value.runId, lastEventIndex: Number(value.lastEventIndex ?? -1) }
-        : null;
-    } catch { return null; }
   }
 
   function nextGraphVersion(sessionId: string, preserveCurrent = false) {
@@ -430,316 +446,44 @@ function App() {
       return null;
     }
   }
-
-  async function reconcileAuthoritativeRun(sessionId: string, generation: string) {
-    const requestVersion = (hydrationVersionsRef.current.get(sessionId) || 0) + 1;
-    hydrationVersionsRef.current.set(sessionId, requestVersion);
-    dispatchConversation({ type: 'HYDRATE_START', sessionId, requestVersion });
-    try {
-      const response = await activateSession(sessionId);
-      const restoredMessages = response.messages === undefined
-        ? normalizeMessages((await getMessages(sessionId)).messages)
-        : normalizeMessages(response.messages);
-      if (hydrationVersionsRef.current.get(sessionId) !== requestVersion) return null;
-      const currentView = conversationRef.current.viewsBySessionId[sessionId];
-      const selectedModel = String(response.model || currentView?.model || response.default_model || defaultModel);
-      const graphVersion = nextGraphVersion(sessionId);
-      dispatchConversation({
-        type: 'HYDRATE_SUCCESS',
-        sessionId,
-        requestVersion,
-        messages: restoredMessages,
-        model: selectedModel,
-        activeDatasetId: Object.prototype.hasOwnProperty.call(response, 'active_dataset_id')
-          ? response.active_dataset_id
-          : currentView?.activeDatasetId,
-        activeRun: response.active_run,
-        feedback: response.pending_feedback,
-        generation,
-        preserveMessages: Boolean(response.active_run && currentView?.messageOrder.length),
-        datasetView: response.dataset_view,
-        hasGraph: response.has_graph,
-      });
-      if (response.has_graph && response.dataset_view?.kind !== 'graph_collection') {
-        void refreshSessionGraph(sessionId, { include_community: false }, false, graphVersion);
-      }
-      if (!response.active_run) {
-        dispatchConversation({ type: 'CLEAR_ACTIVE_RUN', sessionId, generation });
-        clearPersistedRun(sessionId);
-        setWatchPaused(sessionId, false);
-      }
-      setAvailableModels(normalizedModels(response.available_models, selectedModel));
-      setSessions(current => current.map(session => session.session_id === sessionId ? {
-        ...session,
-        project_id: response.project_id || session.project_id,
-        active_dataset_id: Object.prototype.hasOwnProperty.call(response, 'active_dataset_id') ? response.active_dataset_id : session.active_dataset_id,
-        has_graph: response.has_graph,
-        model: selectedModel,
-      } : session));
-      return { activeRun: response.active_run || null, feedback: response.pending_feedback || null };
-    } catch (cause: any) {
-      if (hydrationVersionsRef.current.get(sessionId) === requestVersion) {
-        dispatchConversation({ type: 'HYDRATE_FAILED', sessionId, requestVersion, error: cause.message || '无法核对 Run 状态' });
-      }
-      throw cause;
-    }
-  }
-
-  async function reconcileFeedbackOutcome(sessionId: string, generation: string) {
-    try {
-      const snapshot = await reconcileAuthoritativeRun(sessionId, generation);
-      connectionManagerRef.current.release(sessionId, generation);
-      if (snapshot?.activeRun && snapshot.activeRun.status.toLowerCase() !== 'paused') {
-        openResumeConnection(sessionId, generation, snapshot.activeRun, conversationRef.current.activeSessionId === sessionId);
-      }
-    } catch {
-      dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'submitting_feedback', error: '确认结果暂时无法核对，系统会自动重试' });
-      connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => {
-        const restarted = connectionManagerRef.current.restart(sessionId, generation);
-        if (restarted) void reconcileFeedbackOutcome(sessionId, generation);
-      });
-    }
-  }
-
-  async function reconcileResumeOutcome(sessionId: string, generation: string) {
-    try {
-      const snapshot = await reconcileAuthoritativeRun(sessionId, generation);
-      connectionManagerRef.current.release(sessionId, generation);
-      if (snapshot?.activeRun && snapshot.activeRun.status.toLowerCase() !== 'paused') {
-        openResumeConnection(sessionId, generation, snapshot.activeRun, conversationRef.current.activeSessionId === sessionId);
-      }
-    } catch {
-      dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting', error: '续传状态暂时无法核对，系统会自动重试' });
-      connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => {
-        const restarted = connectionManagerRef.current.restart(sessionId, generation);
-        if (restarted) void reconcileResumeOutcome(sessionId, generation);
-      });
-    }
-  }
-
-  function terminalEvent(batch: StreamBatch) {
-    return batch.events.some(event => event.type === 'done' || event.type === 'error');
-  }
-
-  function feedbackEvent(batch: StreamBatch) {
-    return batch.events.some(event => event.type === 'await_user_feedback' || String(event.event || event.type || '').toLowerCase().includes('runpaused'));
+  function openResumeConnection(sessionId: string, generation: string, activeRun: ActiveRun, foreground = conversationRef.current.activeSessionId === sessionId) {
+    recoveryRef.current!.open(sessionId, generation, activeRun, foreground);
   }
 
   async function consumeRunConnection(
-    sessionId: string,
-    generation: string,
-    connection: NonNullable<ReturnType<RunConnectionManager['get']>>,
+    sessionId: string, generation: string, connection: NonNullable<ReturnType<RunConnectionManager['get']>>,
     operation: 'start' | 'resume' | 'feedback',
-    startPayload?: { message: string; attachments: Array<{ file_token: string; filename: string }> },
-    pendingFeedback?: FeedbackRequest | null,
-    feedbackDecision?: 'approve' | 'reject',
-    resumeFromEventIndex?: number,
-    feedbackDecisionId?: string,
-    clearPendingOnOpen = false,
+    startPayload?: { message: string; attachments: AttachmentRef[] }, pendingFeedback?: FeedbackRequest | null,
+    feedbackDecision?: 'approve' | 'reject', _resumeFromEventIndex?: number, feedbackDecisionId?: string, _clearPendingOnOpen = false,
   ) {
-    let runId = connection.runId || '';
-    let lastEventIndex = resumeFromEventIndex ?? conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.lastEventIndex ?? -1;
-    let terminal = false;
-    let awaitingFeedback = false;
-    let feedbackAccepted = false;
-    let feedbackSubmitFailed = false;
-    let pendingFirstTurnCleared = false;
-    const handlers = {
-      onBatch: (incoming: StreamBatch) => {
-        if (clearPendingOnOpen && !pendingFirstTurnCleared) {
-          clearPendingFirstTurn(sessionId);
-          pendingFirstTurnCleared = true;
-        }
-        const batch = { ...incoming, session_id: incoming.session_id || sessionId, run_id: incoming.run_id || runId };
-        if (batch.session_id !== sessionId) return;
-        if (batch.run_id) {
-          runId = batch.run_id;
-          connectionManagerRef.current.updateRunId(sessionId, generation, runId);
-        }
-        if (batch.event_index != null && Number.isFinite(Number(batch.event_index))) lastEventIndex = Number(batch.event_index);
-        connectionManagerRef.current.receivedEvent(sessionId, generation);
-        dispatchConversation({ type: 'APPLY_BATCH', sessionId, generation, batch });
-        if (runId) persistRun(sessionId, runId, lastEventIndex);
-        terminal ||= terminalEvent(batch);
-        awaitingFeedback ||= feedbackEvent(batch);
-        feedbackAccepted ||= batch.events.some(event => event.type === 'feedback_accepted' || (event.type === 'feedback_submit_error' && event.accepted === true));
-        feedbackSubmitFailed ||= batch.events.some(event => event.type === 'feedback_submit_error' && event.accepted !== true);
-      },
-    };
-
-    const reconcileUnknownFirstTurn = async () => {
-      try {
-        const activated = await activateSession(sessionId);
-        if (activated.active_run) {
-          clearPendingFirstTurn(sessionId);
-          pendingFirstTurnCleared = true;
-          runId = activated.active_run.run_id;
-          lastEventIndex = activated.active_run.last_event_index;
-          dispatchConversation({ type: 'ADOPT_RUN', sessionId, generation, activeRun: activated.active_run, feedback: activated.pending_feedback });
-          connectionManagerRef.current.updateRunId(sessionId, generation, runId);
-          if (activated.active_run.status.toLowerCase() !== 'paused') {
-            const restarted = connectionManagerRef.current.restart(sessionId, generation);
-            if (restarted) void consumeRunConnection(sessionId, generation, restarted, 'resume', undefined, undefined, undefined, lastEventIndex);
-          } else connectionManagerRef.current.release(sessionId, generation);
-          return;
-        }
-        dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: startPayload?.message, restoreAttachments: startPayload?.attachments });
-        dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '任务尚未启动，请手工重试' } });
-        connectionManagerRef.current.release(sessionId, generation);
-      } catch (activateError: any) {
-        dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting', error: activateError.message || '正在核对首次任务是否已启动' });
-        connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => { void reconcileUnknownFirstTurn(); });
-      }
-    };
-
-    try {
-      if (operation === 'start' && startPayload) {
-        await streamChat(sessionId, startPayload.message, startPayload.attachments, handlers, connection.controller.signal);
-      } else if (operation === 'feedback' && pendingFeedback && feedbackDecision && feedbackDecisionId) {
-        await streamFeedback(sessionId, pendingFeedback, feedbackDecision, feedbackDecisionId, handlers, connection.controller.signal);
-      } else if (runId) {
-        await resumeRun(sessionId, runId, lastEventIndex, handlers, connection.controller.signal);
-      }
-    } catch (cause: any) {
-      if (requestWasAborted(cause)) return;
-      if (operation === 'feedback') {
-        feedbackSubmitFailed = true;
-      } else if (operation === 'resume') {
-        void reconcileResumeOutcome(sessionId, generation);
-        return;
-      } else if (operation === 'start' && cause instanceof ApiError && cause.status === 409) {
-        dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: startPayload?.message, restoreAttachments: startPayload?.attachments });
-        connectionManagerRef.current.release(sessionId, generation);
-        try {
-          const snapshot = await reconcileAuthoritativeRun(sessionId, generation);
-          if (snapshot?.activeRun && snapshot.activeRun.status.toLowerCase() !== 'paused') {
-            if (clearPendingOnOpen) clearPendingFirstTurn(sessionId);
-            openResumeConnection(sessionId, generation, snapshot.activeRun, conversationRef.current.activeSessionId === sessionId);
-          }
-        } catch (activateError: any) {
-          dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: activateError.message || cause.message || '无法恢复当前活动 Run' } });
-        }
-        return;
-      } else if (operation === 'start' && !runId && clearPendingOnOpen) {
-        void reconcileUnknownFirstTurn();
-        return;
-      } else if (operation === 'start' && !runId) {
-        try {
-          const activated = await activateSession(sessionId);
-          if (activated.active_run) {
-            if (clearPendingOnOpen) clearPendingFirstTurn(sessionId);
-            runId = activated.active_run.run_id;
-            lastEventIndex = activated.active_run.last_event_index;
-            dispatchConversation({ type: 'ADOPT_RUN', sessionId, generation, activeRun: activated.active_run, feedback: activated.pending_feedback });
-            connectionManagerRef.current.updateRunId(sessionId, generation, runId);
-          } else {
-            dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'failed', error: cause.message || '任务启动失败，请手工重试' });
-            connectionManagerRef.current.release(sessionId, generation);
-            return;
-          }
-        } catch (activateError: any) {
-          dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'failed', error: activateError.message || '无法确认任务是否已启动' });
-          connectionManagerRef.current.release(sessionId, generation);
-          return;
-        }
-      }
-    }
-
-    if (operation === 'feedback' && (feedbackSubmitFailed || !feedbackAccepted)) {
-      void reconcileFeedbackOutcome(sessionId, generation);
-      return;
-    }
-
-    if (terminal) {
-      clearPersistedRun(sessionId);
-      setWatchPaused(sessionId, false);
-      if (clearPendingOnOpen) clearPendingFirstTurn(sessionId);
-      connectionManagerRef.current.release(sessionId, generation);
-      if (startPayload?.attachments.length) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [] } });
-      void refreshSessionGraph(sessionId, { include_community: false }, false, undefined, true);
-      return;
-    }
-    if (awaitingFeedback) {
-      connectionManagerRef.current.release(sessionId, generation);
-      return;
-    }
-    if (!runId) {
-      dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'failed', error: '流连接已结束，但服务器未返回 Run ID' });
-      connectionManagerRef.current.release(sessionId, generation);
-      return;
-    }
-    if (operation === 'resume') {
-      void reconcileResumeOutcome(sessionId, generation);
-      return;
-    }
-    persistRun(sessionId, runId, lastEventIndex);
-    dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting' });
-    connectionManagerRef.current.scheduleReconnect(sessionId, generation, () => {
-      const restarted = connectionManagerRef.current.restart(sessionId, generation);
-      if (restarted) void consumeRunConnection(sessionId, generation, restarted, 'resume');
-    });
+    await recoveryRef.current!.consume(connection, operation, startPayload, pendingFeedback, feedbackDecision, feedbackDecisionId);
   }
 
-  function openResumeConnection(sessionId: string, generation: string, activeRun: ActiveRun, foreground = conversationRef.current.activeSessionId === sessionId) {
-    if (!activeRun.run_id || activeRun.status.toLowerCase() === 'paused' || connectionManagerRef.current.get(sessionId)) return;
-    if (isWatchPausePersisted(sessionId)) {
-      setWatchPaused(sessionId, true);
-      dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' });
-      return;
-    }
-    const retry = () => {
-      const viewRun = conversationRef.current.viewsBySessionId[sessionId]?.activeRun;
-      if (viewRun?.runId) openResumeConnection(sessionId, generation, { run_id: viewRun.runId, status: viewRun.status, last_event_index: viewRun.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
-    };
-    const connection = connectionManagerRef.current.acquire({
-      sessionId,
-      runId: activeRun.run_id,
-      generation,
-      foreground,
-      retry,
-      onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
-    });
-    if (!connection) return;
-    persistRun(sessionId, activeRun.run_id, activeRun.last_event_index);
-    dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'reconnecting' });
-    void consumeRunConnection(sessionId, generation, connection, 'resume', undefined, undefined, undefined, activeRun.last_event_index);
-  }
-
-  async function pauseRunWatching() {
+  function pauseRunWatching() {
     if (!activeSessionId) return;
     const run = conversationRef.current.viewsBySessionId[activeSessionId]?.activeRun;
     if (!run) return;
-    const connection = connectionManagerRef.current.get(activeSessionId);
-    let runId = run.runId || connection?.runId || '';
-    let lastEventIndex = run.lastEventIndex;
-    if (!runId) {
-      try {
-        const response = await activateSession(activeSessionId);
-        if (!response.active_run) return;
-        runId = response.active_run.run_id;
-        lastEventIndex = Math.max(lastEventIndex, Number(response.active_run.last_event_index ?? -1));
-        dispatchConversation({ type: 'SET_RUN_ID', sessionId: activeSessionId, generation: run.generation, runId, lastEventIndex });
-      } catch (cause: any) {
-        dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSessionId, patch: { error: cause.message || '暂时无法确认当前 Run，未暂停接收' } });
-        return;
-      }
-    }
-    persistRun(activeSessionId, runId, lastEventIndex);
     setWatchPaused(activeSessionId, true);
+    hydrationControllersRef.current.get(activeSessionId)?.abort();
+    hydrationVersionsRef.current.set(activeSessionId, (hydrationVersionsRef.current.get(activeSessionId) || 0) + 1);
     connectionManagerRef.current.abort(activeSessionId);
-    dispatchConversation({ type: 'SET_RUN_STATUS', sessionId: activeSessionId, generation: run.generation, status: 'detached' });
+    dispatchConversation({ type: 'SET_RECEPTION', sessionId: activeSessionId, generation: run.generation, reception: 'user_paused', synchronized: false });
   }
 
   function resumeRunWatching() {
     if (!activeSessionId) return;
     const run = conversationRef.current.viewsBySessionId[activeSessionId]?.activeRun;
-    if (!run?.runId) return setWatchPaused(activeSessionId, false);
     setWatchPaused(activeSessionId, false);
-    openResumeConnection(activeSessionId, run.generation, {
-      run_id: run.runId,
-      status: 'running',
-      last_event_index: run.lastEventIndex,
+    if (!run) return;
+    if (run.runId) openResumeConnection(activeSessionId, run.generation, {
+      run_id: run.runId, status: 'running', last_event_index: run.lastAppliedEventIndex,
     }, true);
+    else {
+      const manager = connectionManagerRef.current;
+      const connection = manager.acquire({ sessionId: activeSessionId, generation: run.generation, foreground: true,
+        retry: () => {}, onDetached: () => {} });
+      if (connection) void recoveryRef.current!.check(connection, true);
+    }
   }
 
   const selectSession = async (id: string, source = sessions, updateUrl = true, allowUnlisted = false) => {
@@ -757,32 +501,37 @@ function App() {
     setGraphOpen(window.innerWidth > 900);
     if (updateUrl) updateViewUrl('session', id);
 
+    // A live observer already owns recovery and its one control-query slot.
+    // Selecting its cached view must not start a competing hydration request.
+    if (connectionManagerRef.current.get(id) && conversationRef.current.viewsBySessionId[id]?.hydration === 'ready') return;
+
     hydrationControllersRef.current.get(id)?.abort();
     const controller = new AbortController();
     hydrationControllersRef.current.set(id, controller);
     const requestVersion = (hydrationVersionsRef.current.get(id) || 0) + 1;
     hydrationVersionsRef.current.set(id, requestVersion);
     dispatchConversation({ type: 'HYDRATE_START', sessionId: id, requestVersion });
+    const observedGeneration = conversationRef.current.viewsBySessionId[id]?.activeRun?.generation;
+    const cancelQuery = () => connectionManagerRef.current.cancelControl(id);
+    controller.signal.addEventListener('abort', cancelQuery, { once: true });
 
     try {
-      const response = await activateSession(id, controller.signal);
-      const restoredMessages = response.messages === undefined
-        ? normalizeMessages((await getMessages(id, controller.signal)).messages)
-        : normalizeMessages(response.messages);
-      if (hydrationVersionsRef.current.get(id) !== requestVersion) return;
+      const response = await connectionManagerRef.current.query(id, `hydrate:${requestVersion}`, async signal => {
+        const result = await activateSession(id, signal);
+        return { ...result, messages: result.messages === undefined ? (await getMessages(id, signal)).messages : result.messages };
+      });
+      const restoredMessages = normalizeMessages(response.messages);
+      if (controller.signal.aborted || identityRef.current !== userId || hydrationVersionsRef.current.get(id) !== requestVersion) return;
+      if (conversationRef.current.viewsBySessionId[id]?.activeRun?.generation !== observedGeneration) return;
       const selectedModel = String(response.model || session.model || response.default_model || defaultModel);
       const projectId = response.project_id || session.project_id;
       const activeDatasetId = Object.prototype.hasOwnProperty.call(response, 'active_dataset_id') ? response.active_dataset_id : session.active_dataset_id;
       const previousView = conversationRef.current.viewsBySessionId[id];
       const previousRun = previousView?.activeRun;
-      const storedRun = persistedRun(id);
       const effectiveActiveRun = response.active_run ? {
         ...response.active_run,
         last_event_index: previousRun?.runId === response.active_run.run_id
-          ? Math.max(response.active_run.last_event_index, previousRun.lastEventIndex)
-          : response.active_run.last_event_index < 0 && storedRun?.runId === response.active_run.run_id
-            ? storedRun.lastEventIndex
-            : response.active_run.last_event_index,
+          ? previousRun.lastAppliedEventIndex : -1,
       } : null;
       const generation = effectiveActiveRun && previousRun?.runId === effectiveActiveRun.run_id
         ? previousRun.generation
@@ -792,7 +541,7 @@ function App() {
         type: 'HYDRATE_SUCCESS', sessionId: id, requestVersion, messages: restoredMessages,
         model: selectedModel, activeDatasetId, feedback: response.pending_feedback,
         activeRun: effectiveActiveRun, generation,
-        preserveMessages: Boolean(previousView?.messageOrder.length && previousView.activeRun),
+        preserveMessages: Boolean(effectiveActiveRun && previousRun?.runId === effectiveActiveRun.run_id && previousRun.lastAppliedEventIndex >= 0),
         datasetView: response.dataset_view,
         hasGraph: response.has_graph,
       });
@@ -834,10 +583,15 @@ function App() {
       if (effectiveActiveRun) {
         if (isWatchPausePersisted(id)) {
           setWatchPaused(id, true);
-          dispatchConversation({ type: 'SET_RUN_STATUS', sessionId: id, generation, status: 'detached' });
-        } else openResumeConnection(id, generation, effectiveActiveRun, true);
-      } else setWatchPaused(id, false);
+          dispatchConversation({ type: 'SET_RECEPTION', sessionId: id, generation, reception: 'user_paused', synchronized: false });
+        }
+      } else {
+        connectionManagerRef.current.abort(id);
+        clearPersistedRun(id);
+        setWatchPaused(id, false);
+      }
     } catch (cause: any) {
+      if (controller.signal.aborted || identityRef.current !== userId || hydrationVersionsRef.current.get(id) !== requestVersion) return;
       if (!requestWasAborted(cause) && cause instanceof ApiError && cause.status === 404) {
         connectionManagerRef.current.abort(id);
         clearPersistedRun(id);
@@ -848,6 +602,7 @@ function App() {
         dispatchConversation({ type: 'HYDRATE_FAILED', sessionId: id, requestVersion, error: cause.message || '会话切换失败' });
       }
     } finally {
+      controller.signal.removeEventListener('abort', cancelQuery);
       if (hydrationControllersRef.current.get(id) === controller) hydrationControllersRef.current.delete(id);
     }
   };
@@ -933,7 +688,35 @@ function App() {
     window.addEventListener('popstate', handleHistoryNavigation);
     return () => window.removeEventListener('popstate', handleHistoryNavigation);
   }, [userId, sessions, projects, busy]);
-  useEffect(() => () => connectionManagerRef.current.abortAll(), []);
+  useEffect(() => () => {
+    recoveryRef.current?.reset();
+    for (const controller of hydrationControllersRef.current.values()) controller.abort();
+    hydrationControllersRef.current.clear();
+    hydrationVersionsRef.current.clear();
+  }, [userId]);
+  useEffect(() => {
+    const manager = connectionManagerRef.current;
+    for (const [id, view] of Object.entries(conversation.viewsBySessionId)) {
+      const run = view.activeRun;
+      if (!run) continue;
+      const connection = manager.get(id);
+      if (connection && (connection.generation !== run.generation || (run.runId && connection.runId && connection.runId !== run.runId))) manager.abort(id);
+      if (run.runId && ['completed', 'failed', 'cancelled'].includes(run.status) && run.synchronized !== false) clearPersistedRun(id);
+      else if (run.runId) persistRun(id, run.runId, run.lastAppliedEventIndex);
+      if (run.runId && run.reception === 'connecting' && !manager.get(id) && !isWatchPausePersisted(id)) {
+        openResumeConnection(id, run.generation, { run_id: run.runId, status: run.status === 'awaiting_feedback' ? 'paused' : run.status, last_event_index: run.lastAppliedEventIndex });
+      }
+      const prior = committedCursorsRef.current.get(id);
+      if (run.lastAppliedEventIndex >= 0 && (prior?.generation !== run.generation || run.lastAppliedEventIndex > prior.index)) manager.receivedEvent(id, run.generation);
+      committedCursorsRef.current.set(id, { generation: run.generation, index: run.lastAppliedEventIndex });
+    }
+  }, [conversation.viewsBySessionId]);
+  useEffect(() => {
+    const wake = () => { if (document.visibilityState !== 'hidden') recoveryRef.current?.wake(); };
+    window.addEventListener('online', wake);
+    document.addEventListener('visibilitychange', wake);
+    return () => { window.removeEventListener('online', wake); document.removeEventListener('visibilitychange', wake); };
+  }, []);
   useEffect(() => () => {
     for (const controller of draftCreationControllersRef.current.values()) controller.abort();
     for (const controller of preparationControllersRef.current.values()) controller.abort();
@@ -966,7 +749,8 @@ function App() {
   }, [userId]);
   useEffect(() => {
     if (bottomInteraction.kind !== 'syncing_feedback' || bottomInteraction.reason !== 'missing_feedback' || !activeSessionId || !activeView?.activeRun) return;
-    void reconcileAuthoritativeRun(activeSessionId, activeView.activeRun.generation).catch(() => undefined);
+    const run = activeView.activeRun;
+    if (run.runId) openResumeConnection(activeSessionId, run.generation, { run_id: run.runId, status: 'paused', last_event_index: run.lastAppliedEventIndex });
   }, [activeSessionId, activeView?.activeRun?.generation, activeView?.activeRun?.runId, bottomInteraction.kind, bottomInteraction.kind === 'syncing_feedback' ? bottomInteraction.reason : 'ready']);
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('igraph-theme', dark ? 'dark' : 'light'); }, [dark]);
   useEffect(() => { setReady(true); }, []);
@@ -1209,14 +993,14 @@ function App() {
 
     const retry = () => {
       const run = conversationRef.current.viewsBySessionId[sessionId]?.activeRun;
-      if (run?.runId) openResumeConnection(sessionId, generation, { run_id: run.runId, status: run.status, last_event_index: run.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
+      if (run?.runId) openResumeConnection(sessionId, generation, { run_id: run.runId, status: run.status, last_event_index: run.lastAppliedEventIndex }, conversationRef.current.activeSessionId === sessionId);
     };
     const connection = connectionManagerRef.current.acquire({
       sessionId,
       generation,
       foreground: conversationRef.current.activeSessionId === sessionId,
       retry,
-      onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
+      onDetached: () => dispatchConversation({ type: 'SET_RECEPTION', sessionId, generation, reception: 'capacity_suspended', synchronized: false }),
     });
     if (!connection) {
       dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: '当前会话仍有连接正在收尾，请稍后重试' });
@@ -1371,14 +1155,14 @@ function App() {
     setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, preview: message, last_message: message } : session));
     const retry = () => {
       const run = conversationRef.current.viewsBySessionId[sessionId]?.activeRun;
-      if (run?.runId) openResumeConnection(sessionId, generation, { run_id: run.runId, status: run.status, last_event_index: run.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
+      if (run?.runId) openResumeConnection(sessionId, generation, { run_id: run.runId, status: run.status, last_event_index: run.lastAppliedEventIndex }, conversationRef.current.activeSessionId === sessionId);
     };
     const connection = connectionManagerRef.current.acquire({
       sessionId,
       generation,
       foreground: true,
       retry,
-      onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
+      onDetached: () => dispatchConversation({ type: 'SET_RECEPTION', sessionId, generation, reception: 'capacity_suspended', synchronized: false }),
     });
     if (!connection) {
       dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: message, restoreAttachments: attachments });
@@ -1401,7 +1185,7 @@ function App() {
     if (connectionManagerRef.current.get(sessionId)) return;
     const generation = run.generation;
     const decisionId = crypto.randomUUID();
-    const retry = () => openResumeConnection(sessionId, generation, { run_id: run.runId!, status: 'running', last_event_index: run.lastEventIndex }, conversationRef.current.activeSessionId === sessionId);
+    const retry = () => openResumeConnection(sessionId, generation, { run_id: run.runId!, status: 'running', last_event_index: run.lastAppliedEventIndex }, conversationRef.current.activeSessionId === sessionId);
     const connection = connectionManagerRef.current.acquire({
       sessionId,
       runId: run.runId,
@@ -1409,7 +1193,7 @@ function App() {
       foreground: true,
       protected: true,
       retry,
-      onDetached: () => dispatchConversation({ type: 'SET_RUN_STATUS', sessionId, generation, status: 'detached' }),
+      onDetached: () => dispatchConversation({ type: 'SET_RECEPTION', sessionId, generation, reception: 'capacity_suspended', synchronized: false }),
     });
     if (!connection) return;
     dispatchConversation({ type: 'BEGIN_FEEDBACK_SUBMISSION', sessionId, generation, runId: run.runId, callId, decisionId, decision });

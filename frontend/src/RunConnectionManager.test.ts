@@ -6,7 +6,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 describe('RunConnectionManager', () => {
-  it('caps live connections, detaches overflow, and resumes it when a slot opens', () => {
+  it('foreground acquisition evicts only the old observer and invalidates its pending work', async () => {
+    vi.useFakeTimers();
+    const manager = new RunConnectionManager(1), detached = vi.fn(), retry = vi.fn();
+    const first = manager.acquire({ sessionId: 'A', generation: 'g', foreground: true, retry, onDetached: detached })!;
+    manager.schedule(first, vi.fn(), 30000);
+    const pending = manager.query('A', 'g', async () => new Promise(() => {})).catch(error => error);
+    const next = manager.acquire({ sessionId: 'B', generation: 'b', foreground: true, retry: vi.fn(), onDetached: vi.fn() })!;
+    expect(first.controller.signal.aborted).toBe(true);
+    expect(manager.isCurrent(first)).toBe(false);
+    expect(detached).toHaveBeenCalledTimes(1);
+    expect(manager.all()).toEqual([next]);
+    await pending;
+    manager.release('B', 'b'); await Promise.resolve();
+    expect(retry).toHaveBeenCalledTimes(1);
+    manager.abortAll(); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('caps live connections, detaches overflow, and resumes it when a slot opens', async () => {
     vi.useFakeTimers();
     const manager = new RunConnectionManager(2);
     const retry = vi.fn();
@@ -19,6 +35,7 @@ describe('RunConnectionManager', () => {
 
     manager.release('A', 'A');
     vi.runAllTimers();
+    await Promise.resolve();
     expect(retry).toHaveBeenCalledTimes(1);
   });
 

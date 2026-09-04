@@ -60,6 +60,12 @@ class FakeServiceClient:
 
         if path == "/sessions" and method == "GET":
             return {"data": [item for item in self.runtime_sessions.values() if item.get("user_id") == user_id]}
+        if path.startswith('/internal/sessions/') and path.endswith('/recovery-status'):
+            parts = path.split('/')
+            run = next((run for run in self.runtime_runs.get(parts[3], []) if run['run_id'] == parts[5]), None)
+            if run is None:
+                raise HTTPException(404, 'Run not found')
+            return {'run_id': run['run_id'], 'status': str(run['status']).lower()}
         if path == "/internal/models/custom" and method == "PUT":
             self.custom_model_requests.append({"method": method, "path": path, "user_id": user_id, "body": json_body})
             return {"success": True, "model_id": str((json_body or {}).get("model_id") or "")}
@@ -559,7 +565,9 @@ def test_paused_run_snapshot_blocks_both_chat_endpoints(client: TestClient):
 
 def test_feedback_is_validated_and_duplicate_continue_is_rejected(client: TestClient):
     session_id = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
-    FakeServiceClient.runtime_runs[session_id] = [paused_run()]
+    previous = {'tool_call_id': 'earlier', 'tool_name': 'create_analysis_report', 'result': {'report': {'id': 'saved-report'}}}
+    pending = {**paused_run()['requirements'][0]['tool_execution'], 'approval_id': 'original-approval'}
+    FakeServiceClient.runtime_runs[session_id] = [{**paused_run(), 'tools': [pending, previous]}]
     body = {
         "run_id": "run-paused",
         "request_id": "run-paused",
@@ -583,6 +591,9 @@ def test_feedback_is_validated_and_duplicate_continue_is_rejected(client: TestCl
     forwarded_tools = json.loads(FakeServiceClient.runtime_stream_calls[0]["data"]["tools"])
     assert forwarded_tools[0]["tool_call_id"] == "call-train"
     assert forwarded_tools[0]["tool_args"] == {"epochs": 2}
+    assert forwarded_tools[0]["requires_confirmation"] is True
+    assert forwarded_tools[0]["approval_id"] == 'original-approval'
+    assert forwarded_tools[1] == previous
 
     duplicate = client.post(
         f"/api/sessions/{session_id}/feedback/stream",
@@ -647,13 +658,50 @@ def test_upstream_feedback_rejection_releases_submission_guard(client: TestClien
         "tool_name": "train",
     }
     first = client.post(f"/api/sessions/{session_id}/feedback/stream", headers=headers(), json=body)
-    assert first.status_code == 200
-    assert "feedback_submit_error" in first.text
+    assert first.status_code == 503
+    assert first.json()["detail"] == "runtime unavailable"
 
     second = client.post(
         f"/api/sessions/{session_id}/feedback/stream",
         headers=headers(),
         json={**body, "decision_id": "retry-2"},
     )
-    assert second.status_code == 200
+    assert second.status_code == 503
     assert len(FakeServiceClient.runtime_stream_calls) == 2
+
+
+def test_recovery_snapshot_is_complete_only_at_a_persisted_phase(client: TestClient):
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    record = {'run_id': 'r', 'status': 'RUNNING', 'content': 'AB', 'last_event_index': 100}
+    FakeServiceClient.runtime_runs[sid] = [record]
+    running = client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers()).json()
+    assert running['snapshot_complete'] is False and running['resume_cursor'] is None
+    assert running['active_run']['run_id'] == 'r'
+    record.update(status='COMPLETED', content='ABC')
+    FakeServiceClient.runtime_runs[sid].append({'run_id': 'new', 'status': 'RUNNING', 'created_at': 1000})
+    complete = client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers()).json()
+    assert complete['snapshot_complete'] is True and complete['resume_cursor'] is None
+    assert complete['active_run']['run_id'] == 'new'
+    assert next(message for message in complete['messages'] if message['id'] == 'assistant:r')['content'] == 'ABC'
+    assert client.get(f'/api/sessions/{sid}/runs/wrong/snapshot', headers=headers()).status_code == 404
+    assert client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers('other-user')).status_code in {401, 403, 404}
+
+
+def test_resume_propagates_structured_error_before_sse_headers(client: TestClient):
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    FakeServiceClient.runtime_stream_error = HTTPException(409, {'code': 'REPLAY_UNAVAILABLE', 'reason': 'window_trimmed'})
+    result = client.post(f'/api/sessions/{sid}/runs/r/resume?last_event_index=0', headers=headers())
+    assert result.status_code == 409
+    assert result.headers['content-type'] == 'application/json'
+    assert result.json()['detail']['code'] == 'REPLAY_UNAVAILABLE'
+    assert FakeServiceClient.runtime_stream_calls[-1]['path'] == f'/internal/sessions/{sid}/runs/r/resume'
+
+
+def test_feedback_continues_in_background_and_keeps_acceptance_guard(client: TestClient):
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    FakeServiceClient.runtime_runs[sid] = [paused_run()]
+    body = {'run_id': 'run-paused', 'decision_id': 'd', 'decision': 'approve', 'tool_call_id': 'call-train', 'tool_name': 'train'}
+    assert client.post(f'/api/sessions/{sid}/feedback/stream', headers=headers(), json=body).status_code == 200
+    assert FakeServiceClient.runtime_stream_calls[-1]['data']['background'] == 'true'
+    assert client.post(f'/api/sessions/{sid}/feedback/stream', headers=headers(), json=body).status_code == 409
+    assert len(FakeServiceClient.runtime_stream_calls) == 1

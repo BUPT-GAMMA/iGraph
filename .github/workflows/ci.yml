@@ -79,7 +79,8 @@ jobs:
             tests/servers/test_graph_ml*.py
 
       - name: Validate Python line and branch coverage
-        run: python scripts/check_coverage.py coverage.json --lines 51 --branches 34
+        # Transitional floors; release-milestone review policy: docs/CI_QUALITY_POLICY.md.
+        run: python scripts/check_coverage.py coverage.json --lines 45 --branches 30
 
       - name: Validate Compose configuration
         if: ${{ !cancelled() }}

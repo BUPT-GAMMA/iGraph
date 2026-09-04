@@ -12,6 +12,29 @@ function responseFromChunks(chunks: string[]) {
 }
 
 describe('SSE parser', () => {
+  it('handles UTF-8 byte splits, CRLF across chunks, comments and multiline data', async () => {
+    const bytes = new TextEncoder().encode(': heartbeat\r\ndata: {"type":"token",\r\ndata: "content":"中文🙂"}\r\n\r\n');
+    const onBatch = vi.fn(), onActivity = vi.fn();
+    const body = new ReadableStream({ start(controller) {
+      for (const byte of bytes) controller.enqueue(new Uint8Array([byte]));
+      controller.close();
+    } });
+    await consumeSseResponse(new Response(body), 'A', { onBatch, onActivity });
+    expect(onBatch).toHaveBeenCalledTimes(1);
+    expect(onBatch.mock.calls[0][0].events[0].content).toBe('中文🙂');
+    expect(onActivity).toHaveBeenCalledTimes(bytes.length);
+  });
+  it('propagates JSON and business-dispatch errors instead of dropping a complete frame', async () => {
+    await expect(consumeSseResponse(responseFromChunks(['data: invalid\n\n']), 'A', {})).rejects.toThrow();
+    await expect(consumeSseResponse(responseFromChunks(['data: {"type":"token","content":"x"}\n\n']), 'A', {
+      onBatch: () => { throw new Error('cannot apply'); },
+    })).rejects.toThrow('cannot apply');
+  });
+  it('rejects partially valid V2 batches as a whole', async () => {
+    const onBatch = vi.fn();
+    await expect(consumeSseResponse(responseFromChunks(['data: {"protocol_version":2,"event_index":0,"events":[{"type":"token"},null]}\n\n']), 'A', { onBatch })).rejects.toThrow();
+    expect(onBatch).not.toHaveBeenCalled();
+  });
   it('formats FastAPI validation details instead of showing a generic 422', () => {
     const error = ApiError.fromResponse(422, {
       detail: [{ loc: ['body', 'name'], msg: 'String should have at most 80 characters' }],
