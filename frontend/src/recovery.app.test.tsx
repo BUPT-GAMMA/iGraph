@@ -8,10 +8,12 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   listSessions: vi.fn().mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] }),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }), listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
   activateSession: vi.fn(), resumeRun: vi.fn(), getRunSnapshot: vi.fn(), streamChat: vi.fn(),
+  getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true }),
+  cancelRun: vi.fn(), getRunControl: vi.fn(),
   visualizeGraph: vi.fn().mockRejectedValue(new Error('no graph')),
 }));
 import App from './main';
-import { activateSession, getRunSnapshot, resumeRun, streamChat } from './api';
+import { activateSession, cancelRun, getRunControl, getRunSnapshot, resumeRun, streamChat } from './api';
 
 const active = (content = 'A') => ({ model: 'model', has_graph: false,
   messages: [{ id: 'assistant:r', role: 'assistant' as const, content }],
@@ -29,22 +31,24 @@ beforeEach(() => {
   }));
   vi.mocked(getRunSnapshot).mockResolvedValue({ session_id: 'A', run_id: 'r', status: 'completed', messages: complete().messages,
     active_run: null, pending_feedback: null, snapshot_complete: true, resume_cursor: null });
+  vi.mocked(cancelRun).mockReset().mockResolvedValue({ run_id: 'r', start_request_id: null, registration_status: 'registered', run_status: 'cancelled',
+    cancel_status: 'confirmed', execution_stopped: true, terminal_persisted: true, can_send: true, active_run: null, revision: 3 });
 });
 afterEach(() => { cleanup(); restoreStorage(); restoreStorage = () => {}; });
 
 describe('actual App recovery', () => {
-  it('keeps receiving and pausing usable when recovery storage writes fail', async () => {
+  it('keeps immediate termination usable when recovery and cancellation storage writes fail', async () => {
     const write = Storage.prototype.setItem;
     const storageSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function(this: Storage, key: string, value: string) {
-      if (key.startsWith('igraph-active-run:') || key.startsWith('igraph-run-watch-paused:')) throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      if (key.startsWith('igraph-active-run:') || key.startsWith('igraph-cancel:')) throw new DOMException('Quota exceeded', 'QuotaExceededError');
       return write.call(this, key, value);
     });
     restoreStorage = () => storageSpy.mockRestore();
     vi.mocked(activateSession).mockResolvedValue(active());
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '暂停接收（Agent 将继续运行）' }));
-    expect(await screen.findByRole('button', { name: '继续接收' })).toBeDefined();
-    expect(vi.mocked(resumeRun).mock.calls[0][4].aborted).toBe(true);
+    fireEvent.click(await screen.findByRole('button', { name: '终止当前任务' }));
+    await waitFor(() => expect(cancelRun).toHaveBeenCalledOnce());
+    await waitFor(() => expect(vi.mocked(resumeRun).mock.calls[0][4].aborted).toBe(true));
   });
   it('ignores a persisted cursor on refresh and rebuilds from -1', async () => {
     sessionStorage.setItem('igraph-active-run:v2:recovery-user:A', JSON.stringify({ runId: 'r', lastEventIndex: 99 }));
@@ -53,11 +57,11 @@ describe('actual App recovery', () => {
     await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(1));
     expect(vi.mocked(resumeRun).mock.calls[0][2]).toBe(-1);
   });
-  it('restores completed text and unlocks the paused session after switching back', async () => {
+  it('preserves results after termination and switching back without repeating the stop', async () => {
     vi.mocked(activateSession).mockImplementation(async id => id === 'A' ? active() : { ...active(''), active_run: null });
     const { container } = render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '暂停接收（Agent 将继续运行）' }));
-    await screen.findByRole('button', { name: '继续接收' });
+    fireEvent.click(await screen.findByRole('button', { name: '终止当前任务' }));
+    await waitFor(() => expect(cancelRun).toHaveBeenCalledOnce());
     navigate('B');
     await waitFor(() => expect(container.querySelector('.workspace-context strong')?.textContent).toBe('Session B'));
     vi.mocked(activateSession).mockResolvedValue(complete()); navigate('A');
@@ -65,17 +69,19 @@ describe('actual App recovery', () => {
     await waitFor(() => expect(container.querySelector('.message-content')?.textContent).toBe('ABC'));
     expect((container.querySelector('.send-button') as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole('button', { name: '继续接收' })).toBeNull();
+    expect(cancelRun).toHaveBeenCalledOnce();
   });
-  it('continues a paused observer and applies a complete snapshot', async () => {
+  it('clears legacy observer pauses without turning them into cancellation', async () => {
+    sessionStorage.setItem('igraph-run-watch-paused:v1:recovery-user:A', '1');
     vi.mocked(activateSession).mockResolvedValue(active());
-    const { container } = render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '暂停接收（Agent 将继续运行）' }));
     vi.mocked(resumeRun).mockImplementationOnce(async (_s, _r, _c, handlers) => {
       handlers.onBatch?.({ protocol_version: 2, session_id: 'A', run_id: 'r', event_index: 0, events: [{ type: 'done', content: 'ABC' }] });
     });
-    fireEvent.click(await screen.findByRole('button', { name: '继续接收' }));
+    const { container } = render(<App />);
     await waitFor(() => expect(container.querySelector('.message-content')?.textContent).toBe('ABC'));
     await waitFor(() => expect((container.querySelector('.send-button') as HTMLButtonElement).disabled).toBe(false));
-    expect(resumeRun).toHaveBeenCalledTimes(2);
+    expect(resumeRun).toHaveBeenCalledTimes(1);
+    expect(cancelRun).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('igraph-run-watch-paused:v1:recovery-user:A')).toBeNull();
   });
 });

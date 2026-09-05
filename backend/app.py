@@ -11,7 +11,8 @@ import json
 import os
 import re
 import uuid
-from contextlib import AsyncExitStack
+import hashlib
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
@@ -32,6 +33,9 @@ from backend.projects import ProjectDirectory, ProjectRecord
 from backend.service_client import ServiceClient, forwarded_headers
 from backend.stream_recovery import close_observation, observation_events
 from backend.users import UserDirectory, UserRecord
+from execution_protocol import (CancelRequest, JobCancelRequest, Target, controls_enabled,
+                                execution_headers, require_service, service_headers)
+from execution_lifecycle import ProcessLease
 
 
 class CreateSessionReq(BaseModel):
@@ -82,6 +86,7 @@ class ChatReq(BaseModel):
     planning_mode: Literal["never", "auto", "always"] | None = None
     output_format: Literal["chat", "report", "json"] = "chat"
     regenerate: bool = False
+    start_request_id: uuid.UUID | None = None
 
 
 class SessionSettingReq(BaseModel):
@@ -467,7 +472,7 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
         status = str(run.get("status") or "").lower()
         user_text = _run_input_text(run).strip()
         if user_text:
-            messages.append({"id": f"user:{run_id}", "role": "user", "content": user_text})
+            messages.append({"id": f"user:{run_id}", "run_id": run_id, "role": "user", "content": user_text})
 
         tool_cards: list[dict] = []
         graphs: list[dict] = []
@@ -531,6 +536,7 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
         if assistant_text or tool_cards or graphs or reports or feedback_requests or status in {"completed", "error", "failed", "cancelled"}:
             messages.append({
                 "id": f"assistant:{run_id}",
+                "run_id": run_id,
                 "role": "assistant",
                 "content": assistant_text,
                 "tools": tool_cards,
@@ -726,10 +732,132 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     session_creation_lock_users: dict[tuple[str, str], int] = {}
     session_creation_locks_guard = asyncio.Lock()
     reserved_runs: set[tuple[str, str]] = set()
+    preparations: dict[tuple[str, str, str], asyncio.Task] = {}
+    preparation_finished: dict[tuple[str, str, str], dict] = {}
+    preparation_lease = ProcessLease(settings.users_file.parent / 'executors') if controls_enabled() else None
+    preparation_instance = preparation_lease.identity if preparation_lease else str(uuid.uuid4())
+    starting_tasks: dict[tuple[str, str, str], set[asyncio.Task]] = {}
+    starting_finished: dict[tuple[str, str, str], dict] = {}
+    launch_tasks: set[asyncio.Task] = set()
+
+    def own_launch(operation):
+        task = asyncio.create_task(operation)
+        launch_tasks.add(task)
+        def finished(done):
+            launch_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
+        return task
     feedback_attempts: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     feedback_attempt_ttl_seconds = 30 * 60
 
-    app = FastAPI(title="iGraph Backend", version="3.0.0")
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            tasks = set(launch_tasks) | set(preparations.values())
+            for values in starting_tasks.values():
+                tasks.update(values)
+            tasks.discard(asyncio.current_task())
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if preparation_lease:
+                preparation_lease.close()
+
+    app = FastAPI(title="iGraph Backend", version="3.0.0", lifespan=lifespan)
+
+    def previous_preparation_exit(owner):
+        if preparation_lease and ProcessLease.inspect(preparation_lease.root, owner) == 'exited':
+            return {'execution_stopped': True, 'generation': 1, 'failed': True}
+        return None
+
+    @app.get('/api/capabilities')
+    async def capabilities():
+        # Deployment gates stay closed until every executor implements v1.
+        if not controls_enabled():
+            return {"run_cancel_v1": False, "job_cancel_v1": False}
+        try:
+            values = await asyncio.gather(*[
+                client.request('GET', '/internal/capabilities', headers=service_headers(''))
+                for client in (runtime, graph)
+            ])
+            ready = all(value.get('run_cancel_v1') and value.get('job_cancel_v1') for value in values)
+            return {"run_cancel_v1": bool(ready), "job_cancel_v1": bool(ready)}
+        except Exception:
+            return {"run_cancel_v1": False, "job_cancel_v1": False}
+
+    @app.post('/internal/sessions/{session_id}/runs/{run_id}/cancel')
+    async def cancel_preparation(session_id: str, run_id: str, request: Request):
+        require_service(request)
+        uid = request.headers.get('X-User-ID', '')
+        key = (uid, session_id, run_id)
+        task = preparations.get(key)
+        if task and not task.done():
+            task.cancel()
+        body = await request.json()
+        previous = previous_preparation_exit(body.get('preparation_owner'))
+        if previous:
+            return previous
+        start_key = (uid, session_id, str(body.get('start_request_id') or ''))
+        if body.get('preparation_owner') == preparation_instance:
+            for starting in starting_tasks.get(start_key, set()):
+                starting.cancel()
+        evidence = preparation_finished.get(key) or (starting_finished.get(start_key) if body.get('preparation_owner') == preparation_instance else None)
+        return {'execution_stopped': evidence is not None and not starting_tasks.get(start_key), **(evidence or {})}
+
+    @app.get('/internal/sessions/{session_id}/runs/{run_id}/preparation')
+    async def preparation_status(session_id: str, run_id: str, request: Request):
+        require_service(request)
+        previous = previous_preparation_exit(request.query_params.get('preparation_owner'))
+        if previous:
+            return previous
+        key = (request.headers.get('X-User-ID', ''), session_id, run_id)
+        start_key = (key[0], session_id, request.query_params.get('start_request_id', ''))
+        evidence = preparation_finished.get(key) or (starting_finished.get(start_key) if request.query_params.get('preparation_owner') == preparation_instance else None)
+        return {'execution_stopped': evidence is not None and not starting_tasks.get(start_key), **(evidence or {})}
+
+    @app.post('/api/sessions/{session_id}/runs/cancel')
+    async def cancel_run(session_id: str, req: CancelRequest, request: Request):
+        user = current_user(request, users)
+        # Runtime validates persisted ownership. Locally registered preparation
+        # already carries trusted ownership and can stop during a DB outage.
+        if not controls_enabled():
+            raise HTTPException(409, {"code": "RUN_CANCEL_UNAVAILABLE"})
+        if req.target.run_id:
+            task = preparations.get((user.user_id, session_id, str(req.target.run_id)))
+            if task:
+                task.cancel()
+        result = await runtime.request('POST', f'/internal/sessions/{session_id}/runs/cancel',
+                                       headers=forwarded_headers(request, user.user_id), json_body=req.model_dump(mode='json'))
+        task = preparations.get((user.user_id, session_id, str(result.get('run_id'))))
+        if task:
+            task.cancel()
+        return JSONResponse(result, status_code=200 if result.get('execution_stopped') else 202)
+
+    @app.get('/api/sessions/{session_id}/runs/control')
+    async def control_run(session_id: str, request: Request, run_id: uuid.UUID | None = None, start_request_id: uuid.UUID | None = None):
+        user = current_user(request, users)
+        await get_session(session_id, request, user.user_id)
+        if (run_id is None) == (start_request_id is None):
+            raise HTTPException(422, {"code": "INVALID_CONTROL_TARGET"})
+        return await runtime.request('GET', f'/internal/sessions/{session_id}/runs/control',
+                                     headers=forwarded_headers(request, user.user_id), params=Target(run_id=run_id, start_request_id=start_request_id).lookup())
+
+    @app.post('/api/sessions/{session_id}/jobs/{job_id}/cancel')
+    async def cancel_job(session_id: str, job_id: str, req: JobCancelRequest, request: Request):
+        user = current_user(request, users)
+        result = await runtime.request('POST', f'/internal/sessions/{session_id}/jobs/{job_id}/cancel',
+                                       headers=forwarded_headers(request, user.user_id), json_body=req.model_dump(mode='json'))
+        return JSONResponse(result, status_code=200 if result.get('execution_stopped') else 202)
+
+    @app.get('/api/sessions/{session_id}/jobs/{job_id}/control')
+    async def job_control(session_id: str, job_id: str, request: Request):
+        user = current_user(request, users)
+        return await runtime.request('GET', f'/internal/sessions/{session_id}/jobs/{job_id}/summary',
+                                     headers=forwarded_headers(request, user.user_id))
 
     def available_models_for(user: UserRecord) -> list[str]:
         custom_ids = [item.model_id for item in custom_models.list(user.user_id)]
@@ -1087,7 +1215,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                     completed = job.get("result") if isinstance(job.get("result"), dict) else result
                     result = {**load_context, **completed}
                     break
-                if status in {"failed", "cancelled"}:
+                if status == 'cancelled':
+                    # User cancellation leaves the validated project source
+                    # available for the next Run and other conversations.
+                    raise HTTPException(409, {'code': 'RUN_CANCELLED'})
+                if status == "failed":
                     project_datasets.update(
                         dataset.dataset_id,
                         user_id,
@@ -1293,6 +1425,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         if verify:
             await get_session(session_id, request, user_id)
         headers = forwarded_headers(request, user_id)
+        if controls_enabled():
+            await runtime.request('POST', f'/internal/sessions/{session_id}/prepare-delete', headers=headers)
         try:
             await graph.request("DELETE", f"/sessions/{session_id}", headers=headers)
         except HTTPException as exc:
@@ -1878,10 +2012,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         runs = await get_session_runs(session_id, request, user.user_id)
         restored = _messages_from_runs(runs) or _messages(session)
         active_run, pending, _ = _active_run_snapshot(runs)
+        control = await runtime.request('GET', f'/internal/sessions/{session_id}/execution',
+            headers=forwarded_headers(request, user.user_id)) if controls_enabled() else None
         return {
             "success": True,
             "session_id": session_id,
             "restored": True,
+            'control': control,
             "requires_graph_reload": False,
             "messages": restored,
             "has_graph": has_graph,
@@ -2075,8 +2212,120 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         }
         return form, forwarded_headers(request, user.user_id), user.user_id
 
+    async def controlled_run_form(session_id: str, req: ChatReq, request: Request):
+        user = current_user(request, users)
+        req = req.model_copy(update={'start_request_id': req.start_request_id or uuid.uuid4()})
+        start_key = (user.user_id, session_id, str(req.start_request_id))
+        task = asyncio.current_task()
+        starting_tasks.setdefault(start_key, set()).add(task)
+        failed = True
+        try:
+            result = await controlled_run_form_body(session_id, req, request)
+            failed = False
+            return result
+        finally:
+            tasks = starting_tasks[start_key]
+            tasks.discard(task)
+            if not tasks:
+                starting_tasks.pop(start_key, None)
+                starting_finished[start_key] = {'generation': 1, 'failed': failed}
+
+    async def controlled_run_form_body(session_id: str, req: ChatReq, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        start_id = str(req.start_request_id or uuid.uuid4())
+        state = _state(session)
+        content = {"request": req.model_dump(mode='json', exclude={'start_request_id'}),
+                   "model": state.get('model'), "reasoning_mode": req.reasoning_mode or state.get('reasoning_mode'),
+                   "planning_mode": req.planning_mode or state.get('planning_mode'), "active_dataset_id": state.get('active_dataset_id')}
+        digest = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+        registration = await runtime.request('POST', f'/internal/sessions/{session_id}/runs/register',
+                                             headers=forwarded_headers(request, user.user_id),
+                                             json_body={"start_request_id": start_id, "fingerprint": digest, 'preparation_owner': preparation_instance})
+        if not registration.get('preparation_claimed'):
+            # Stable identity is enough for the client's normal resume/snapshot
+            # path. Never resend a user question on an idempotent duplicate.
+            return None, registration
+        rid, generation = registration['run_id'], registration['execution_generation']
+        key = (user.user_id, session_id, rid)
+        token = execution_headers.set({**service_headers(user.user_id), 'X-Run-ID': rid,
+                                       'X-Execution-Generation': str(generation), 'X-Operation-ID': str(uuid.uuid4())})
+        try:
+            task = asyncio.create_task(run_form(session_id, req, request))
+        finally:
+            execution_headers.reset(token)
+        preparations[key] = task
+        failed = True
+        try:
+            result = await task
+            failed = False
+            result[0]['run_id'] = rid
+            return result, registration
+        except asyncio.CancelledError:
+            raise HTTPException(409, {"code": "RUN_CANCELLED", "run_id": rid, "start_request_id": start_id})
+        finally:
+            preparations.pop(key, None)
+            preparation_finished[key] = {'generation': generation, 'failed': failed}
+            # The coordinator can recover this acknowledgement by querying the
+            # BFF even if this response/ack is lost. Browser disconnect is separate.
+            ack = asyncio.create_task(runtime.request('POST', f'/internal/sessions/{session_id}/runs/{rid}/preparation-finished',
+                       headers=forwarded_headers(request, user.user_id), json_body={"generation": generation, "failed": failed}))
+            try:
+                await asyncio.shield(ack)
+            except (Exception, asyncio.CancelledError):
+                # Consume detached errors without claiming durable confirmation.
+                ack.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+
+    def duplicate_start(registration, streaming: bool):
+        if not streaming:
+            return JSONResponse({"success": True, "control": registration, "run_id": registration['run_id']}, status_code=202)
+        async def events():
+            yield _sse({"type": "stream_recovery_required", "run_id": registration['run_id'],
+                        "reason": "start_already_registered"})
+        return StreamingResponse(events(), media_type='text/event-stream')
+
+    async def failed_native_handoff(session_id, prepared, registration, request):
+        _, _, uid = prepared
+        rid, generation = registration['run_id'], registration['execution_generation']
+        preparation_finished[(uid, session_id, rid)] = {'generation': generation, 'failed': True}
+        # Closing an unclaimed start is atomic against the native claim. An
+        # already claimed producer retains its identity and normal recovery.
+        try:
+            await asyncio.wait_for(runtime.request('POST', f'/internal/sessions/{session_id}/runs/{rid}/preparation-finished',
+                headers=forwarded_headers(request, uid), json_body={'generation': generation, 'failed': True}), 5)
+        except Exception:
+            pass  # The coordinator can query this instance's evidence after loss.
+
     @app.post("/api/sessions/{session_id}/chat")
     async def chat(session_id: str, req: ChatReq, request: Request):
+        if controls_enabled():
+            async def launch():
+                prepared, registration = await controlled_run_form(session_id, req, request)
+                if prepared is None:
+                    return None, registration, None
+                form, headers, _ = prepared
+                form.update({'stream': 'false', 'background': 'true'})
+                try:
+                    payload = await runtime.request('POST', f'/agents/{settings.agent_id}/runs', headers=headers, data=form)
+                except BaseException:
+                    await failed_native_handoff(session_id, prepared, registration, request)
+                    raise
+                return prepared, registration, payload
+            prepared, registration, payload = await asyncio.shield(own_launch(launch()))
+            if prepared is None:
+                return duplicate_start(registration, False)
+            form, headers, user_id = prepared
+            # Preserve the existing non-stream response contract while the
+            # producer remains independently owned by Agno.
+            while str(payload.get('status') or '').lower() not in {'completed', 'cancelled', 'failed', 'error', 'paused'}:
+                await asyncio.sleep(.25)
+                runs = await runtime.request('GET', f'/sessions/{session_id}/runs', headers=headers,
+                                             params={'type': 'agent', 'user_id': user_id})
+                payload = next((run for run in _data_rows(runs) if run.get('run_id') == registration['run_id']), payload)
+            return {"success": True, "run_id": registration['run_id'], "start_request_id": registration['start_request_id'],
+                    "response": str(payload.get('content') or ''), 'context_usage': payload.get('metrics') or {},
+                    'has_graph': await graph_loaded(session_id, request, user_id),
+                    'reasoning_mode': json.loads(form['factory_input'])['reasoning_mode']}
         _, reservation = await reserve_new_run(session_id, request)
         try:
             form, headers, user_id = await run_form(session_id, req, request)
@@ -2095,21 +2344,56 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
     @app.post("/api/sessions/{session_id}/chat/stream")
     async def chat_stream(session_id: str, req: ChatReq, request: Request):
-        _, reservation = await reserve_new_run(session_id, request)
+        reservation = None
+        if controls_enabled():
+            async def launch():
+                prepared, registration = await controlled_run_form(session_id, req, request)
+                if prepared is None:
+                    return None, None, registration
+                form, headers, _ = prepared
+                form.update({'stream': 'true', 'background': 'true'})
+                owned_stack = AsyncExitStack()
+                try:
+                    upstream = await owned_stack.enter_async_context(runtime.stream('POST', f'/agents/{settings.agent_id}/runs', headers=headers, data=form))
+                    return owned_stack, upstream, registration
+                except BaseException:
+                    await failed_native_handoff(session_id, prepared, registration, request)
+                    await close_observation(owned_stack)
+                    raise
+            task = own_launch(launch())
+            try:
+                stack, response, registration = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                async def disconnect():
+                    try:
+                        owned_stack, _, _ = await task
+                        if owned_stack:
+                            await close_observation(owned_stack)
+                    except Exception:
+                        pass  # Owned task's error is observable through control.
+                own_launch(disconnect())
+                raise
+            if stack is None:
+                return duplicate_start(registration, True)
+        else:
+            _, reservation = await reserve_new_run(session_id, request)
         try:
-            form, headers, _ = await run_form(session_id, req, request)
-            form.update({"stream": "true", "background": "true"})
+            if reservation:
+                form, headers, _ = await run_form(session_id, req, request)
+                form.update({"stream": "true", "background": "true"})
         except Exception:
-            await release_run_reservation(reservation)
+            if reservation:
+                await release_run_reservation(reservation)
             raise
         protocol_version = 2 if request.headers.get("X-iGraph-Stream-Version") == "2" else 1
-        stack = AsyncExitStack()
-        try:
-            response = await stack.enter_async_context(runtime.stream("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form))
-        except BaseException:
-            await close_observation(stack)
-            await release_run_reservation(reservation)
-            raise
+        if reservation:
+            stack = AsyncExitStack()
+            try:
+                response = await stack.enter_async_context(runtime.stream("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form))
+            except BaseException:
+                await close_observation(stack)
+                await release_run_reservation(reservation)
+                raise
 
         async def events():
             try:
@@ -2122,7 +2406,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             try:
                 await close_observation(stack)
             finally:
-                await release_run_reservation(reservation)
+                if reservation:
+                    await release_run_reservation(reservation)
 
         return StreamingResponse(
             events(),
@@ -2147,8 +2432,20 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         phase = await runtime.request('GET', f'/internal/sessions/{session_id}/runs/{run_id}/recovery-status',
                                       headers=forwarded_headers(request, user.user_id))
         active_run, pending, _ = _active_run_snapshot(runs)
+        summary = None
+        if controls_enabled():
+            try:
+                summary = await runtime.request('GET', f'/internal/sessions/{session_id}/runs/control',
+                                                headers=forwarded_headers(request, user.user_id), params={'run_id': run_id})
+            except HTTPException as exc:
+                # Persisted history predating the control ledger still has a
+                # valid, owned native snapshot. It grants no execution rights
+                # and must not be turned into a fabricated control record.
+                if exc.status_code != 404 or not isinstance(exc.detail, dict) or exc.detail.get('code') != 'RUN_NOT_FOUND':
+                    raise
         return {
             'session_id': session_id, 'run_id': run_id, 'status': status,
+            'control': summary,
             'messages': _messages_from_runs(runs), 'active_run': active_run, 'pending_feedback': pending,
             'snapshot_complete': status in {'completed', 'error', 'failed', 'cancelled', 'paused'} and phase.get('status') == status,
             # Agno's persisted events omit content deltas and their original indices.

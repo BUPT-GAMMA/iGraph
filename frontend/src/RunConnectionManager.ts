@@ -18,11 +18,32 @@ export type RunConnection = {
 
 type DetachedConnection = Omit<RunConnection, 'controller' | 'wakeScheduled'>;
 type ClockTask = { at: number; callback: () => void };
-type ClockSlot = { timer?: number; wake?: ClockTask; deadline?: ClockTask };
+type ClockSlot = { timer?: number; tasks: Map<string, ClockTask> };
 
 const RECONNECT_DELAYS = [1, 2, 4, 8, 15, 30];
 
 export class RunConnectionManager {
+  private cancellationPriority = new Set<string>();
+  isCancelling(sessionId: string) { return this.cancellationPriority.has(sessionId); }
+  prioritizeCancellation(sessionId: string) {
+    this.cancellationPriority.add(sessionId);
+    this.cancelControl(sessionId);
+    this.clockTask(sessionId, 'wake');
+  }
+  finishCancellation(sessionId: string) { this.cancellationPriority.delete(sessionId); }
+  scheduleControl(sessionId: string, callback: () => void, delay: number) {
+    this.clockTask(sessionId, 'wake', { at: Date.now() + delay, callback });
+  }
+  scheduleAuxiliary(sessionId: string, key: string, callback: () => void, delay: number) {
+    this.clockTask(sessionId, `aux:${key}`, { at: Date.now() + delay, callback });
+  }
+  hasControl(sessionId: string) { return this.controls.has(sessionId); }
+  forget(sessionId: string) {
+    this.abort(sessionId);
+    const slot = this.clocks.get(sessionId);
+    if (slot?.timer !== undefined) window.clearTimeout(slot.timer);
+    this.clocks.delete(sessionId);
+  }
   private connections = new Map<string, RunConnection>();
   private detached = new Map<string, DetachedConnection>();
   private epoch = 0;
@@ -61,7 +82,7 @@ export class RunConnectionManager {
       }
       this.connections.delete(displaced.sessionId);
       displaced.controller.abort();
-      this.cancelControl(displaced.sessionId);
+      if (!this.isCancelling(displaced.sessionId)) this.cancelControl(displaced.sessionId);
       this.clearScheduled(displaced);
       this.detached.set(displaced.sessionId, {
         sessionId: displaced.sessionId,
@@ -111,19 +132,20 @@ export class RunConnectionManager {
     this.clockTask(sessionId, 'deadline');
   }
 
-  query<T>(sessionId: string, generation: string, request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  query<T>(sessionId: string, generation: string, request: (signal: AbortSignal) => Promise<T>, timeoutMs = 15000, cancelling = false): Promise<T> {
+    if (this.isCancelling(sessionId) && !cancelling) return Promise.reject(new DOMException('取消核实优先', 'AbortError'));
     const prior = this.controls.get(sessionId);
     if (prior?.generation === generation) return prior.promise as Promise<T>;
     this.cancelControl(sessionId);
     const controller = new AbortController();
     const signal = controller.signal;
-    const deadline = this.clockTask(sessionId, 'deadline', { at: Date.now() + 15000,
+    const deadline = this.clockTask(sessionId, 'deadline', { at: Date.now() + timeoutMs,
       callback: () => controller.abort(new DOMException('恢复查询超时', 'TimeoutError')) });
     const promise = Promise.race([
       Promise.resolve().then(() => { if (signal.aborted) throw signal.reason; return request(signal); }),
       new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })),
     ]).finally(() => {
-      if (this.clocks.get(sessionId)?.deadline === deadline) this.clockTask(sessionId, 'deadline');
+      if (this.clocks.get(sessionId)?.tasks.get('deadline') === deadline) this.clockTask(sessionId, 'deadline');
       if (this.controls.get(sessionId)?.controller === controller) this.controls.delete(sessionId);
     });
     this.controls.set(sessionId, { controller, promise, generation });
@@ -142,6 +164,7 @@ export class RunConnectionManager {
   }
 
   scheduleReconnect(sessionId: string, generation: string, callback: () => void, minimumDelayMs = 0) {
+    if (this.isCancelling(sessionId)) return;
     const connection = this.connections.get(sessionId);
     if (!connection || connection.generation !== generation || connection.controller.signal.aborted) return;
     const seconds = RECONNECT_DELAYS[Math.min(connection.reconnectAttempt, RECONNECT_DELAYS.length - 1)];
@@ -152,6 +175,7 @@ export class RunConnectionManager {
   }
 
   schedule(connection: RunConnection, callback: () => void, delay: number) {
+    if (this.isCancelling(connection.sessionId)) return;
     if (!this.isCurrent(connection)) return;
     connection.wakeScheduled = true; // A scheduled wake marker, not a second timer.
     this.clockTask(connection.sessionId, 'wake', { at: Date.now() + delay, callback: () => {
@@ -161,34 +185,36 @@ export class RunConnectionManager {
   }
 
   private clearScheduled(connection: RunConnection) {
+    if (this.isCancelling(connection.sessionId)) return;
     connection.wakeScheduled = undefined;
     this.clockTask(connection.sessionId, 'wake');
   }
 
   /** Control deadlines, retry delays and stream watchdogs share one clock. */
-  private clockTask(sessionId: string, kind: 'wake' | 'deadline', task?: ClockTask) {
-    const slot = this.clocks.get(sessionId) || {};
+  private clockTask(sessionId: string, kind: string, task?: ClockTask) {
+    const slot = this.clocks.get(sessionId) || { tasks: new Map<string, ClockTask>() };
     if (slot.timer != null) window.clearTimeout(slot.timer);
-    slot[kind] = task;
-    const tasks = [slot.wake, slot.deadline].filter((value): value is ClockTask => Boolean(value));
+    if (task) slot.tasks.set(kind, task); else slot.tasks.delete(kind);
+    const tasks = [...slot.tasks.values()];
     if (!tasks.length) { this.clocks.delete(sessionId); return task; }
     this.clocks.set(sessionId, slot);
     slot.timer = window.setTimeout(() => {
       if (this.clocks.get(sessionId) !== slot) return;
       slot.timer = undefined;
       const ready: ClockTask[] = [];
-      for (const key of ['deadline', 'wake'] as const) {
-        const current = slot[key];
-        if (current && current.at <= Date.now()) { ready.push(current); slot[key] = undefined; }
+      for (const [key, current] of slot.tasks) {
+        if (current.at <= Date.now()) { ready.push(current); slot.tasks.delete(key); }
       }
       // Re-arm any remaining task before callbacks can schedule replacements.
-      this.clockTask(sessionId, 'wake', slot.wake);
+      this.clockTask(sessionId, '__arm');
       for (const current of ready) current.callback();
     }, Math.max(0, Math.min(...tasks.map(value => value.at)) - Date.now()));
     return task;
   }
 
   abort(sessionId: string, pump = true) {
+    this.cancellationPriority.delete(sessionId);
+    this.clockTask(sessionId, 'wake');
     this.cancelControl(sessionId);
     const connection = this.connections.get(sessionId);
     if (connection) {
@@ -201,6 +227,7 @@ export class RunConnectionManager {
   }
 
   release(sessionId: string, generation: string) {
+    if (this.isCancelling(sessionId)) return;
     const connection = this.connections.get(sessionId);
     if (!connection || connection.generation !== generation) return;
     this.clearScheduled(connection);
@@ -211,6 +238,9 @@ export class RunConnectionManager {
   }
 
   abortAll() {
+    this.cancellationPriority.clear();
+    for (const slot of this.clocks.values()) if (slot.timer != null) window.clearTimeout(slot.timer);
+    this.clocks.clear();
     for (const sessionId of this.controls.keys()) this.cancelControl(sessionId);
     for (const connection of this.connections.values()) {
       connection.controller.abort();

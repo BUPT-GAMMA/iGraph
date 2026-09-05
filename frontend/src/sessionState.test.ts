@@ -25,6 +25,28 @@ function lastMessage(state: ConversationState, sessionId: string) {
 }
 
 describe('conversationReducer session/run isolation', () => {
+  it('does not unlock a cancelling preparation when its old upload fails', () => {
+    let state = session(initialConversationState, 'A');
+    state = conversationReducer(state, { type: 'BEGIN_RUN_PREPARATION', sessionId: 'A', generation: 'g' });
+    state = conversationReducer(state, { type: 'REQUEST_CANCEL', sessionId: 'A', generation: 'g', cancelRequestId: 'c' });
+    state = conversationReducer(state, { type: 'PREPARE_RUN_FAILED', sessionId: 'A', generation: 'g', error: 'late error' });
+    state = conversationReducer(state, { type: 'ROLLBACK_RUN_START', sessionId: 'A', generation: 'g' });
+    expect(state.viewsBySessionId.A.activeRun?.cancellation).toBe('requested');
+    expect(selectRunGate(state.viewsBySessionId.A).canStartRun).toBe(false);
+  });
+  it('keeps cancellation terminal when native completion fills partial output', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    for (const [index, event] of [
+      { type: 'token', content: 'A' },
+      { type: 'error', cancelled: true, error: '用户终止了当前任务' },
+      { type: 'done', content: 'AB' },
+    ].entries()) {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: batch('A', 'r', index, [event]) });
+    }
+    expect(state.viewsBySessionId.A.activeRun?.status).toBe('cancelled');
+    expect(lastMessage(state, 'A').content).toBe('AB');
+    expect(state.viewsBySessionId.A.error).toBeUndefined();
+  });
   it('keeps one local draft per project without creating a session view', () => {
     const draftA = { draftId: 'draft-a', projectId: 'project-a', phase: 'editing' as const, text: 'hello', model: 'model-a', activeDatasetId: null, attachments: [] };
     let state = conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft: draftA });

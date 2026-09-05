@@ -68,6 +68,17 @@ _graph_data = GraphDataClient(config.graph_data_url)
 _session_registry = SessionRegistry()
 
 
+@mcp.custom_route('/internal/capabilities', methods=['GET'], include_in_schema=False)
+async def control_capabilities(request):
+    import hmac
+    from starlette.responses import JSONResponse
+    from execution_protocol import controls_enabled
+    expected = os.getenv('IGRAPH_CONTROL_SERVICE_KEY', '')
+    if not expected or not hmac.compare_digest(request.headers.get('X-iGraph-Service-Key', ''), expected):
+        return JSONResponse({'code': 'SERVICE_AUTH_REQUIRED'}, status_code=403)
+    return JSONResponse({'run_cancel_v1': controls_enabled(), 'job_cancel_v1': controls_enabled()})
+
+
 def _json(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
@@ -125,13 +136,14 @@ async def _invoke_graph_tool(tool_name: str, ctx: Context, arguments: dict) -> s
             target_base_url=_graph_data.base_url,
         )
     start = asyncio.get_event_loop().time()
-    result = await _graph_data.call_tool(
-        sid,
-        tool_name,
-        forwarded_arguments,
-        user_id=user_id,
-        run_id=_run_id(),
-    )
+    from execution_protocol import execution_headers
+    incoming = _http_headers()
+    token = execution_headers.set({key: incoming[key.lower()] for key in
+        ['X-iGraph-Service-Key', 'X-Execution-Generation', 'X-Operation-ID'] if incoming.get(key.lower())})
+    try:
+        result = await _graph_data.call_tool(sid, tool_name, forwarded_arguments, user_id=user_id, run_id=_run_id())
+    finally:
+        execution_headers.reset(token)
     duration_ms = int((asyncio.get_event_loop().time() - start) * 1000)
     result_dict = result if isinstance(result, dict) else {"success": False, "error": str(result)}
     mcp_log.response(tool_name, result_dict, duration_ms)

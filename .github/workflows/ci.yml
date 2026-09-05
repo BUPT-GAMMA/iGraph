@@ -23,7 +23,20 @@ jobs:
     name: Python tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    services:
+      control-postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: cancellation-ci-only
+          POSTGRES_DB: cancellation_tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cancellation_tests"
+          --health-interval 5s --health-timeout 3s --health-retries 20
     env:
+      IGRAPH_CONTROL_TEST_DATABASE_URL: postgresql+psycopg://postgres:cancellation-ci-only@127.0.0.1:5432/cancellation_tests
       AGNO_TELEMETRY: "false"
       GRAPH_COMPUTE_CONCURRENCY: "1"
       MKL_NUM_THREADS: "1"
@@ -79,8 +92,42 @@ jobs:
             tests/servers/test_graph_ml*.py
 
       - name: Validate Python line and branch coverage
-        # Transitional floors; release-milestone review policy: docs/CI_QUALITY_POLICY.md.
-        run: python scripts/check_coverage.py coverage.json --lines 45 --branches 30
+        # Preserve the dev baseline while adding cancellation coverage.
+        run: python scripts/check_coverage.py coverage.json --lines 51 --branches 34
+
+      - name: Set up pnpm for real browser integration
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.28.1
+          run_install: false
+
+      - name: Set up Node.js for real browser integration
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Run Factory and cancellation browser regressions
+        working-directory: frontend
+        env:
+          IGRAPH_TEST_PYTHON: python
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chrome
+          pnpm test:e2e:native
+          pnpm test:e2e:cancel
+
+      - name: Upload full-stack browser diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: full-stack-playwright-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            output/playwright/native-results
+            output/playwright/cancellation-results
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Validate Compose configuration
         if: ${{ !cancelled() }}

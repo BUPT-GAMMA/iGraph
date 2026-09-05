@@ -3,6 +3,7 @@
 """
 
 from __future__ import annotations
+from graph_data_service.worker_signals import check_cancelled
 
 from typing import Any, Callable, Dict, Optional
 
@@ -108,6 +109,7 @@ class PreTrainTrainer:
         epochs = max(1, int(req.train_config.epochs))
         last_loss = 0.0
         for epoch in range(epochs):
+            check_cancelled()
             backbone.train()
             opt.zero_grad()
             z = backbone(x, eidx)
@@ -239,6 +241,7 @@ class PreTrainTrainer:
         ml_log = get_service_logger(session_id, "graph_ml")
         last_loss = 0.0
         for epoch in range(epochs):
+            check_cancelled()
             epoch_losses = []
             for pos_rw, neg_rw in loader:
                 opt.zero_grad()

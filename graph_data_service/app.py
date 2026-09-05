@@ -43,6 +43,10 @@ from graph_data_service.graph_ml import GraphMLModule
 from graph_data_service.graph_ml.datasets import graph_classification_sample_to_graph_data
 from graph_data_service.graph_ml.schemas import LoadGraphClassificationGraphRequest
 from graph_data_service.job_manager import JobManager
+from graph_data_service.execution_host import GraphExecutionHost, JobContext, job_context
+from graph_data_service.worker_contract import ISOLATED_DATA_TOOLS
+from graph_data_service.async_work import run_sync
+from execution_protocol import controls_enabled, require_service
 from graph_data_service.rag import LightweightRAG
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
 from graph_data_service.session import GraphSession, UploadFileRecord
@@ -255,6 +259,7 @@ class GraphDataService:
         text_graph_llm_factory: Callable[[str], Awaitable[str]] | None = None,
         nebula_repository: NebulaGraphRepository | None = None,
         storage_backend: str | None = None,
+        migrate_storage: bool = True,
     ) -> None:
         self._sessions: Dict[str, GraphSession] = {}
         self._compute = GraphCompute()
@@ -263,7 +268,8 @@ class GraphDataService:
         # Graph Engine-owned layout. Sources are deliberately retained.
         try:
             from graph_engine.migration import migrate_legacy_graph_storage
-            migrate_legacy_graph_storage()
+            if migrate_storage:
+                migrate_legacy_graph_storage()
         except Exception:
             pass
         self._dataset_registry = DatasetRegistry(str(_dp.global_datasets_dir()))
@@ -279,6 +285,7 @@ class GraphDataService:
             provider_gateway=_pg,
         )
         self._job_manager = JobManager()
+        self._execution_host = GraphExecutionHost(self._job_manager) if controls_enabled() else None
         self._nebula = nebula_repository or NebulaGraphRepository()
         backend = str(storage_backend or os.getenv("GRAPH_STORAGE_BACKEND", "local")).strip().lower()
         if backend not in {"local", "nebula"}:
@@ -406,6 +413,9 @@ class GraphDataService:
         return session
 
     def delete_session(self, session_id: str, user_id: str = "") -> None:
+        if self._execution_host and any(job.user_id == user_id and job.status not in {'done', 'failed', 'cancelled'}
+                                       for job in self._job_manager.list_jobs(session_id)):
+            raise HTTPException(409, {'code': 'SESSION_EXECUTION_ACTIVE'})
         key = self._session_key(session_id, user_id)
         self._graph_ml.release_session(key)
         session = self._sessions.pop(key, None)
@@ -738,6 +748,7 @@ class GraphDataService:
             graph_version,
             user_id,
             _progress_kwarg="progress_callback",
+            _identity={"user_id": user_id},
         )
         return {
             "success": True,
@@ -1084,6 +1095,7 @@ class GraphDataService:
                 append,
                 user_id,
                 _progress_kwarg="progress_callback",
+                _identity={"user_id": user_id},
             )
             return {
                 "success": True,
@@ -1283,6 +1295,7 @@ class GraphDataService:
             text,
             True,
             _progress_kwarg="progress_callback",
+            _identity={"user_id": user_id},
             append=append,
             extraction_goal=fmt_extraction_goal,
         )
@@ -2649,8 +2662,8 @@ class GraphDataService:
 
         if tool_name == "get_job_status":
             job_id = _required_str(arguments, "job_id")
-            job = self._job_manager.status(job_id)
-            pending = self._job_manager.drain_pending_progress(job_id)
+            job = self._job_manager.owned(job_id, session_id, user_id)
+            pending = self._job_manager.drain_pending_progress(job_id) if job else []
             return {
                 "success": bool(job),
                 "job": job.to_dict() if job else None,
@@ -2659,6 +2672,8 @@ class GraphDataService:
 
         if tool_name == "cancel_job":
             job_id = _required_str(arguments, "job_id")
+            if not self._job_manager.owned(job_id, session_id, user_id):
+                return {"success": False, "error": "作业不存在", "job_id": job_id}
             return {"success": self._job_manager.cancel(job_id), "job_id": job_id}
 
         if tool_name == "create_analysis_report":
@@ -3051,6 +3066,7 @@ class GraphDataService:
             user_id,
             tool_name,
             clean_arguments,
+            _identity={"user_id": user_id},
             _progress_kwarg=(
                 "progress_callback"
                 if tool_name in {"load_graph_classification_dataset", "train"}
@@ -3104,13 +3120,16 @@ class GraphDataService:
     async def _dispatch_heavy_graph_ml_tool_once(
         self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = ""
     ) -> dict:
+        if job_context.get() and self._execution_host:
+            from graph_data_service.isolated_compute import run_isolated
+            return await self._run_with_heavy_limits(user_id, lambda: run_isolated(self, session_id, user_id, tool_name, arguments))
         runtime_key = self._cache_key(session_id, user_id)
         key = (runtime_key, tool_name, self._canonical_tool_arguments(arguments))
         async with self._graph_ml_inflight_lock:
             task = self._graph_ml_inflight.get(key)
             if task is None:
                 if user_id:
-                    invoke = lambda: asyncio.to_thread(
+                    invoke = lambda: run_sync(
                         self._dispatch_graph_ml_tool,
                         session_id,
                         tool_name,
@@ -3120,7 +3139,7 @@ class GraphDataService:
                 else:
                     # Preserve compatibility with injected/test dispatchers
                     # that implement the original three-argument contract.
-                    invoke = lambda: asyncio.to_thread(
+                    invoke = lambda: run_sync(
                         self._dispatch_graph_ml_tool,
                         session_id,
                         tool_name,
@@ -3162,9 +3181,12 @@ class GraphDataService:
         arguments: Dict[str, Any],
         progress_callback=None,
     ) -> dict:
+        if job_context.get() and self._execution_host:
+            from graph_data_service.isolated_compute import run_isolated
+            return await self._run_with_heavy_limits(user_id, lambda: run_isolated(self, session_id, user_id, tool_name, arguments, progress_callback))
         return await self._run_with_heavy_limits(
             user_id,
-            lambda: asyncio.to_thread(
+            lambda: run_sync(
                 self._dispatch_graph_ml_tool,
                 session_id,
                 tool_name,
@@ -3176,12 +3198,21 @@ class GraphDataService:
 
     async def dispatch_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
         """统一工具分发入口。"""
+        if job_context.get() and self._execution_host and tool_name in NX_TOOL_NAMES | ISOLATED_DATA_TOOLS:
+            session = self.get_required(session_id, user_id=user_id)
+            if not session.is_remote:
+                cached = getattr(session, '_controlled_graph_info', None)
+                if tool_name == 'get_graph_info' and cached and cached[0] == session.graph_version:
+                    import copy
+                    return copy.deepcopy(cached[1])
+                from graph_data_service.isolated_compute import run_isolated
+                return await self._run_with_compute_limits(user_id, lambda: run_isolated(self, session_id, user_id, tool_name, arguments))
         if tool_name == "nebula_status":
-            return await asyncio.to_thread(self.do_nebula_status, session_id, user_id)
+            return await run_sync(self.do_nebula_status, session_id, user_id)
         if tool_name == "nebula_sync_graph":
             return await self.submit_nebula_sync(session_id, user_id=user_id)
         if tool_name in _NEBULA_QUERY_TOOLS:
-            return await asyncio.to_thread(
+            return await run_sync(
                 self._dispatch_nebula_query,
                 session_id,
                 tool_name,
@@ -3208,6 +3239,7 @@ class GraphDataService:
                 text,
                 directed,
                 _progress_kwarg="progress_callback",
+                _identity={"user_id": user_id},
                 filename=filename,
                 append=append,
                 extraction_goal=extraction_goal,
@@ -3220,9 +3252,9 @@ class GraphDataService:
                 "message": "text2graph 已作为异步作业启动。",
             }
         if tool_name == "search_node":
-            return await asyncio.to_thread(self.do_search_node, session_id, arguments, user_id)
+            return await run_sync(self.do_search_node, session_id, arguments, user_id)
         if tool_name == "search_edge":
-            return await asyncio.to_thread(self.do_search_edge, session_id, arguments, user_id)
+            return await run_sync(self.do_search_edge, session_id, arguments, user_id)
         if tool_name in _GRAPH_ML_TOOL_NAMES:
             if tool_name in _GRAPH_ML_HEAVY_TOOLS and self._wants_graph_ml_async_job(arguments):
                 return await self._submit_graph_ml_tool_job(session_id, tool_name, arguments, user_id=user_id)
@@ -3232,7 +3264,7 @@ class GraphDataService:
         if tool_name == "shortest_path" and not _optional_bool(arguments, "use_weight", True):
             session = self.get_required(session_id, user_id=user_id)
             if session.is_remote:
-                return await asyncio.to_thread(
+                return await run_sync(
                     self._dispatch_graph_tool,
                     session_id,
                     tool_name,
@@ -3244,7 +3276,7 @@ class GraphDataService:
             if session.is_remote or _optional_bool(arguments, "create_version", True):
                 return await self._run_with_compute_limits(
                     user_id,
-                    lambda: asyncio.to_thread(
+                    lambda: run_sync(
                         self._dispatch_graph_tool,
                         session_id,
                         tool_name,
@@ -3256,12 +3288,12 @@ class GraphDataService:
             session = self.get_required(session_id, user_id=user_id)
             scope_meta: dict[str, Any] = {}
             if session.is_remote and tool_name == "degree_analysis" and arguments.get("node"):
-                return await asyncio.to_thread(
+                return await run_sync(
                     self._dispatch_graph_tool, session_id, tool_name, arguments, user_id
                 )
             if session.is_remote and tool_name in {"all_shortest_paths", "path_analysis", "reachability"}:
                 try:
-                    nx_graph, scope_meta = await asyncio.to_thread(
+                    nx_graph, scope_meta = await run_sync(
                         self._primary_bounded_nx_graph,
                         session,
                         tool_name,
@@ -3304,7 +3336,7 @@ class GraphDataService:
             if scope_meta and isinstance(result, dict):
                 result.update(scope_meta)
             return result
-        return await asyncio.to_thread(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id)
+        return await run_sync(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id)
 
 
 def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
@@ -3312,7 +3344,11 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        if svc._execution_host:
+            await svc._execution_host.restore()
         yield
+        if svc._execution_host:
+            await svc._execution_host.close()
         # SIGTERM 时取消所有后台 Job 的 asyncio Task（底层线程会随进程退出）
         cancelled = svc._job_manager.cancel_all()
         if cancelled:
@@ -3332,6 +3368,50 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
 
     def _get_user_id(request: Request) -> str:
         return request.headers.get("X-User-ID", "").strip()
+
+    async def controlled_tool(session_id, tool_name, arguments, request):
+        uid = _get_user_id(request)
+        rid = request.headers.get('X-Run-ID', '')
+        if svc._execution_host and tool_name == 'cancel_job':
+            require_service(request)
+            import uuid
+            cancel_id = str(uuid.UUID(request.headers['X-Operation-ID'])) if request.headers.get('X-Operation-ID') else str(uuid.uuid4())
+            return await svc._execution_host.request_job_stop(uid, session_id, _required_str(arguments, 'job_id'), cancel_id)
+        if svc._execution_host and rid and tool_name not in {'get_job_status', 'cancel_job'}:
+            require_service(request)
+            try:
+                import uuid
+                ctx = JobContext(uid, session_id, str(uuid.UUID(rid)), int(request.headers['X-Execution-Generation']),
+                                 str(uuid.UUID(request.headers['X-Operation-ID'])))
+            except (ValueError, KeyError):
+                raise HTTPException(422, {'code': 'INVALID_EXECUTION_IDENTITY'})
+            async def invoke():
+                return await svc.dispatch_tool(session_id, tool_name, arguments, user_id=uid)
+            return await svc._execution_host.execute(ctx, tool_name, arguments, invoke)
+        return await svc.dispatch_tool(session_id, tool_name, arguments, user_id=uid)
+
+    @app.get('/internal/capabilities')
+    async def control_capabilities(request: Request):
+        require_service(request)
+        from importlib.metadata import version
+        # Remote graph writes have a different commit protocol. Keep that
+        # deployment on its existing path until its executor is certified.
+        ready = bool(svc._execution_host and not svc.nebula_primary and os.name == 'posix'
+                     and os.path.isdir('/dev/fd') and version('anyio') == '4.14.1')
+        return {'run_cancel_v1': ready, 'job_cancel_v1': ready}
+
+    @app.post('/internal/sessions/{sid}/runs/{rid}/cancel')
+    async def stop_owned_run(sid: str, rid: str, request: Request):
+        require_service(request)
+        ids = svc._job_manager.cancel_run(_get_user_id(request), sid, rid)
+        return {'run_id': rid, 'pending_jobs': [jid for jid in ids if svc._job_manager.status(jid).status not in {'done', 'failed', 'cancelled'}]}
+
+    @app.post('/internal/sessions/{sid}/jobs/{jid}/cancel')
+    async def stop_owned_job(sid: str, jid: str, request: Request):
+        require_service(request)
+        if not svc._execution_host:
+            raise HTTPException(409, {'code': 'JOB_CANCEL_UNAVAILABLE'})
+        return svc._execution_host.cancel_job(_get_user_id(request), sid, jid)
 
     @app.get("/datasets")
     def list_datasets_endpoint(request: Request):
@@ -3457,6 +3537,8 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @app.post("/sessions/{session_id}/graph/load_upload")
     async def load_graph_upload(session_id: str, req: LoadGraphUploadReq, request: Request):
         user_id = _get_user_id(request)
+        if svc._execution_host and request.headers.get('X-Run-ID'):
+            return await controlled_tool(session_id, 'load_graph_from_upload', {'filename': req.filename, 'append': req.append}, request)
         return await svc.do_load_graph_from_upload(session_id, req.filename, req.append, user_id=user_id)
 
     @app.post("/sessions/{session_id}/graph/clear")
@@ -3547,7 +3629,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         t0 = time.monotonic()
 
         try:
-            result = await svc.dispatch_tool(session_id, tool_name, arguments, user_id=user_id)
+            result = await controlled_tool(session_id, tool_name, arguments, request)
             duration_ms = int((time.monotonic() - t0) * 1000)
             svc_log.response(tool_name, result, duration_ms)
             return result

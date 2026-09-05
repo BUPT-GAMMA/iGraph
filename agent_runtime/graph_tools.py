@@ -9,6 +9,7 @@ from agno.tools.mcp import MCPTools
 
 from agent_runtime.approval_policy import GRAPH_TOOLS_REQUIRING_CONFIRMATION
 from agent_runtime.config import AgentRuntimeConfig
+from execution_protocol import controls_enabled, service_headers
 
 if TYPE_CHECKING:
     from agno.agent import Agent
@@ -22,16 +23,26 @@ def graph_identity_headers(
 ) -> dict[str, str]:
     if run_context is None:
         return {}
+    scope = None
+    if controls_enabled():
+        from agent_runtime.execution_scope import current_scope, operation_id
+        scope = current_scope.get()
     return {
         "X-User-ID": str(run_context.user_id or ""),
         "X-Session-ID": str(run_context.session_id or ""),
         "X-Run-ID": str(run_context.run_id or ""),
         "X-Agent-ID": str(getattr(agent, "id", "") or ""),
+        **({**service_headers(scope.user_id), "X-Execution-Generation": str(scope.generation),
+            "X-Operation-ID": operation_id.get() or ""} if scope else {}),
     }
 
 
 def create_graph_tools(config: AgentRuntimeConfig) -> MCPTools:
-    return MCPTools(
+    constructor = MCPTools
+    if controls_enabled():
+        from agent_runtime.mcp_compat import OwnedMCPTools
+        constructor = OwnedMCPTools
+    return constructor(
         url=config.mcp_url,
         header_provider=graph_identity_headers,
         requires_confirmation_tools=sorted(GRAPH_TOOLS_REQUIRING_CONFIRMATION),

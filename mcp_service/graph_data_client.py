@@ -9,6 +9,7 @@ import os
 from typing import Any, Dict, Optional
 
 import httpx
+from execution_protocol import execution_headers
 
 
 def _env_float(name: str, default: float) -> float:
@@ -176,7 +177,7 @@ class GraphDataClient:
                     timeout=_request_timeout(path),
                 ) as client:
                     kwargs: dict[str, Any] = {"json": data}
-                    headers = {}
+                    headers = dict(execution_headers.get())
                     if user_id:
                         headers["X-User-ID"] = user_id
                     if run_id:

@@ -37,16 +37,15 @@ export type ComposerProps = {
   sendBlocked?: boolean;
   runtimeControlsDisabled?: boolean;
   sendBlockedReason?: string;
-  watchPaused?: boolean;
-  canPauseWatching?: boolean;
-  onPauseWatching?: () => void;
-  onResumeWatching?: () => void;
+  canCancel?: boolean;
+  cancellation?: 'requested' | 'stopping' | 'unconfirmed' | 'saving' | 'confirmed';
+  onCancel?: () => void;
   focusRequest?: number;
   onSaveCustomModel?: (input: { model_id: string; display_name: string; base_url: string; api_key: string }) => Promise<void>;
   onDeleteCustomModel?: (modelId: string) => Promise<void>;
 };
 
-export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, watchPaused = false, canPauseWatching = false, onPauseWatching, onResumeWatching, focusRequest, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
+export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -58,8 +57,11 @@ export function Composer({ value, model, models, customModels = [], activeDatase
   const modelOptions = models.length ? models : [model].filter(Boolean);
   const customIds = new Set(customModels.map(item => item.model_id));
   const builtInOptions = modelOptions.filter(option => !customIds.has(option));
-  const runControl = watchPaused || (loading && canPauseWatching);
-  const runControlLabel = watchPaused ? '继续接收' : '暂停接收（Agent 将继续运行）';
+  const runControl = canCancel;
+  const stopping = cancellation === 'requested' || cancellation === 'stopping' || cancellation === 'saving';
+  const runControlLabel = '终止当前任务';
+  const cancellationLabel = cancellation === 'unconfirmed' ? '停止请求尚未确认，可点击方块重试'
+    : cancellation === 'saving' ? '已停止，正在保存结果' : stopping ? '正在停止…' : cancellation === 'confirmed' ? '任务已结束' : '';
   useEffect(() => { if (!disabled) textareaRef.current?.focus(); }, [focusRequest, disabled]);
   useEffect(() => {
     if (!modelOpen) return;
@@ -133,14 +135,14 @@ export function Composer({ value, model, models, customModels = [], activeDatase
           </div> : null}
         </div>
         <div className="composer-spacer" />
-        <span className="auto-mode">{watchPaused ? '接收已暂停 · Agent 仍在运行' : loading && canPauseWatching ? '正在接收 · 可暂停观看' : '◉ Auto'}</span>
+        <span className="auto-mode" role="status">{cancellationLabel || '◉ Auto'}</span>
         <button
-          className={`send-button ${loading && !watchPaused ? 'stop' : ''}`}
-          onClick={runControl ? (watchPaused ? onResumeWatching : onPauseWatching) : onSend}
-          disabled={runControl ? uploading : disabled || uploading || sendBlocked}
+          className={`send-button ${runControl ? 'stop' : ''}`}
+          onClick={runControl ? onCancel : onSend}
+          disabled={runControl ? stopping : disabled || uploading || sendBlocked}
           title={runControl ? runControlLabel : sendBlocked ? sendBlockedReason : '发送'}
           aria-label={runControl ? runControlLabel : sendBlocked ? sendBlockedReason || '当前不可发送' : '发送'}
-        >{loading && !watchPaused ? <span className="stop-square" /> : <Icon name="send" size={18} />}</button>
+        >{runControl ? <span className="stop-square" /> : <Icon name="send" size={18} />}</button>
       </div>
     </div>
     {configOpen ? <div className="modal-backdrop custom-model-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeCustomModelDialog(); }}>
@@ -155,6 +157,6 @@ export function Composer({ value, model, models, customModels = [], activeDatase
         <div className="dialog-actions"><button type="button" className="secondary-command" onClick={closeCustomModelDialog} disabled={savingModel}>取消</button><button type="submit" className="primary-command" disabled={savingModel || !customDraft.model_id.trim() || !customDraft.base_url.trim() || !customDraft.api_key.trim()}>{savingModel ? '保存中…' : '保存模型'}</button></div>
       </form>
     </div> : null}
-    <div className="composer-footer"><span>{watchPaused ? '仅暂停本页接收；Agent 会在服务器继续运行，点击“继续接收”可补发进度' : sendBlockedReason || '支持粘贴边列表 · 支持上传 .txt / .json / .pt 文件'}</span><span>Shift + Enter 换行</span></div>
+    <div className="composer-footer"><span>{cancellationLabel || sendBlockedReason || '支持粘贴边列表 · 支持上传 .txt / .json / .pt 文件'}</span><span>Shift + Enter 换行</span></div>
   </div>;
 }

@@ -99,7 +99,8 @@ def create_recovery_router(db, agent_id: str = "igraph-agent") -> APIRouter:
         user_id = str(getattr(request.state, 'user_id', '') or request.headers.get('X-User-ID', '')).strip()
         run = await owned_run(db, session_id, run_id, user_id, agent_id)
         status = event_buffer.get_run_status(run_id)
-        return {'run_id': run_id, 'status': (status or run.status).value.lower()}
+        phase = status or run.status
+        return {'run_id': run_id, 'status': str(getattr(phase, 'value', phase)).lower()}
 
     @router.post('/internal/sessions/{session_id}/runs/{run_id}/resume')
     async def resume(session_id: str, run_id: str, request: Request, last_event_index: int = Form(-1)):

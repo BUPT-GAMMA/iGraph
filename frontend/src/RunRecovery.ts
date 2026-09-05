@@ -1,4 +1,4 @@
-import { activateSession, ApiError, getRunSnapshot, resumeRun, streamChat, streamFeedback, StreamProtocolError } from './api';
+import { activateSession, ApiError, getRunControl, getRunSnapshot, resumeRun, streamChat, streamFeedback, StreamProtocolError } from './api';
 import { applyBatch, createSessionView } from './sessionState';
 import type { ConversationAction, SessionViewState } from './sessionState';
 import type { ActiveRun, AttachmentRef, FeedbackRequest, StreamBatch } from './types';
@@ -7,6 +7,7 @@ import type { RunConnection } from './RunConnectionManager';
 import { recordRecovery } from './recoveryTelemetry';
 
 type Options = {
+  controlEnabled?: boolean;
   manager: RunConnectionManager;
   view: (sessionId: string) => SessionViewState | undefined;
   identity: () => string;
@@ -112,12 +113,13 @@ export class RunRecovery {
       },
     };
     try {
-      if (operation === 'start' && start) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal);
+      if (operation === 'start' && start) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation);
       else if (operation === 'feedback' && feedback && decision && decisionId) await streamFeedback(sessionId, feedback, decision, decisionId, handlers, connection.controller.signal);
       else if (runId) await resumeRun(sessionId, runId, cursor, handlers, connection.controller.signal);
     } catch (cause) { error = cause; }
     connection.observing = false;
     if (!valid()) return;
+    if (o.manager.isCancelling(sessionId)) return;
     if (operation === 'start' && start && error instanceof ApiError && (error.status === 409 && error.activeRun || [400, 422].includes(error.status))) {
       dispatch({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: start.message, restoreAttachments: start.attachments });
       if (error.activeRun) {
@@ -188,10 +190,27 @@ export class RunRecovery {
     const { sessionId, generation } = connection;
     const identity = o.identity();
     if (!this.valid(connection, identity)) return;
+    if (o.manager.isCancelling(sessionId)) return;
     connection.lastCheckAt = Date.now();
     const startedAt = Date.now();
     try {
       if (!connection.runId) {
+        const startId = o.view(sessionId)?.activeRun?.startRequestId;
+        if (startId && o.controlEnabled) {
+          const control = await o.manager.query(sessionId, generation, signal => getRunControl(sessionId, { start_request_id: startId }, signal));
+          if (!this.valid(connection, identity)) return;
+          if (!control.run_id || control.run_status === 'preparing') { this.retry(connection, undefined, true); return; }
+          o.dispatch({ type: 'SET_RUN_ID', sessionId, generation, runId: control.run_id });
+          o.manager.updateRunId(sessionId, generation, control.run_id);
+          if (control.execution_stopped && control.terminal_persisted) o.dispatch({ type: 'APPLY_CONTROL', sessionId, generation, control });
+          if (control.execution_stopped && control.terminal_persisted && control.native_run_created === false) {
+            o.manager.abort(sessionId);
+            o.settled(sessionId);
+            return;
+          }
+          this.retry(connection, undefined, true);
+          return;
+        }
         const response = await o.manager.query(sessionId, generation, signal => activateSession(sessionId, signal));
         if (!this.valid(connection, identity)) return;
         const active = response.active_run;

@@ -7,6 +7,7 @@ import { SlidingTabs } from './SlidingTabs';
 
 type Tab = 'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts';
 type LayoutMode = 'force' | 'radial' | 'circle';
+type StopJob = (sessionId: string, jobId: string, notify: (status: string) => void) => void;
 
 function nodeId(node: Record<string, unknown>, index: number) { return String(node.id ?? node.label ?? index); }
 
@@ -81,6 +82,7 @@ type GraphWorkspaceProps = {
   onToggle: () => void;
   onExpand?: (node: Record<string, unknown>) => void;
   layoutVersion?: number;
+  onStopJob?: StopJob;
 };
 
 function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWorkspaceProps) {
@@ -91,13 +93,14 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
     && previous.collapsed === next.collapsed
     && previous.layoutVersion === next.layoutVersion
     && previous.projectId === next.projectId
-    && previous.sessionId === next.sessionId;
+    && previous.sessionId === next.sessionId
+    && previous.onStopJob === next.onStopJob;
   if (!coreEqual) return false;
   if (next.tab === 'ML' || next.tab === 'Artifacts') return previous.messages === next.messages && previous.liveTools === next.liveTools;
   return true;
 }
 
-export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0 }: GraphWorkspaceProps) {
+export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob }: GraphWorkspaceProps) {
   const incomingDataSignature = useMemo(() => data ? JSON.stringify(data) : 'empty', [data]);
   const stableDataRef = useRef<{ signature: string; data: GraphData | null }>({ signature: incomingDataSignature, data });
   if (stableDataRef.current.signature !== incomingDataSignature) stableDataRef.current = { signature: incomingDataSignature, data };
@@ -239,7 +242,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   }, [selected, communityById, collapsed, tab]);
   const tabs: Tab[] = ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
   return <aside className={`graph-workspace ${collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图工作台</strong><button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={collapsed ? '展开右侧栏' : '收起右侧栏'} title={collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={21} /></button></div><div className="workspace-panel-content" aria-hidden={collapsed}><SlidingTabs ariaLabel="图工作台视图" className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: item }))} value={tab} onChange={onTab} />
-    {tab === 'ML' ? <MLTab messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={projectTrainingError} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图</strong></div> : view?.status === 'failed' ? <div className="graph-empty"><strong>图加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>暂无图</strong><span>加载数据或发送建图请求后，这里会显示图分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button></div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} aria-label="图谱画布，可拖动平移并使用滚轮缩放" /></div>{(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? 'Selected node')}</strong><span>selected</span></div><div className="inspector-row"><span>Node ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>Type</span><strong>{String(selected.type ?? selected.category ?? 'node')}</strong></div><div className="inspector-row"><span>Degree</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} />}
+    {tab === 'ML' ? <MLTab onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={projectTrainingError} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图</strong></div> : view?.status === 'failed' ? <div className="graph-empty"><strong>图加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>暂无图</strong><span>加载数据或发送建图请求后，这里会显示图分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button></div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} aria-label="图谱画布，可拖动平移并使用滚轮缩放" /></div>{(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? 'Selected node')}</strong><span>selected</span></div><div className="inspector-row"><span>Node ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>Type</span><strong>{String(selected.type ?? selected.category ?? 'node')}</strong></div><div className="inspector-row"><span>Degree</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} />}
   </div></aside>;
 }, graphWorkspacePropsEqual);
 
@@ -433,7 +436,21 @@ function FinalMetricsTable({ metrics }: { metrics: Record<string, unknown> }) {
   return <div className="ml-table-wrap"><table className="ml-table"><thead><tr><th>数据划分</th><th>Accuracy</th><th>Loss</th><th>样本数</th></tr></thead><tbody>{rows.map(row => <tr key={row.prefix}><td>{row.label}</td><td>{formatMetric(`${row.prefix}_acc`, metrics[`${row.prefix}_acc`])}</td><td>{formatMetric(`${row.prefix}_loss`, metrics[`${row.prefix}_loss`])}</td><td>{formatMetric(`num_${row.prefix}`, metrics[`num_${row.prefix}`])}</td></tr>)}</tbody></table></div>;
 }
 
-function MLRunCard({ run, index }: { run: ToolCall; index: number }) {
+function JobStopButton({ run, sessionId, onStopJob }: { run: ToolCall; sessionId: string; onStopJob?: StopJob }) {
+  const [status, setStatus] = useState('');
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const result = recordValue(run.result);
+  const jobId = String(result.job_id || recordValue(run.progress).job_id || '');
+  const terminal = ['done', 'completed', 'cancelled', 'failed'].includes(String(result.job_status || result.status || ''));
+  if (!onStopJob || !jobId || !sessionId || terminal || status === 'confirmed') return status === 'confirmed' ? <span role="status">作业已结束</span> : null;
+  const pending = status === 'stopping';
+  return <button type="button" disabled={pending} aria-label="终止作业" onClick={() => onStopJob(sessionId, jobId, next => { if (mounted.current) setStatus(next); })}>
+    {pending ? '正在停止…' : status === 'unconfirmed' ? '停止尚未确认，重试' : '终止作业'}
+  </button>;
+}
+
+function MLRunCard({ run, index, sessionId, onStopJob }: { run: ToolCall; index: number; sessionId: string; onStopJob?: StopJob }) {
   const history = runHistory(run);
   const [view, setView] = useState<'chart' | 'table'>(history.length ? 'chart' : 'table');
   const result = recordValue(run.result);
@@ -453,8 +470,10 @@ function MLRunCard({ run, index }: { run: ToolCall; index: number }) {
   const totalEpochs = Number(progress.epochs || recordValue(args.train_config).epochs || recordValue(args.algo_config).epochs || completedEpochs || 0);
   const projectRun = run as ProjectTrainingRun;
   const source = [projectRun.session_title, projectRun.dataset_name].filter(Boolean).join(' · ');
-  const statusLabel = projectRun.status_unavailable ? '状态不可用' : run.done ? (metrics.stopped_early ? '提前停止' : '已完成') : '训练中';
+  const jobStatus = String(result.job_status || result.status || progress.status || '');
+  const statusLabel = projectRun.status_unavailable ? '状态不可用' : jobStatus === 'cancelled' ? '已终止' : jobStatus === 'cancelling' ? '正在停止' : jobStatus === 'failed' ? '失败' : run.done ? (metrics.stopped_early ? '提前停止' : '已完成') : '训练中';
   return <article className="ml-run-card"><header className="ml-run-header"><div className="workspace-list-icon"><Icon name="cube" size={16} /></div><div><strong>{taskNames[task] || task}</strong><span>{model}{totalEpochs ? ` · ${completedEpochs}/${totalEpochs} epochs` : ''}{source ? ` · ${source}` : ''}</span></div><b className={projectRun.status_unavailable ? 'unavailable' : run.done ? 'done' : 'running'}>{statusLabel}</b></header>
+    <JobStopButton run={run} sessionId={projectRun.session_id || sessionId} onStopJob={onStopJob} />
     {summaryKeys.length ? <div className="ml-metric-grid">{summaryKeys.map(key => <div key={key}><span>{metricLabel(key)}</span><strong>{formatMetric(key, metrics[key])}</strong></div>)}</div> : null}
     <div className="ml-view-bar"><span>{history.length ? `${history.length} 个训练点` : `运行 ${index + 1}`}</span><SlidingTabs ariaLabel="训练结果视图" className="ml-view-toggle" indicatorClassName="ml-view-indicator" options={[{ value: 'chart', label: '曲线', disabled: !history.length }, { value: 'table', label: '表格' }]} value={view} onChange={setView} /></div>
     {view === 'chart' ? <div className="ml-charts"><MetricChart rows={history} keys={lossKeys} title="损失" /><MetricChart rows={history} keys={scoreKeys} title="评估指标" />{!lossKeys.length && !scoreKeys.length ? <FinalMetricsTable metrics={metrics} /> : null}</div> : history.length ? <MetricsTable rows={history} /> : <FinalMetricsTable metrics={metrics} />}
@@ -471,7 +490,7 @@ function ProjectTrainingComparison({ runs }: { runs: ProjectTrainingRun[] }) {
   })}</tbody></table></div>;
 }
 
-function MLTab({ messages, liveTools, projectRuns, sessionId, loading, error }: { messages: Message[]; liveTools: ToolCall[]; projectRuns: ProjectTrainingRun[]; sessionId: string; loading: boolean; error: string }) {
+function MLTab({ messages, liveTools, projectRuns, sessionId, loading, error, onStopJob }: { messages: Message[]; liveTools: ToolCall[]; projectRuns: ProjectTrainingRun[]; sessionId: string; loading: boolean; error: string; onStopJob?: StopJob }) {
   const [scope, setScope] = useState<'current' | 'project'>('current');
   const runs = useMemo(() => mergeMlRuns(messages, liveTools), [messages, liveTools]);
   const localTrainingRuns = runs.filter(run => String(run.tool || '') === 'train');
@@ -485,8 +504,8 @@ function MLTab({ messages, liveTools, projectRuns, sessionId, loading, error }: 
     {loading ? <div className="ml-sync-status"><span className="loader" /> 正在同步项目训练结果</div> : null}
     {error ? <div className="ml-sync-error">{error}</div> : null}
     {effectiveScope === 'project' && visibleTrainingRuns.length ? <ProjectTrainingComparison runs={projectRuns} /> : null}
-    {!visibleTrainingRuns.length && !loading ? <div className="ml-no-runs">该会话还没有训练记录，可切换到“项目对比”查看其他会话。</div> : visibleTrainingRuns.map((run, index) => <MLRunCard key={`${trainingRunIdentity(run) || 'train'}-${index}`} run={run} index={index} />)}
-    {effectiveScope === 'current' && otherRuns.length ? <div className="ml-activity"><strong>数据与推理记录</strong><div className="workspace-list">{otherRuns.map((run, index) => <div className="workspace-list-row" key={`${run.call_id || run.tool}-${index}`}><div className="workspace-list-icon"><Icon name="cube" size={15} /></div><div><strong>{String(run.tool)}</strong><span>{run.done ? '已完成' : '运行中'}</span></div><b>{run.done ? '完成' : '运行中'}</b></div>)}</div></div> : null}</div>;
+    {!visibleTrainingRuns.length && !loading ? <div className="ml-no-runs">该会话还没有训练记录，可切换到“项目对比”查看其他会话。</div> : visibleTrainingRuns.map((run, index) => <MLRunCard onStopJob={onStopJob} sessionId={sessionId} key={`${trainingRunIdentity(run) || 'train'}-${index}`} run={run} index={index} />)}
+    {effectiveScope === 'current' && otherRuns.length ? <div className="ml-activity"><strong>数据与推理记录</strong><div className="workspace-list">{otherRuns.map((run, index) => <div className="workspace-list-row" key={`${run.call_id || run.tool}-${index}`}><div className="workspace-list-icon"><Icon name="cube" size={15} /></div><div><strong>{String(run.tool)}</strong><span>{run.done ? '已完成' : '运行中'}</span></div><b>{run.done ? '完成' : '运行中'}</b><JobStopButton run={run} sessionId={sessionId} onStopJob={onStopJob} /></div>)}</div></div> : null}</div>;
 }
 
 function ArtifactsTab({ messages }: { messages: Message[] }) {
