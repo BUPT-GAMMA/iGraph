@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
 
 test('both docked panel toggles remain reachable in the same screen position', async ({ page }) => {
   await page.goto('/?session=session-a');
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
   await expect(page.getByText('iGraph 1.0')).toHaveCount(0);
   await page.waitForTimeout(220);
 
@@ -61,7 +61,8 @@ test('new conversations stay local until the first prompt is sent', async ({ pag
   for (let index = 0; index < 10; index += 1) await newInProject.click();
 
   await expect(page).toHaveURL(/\?project=project-1&new=1$/);
-  await expect(page.locator('.workspace-context strong')).toHaveText('新对话');
+  await expect(page.getByRole('heading', { name: '开始图分析', exact: true })).toBeVisible();
+  await expect(page.locator('.session-row.selected')).toHaveCount(0);
   await expect(page.locator('.session-row')).toHaveCount(sessionsBefore);
   expect(createRequests).toBe(0);
 
@@ -71,12 +72,12 @@ test('new conversations stay local until the first prompt is sent', async ({ pag
   await expect.poll(() => createRequests).toBe(1);
   await expect(page).toHaveURL(/\?session=[^&]+$/);
   await expect(page.locator('.session-row')).toHaveCount(sessionsBefore + 1);
-  await expect(page.locator('.workspace-context strong')).toHaveText('首次问题只创建一次');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('首次问题只创建一次');
 });
 
 test('the workspace tab indicator slides between tabs', async ({ page }) => {
   await page.goto('/?session=session-a');
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
 
   const indicator = page.locator('.workspace-tab-indicator');
   await expect(indicator).toBeVisible();
@@ -97,7 +98,9 @@ test('the workspace tab indicator slides between tabs', async ({ page }) => {
 test('graph collections degrade safely and recover when switching back to a single graph', async ({ page }) => {
   await page.goto('/?session=session-a');
   await expect(page.locator('.graph-canvas svg')).toBeVisible();
-  await expect(page.locator('.workspace-context span').filter({ hasText: '2,708 nodes' })).toBeVisible();
+  await page.getByRole('tab', { name: 'Overview' }).click();
+  await expect(page.locator('.stat-grid > div').filter({ hasText: 'Nodes' }).locator('strong')).toHaveText('2,708');
+  await page.getByRole('tab', { name: 'Graph', exact: true }).click();
 
   await page.locator('.composer-dataset').click();
   const datasetDialog = page.getByRole('dialog', { name: '项目数据集' });
@@ -108,7 +111,6 @@ test('graph collections degrade safely and recover when switching back to a sing
   await expect(page.locator('.graph-canvas')).toHaveCount(0);
   await expect(page.locator('.graph-toolbar')).toHaveCount(0);
   await expect(page.locator('.node-inspector')).toHaveCount(0);
-  await expect(page.locator('.workspace-context span').filter({ hasText: '41,127 graphs' })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Overview' }).click();
   await expect(page.getByText('41,127', { exact: true })).toBeVisible();
@@ -134,7 +136,7 @@ test('graph collections degrade safely and recover when switching back to a sing
 test('a selected conversation owns the highlight and dark project fields share one style', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('igraph-theme', 'dark'));
   await page.goto('/?session=session-a');
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
 
   const projectNode = page.locator('.project-tree-node').filter({ hasText: 'E2E Project' });
   await expect(projectNode.locator(':scope > .project-row')).not.toHaveClass(/selected/);
@@ -161,7 +163,7 @@ test('a selected conversation owns the highlight and dark project fields share o
 test('mobile navigation and docked drawers keep their exit animation mounted', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/?session=session-a');
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
 
   const sidebar = page.locator('.sidebar');
   const backdrop = page.locator('.mobile-sidebar-backdrop');
@@ -225,7 +227,7 @@ test('a background stream cannot pollute the newly selected session', async ({ p
   await expect(page.getByText('A-response-')).toBeVisible();
 
   await page.getByTitle('Session B').first().click();
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session B');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session B');
   await expect(page.getByText('A-response-')).toHaveCount(0);
 
   await composer.fill('question for B');
@@ -234,7 +236,7 @@ test('a background stream cannot pollute the newly selected session', async ({ p
   await expect(page.locator('.message-row.assistant .message-content')).not.toContainText('A-response');
 
   await page.getByTitle('Session A').first().click();
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
   await expect(page.getByText('A-response-complete')).toBeVisible();
 });
 
@@ -286,27 +288,27 @@ test('the approval dock stays inside a mobile viewport', async ({ page }) => {
 
 test('browser history keeps the URL and selected workspace in sync', async ({ page }) => {
   await page.goto('/?session=session-a');
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
 
   await page.getByTitle('Session B').first().click();
   await expect(page).toHaveURL(/\?session=session-b$/);
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session B');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session B');
 
   await page.goBack();
   await expect(page).toHaveURL(/\?session=session-a$/);
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
 });
 
 test('deleting a background session keeps the current session selected', async ({ page }) => {
   await page.goto('/?session=session-b');
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session B');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session B');
   page.once('dialog', dialog => dialog.accept());
 
   const backgroundSession = page.locator('.session-row').filter({ hasText: 'Session C Paused' });
   await backgroundSession.getByRole('button', { name: '删除任务' }).click();
 
   await expect(page).toHaveURL(/\?session=session-b$/);
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session B');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session B');
   await expect(page.getByPlaceholder('今天帮你分析什么？粘贴边列表，或直接用自然语言提问')).toBeEnabled();
 });
 
@@ -325,21 +327,21 @@ test('an invalid deep link returns to an actionable home page', async ({ page })
 
 test('deleting the active session replaces its stale URL with home', async ({ page }) => {
   await page.goto('/?session=session-a');
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session A');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
   page.once('dialog', dialog => dialog.accept());
 
   const recent = page.locator('.session-row').filter({ hasText: 'Session A' });
   await recent.getByRole('button', { name: '删除任务' }).click();
 
   await expect(page).toHaveURL('/');
-  await expect(page.locator('.workspace-context strong')).toHaveText('iGraph 工作台');
+  await expect(page.getByRole('heading', { name: '开始新的图分析', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '新建任务' }).last()).toBeEnabled();
   await expect(page.getByPlaceholder('今天帮你分析什么？粘贴边列表，或直接用自然语言提问')).toHaveCount(0);
 });
 
 test('deleting a project also clears its active session and route', async ({ page }) => {
   await page.goto('/?session=session-b');
-  await expect(page.locator('.workspace-context strong')).toHaveText('Session B');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session B');
 
   await page.getByRole('button', { name: 'E2E Project 项目操作' }).click();
   await page.getByRole('button', { name: '删除项目' }).click();
@@ -347,7 +349,7 @@ test('deleting a project also clears its active session and route', async ({ pag
   await page.getByRole('button', { name: '继续' }).click();
 
   await expect(page).toHaveURL('/');
-  await expect(page.locator('.workspace-context strong')).toHaveText('iGraph 工作台');
+  await expect(page.getByRole('heading', { name: '开始新的图分析', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '新建任务' }).last()).toBeEnabled();
   await expect(page.getByText('Session B')).toHaveCount(0);
 });

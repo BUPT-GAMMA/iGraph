@@ -66,6 +66,39 @@ def test_deleted_session_fence_rejects_late_start_and_preserves_other_users(stor
         store.seal_session('bob', sid)
 
 
+def test_delete_fences_and_cancels_current_run_and_historical_jobs_atomically(store):
+    sid = str(uuid.uuid4())
+    old, _ = store.register('alice', sid, str(uuid.uuid4()), 'old')
+    store.claim_agent('alice', sid, old['run_id'])
+    job, _ = store.register_job('alice', sid, old['run_id'], 1, 'old-job', 'work')
+    store.acknowledge('alice', sid, old['run_id'], 1, preparation_stopped=True, agent_stopped=True,
+                      terminal_persisted=True, run_status='completed')
+    current, _ = store.register('alice', sid, str(uuid.uuid4()), 'current')
+    other, _ = store.register('bob', sid, str(uuid.uuid4()), 'other-user')
+    deletion, targets = store.begin_session_deletion('alice', sid)
+    assert {row['run_id'] for row in targets} == {old['run_id'], current['run_id']}
+    assert all(row['state']['cancel_status'] == 'requested' for row in targets)
+    duplicate, repeated = store.begin_session_deletion('alice', sid)
+    assert duplicate['control_id'] == deletion['control_id']
+    assert [row['state']['cancel_request_id'] for row in repeated] == [row['state']['cancel_request_id'] for row in targets]
+    assert store.get('bob', sid, run_id=other['run_id'])['state']['cancel_status'] == 'none'
+    assert store.session_deletions('bob') == []
+    with pytest.raises(ControlError, match='SESSION_DELETING'):
+        store.register('alice', sid, str(uuid.uuid4()), 'late')
+    with pytest.raises(ControlError, match='SESSION_DELETING'):
+        store.claim_agent('alice', sid, current['run_id'])
+    with pytest.raises(ControlError, match='SESSION_DELETING'):
+        store.register_job('alice', sid, old['run_id'], 1, 'late-job', 'work', parent_id=job['job_id'])
+    with pytest.raises(ControlError, match='SESSION_EXECUTION_ACTIVE'):
+        store.seal_session('alice', sid)
+
+
+def test_delete_keeps_uncontrolled_active_native_run_explicit(store):
+    with pytest.raises(ControlError, match='SESSION_CANCEL_UNAVAILABLE'):
+        store.begin_session_deletion('alice', 's', ['legacy-running'])
+    assert store.session_deletion('alice', 's') is None
+
+
 def test_cancellation_waits_for_every_executor_and_save(store):
     sid = str(uuid.uuid4())
     row, _ = store.register('alice', sid, str(uuid.uuid4()), 'digest')

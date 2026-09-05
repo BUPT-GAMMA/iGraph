@@ -126,10 +126,13 @@ def test_pre_cancel_prevents_all_native_work_and_delete_seals_late_launches(tmp_
                 assert late.status_code == 409
             assert metrics['calls'] == {} and not graph._job_manager._jobs
             deleted = await client.delete(f'/api/sessions/{sid}')
-            assert deleted.status_code == 200, deleted.text
+            assert deleted.status_code == 202, deleted.text
             late = await client.post(f'/api/sessions/{sid}/chat/stream', json={'message': 'still never', 'start_request_id': str(uuid4())})
             assert late.status_code == 404
             assert metrics['calls'] == {}
+            async def removed():
+                return controller.store.session_deletion('admin', sid)['state']['delete_status'] == 'deleted'
+            await eventually(removed)
     asyncio.run(scenario())
 
 

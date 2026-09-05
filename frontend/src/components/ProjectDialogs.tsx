@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import type { Project, Session } from '../types';
+import type { Project } from '../types';
 import { Icon } from './Icon';
 
 type EditorProps = {
@@ -51,26 +51,6 @@ export function DeleteProjectDialog({ project, onClose, onConfirm }: { project: 
       <label className={`dialog-choice danger-choice ${action === 'delete' ? 'selected' : ''}`}><input type="radio" checked={action === 'delete'} onChange={() => setAction('delete')} /><span><strong>删除项目和全部会话</strong><small>会话历史与对应图状态都会被删除。</small></span></label>
       {error && <div className="dialog-error">{error}</div>}
       <div className="dialog-actions"><button className="secondary-command" onClick={onClose}>取消</button><button className={`primary-command ${action === 'delete' ? 'destructive-command' : ''}`} disabled={saving} onClick={confirm}>{saving ? '处理中…' : '继续'}</button></div>
-    </div>
-  </div>;
-}
-
-export function MoveConversationDialog({ session, projects, currentProjectId, onClose, onConfirm }: { session: Session; projects: Project[]; currentProjectId?: string; onClose: () => void; onConfirm: (projectId: string) => Promise<void> }) {
-  const [projectId, setProjectId] = useState(currentProjectId || projects[0]?.project_id || '');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  async function confirm() {
-    if (!projectId || projectId === currentProjectId) return onClose();
-    setSaving(true); setError('');
-    try { await onConfirm(projectId); } catch (cause: any) { setError(cause.message || '移动会话失败'); setSaving(false); }
-  }
-  return <div className="modal-backdrop" role="presentation">
-    <div className="project-dialog move-dialog">
-      <div className="dialog-head"><div><span>Move conversation</span><h2>移动会话</h2></div><button className="dialog-close" title="关闭" aria-label="关闭" onClick={onClose}><Icon name="close" size={17} /></button></div>
-      <p className="dialog-description">{session.title || '未命名分析'}</p>
-      <div className="move-project-list">{projects.map(project => <label className={`dialog-choice ${projectId === project.project_id ? 'selected' : ''}`} key={project.project_id}><input type="radio" checked={projectId === project.project_id} onChange={() => setProjectId(project.project_id)} /><span><strong>{project.name}</strong><small>{project.conversation_count || 0} 个会话{project.project_id === currentProjectId ? ' · 当前项目' : ''}</small></span></label>)}</div>
-      {error && <div className="dialog-error">{error}</div>}
-      <div className="dialog-actions"><button className="secondary-command" onClick={onClose}>取消</button><button className="primary-command" disabled={saving || !projectId || projectId === currentProjectId} onClick={confirm}>{saving ? '移动中…' : '移动'}</button></div>
     </div>
   </div>;
 }

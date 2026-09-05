@@ -25,7 +25,7 @@ export function ProjectWorkspace({ project, datasets, busy, onUpload, onSetDefau
   return <section className="project-workspace">
     <header className="project-workspace-head">
       <div className="project-workspace-title">
-        <div className="context-icon"><Icon name="project" size={19} /></div>
+        <div className="context-icon"><Icon name="folder-open" size={21} /></div>
         <div><span>Project</span><h1>{project.name}</h1><p>{project.description || '集中管理这个项目中的图分析会话。'}</p></div>
       </div>
     </header>
