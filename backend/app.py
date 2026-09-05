@@ -1419,7 +1419,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user_id),
             params={"type": "agent", "component_id": settings.agent_id, "user_id": user_id, "limit": limit},
         )
-        return _data_rows(payload)
+        rows = _data_rows(payload)
+        if controls_enabled():
+            deleting = await runtime.request('GET', '/internal/sessions/deleting', headers=forwarded_headers(request, user_id))
+            hidden = set(deleting.get('session_ids', []))
+            rows = [row for row in rows if row.get('session_id') not in hidden]
+        return rows
 
     async def delete_owned_session(session_id: str, request: Request, user_id: str, *, verify: bool = True) -> None:
         if verify:
@@ -2086,6 +2091,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request):
         user = current_user(request, users)
+        if controls_enabled():
+            # Runtime authenticates ownership and durably fences/cancels the
+            # session before acknowledgement; its coordinator finishes cleanup.
+            result = await runtime.request('DELETE', f'/internal/sessions/{session_id}',
+                headers=forwarded_headers(request, user.user_id))
+            return JSONResponse(result, status_code=200 if result['delete_status'] == 'deleted' else 202)
         await delete_owned_session(session_id, request, user.user_id)
         return {"success": True}
 

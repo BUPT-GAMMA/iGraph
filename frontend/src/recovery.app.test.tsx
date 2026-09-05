@@ -9,11 +9,11 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }), listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
   activateSession: vi.fn(), resumeRun: vi.fn(), getRunSnapshot: vi.fn(), streamChat: vi.fn(),
   getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true }),
-  cancelRun: vi.fn(), getRunControl: vi.fn(),
+  cancelRun: vi.fn(), getRunControl: vi.fn(), deleteSession: vi.fn(),
   visualizeGraph: vi.fn().mockRejectedValue(new Error('no graph')),
 }));
 import App from './main';
-import { activateSession, cancelRun, getCapabilities, getRunControl, getRunSnapshot, resumeRun, streamChat, visualizeGraph } from './api';
+import { activateSession, cancelRun, deleteSession, getCapabilities, getRunControl, getRunSnapshot, resumeRun, streamChat, visualizeGraph } from './api';
 
 const active = (content = 'A') => ({ model: 'model', has_graph: false,
   messages: [{ id: 'assistant:r', role: 'assistant' as const, content }],
@@ -30,6 +30,7 @@ beforeEach(() => {
   vi.mocked(getRunControl).mockReset().mockResolvedValue({ run_id: 'r', start_request_id: null, registration_status: 'registered', run_status: 'completed',
     cancel_status: 'none', execution_stopped: true, terminal_persisted: true, can_send: true, active_run: null, revision: 3 });
   vi.mocked(visualizeGraph).mockClear();
+  vi.mocked(deleteSession).mockReset().mockResolvedValue({ success: true, delete_status: 'requested' });
   vi.mocked(streamChat).mockReset().mockImplementation(async (_s, _m, _a, _h, signal) => new Promise((_resolve, reject) => {
     signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
   }));
@@ -44,6 +45,45 @@ beforeEach(() => {
 afterEach(() => { cleanup(); restoreStorage(); restoreStorage = () => {}; });
 
 describe('actual App recovery', () => {
+  it.each(['streaming', 'before response'])('removes an accepted deletion during %s and ignores late output', async phase => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(activateSession).mockResolvedValue(phase === 'streaming' ? active() : { ...complete(), messages: [] });
+    const { container } = render(<App />);
+    if (phase === 'before response') {
+      const composer = await screen.findByPlaceholderText('今天帮你分析什么？粘贴边列表，或直接用自然语言提问');
+      fireEvent.change(composer, { target: { value: '新消息' } });
+      fireEvent.keyDown(composer, { key: 'Enter' });
+      await waitFor(() => expect(streamChat).toHaveBeenCalledOnce());
+    } else await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
+    const call = phase === 'streaming' ? vi.mocked(resumeRun).mock.calls[0] : vi.mocked(streamChat).mock.calls[0];
+    fireEvent.click(screen.getAllByRole('button', { name: '删除任务' })[0]);
+    await waitFor(() => expect(deleteSession).toHaveBeenCalledWith('A'));
+    await waitFor(() => expect(call[4].aborted).toBe(true));
+    expect(screen.getAllByRole('button', { name: '删除任务' })).toHaveLength(1);
+    expect(window.location.search).not.toContain('session=A');
+    act(() => call[3].onBatch?.({ protocol_version: 2, session_id: 'A', run_id: 'r', event_index: 0,
+      events: [{ type: 'token', content: '迟到的旧会话输出' }] }));
+    expect(container.textContent).not.toContain('迟到的旧会话输出');
+    expect(container.textContent).not.toContain('请求失败');
+    confirm.mockRestore();
+  });
+  it('deduplicates deletion and preserves a session selected while acknowledgement was pending', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let accepted!: (value: { success: boolean; delete_status: 'requested' }) => void;
+    vi.mocked(deleteSession).mockImplementation(async () => new Promise(resolve => { accepted = resolve; }));
+    vi.mocked(activateSession).mockImplementation(async id => id === 'A' ? active() : { ...complete(), messages: [] });
+    const { container } = render(<App />);
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
+    const remove = screen.getAllByRole('button', { name: '删除任务' })[0];
+    fireEvent.click(remove); fireEvent.click(remove);
+    expect(deleteSession).toHaveBeenCalledOnce();
+    navigate('B');
+    await waitFor(() => expect(container.querySelector('.session-row.selected .recent-session-name')?.textContent).toBe('Session B'));
+    await act(async () => accepted({ success: true, delete_status: 'requested' }));
+    expect(window.location.search).toContain('session=B');
+    expect(container.querySelector('.session-row.selected .recent-session-name')?.textContent).toBe('Session B');
+    confirm.mockRestore();
+  });
   it.each([false, true])('accepts the next question while completed content and graph requests remain pending (existing graph: %s)', async hasGraph => {
     vi.mocked(activateSession).mockResolvedValue({ ...complete(), messages: [], has_graph: hasGraph });
     vi.mocked(getRunSnapshot).mockImplementation(async () => new Promise(() => {}));
@@ -119,9 +159,9 @@ describe('actual App recovery', () => {
     fireEvent.click(await screen.findByRole('button', { name: '终止当前任务' }));
     await waitFor(() => expect(cancelRun).toHaveBeenCalledOnce());
     navigate('B');
-    await waitFor(() => expect(container.querySelector('.workspace-context strong')?.textContent).toBe('Session B'));
+    await waitFor(() => expect(container.querySelector('.session-row.selected .recent-session-name')?.textContent).toBe('Session B'));
     vi.mocked(activateSession).mockResolvedValue(complete()); navigate('A');
-    await waitFor(() => expect(container.querySelector('.workspace-context strong')?.textContent).toBe('Session A'));
+    await waitFor(() => expect(container.querySelector('.session-row.selected .recent-session-name')?.textContent).toBe('Session A'));
     await waitFor(() => expect(container.querySelector('.message-content')?.textContent).toBe('ABC'));
     expect((container.querySelector('.send-button') as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole('button', { name: '继续接收' })).toBeNull();

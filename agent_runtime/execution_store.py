@@ -118,6 +118,57 @@ class ExecutionStore:
                          session_id=sid, run_id=identity, generation=1, revision=1, admission_blocked=False,
                          state={'closed': True}, created_at=now, updated_at=now))
 
+    def session_deletion(self, uid, sid):
+        with self.transaction(uid, sid) as conn:
+            row = conn.execute(select(controls).where(controls.c.user_id == uid,
+                controls.c.session_id == sid, controls.c.kind == 'session')).mappings().first()
+            return dict(row) if row else None
+
+    def begin_session_deletion(self, uid, sid, active_native_runs=()):
+        """Fence the session and record every owned cancellation atomically."""
+        with self.transaction(uid, sid) as conn:
+            rows = list(conn.execute(select(controls).where(controls.c.user_id == uid,
+                controls.c.session_id == sid)).mappings())
+            runs = [dict(row) for row in rows if row['kind'] == 'run']
+            if set(active_native_runs) - {row['run_id'] for row in runs}:
+                raise ControlError('SESSION_CANCEL_UNAVAILABLE')
+            deletion = next((dict(row) for row in rows if row['kind'] == 'session'), None)
+            if deletion is None:
+                identity, now = str(uuid.uuid4()), time.time()
+                deletion = dict(control_id=identity, kind='session', user_id=uid, session_id=sid,
+                    run_id=identity, generation=1, revision=1, admission_blocked=False,
+                    state={'closed': True, 'delete_status': 'requested'}, created_at=now, updated_at=now)
+                conn.execute(controls.insert().values(**deletion))
+            elif not deletion['state'].get('delete_status'):
+                deletion = self._update(conn, deletion, {**deletion['state'], 'delete_status': 'requested'})
+            pending_jobs = {row['run_id'] for row in rows if row['kind'] == 'job'
+                and not (row['state'].get('execution_stopped') and row['state'].get('terminal_persisted'))}
+            targets = []
+            for run in runs:
+                if not run['admission_blocked'] and run['run_id'] not in pending_jobs and run['state']['cancel_status'] not in {'requested', 'stopping'}:
+                    continue
+                cancel_id = str(uuid.uuid5(uuid.UUID(deletion['control_id']), run['run_id']))
+                state = self._cancel_state(conn, uid, sid, run, cancel_id)
+                # The session fence blocks new work. Historical jobs must not
+                # contend with the current Run's unique admission record.
+                state['cancel_blocks_admission'] = run['admission_blocked']
+                targets.append(self._update(conn, run, state))
+            return deletion, targets
+
+    def session_deletions(self, uid=None, *, pending_only=False):
+        conditions = [controls.c.kind == 'session', controls.c.state['delete_status'].as_string().in_(
+            ['requested'] if pending_only else ['requested', 'deleted'])]
+        if uid is not None:
+            conditions.append(controls.c.user_id == uid)
+        with self.engine.connect() as conn:
+            return [dict(row) for row in conn.execute(select(controls).where(*conditions)).mappings()]
+
+    def finish_session_deletion(self, uid, sid):
+        with self.transaction(uid, sid) as conn:
+            row = conn.execute(select(controls).where(controls.c.user_id == uid,
+                controls.c.session_id == sid, controls.c.kind == 'session')).mappings().one()
+            return self._update(conn, dict(row), {**row['state'], 'delete_status': 'deleted'})
+
     def _insert_run(self, conn, uid, sid, key, digest, *, cancelled=False):
         rid = str(uuid.uuid4())
         now = time.time()
@@ -243,19 +294,22 @@ class ExecutionStore:
                 self._limit_new_keys(conn, uid, sid)
                 row = self._insert_run(conn, uid, sid, target["start_request_id"], None, cancelled=True)
             self._check_cancel_key(conn, uid, sid, cancel_id, row['control_id'])
-            state = dict(row["state"])
-            if state["cancel_status"] == "none":
-                state["cancel_status"] = "requested"
-                state["cancel_blocks_admission"] = row["admission_blocked"] or self._active(conn, uid, sid) is None
-                if state['run_status'] == 'paused':
-                    # A saved approval phase is not the requested cancelled
-                    # terminal. Storage-only cancellation must be verified first.
-                    state['terminal_persisted'] = False
-            state.setdefault('cancel_requested_at', time.time())
-            state["cancel_request_id"] = state.get("cancel_request_id") or cancel_id
-            state['cancel_target_id'] = row['control_id']
-            state['cancel_requests'] = {**state.get('cancel_requests', {}), cancel_id: row['control_id']}
+            state = self._cancel_state(conn, uid, sid, row, cancel_id)
             return self._update(conn, row, state)
+
+    def _cancel_state(self, conn, uid, sid, row, cancel_id):
+        state = dict(row['state'])
+        if state['cancel_status'] == 'none':
+            state['cancel_status'] = 'requested'
+            state['cancel_blocks_admission'] = row['admission_blocked'] or self._active(conn, uid, sid) is None
+            if state['run_status'] == 'paused':
+                # A saved approval phase still needs a verified cancelled write.
+                state['terminal_persisted'] = False
+        state.setdefault('cancel_requested_at', time.time())
+        state['cancel_request_id'] = state.get('cancel_request_id') or cancel_id
+        state['cancel_target_id'] = row['control_id']
+        state['cancel_requests'] = {**state.get('cancel_requests', {}), cancel_id: row['control_id']}
+        return state
 
     def _check_cancel_key(self, conn, uid, sid, cancel_id, target_id):
         rows = conn.execute(select(controls.c.state).where(controls.c.user_id == uid, controls.c.session_id == sid)).scalars()

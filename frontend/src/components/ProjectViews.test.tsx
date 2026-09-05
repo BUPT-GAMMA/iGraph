@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Dataset, Project, Session } from '../types';
-import { DeleteProjectDialog, MoveConversationDialog, ProjectDialog } from './ProjectDialogs';
+import type { Dataset, Project } from '../types';
+import { DeleteProjectDialog, ProjectDialog } from './ProjectDialogs';
 import { ProjectWorkspace } from './ProjectWorkspace';
 import { TopBar } from './TopBar';
 
@@ -56,29 +56,6 @@ describe('project dialogs', () => {
     fireEvent.click(screen.getByRole('button', { name: '继续' }));
     await waitFor(() => expect(onConfirm).toHaveBeenNthCalledWith(2, 'move_to_general'));
   });
-
-  it('moves a conversation only after another project is selected', async () => {
-    const session: Session = { session_id: 'session-1', project_id: 'project-1', title: 'GCN 实验' };
-    const projects = [project, { ...project, project_id: 'project-2', name: 'Other', conversation_count: 0 }];
-    const onConfirm = vi.fn().mockResolvedValue(undefined);
-    render(<MoveConversationDialog session={session} projects={projects} currentProjectId="project-1" onClose={vi.fn()} onConfirm={onConfirm} />);
-
-    expect((screen.getByRole('button', { name: '移动' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('2 个会话 · 当前项目')).toBeTruthy();
-    fireEvent.click(screen.getByRole('radio', { name: /Other/ }));
-    fireEvent.click(screen.getByRole('button', { name: '移动' }));
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith('project-2'));
-    expect(screen.getByText('移动中…')).toBeTruthy();
-  });
-
-  it('reports conversation move failures', async () => {
-    const session: Session = { session_id: 'session-1' };
-    const onConfirm = vi.fn().mockRejectedValue(new Error('目标项目不可用'));
-    render(<MoveConversationDialog session={session} projects={[project]} onClose={vi.fn()} onConfirm={onConfirm} />);
-
-    fireEvent.click(screen.getByRole('button', { name: '移动' }));
-    await waitFor(() => expect(screen.getByText('目标项目不可用')).toBeTruthy());
-  });
 });
 
 describe('project workspace and top bar', () => {
@@ -129,7 +106,8 @@ describe('project workspace and top bar', () => {
   it('opens the mobile navigation from the top bar', () => {
     const onMenu = vi.fn();
     render(<TopBar onMenu={onMenu} />);
-    expect(screen.getByText('图分析工作台')).toBeTruthy();
+    expect(screen.getByText('iGraph')).toBeTruthy();
+    expect(screen.queryByText('图分析工作台')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '打开侧栏' }));
     expect(onMenu).toHaveBeenCalledOnce();
   });

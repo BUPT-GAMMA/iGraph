@@ -157,6 +157,5 @@ export function Composer({ value, model, models, customModels = [], activeDatase
         <div className="dialog-actions"><button type="button" className="secondary-command" onClick={closeCustomModelDialog} disabled={savingModel}>取消</button><button type="submit" className="primary-command" disabled={savingModel || !customDraft.model_id.trim() || !customDraft.base_url.trim() || !customDraft.api_key.trim()}>{savingModel ? '保存中…' : '保存模型'}</button></div>
       </form>
     </div> : null}
-    <div className="composer-footer"><span>{cancellationLabel || sendBlockedReason || '支持粘贴边列表 · 支持上传 .txt / .json / .pt 文件'}</span><span>Shift + Enter 换行</span></div>
   </div>;
 }

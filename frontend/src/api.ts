@@ -138,12 +138,11 @@ export async function updateSessionModel(id: string, model: string) {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }),
   });
 }
-export async function deleteSession(id: string) { return json<any>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
-export async function moveSession(id: string, projectId: string) {
-  return json<any>(`/api/sessions/${encodeURIComponent(id)}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: projectId }),
-  });
+export async function deleteSession(id: string) {
+  // 202 acknowledges durable stop-and-delete; server cleanup survives disconnect.
+  return json<{ success: boolean; delete_status?: 'requested' | 'deleted' }>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
+
 export async function getMessages(id: string, signal?: AbortSignal) { return json<{ messages?: Message[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`, { signal }); }
 export async function listProjects() { return json<{ success?: boolean; projects?: Project[] }>('/api/projects'); }
 export async function createProject(name: string, description = '') {

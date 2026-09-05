@@ -67,6 +67,35 @@ describe('docked panel controls', () => {
     expect(container.querySelector('.project-session-row')?.classList.contains('selected')).toBe(false);
   });
 
+  it('switches between closed and open folder icons with the project tree state', () => {
+    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 0 }];
+    const { container } = render(<Sidebar {...sidebarProps} projects={projects} sessions={[]} collapsed={false} onCollapse={noop} />);
+
+    expect(container.querySelector('.project-row-icon path')?.getAttribute('d')).toContain('M3 6.5');
+    fireEvent.click(screen.getByRole('button', { name: '展开 项目一' }));
+    expect(container.querySelector('.project-row-icon path')?.getAttribute('d')).toContain('M3 16.5');
+  });
+
+  it('opens project actions in a floating menu and dispatches each action', () => {
+    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 0 }];
+    const onEditProject = vi.fn();
+    const onDeleteProject = vi.fn();
+    render(<Sidebar {...sidebarProps} projects={projects} sessions={[]} collapsed={false} onCollapse={noop} onEditProject={onEditProject} onDeleteProject={onDeleteProject} />);
+
+    const trigger = screen.getByRole('button', { name: '项目一 项目操作' });
+    fireEvent.click(trigger);
+    const menu = screen.getByRole('menu', { name: '项目一 项目操作' });
+    expect(menu.parentElement).toBe(document.body);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑项目' }));
+    expect(onEditProject).toHaveBeenCalledWith(projects[0]);
+    expect(screen.queryByRole('menu')).toBeNull();
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除项目' }));
+    expect(onDeleteProject).toHaveBeenCalledWith(projects[0]);
+  });
+
   it('shows the project name before each recent task title', () => {
     const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
     const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '会话一' }];

@@ -98,6 +98,22 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         @app.middleware('http')
         async def protect_native_execution(request: Request, call_next):
             path = request.url.path.removeprefix(request.scope.get('root_path', '')).strip('/').split('/')
+            if request.method == 'POST' and path == ['sessions']:
+                uid = str(getattr(request.state, 'user_id', '') or request.headers.get('X-User-ID', ''))
+                try:
+                    body = await request.json()
+                except ValueError:
+                    body = None  # Keep native request validation for malformed JSON.
+                if uid and isinstance(body, dict) and isinstance(body.get('session_id'), str):
+                    deletion = await controller.call(controller.store.session_deletion, uid, body['session_id'])
+                    if deletion:
+                        return JSONResponse({'detail': {'code': 'SESSION_DELETING'}}, status_code=409)
+            if request.method == 'GET' and len(path) >= 2 and path[0] == 'sessions':
+                uid = str(getattr(request.state, 'user_id', '') or request.headers.get('X-User-ID', ''))
+                if uid:
+                    deletion = await controller.call(controller.store.session_deletion, uid, path[1])
+                    if deletion and deletion['state'].get('delete_status'):
+                        return JSONResponse({'detail': {'code': 'SESSION_NOT_FOUND'}}, status_code=404)
             if request.method == 'DELETE' and path[0] == 'sessions':
                 try:
                     require_service(request)

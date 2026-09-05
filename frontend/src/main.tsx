@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { activateSession, ApiError, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
+import { activateSession, ApiError, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, renameProjectDataset, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
@@ -13,7 +13,7 @@ import { ChatPane } from './components/ChatPane';
 import { GraphWorkspace } from './components/GraphWorkspace';
 import { BrandLogo, Icon } from './components/Icon';
 import { ManagementPanel } from './components/ManagementPanel';
-import { DeleteProjectDialog, MoveConversationDialog, ProjectDialog } from './components/ProjectDialogs';
+import { DeleteProjectDialog, ProjectDialog } from './components/ProjectDialogs';
 import { ProjectWorkspace } from './components/ProjectWorkspace';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
@@ -103,14 +103,6 @@ function unsupportedGraphViewFromError(cause: unknown): GraphViewState | null {
   return unsupportedGraphView(detail.dataset_view as DatasetView | undefined);
 }
 
-function graphTotalNodes(graph: GraphData | null) {
-  return graph ? Number(graph.total_nodes ?? graph.num_nodes ?? graph.nodes.length) : 0;
-}
-
-function graphTotalEdges(graph: GraphData | null) {
-  return graph ? Number(graph.total_edges ?? graph.num_edges ?? graph.edges.length) : 0;
-}
-
 type PendingFirstTurn = {
   message: string;
   attachments: AttachmentRef[];
@@ -189,7 +181,6 @@ function App() {
   const [projectEditor, setProjectEditor] = useState<'create' | 'edit' | null>(null);
   const [projectEditorTarget, setProjectEditorTarget] = useState<Project | null>(null);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<Project | null>(null);
-  const [moveSessionTarget, setMoveSessionTarget] = useState<Session | null>(null);
   const [dark, setDark] = useState(() => localStorage.getItem('igraph-theme') === 'dark');
   const [sidebarWidth, setSidebarWidth] = useState(() => storedWidth('igraph-layout-sidebar-width', window.innerWidth <= 1280 ? 230 : SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX));
   const [graphWidth, setGraphWidth] = useState(() => storedWidth('igraph-layout-graph-width', window.innerWidth <= 1280 ? 330 : GRAPH_DEFAULT, GRAPH_MIN, GRAPH_MAX));
@@ -244,6 +235,7 @@ function App() {
   const hydrationControllersRef = useRef(new Map<string, AbortController>());
   const draftCreationControllersRef = useRef(new Map<string, AbortController>());
   const preparationControllersRef = useRef(new Map<string, AbortController>());
+  const deletionRequestsRef = useRef(new Set<string>());
   const graphVersionsRef = useRef(new Map<string, number>());
   const bodyRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
@@ -392,7 +384,6 @@ function App() {
     dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: null });
     setGraphOpen(false);
     setDatasetOpen(false);
-    setMoveSessionTarget(null);
     setMobileSidebarOpen(false);
     setWorkspaceError(message);
     if (updateUrl) writeWorkspaceRoute({ kind: 'home' }, replaceUrl);
@@ -865,7 +856,6 @@ function App() {
     setActiveProject(null);
     setGraphOpen(false);
     setDatasetOpen(false);
-    setMoveSessionTarget(null);
     setMobileSidebarOpen(false);
     setWorkspaceError('');
     setComposerFocusRequest(current => current + 1);
@@ -877,14 +867,19 @@ function App() {
     }
   }
   async function deleteTask(id: string) {
+    const identity = identityRef.current;
+    const requestKey = `${identity}:${id}`;
+    if (deletionRequestsRef.current.has(requestKey)) return;
     if (!window.confirm('确认删除这个分析任务吗？')) return;
+    deletionRequestsRef.current.add(requestKey);
     const deleted = sessions.find(item => item.session_id === id);
-    const deletingActiveSession = conversationRef.current.activeSessionId === id;
     const preparation = preparationControllersRef.current.get(id);
     preparation?.abort();
     preparationControllersRef.current.delete(id);
     try {
       await removeSession(id);
+      if (identityRef.current !== identity) return;
+      const deletingActiveSession = conversationRef.current.activeSessionId === id;
       cancellationRef.current?.forget(id);
       connectionManagerRef.current.abort(id);
       hydrationControllersRef.current.get(id)?.abort();
@@ -897,9 +892,12 @@ function App() {
       if (activeProject?.project_id === deleted?.project_id) setActiveProject(current => current ? { ...current, conversation_count: Math.max(0, (current.conversation_count || 0) - 1) } : current);
       if (deletingActiveSession) showWorkspaceHome(true, true);
     } catch (cause: any) {
+      if (identityRef.current !== identity) return;
       const run = conversationRef.current.viewsBySessionId[id]?.activeRun;
       if (preparation && run?.status === 'preparing') dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId: id, generation: run.generation, error: '删除任务失败，请重试' });
       setWorkspaceError(cause.message || '删除任务失败');
+    } finally {
+      deletionRequestsRef.current.delete(requestKey);
     }
   }
   async function saveProject(name: string, description: string) {
@@ -971,22 +969,6 @@ function App() {
       setWorkspaceError('');
     }
   }
-  async function moveCurrentSession(projectId: string) {
-    if (!moveSessionTarget) return;
-    const oldProjectId = moveSessionTarget.project_id;
-    const graphVersion = nextGraphVersion(moveSessionTarget.session_id);
-    const response = await moveSession(moveSessionTarget.session_id, projectId);
-    setSessions(current => current.map(session => session.session_id === moveSessionTarget.session_id ? { ...session, project_id: projectId, active_dataset_id: response.active_dataset_id, has_graph: false } : session));
-    dispatchConversation({ type: 'PATCH_VIEW', sessionId: moveSessionTarget.session_id, patch: { activeDatasetId: response.active_dataset_id } });
-    dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: moveSessionTarget.session_id, requestVersion: graphVersion, graph: { status: 'empty', data: null } });
-    setProjects(current => current.map(project => {
-      if (project.project_id === oldProjectId) return { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) };
-      if (project.project_id === projectId) return { ...project, conversation_count: (project.conversation_count || 0) + 1 };
-      return project;
-    }));
-    setMoveSessionTarget(null);
-  }
-
   function pendingFirstTurnSnapshot(
     message: string,
     attachments: AttachmentRef[],
@@ -1541,21 +1523,10 @@ function App() {
     ? activeDraft.attachments
     : [...(activeView?.attachments || []), ...(activeView?.pendingAttachments || [])];
   const layoutStyle = { '--sidebar-width': `${sidebarWidth}px`, '--graph-width': `${graphWidth}px`, '--collapsed-panel-width': `${COLLAPSED_PANEL_WIDTH}px` } as CSSProperties;
-  const graphNodeCount = graphTotalNodes(graph);
-  const graphEdgeCount = graphTotalEdges(graph);
   const sessionProject = projects.find(project => project.project_id === activeSession?.project_id);
   const workspaceProject = draftProject || sessionProject;
   const activeDatasetId = activeDraft?.activeDatasetId ?? activeView?.activeDatasetId;
   const activeDataset = datasets.find(dataset => dataset.dataset_id === activeDatasetId);
-  const graphSummary = graphView.status === 'unsupported'
-    ? `${Number(graphView.summary.num_graphs || 0).toLocaleString()} graphs`
-    : graphView.status === 'ready'
-      ? `${graphNodeCount.toLocaleString()} nodes · ${graphEdgeCount.toLocaleString()} edges`
-      : graphView.status === 'loading'
-        ? '正在加载图谱数据'
-        : graphView.status === 'failed'
-          ? '图谱加载失败'
-          : '等待加载图谱数据';
   const runStatuses = Object.fromEntries(Object.entries(conversation.viewsBySessionId)
     .filter(([, view]) => Boolean(view.activeRun))
     .map(([sessionId, view]) => [sessionId, view.activeRun!.status]));
@@ -1568,18 +1539,10 @@ function App() {
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
         {activeProject ? <>
-          <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
+          {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
           <ProjectWorkspace project={activeProject} datasets={datasets} busy={busy || uploading} onUpload={file => addProjectDataset(file, false)} onSetDefault={makeDefaultDataset} onRename={renameDataset} onDelete={removeDataset} />
         </> : <>
-          <div className="workspace-context">
-            <div className="context-icon"><BrandLogo /></div>
-            <div>{workspaceProject && <button className="project-breadcrumb" onClick={() => selectProject(workspaceProject.project_id)}>{workspaceProject.name} /</button>}<strong>{activeDraft ? '新对话' : activeSession?.title || 'iGraph 工作台'}</strong>{!activeDraft && <span>{activeSession ? graphSummary : '选择已有会话，或新建任务'}</span>}</div>
-            <div className="context-actions">
-              {activeSession && <button onClick={() => setMoveSessionTarget(activeSession)}><Icon name="move" size={14} /> 移动</button>}
-              {activeSession && !graphOpen && <button onClick={() => setGraphOpen(true)}><Icon name="graph" size={14} /> 展开图</button>}
-            </div>
-          </div>
-          <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
+          {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
           {activeDraft
             ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
@@ -1593,7 +1556,6 @@ function App() {
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
     {projectEditor && <ProjectDialog key={`${projectEditor}-${projectEditorTarget?.project_id || 'new'}`} project={projectEditor === 'edit' ? projectEditorTarget : null} onClose={() => { setProjectEditor(null); setProjectEditorTarget(null); }} onSave={saveProject} />}
     {deleteProjectTarget && <DeleteProjectDialog project={deleteProjectTarget} onClose={() => setDeleteProjectTarget(null)} onConfirm={deleteCurrentProject} />}
-    {moveSessionTarget && <MoveConversationDialog session={moveSessionTarget} projects={projects} currentProjectId={moveSessionTarget.project_id} onClose={() => setMoveSessionTarget(null)} onConfirm={moveCurrentSession} />}
   </div>;
 }
 

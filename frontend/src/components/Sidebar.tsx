@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Project, Session } from '../types';
 import { Icon } from './Icon';
 
@@ -55,14 +56,72 @@ function runStatusLabel(status?: string) {
 export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, dark, onTheme, onMemory, onSkills, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const projectMenuRef = useRef<HTMLDivElement | null>(null);
+  const projectMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const activeSessionProjectId = sessions.find(session => session.session_id === activeId)?.project_id;
   const projectNames = new Map(projects.map(project => [project.project_id, project.name]));
+  const menuProject = projects.find(project => project.project_id === menuProjectId);
 
   useEffect(() => {
     const projectId = activeProjectId || activeSessionProjectId;
     if (!projectId) return;
     setExpandedProjects(current => current.has(projectId) ? current : new Set([...current, projectId]));
   }, [activeProjectId, activeSessionProjectId]);
+
+  useEffect(() => {
+    if (!menuProjectId) return;
+    projectMenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    function closeOnOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (projectMenuRef.current?.contains(target) || projectMenuTriggerRef.current?.contains(target)) return;
+      setMenuProjectId(null);
+      setMenuPosition(null);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      setMenuProjectId(null);
+      setMenuPosition(null);
+      projectMenuTriggerRef.current?.focus();
+    }
+    function closeOnViewportChange() {
+      setMenuProjectId(null);
+      setMenuPosition(null);
+    }
+    document.addEventListener('mousedown', closeOnOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    document.addEventListener('scroll', closeOnViewportChange, true);
+    window.addEventListener('resize', closeOnViewportChange);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+      document.removeEventListener('scroll', closeOnViewportChange, true);
+      window.removeEventListener('resize', closeOnViewportChange);
+    };
+  }, [menuProjectId]);
+
+  function toggleProjectMenu(project: Project, trigger: HTMLButtonElement) {
+    if (menuProjectId === project.project_id) {
+      setMenuProjectId(null);
+      setMenuPosition(null);
+      return;
+    }
+    const rect = trigger.getBoundingClientRect();
+    const menuWidth = 176;
+    const menuHeight = project.is_default ? 46 : 88;
+    const left = Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8));
+    const top = rect.bottom + menuHeight + 8 <= window.innerHeight
+      ? rect.bottom + 6
+      : Math.max(8, rect.top - menuHeight - 6);
+    projectMenuTriggerRef.current = trigger;
+    setMenuPosition({ left, top });
+    setMenuProjectId(project.project_id);
+  }
+
+  function closeProjectMenu() {
+    setMenuProjectId(null);
+    setMenuPosition(null);
+  }
 
   function toggleProject(projectId: string) {
     setExpandedProjects(current => {
@@ -100,14 +159,10 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
             return <div className={`project-tree-node ${expanded ? 'expanded' : ''}`} key={project.project_id}>
               <div className={`project-row ${activeProjectId === project.project_id ? 'selected' : ''}`}>
                 <button className="project-disclosure" onClick={() => toggleProject(project.project_id)} aria-label={`${expanded ? '收起' : '展开'} ${project.name}`} aria-expanded={expanded}><Icon name="chevron" size={13} /></button>
-                <button className="project-row-main" onClick={() => openProject(project.project_id)} title={project.name}><span className="project-row-icon"><Icon name="project" size={14} /></span><strong>{project.name}</strong></button>
+                <button className="project-row-main" onClick={() => openProject(project.project_id)} title={project.name}><span className="project-row-icon"><Icon name={expanded ? 'folder-open' : 'folder'} size={17} /></span><strong>{project.name}</strong></button>
                 <button className="project-inline-action" onClick={() => { onNewInProject(project.project_id); onCloseMobile(); }} title={`在 ${project.name} 中新建会话`} aria-label={`在 ${project.name} 中新建会话`}><Icon name="plus" size={14} /></button>
-                <button className="project-inline-action" onClick={() => setMenuProjectId(current => current === project.project_id ? null : project.project_id)} title="项目操作" aria-label={`${project.name} 项目操作`}><Icon name="more" size={15} /></button>
+                <button className="project-inline-action" onClick={event => toggleProjectMenu(project, event.currentTarget)} title="项目操作" aria-label={`${project.name} 项目操作`} aria-haspopup="menu" aria-expanded={menuProjectId === project.project_id}><Icon name="more" size={15} /></button>
               </div>
-              {menuProjectId === project.project_id && <div className="project-action-menu">
-                <button onClick={() => { setMenuProjectId(null); onEditProject(project); }}><Icon name="edit" size={14} /> 编辑项目</button>
-                {!project.is_default && <button className="danger" onClick={() => { setMenuProjectId(null); onDeleteProject(project); }}><Icon name="trash" size={14} /> 删除项目</button>}
-              </div>}
               {expanded && <div className="project-session-list">
                 {projectSessions.length === 0 ? <div className="project-tree-empty">暂无会话</div> : projectSessions.map(session => <div className={`project-session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id}>
                   <button className="project-session-main" onClick={() => { onSelect(session.session_id); onCloseMobile(); }} title={sessionTitle(session)}><Icon name="file" size={13} />{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<span>{sessionTitle(session)}</span></button>
@@ -130,6 +185,10 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
     <div className="sidebar-footer"><div className="avatar">{(userId || 'A').slice(0, 1).toUpperCase()}</div><div><strong>{userId}</strong><span>Personal Workspace</span></div><button className="sidebar-theme" onClick={onTheme} aria-label={dark ? '切换到浅色主题' : '切换到深色主题'} title={dark ? '切换到浅色主题' : '切换到深色主题'}><Icon name={dark ? 'sun' : 'moon'} size={17} /></button></div>
     </div>
   </aside>
+  {menuProject && menuPosition ? createPortal(<div ref={projectMenuRef} className="project-action-menu project-action-popover" role="menu" aria-label={`${menuProject.name} 项目操作`} style={menuPosition}>
+    <button role="menuitem" onClick={() => { closeProjectMenu(); onEditProject(menuProject); }}><Icon name="edit" size={15} /> 编辑项目</button>
+    {!menuProject.is_default ? <><div className="project-action-separator" role="separator" /><button role="menuitem" className="danger" onClick={() => { closeProjectMenu(); onDeleteProject(menuProject); }}><Icon name="trash" size={15} /> 删除项目</button></> : null}
+  </div>, document.body) : null}
   <button className={`mobile-sidebar-backdrop ${mobileOpen ? 'is-visible' : ''}`} onClick={onCloseMobile} aria-label="关闭侧栏" aria-hidden={!mobileOpen} tabIndex={mobileOpen ? 0 : -1} />
   </>;
 }

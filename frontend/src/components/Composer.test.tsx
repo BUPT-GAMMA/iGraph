@@ -63,6 +63,8 @@ describe('ConversationInputArea', () => {
     expect((screen.getByLabelText('发送') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText('选择模型') as HTMLSelectElement).disabled).toBe(false);
     expect((screen.getByLabelText('上传图文件') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/支持上传 \.txt/)).toBeNull();
+    expect(screen.queryByText('Shift + Enter 换行')).toBeNull();
   });
 
   it('opens custom model configuration in a separate dialog', async () => {
