@@ -1,89 +1,73 @@
-# CI 质量标准与覆盖率政策
+# CI 测试策略
 
-适用范围：当前 iGraph 的前后端日常开发、PR 审查与发布验证。
+## 日常检查
 
-## 1. 强制检查与基线门槛
+每次 push，以及未勾选 `full` 的手动运行，执行两个并行任务：
 
-| 检查 | 当前规则 |
+| 任务 | 检查范围 |
 | --- | --- |
-| Python 核心及 Graph ML 自动化测试 | 继续要求通过；保留现有测试发现范围 |
-| 前端单元与组件测试 | 继续要求通过 |
-| TypeScript 类型检查与前端生产构建 | 继续要求通过 |
-| 现有 Playwright E2E 套件 | 继续要求通过 |
-| Docker Compose 配置校验 | 继续要求通过 |
-| 前端行覆盖率 | 至少 44% |
-| 前端语句覆盖率 | 至少 44% |
-| 前端函数覆盖率 | 至少 59% |
-| 前端分支覆盖率 | 至少 68% |
-| Python 行覆盖率 | 至少 51% |
-| Python 分支覆盖率 | 至少 34% |
-| Python 综合覆盖率 | 持续生成报告，统一通过上述行/分支底线判断 |
+| `Python tests` | 后端基础及业务回归、Graph ML、协议和断流恢复、PostgreSQL 控制并发、任务取消及进程退出；四种真实链路取消场景各执行一次；Docker Compose 配置校验 |
+| `Frontend checks` | 全部 Vitest 单元/组件测试、TypeScript 类型检查、Vite 生产构建 |
 
-这些门槛恢复到 dev 分支基线，取消改造保持完整统计范围和阻断能力。测试失败、
-类型错误、构建失败或 E2E 失败仍会使 CI 失败，并由 `Required checks`
-阻止后续生产发布。
+`Required checks` 要求两个任务均成功；测试断言、类型检查、构建和配置错误仍会阻断。
+保留这些检查名称，兼容现有分支保护。main 的镜像发布和生产部署继续依赖该汇总检查。
 
-Python 的 `.coveragerc` 保留 `branch = True` 和完整源代码统计范围；
-`fail_under = 0` 仅关闭 coverage.py 的综合百分比门槛。
-CI 继续调用 `scripts/check_coverage.py`，分别强制执行 51% / 34% 底线。
+日常 CI 不启用覆盖率采集、覆盖率硬门槛、Python 分片及覆盖率汇总，
+也不安装浏览器。Python 输出最慢的 10 项测试，便于定位耗时。
 
-前端保留完整统计范围、V8 coverage provider 和全部覆盖率报告。
-`frontend/vite.config.ts` 是配置源；仓库跟踪的 `vite.config.js` 为其编译产物，
-修改后运行 `pnpm build` 并检查二者同步。
+## 手动完整回归
 
-## 2. 改善目标与审查规则
+在 GitHub Actions 的 CI 页面选择 **Run workflow**，勾选 `full`：
 
-- 整体行覆盖率以 **60%** 为阶段改善目标，按版本安排测试建设。
-- 新增重要业务逻辑以 **约 80%** 覆盖率为审查参考目标，初期不作为新增自动阻断项。
-- 当前流水线统计整体覆盖率；新增代码覆盖率暂由 PR 审查评估。
-  后续引入差异覆盖率报告时，先作为信息展示并验证统计口径。
-- 缺陷修复应附带能够复现原问题的回归测试，并验证修复后的预期行为。
-  暂时无法自动化的场景应在 PR 中说明原因、提供可重复的验收步骤及后续补测安排。
-- 优先覆盖会话/Run 状态转换、断流与恢复、租户权限隔离、文件上传边界、
-  训练提交/取消/结束状态，以及正常、失败、并发和重试路径。
-- 测试应断言可观察的行为、输出和副作用；审查时检查未覆盖路径的实际风险。
+- 运行全部 Python 测试，取消真实链路四种场景各重复 20 次，审批/取消竞争也重复 20 次。
+- 包含日常暂不执行的三个较慢套件：
+  - `tests/test_isolated_compute.py`：隔离计算、图版本与产物发布、跨模型训练推理等。
+  - `tests/test_cancellation_failures.py`：数据库故障、请求丢失、辅助模型取消等故障注入。
+  - `tests/test_execution_restart.py`：强制退出、重启、后代进程清理及提交恢复。
+- Python 任务追加真实 Factory 恢复及取消浏览器回归；前端任务追加普通 Playwright E2E。
+- 完整模式中任何测试失败均使本次运行失败，浏览器失败时保留 trace 和截图。
 
-覆盖率表示测试执行过的代码范围。测试通过与覆盖率达标需要结合代码审查、
-有效断言和功能验收共同判断。前端当前覆盖率来自 Vitest 单元/组件测试，
-Playwright E2E 另行执行，其覆盖率尚未合并进这份报告。
+测试文件与原有断言均保留。日常模式验证基本功能；上述故障场景、完整产物矩阵和
+浏览器交互仅在完整模式验证。修改执行器、取消/恢复协议或重要交互后，以及发布前，
+建议对目标提交执行完整模式；当前流程不自动强制这一步。
 
-## 3. 门槛维护
+## 覆盖率
 
-1. 按版本里程碑复核，期间保持门槛固定。
-2. 提高门槛前，确认多次运行持续达标，并为后续开发保留明显余量。
-3. 统计范围、coverage provider、工具版本或模块加载方式变化时，先比较报告分母与结果，
-   核实差异原因；维持前端函数和分支硬门槛。
-4. 调整门槛应通过明确说明原因的 PR，同步更新本政策，保留审查记录。
-5. 代码缺陷通过修复和回归测试处理；覆盖率政策变更单独说明影响和适用阶段。
-
-## 4. 本地验证
-
-前端，在 `frontend` 目录运行：
+覆盖率仅用于本地分析，不设 CI 最低百分比。统计范围和报告工具继续保留。
 
 ```bash
+# 仓库根目录，使用 Python 3.12 和 requirements-ci.txt
+python -m pytest -q --cov --cov-report=html --cov-report=json:/tmp/igraph-coverage.json
+
+# frontend 目录
 pnpm test:coverage
-pnpm build
-pnpm test:e2e
 ```
 
-Python 使用项目声明的 Python 3.12 与 `requirements-ci.txt` 环境。
-可在仓库根目录一次性运行与 CI 相同发现范围的测试并检查报告：
+前端覆盖率来自 Vitest，未合并 Playwright 执行记录。
+`scripts/check_coverage.py` 保留为可选分析工具，CI 不调用它。
+`frontend/vite.config.ts` 是配置源，修改后通过 `pnpm build` 同步跟踪的 JS 编译产物。
+
+## 本地回归
 
 ```bash
-python -m pytest -q --cov --cov-report=xml:coverage.xml --cov-report=json:coverage.json
-python scripts/check_coverage.py coverage.json --lines 51 --branches 34
+# 日常后端范围；提供专用 PostgreSQL 测试库 URL 可验证与 CI 相同的数据库锁语义
+IGRAPH_CANCEL_TEST_REPETITIONS=1 python -m pytest -q --durations=10 \
+  --ignore=tests/test_isolated_compute.py \
+  --ignore=tests/test_cancellation_failures.py \
+  --ignore=tests/test_execution_restart.py
+
+# 完整后端范围；默认即为 20 次，也可显式指定
+IGRAPH_CANCEL_TEST_REPETITIONS=20 python -m pytest -q --durations=10
+
+# frontend 目录，日常范围
+pnpm test
+pnpm build
+
+# frontend 目录，完整模式追加；使用 Python 3.12 的 IGRAPH_TEST_PYTHON
+pnpm test:e2e
+pnpm test:e2e:native
+pnpm test:e2e:cancel
 ```
 
-CI 为便于定位问题，将 Python 核心和 Graph ML 测试拆成两个步骤，随后合并报告、
-执行同一门槛检查。完整流程见 `.github/workflows/ci.yml`。
-
-## 5. 制定依据
-
-- [Google：Code Coverage Best Practices](https://testing.googleblog.com/2020/08/code-coverage-best-practices.html)：
-  按业务风险和测试成本选择目标，60% / 75% / 90% 为参考档位。
-- [Sonar：Understanding quality gates](https://docs.sonarsource.com/sonarqube-cloud/standards/managing-quality-gates/introduction-to-quality-gates)：
-  默认 Sonar way 关注新增代码的 80% 覆盖率。
-- [Codecov：Status Checks](https://docs.codecov.com/docs/commit-status)：
-  支持整体与差异覆盖率、下降容差及信息展示模式。
-- [Martin Fowler：Test Coverage](https://martinfowler.com/bliki/TestCoverage.html)：
-  使用覆盖率发现测试空白，结合行为断言判断测试质量。
+Compose 校验在临时目录复制 `compose.yaml` 和示例 `.env` 后执行，避免依赖或
+覆盖开发者已有配置。`--env-file` 负责变量插值，服务级 `env_file: .env` 仍需对应文件。

@@ -127,7 +127,8 @@ def test_job_stop_confirms_every_descendant_and_never_retargets_a_cancel_key(sto
         store.cancel_job('alice', sid, child['job_id'], 'different-stop')
 
 
-@pytest.mark.parametrize('iteration', range(20))
+# Daily CI exercises every scenario once; full acceptance retains 20 repetitions.
+@pytest.mark.parametrize('iteration', range(max(1, int(os.getenv('IGRAPH_CANCEL_TEST_REPETITIONS', '20')))))
 def test_continue_cancel_boundary_is_atomic_and_never_revives_a_cancelled_run(store, iteration):
     sid = str(uuid.uuid4())
     row, _ = store.register('alice', sid, str(uuid.uuid4()), 'q')

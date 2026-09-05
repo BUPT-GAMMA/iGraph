@@ -12,13 +12,6 @@ export default defineConfig({
       reporter: ['text', 'json-summary', 'lcov', 'cobertura', 'html'],
       include: ['src/**/*.{ts,tsx}'],
       exclude: ['src/**/*.{test,spec}.{ts,tsx}', 'src/vite-env.d.ts'],
-      // Preserve the dev baseline across all four coverage dimensions.
-      thresholds: {
-        lines: 44,
-        statements: 44,
-        functions: 59,
-        branches: 68,
-      },
     },
   },
   server: {

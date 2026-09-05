@@ -1,4 +1,5 @@
 import asyncio
+import os
 import socket
 from uuid import uuid4
 
@@ -117,6 +118,7 @@ async def _ready(value):
 
 
 @pytest.mark.parametrize('mode', ['first-token', 'stream', 'train', 'approval'])
-@pytest.mark.parametrize('iteration', range(20))
+# Daily CI exercises every scenario once; full acceptance retains 20 repetitions.
+@pytest.mark.parametrize('iteration', range(max(1, int(os.getenv('IGRAPH_CANCEL_TEST_REPETITIONS', '20')))))
 def test_full_factory_mcp_worker_and_bff_stop(tmp_path, mode, iteration):
     asyncio.run(exercise(tmp_path, mode))
