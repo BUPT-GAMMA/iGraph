@@ -143,6 +143,10 @@ test('a historical training card stops its worker while the new run keeps stream
   await expect(stopJob).toBeVisible();
   const next = `stream-while-old-training-${Date.now()}`;
   await composer.fill(next); await composer.press('Enter');
+  // Preparation includes project history and live job reads while the worker
+  // is training. Wait for native model entry independently of stop latency.
+  await expect.poll(async () => (await (await request.get(`${api}/test-metrics`)).json()).calls[next],
+    { timeout: 20_000, message: 'the new run starts its model request while historical training continues' }).toBe(1);
   await expect(page.locator('.message-row.assistant .message-content').last()).toHaveText('A');
   await stopJob.click();
   await expect.poll(async () => (await (await request.get(`${api}/test-metrics`)).json()).jobs.find((job: { job_id: string }) => job.job_id === jid)?.status).toBe('cancelled');

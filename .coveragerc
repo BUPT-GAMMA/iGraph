@@ -8,8 +8,8 @@ source =
     mcp_service
 
 [report]
-# Aggregate coverage is informational. CI enforces separate line/branch floors
-# through scripts/check_coverage.py; see docs/CI_QUALITY_POLICY.md.
+# Coverage is informational; daily CI runs without instrumentation or thresholds.
+# See docs/CI_QUALITY_POLICY.md for optional local reports.
 fail_under = 0
 precision = 2
 show_missing = True
