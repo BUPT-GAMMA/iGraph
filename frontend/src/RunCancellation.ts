@@ -27,6 +27,7 @@ export class RunCancellation {
   observe(sid: string) {
     const o = this.options, run = o.view(sid)?.activeRun;
     if (this.intents.has(sid) || !run?.runId || run.cancellation === 'confirmed') return;
+    if (!run.cancellation && o.manager.get(sid)) return;
     if (!run.cancellation && !(run.serverCanSend === false && ['completed', 'cancelled', 'failed'].includes(run.status))) return;
     const intent: Intent = { identity: o.identity(), sessionId: sid, generation: run.generation,
       cancelRequestId: crypto.randomUUID(), target: { run_id: run.runId }, queryOnly: true,
@@ -148,8 +149,7 @@ export class RunCancellation {
         // Server admission is already authoritative. Content synchronization is
         // independently scoped and cannot clear a newer run or its graph.
         if (control.run_id && control.native_run_created !== false) {
-          this.syncs.set(control.run_id, { sid: intent.sessionId, rid: control.run_id, identity: intent.identity, epoch: this.epoch, attempt: 0 });
-          void this.syncResult(control.run_id);
+          this.synchronize(intent.sessionId, control.run_id);
         }
         return;
       }
@@ -184,6 +184,12 @@ export class RunCancellation {
     }
   }
 
+  synchronize(sid: string, rid: string) {
+    if (this.syncs.has(rid)) return;
+    this.syncs.set(rid, { sid, rid, identity: this.options.identity(), epoch: this.epoch, attempt: 0 });
+    void this.syncResult(rid);
+  }
+
   private async syncResult(rid: string) {
     const sync = this.syncs.get(rid);
     if (!sync) return;
@@ -192,7 +198,7 @@ export class RunCancellation {
     if (epoch !== this.epoch || o.identity() !== identity || !o.view(sid)) { this.syncs.delete(rid); return; }
     try {
       if (o.manager.hasControl(sid) || o.manager.isCancelling(sid)) return;
-      const snapshot = await o.manager.query(sid, `cancel-snapshot:${rid}`, signal => getRunSnapshot(sid, rid, signal));
+      const snapshot = await o.manager.query(sid, `run-snapshot:${rid}`, signal => getRunSnapshot(sid, rid, signal));
       if (epoch === this.epoch && o.identity() === identity && o.view(sid)) {
         o.dispatch({ type: 'MERGE_RUN_SNAPSHOT', sessionId: sid, snapshot });
         if (snapshot.snapshot_complete) this.syncs.delete(rid);

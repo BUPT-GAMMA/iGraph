@@ -16,6 +16,7 @@ type Options = {
   dispatch: (action: ConversationAction) => void;
   settled: (sessionId: string) => void;
   accepted: (sessionId: string) => void;
+  synchronize?: (sessionId: string, runId: string) => void;
 };
 
 class RecoveryRequired extends Error {}
@@ -27,6 +28,8 @@ const fatal = (error: unknown) => error instanceof ApiError && [400, 401, 403, 4
  */
 export class RunRecovery {
   private firstTurnEvidence = new Map<string, { generation: string; previousIds: Set<string>; message: string }>();
+  private checks = new WeakMap<RunConnection, Promise<void>>();
+  private terminalConnections = new WeakSet<RunConnection>();
   constructor(private options: Options) {}
   configure(options: Options) { this.options = options; }
   reset() { this.firstTurnEvidence.clear(); this.options.manager.abortAll(); }
@@ -108,6 +111,11 @@ export class RunRecovery {
         // Phase-boundary events need authoritative verification even on a live stream.
         if (terminal(shadow.activeRun?.status) || shadow.activeRun?.status === 'awaiting_feedback') {
           dispatch({ type: 'SET_RECEPTION', sessionId, generation, reception: 'snapshot_sync', synchronized: false });
+          if (terminal(shadow.activeRun?.status) && o.controlEnabled && o.synchronize) {
+            // React may not have committed APPLY_BATCH yet.
+            this.terminalConnections.add(connection);
+            void this.check(connection, true);
+          }
         } else if (caughtUp) dispatch({ type: 'REPLAY_CAUGHT_UP', sessionId, generation });
         if (connection.wakeScheduled == null) this.watch(connection, identity);
       },
@@ -185,7 +193,17 @@ export class RunRecovery {
     recordRecovery('retry', { attempt: connection.reconnectAttempt });
   }
 
-  async check(connection: RunConnection, resumeAfter = false) {
+  check(connection: RunConnection, resumeAfter = false): Promise<void> {
+    const pending = this.checks.get(connection);
+    if (pending) return pending;
+    const check = this.checkOnce(connection, resumeAfter).finally(() => {
+      if (this.checks.get(connection) === check) this.checks.delete(connection);
+    });
+    this.checks.set(connection, check);
+    return check;
+  }
+
+  private async checkOnce(connection: RunConnection, resumeAfter: boolean) {
     const o = this.options;
     const { sessionId, generation } = connection;
     const identity = o.identity();
@@ -239,6 +257,32 @@ export class RunRecovery {
         // No durable evidence yet: keep querying without resending the request.
         this.retry(connection, undefined, true);
         return;
+      }
+      const current = o.view(sessionId)?.activeRun;
+      if (o.controlEnabled && o.synchronize && (this.terminalConnections.has(connection) || terminal(current?.status)) && !current?.snapshotOnly) {
+        const control = await o.manager.query(sessionId, generation, signal => getRunControl(sessionId, { run_id: connection.runId! }, signal))
+          .catch(error => { if (error instanceof ApiError && error.status === 404 && error.code === 'RUN_NOT_FOUND') return null; throw error; });
+        if (!this.valid(connection, identity) || o.manager.isCancelling(sessionId)) return;
+        // Runs created before control registration retain snapshot-based recovery.
+        if (control && control.registration_status === 'registered') {
+          if (control.run_id !== connection.runId) throw new RecoveryRequired('控制身份不匹配');
+          if (control.revision < (o.view(sessionId)?.activeRun?.controlRevision || 0)) throw new RecoveryRequired('控制版本过期');
+          o.dispatch({ type: 'APPLY_CONTROL', sessionId, generation, control });
+          if (control.execution_stopped && control.terminal_persisted &&
+            (control.can_send || (control.active_run && control.active_run.run_id !== connection.runId))) {
+            o.accepted(sessionId);
+            this.firstTurnEvidence.delete(sessionId);
+            o.manager.release(sessionId, generation);
+            if (control.can_send) o.settled(sessionId);
+            else o.dispatch({ type: 'ADOPT_RUN', sessionId, generation: `resume:${control.active_run!.run_id}`, activeRun: control.active_run! });
+            o.synchronize(sessionId, connection.runId!);
+            return;
+          }
+          // Native completion may precede executor exit and its durable acknowledgement.
+          // Recheck promptly using the existing timer; content/graph I/O is independent.
+          o.manager.schedule(connection, () => void this.check(connection, true), Math.min(250 * 2 ** connection.reconnectAttempt++, 30000));
+          return;
+        }
       }
       const snapshot = await o.manager.query(sessionId, generation, signal => getRunSnapshot(sessionId, connection.runId!, signal));
       if (!this.valid(connection, identity)) return;

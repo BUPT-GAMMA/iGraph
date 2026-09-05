@@ -211,9 +211,13 @@ function App() {
     foreground: (id: string) => conversationRef.current.activeSessionId === id,
     dispatch: dispatchConversation,
     accepted: (id: string) => clearPendingFirstTurn(id),
+    synchronize: (id: string, runId: string) => cancellationRef.current?.synchronize(id, runId),
     settled: (id: string) => {
       clearPersistedRun(id);
-      void refreshSessionGraph(id, { include_community: false }, false, undefined, true);
+      const view = conversationRef.current.viewsBySessionId[id];
+      if (view && (view.graph.status !== 'empty' || view.activeRun?.toolOrder.length)) {
+        void refreshSessionGraph(id, { include_community: false }, false, undefined, true);
+      }
     },
   };
   if (!recoveryRef.current) recoveryRef.current = new RunRecovery(recoveryOptions);
@@ -697,12 +701,47 @@ function App() {
     hydrationVersionsRef.current.clear();
   }, [userId]);
   useEffect(() => {
-    const controller = new AbortController();
+    let disposed = false;
+    let inFlight = false;
+    let enabled = false;
+    let attempt = 0;
+    let controller: AbortController | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     setCancelEnabled(false);
-    void getCapabilities(controller.signal).then(value => {
-      if (!controller.signal.aborted) setCancelEnabled(value.run_cancel_v1);
-    }).catch(() => undefined);
-    return () => controller.abort();
+    if (!userId || demoMode) return;
+    async function refreshCapabilities() {
+      if (disposed || inFlight || enabled) return;
+      clearTimeout(retryTimer);
+      inFlight = true;
+      const request = controller = new AbortController();
+      timeoutTimer = setTimeout(() => request.abort(), 5000);
+      try {
+        const value = await getCapabilities(request.signal);
+        if (!disposed && !request.signal.aborted) {
+          enabled = value.run_cancel_v1;
+          setCancelEnabled(enabled);
+        }
+      } catch { /* Startup and network failures are retried without restarting the run. */ }
+      finally {
+        clearTimeout(timeoutTimer);
+        inFlight = false;
+        if (!disposed && !enabled) {
+          retryTimer = setTimeout(() => void refreshCapabilities(), Math.min(1000 * 2 ** attempt++, 30000));
+        }
+      }
+    }
+    void refreshCapabilities();
+    window.addEventListener('online', refreshCapabilities);
+    window.addEventListener('focus', refreshCapabilities);
+    return () => {
+      disposed = true;
+      clearTimeout(retryTimer);
+      clearTimeout(timeoutTimer);
+      controller?.abort();
+      window.removeEventListener('online', refreshCapabilities);
+      window.removeEventListener('focus', refreshCapabilities);
+    };
   }, [userId]);
   useEffect(() => {
     if (!userId || !cancelEnabled) return;
