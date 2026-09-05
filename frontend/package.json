@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:native": "playwright test --config playwright.native.config.ts",
+    "test:e2e:cancel": "playwright test --config playwright.cancel.config.ts",
     "test:watch": "vitest",
     "preview": "vite preview --host 0.0.0.0"
   },

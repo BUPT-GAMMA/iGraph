@@ -12,11 +12,12 @@ export default defineConfig({
       reporter: ['text', 'json-summary', 'lcov', 'cobertura', 'html'],
       include: ['src/**/*.{ts,tsx}'],
       exclude: ['src/**/*.{test,spec}.{ts,tsx}', 'src/vite-env.d.ts'],
-      // Transitional floors, reviewed at release milestones; see docs/CI_QUALITY_POLICY.md.
-      // Function and branch coverage remain visible in reports without blocking CI.
+      // Preserve the dev baseline across all four coverage dimensions.
       thresholds: {
-        lines: 40,
-        statements: 40,
+        lines: 44,
+        statements: 44,
+        functions: 59,
+        branches: 68,
       },
     },
   },

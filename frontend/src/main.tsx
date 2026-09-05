@@ -1,10 +1,12 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { activateSession, ApiError, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, moveSession, renameProjectDataset, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
+import { RunCancellation } from './RunCancellation';
+import { getCapabilities } from './api';
 import { conversationReducer, createSessionView, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import { DatasetPanel } from './components/DatasetPanel';
 import { ChatPane } from './components/ChatPane';
@@ -72,7 +74,7 @@ function ColumnDivider({ side, value, minimum, maximum, onPointerDown, onNudge, 
 
 function normalizeMessages(input: unknown): Message[] {
   if (!Array.isArray(input)) return [];
-  return input.map((item, index) => ({ id: item?.id || item?.message_id || `history:${index}`, role: item?.role === 'user' ? 'user' : 'assistant', content: String(item?.content || ''), tools: item?.tools || [], plan: item?.plan || null, graphs: item?.graphs || [], reports: item?.reports || [] }));
+  return input.map((item, index) => ({ id: item?.id || item?.message_id || `history:${index}`, run_id: item?.run_id, role: item?.role === 'user' ? 'user' : 'assistant', content: String(item?.content || ''), tools: item?.tools || [], plan: item?.plan || null, graphs: item?.graphs || [], reports: item?.reports || [] }));
 }
 
 function mergeSessionLists(current: Session[], incoming: Session[]) {
@@ -193,29 +195,47 @@ function App() {
   const [graphWidth, setGraphWidth] = useState(() => storedWidth('igraph-layout-graph-width', window.innerWidth <= 1280 ? 330 : GRAPH_DEFAULT, GRAPH_MIN, GRAPH_MAX));
   const [graphLayoutVersion, setGraphLayoutVersion] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
-  const [watchPausedBySession, setWatchPausedBySession] = useState<Record<string, boolean>>({});
+  const [cancelEnabled, setCancelEnabled] = useState(false);
   const conversationRef = useRef(conversation);
   const identityRef = useRef(userId);
   identityRef.current = userId;
-  const pausedRef = useRef(new Map<string, boolean>());
   const connectionManagerRef = useRef(new RunConnectionManager(4));
   const committedCursorsRef = useRef(new Map<string, { generation: string; index: number }>());
   const recoveryRef = useRef<RunRecovery | null>(null);
   const recoveryOptions = {
+    controlEnabled: cancelEnabled,
     manager: connectionManagerRef.current,
     view: (id: string) => conversationRef.current.viewsBySessionId[id],
     identity: () => identityRef.current,
-    paused: (id: string) => isWatchPausePersisted(id),
+    paused: () => false,
     foreground: (id: string) => conversationRef.current.activeSessionId === id,
     dispatch: dispatchConversation,
     accepted: (id: string) => clearPendingFirstTurn(id),
     settled: (id: string) => {
-      clearPersistedRun(id); setWatchPaused(id, false);
+      clearPersistedRun(id);
       void refreshSessionGraph(id, { include_community: false }, false, undefined, true);
     },
   };
   if (!recoveryRef.current) recoveryRef.current = new RunRecovery(recoveryOptions);
   else recoveryRef.current.configure(recoveryOptions);
+  const cancellationRef = useRef<RunCancellation | null>(null);
+  const cancellationOptions = {
+    manager: connectionManagerRef.current, identity: () => identityRef.current,
+    view: (id: string) => conversationRef.current.viewsBySessionId[id], dispatch: dispatchConversation,
+    settled: (id: string, control: import('./api').RunControl) => {
+      clearPersistedRun(id);
+      if (!control.can_send && control.active_run) {
+        const generation = `resume:${control.active_run.run_id}`;
+        dispatchConversation({ type: 'ADOPT_RUN', sessionId: id, generation, activeRun: control.active_run });
+        openResumeConnection(id, generation, control.active_run);
+      }
+    },
+  };
+  if (!cancellationRef.current) cancellationRef.current = new RunCancellation(cancellationOptions);
+  else cancellationRef.current.configure(cancellationOptions);
+  const stopJob = useCallback((sid: string, jid: string, notify: (status: string) => void) => {
+    cancellationRef.current?.requestJob(sid, jid, notify);
+  }, []);
   const hydrationVersionsRef = useRef(new Map<string, number>());
   const hydrationControllersRef = useRef(new Map<string, AbortController>());
   const draftCreationControllersRef = useRef(new Map<string, AbortController>());
@@ -244,7 +264,6 @@ function App() {
   const runTools = selectRunTools(activeView);
   const plan = activeView?.activeRun?.plan || null;
   const runGate = selectRunGate(activeView);
-  const watchPaused = Boolean(activeSessionId && watchPausedBySession[activeSessionId]);
   const bottomInteraction = selectBottomInteraction(activeView);
   const sendBlockedReason = activeDraft && activeDraft.phase !== 'editing' && activeDraft.phase !== 'failed'
     ? activeDraft.phase === 'creating_session'
@@ -380,23 +399,14 @@ function App() {
   function watchPauseStorageKey(sessionId: string) { return `igraph-run-watch-paused:v1:${userId}:${sessionId}`; }
 
   function isWatchPausePersisted(sessionId: string) {
-    if (pausedRef.current.has(sessionId)) return pausedRef.current.get(sessionId)!;
-    try { return Boolean(userId && sessionStorage.getItem(watchPauseStorageKey(sessionId)) === '1'); } catch { return false; }
+    // Upgrade migration only: an old observer pause never becomes a stop intent.
+    try { sessionStorage.removeItem(watchPauseStorageKey(sessionId)); } catch { /* optional */ }
+    return false;
   }
 
-  function setWatchPaused(sessionId: string, paused: boolean) {
-    pausedRef.current.set(sessionId, paused);
-    setWatchPausedBySession(current => ({ ...current, [sessionId]: paused }));
-    if (!userId) return;
-    try {
-      if (paused) sessionStorage.setItem(watchPauseStorageKey(sessionId), '1');
-      else sessionStorage.removeItem(watchPauseStorageKey(sessionId));
-    } catch { /* Storage is optional; the in-memory pause remains authoritative. */ }
-  }
-
-  function persistRun(sessionId: string, runId: string, lastAppliedEventIndex: number) {
-    if (!userId || !runId) return;
-    try { sessionStorage.setItem(runStorageKey(sessionId), JSON.stringify({ runId, lastAppliedEventIndex })); } catch { /* Current reception remains usable. */ }
+  function persistRun(sessionId: string, runId: string | undefined, lastAppliedEventIndex: number, startRequestId?: string) {
+    if (!userId || (!runId && !startRequestId)) return;
+    try { sessionStorage.setItem(runStorageKey(sessionId), JSON.stringify({ runId, startRequestId, lastAppliedEventIndex })); } catch { /* Current reception remains usable. */ }
   }
 
   function clearPersistedRun(sessionId: string) { try { sessionStorage.removeItem(runStorageKey(sessionId)); } catch { /* optional storage */ } }
@@ -459,31 +469,18 @@ function App() {
     await recoveryRef.current!.consume(connection, operation, startPayload, pendingFeedback, feedbackDecision, feedbackDecisionId);
   }
 
-  function pauseRunWatching() {
+  function terminateCurrentRun() {
+    if (activeDraft) {
+      draftCreationControllersRef.current.get(activeDraft.projectId)?.abort();
+      draftCreationControllersRef.current.delete(activeDraft.projectId);
+      dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { phase: 'editing' } });
+      return;
+    }
     if (!activeSessionId) return;
-    const run = conversationRef.current.viewsBySessionId[activeSessionId]?.activeRun;
-    if (!run) return;
-    setWatchPaused(activeSessionId, true);
+    preparationControllersRef.current.get(activeSessionId)?.abort();
     hydrationControllersRef.current.get(activeSessionId)?.abort();
     hydrationVersionsRef.current.set(activeSessionId, (hydrationVersionsRef.current.get(activeSessionId) || 0) + 1);
-    connectionManagerRef.current.abort(activeSessionId);
-    dispatchConversation({ type: 'SET_RECEPTION', sessionId: activeSessionId, generation: run.generation, reception: 'user_paused', synchronized: false });
-  }
-
-  function resumeRunWatching() {
-    if (!activeSessionId) return;
-    const run = conversationRef.current.viewsBySessionId[activeSessionId]?.activeRun;
-    setWatchPaused(activeSessionId, false);
-    if (!run) return;
-    if (run.runId) openResumeConnection(activeSessionId, run.generation, {
-      run_id: run.runId, status: 'running', last_event_index: run.lastAppliedEventIndex,
-    }, true);
-    else {
-      const manager = connectionManagerRef.current;
-      const connection = manager.acquire({ sessionId: activeSessionId, generation: run.generation, foreground: true,
-        retry: () => {}, onDetached: () => {} });
-      if (connection) void recoveryRef.current!.check(connection, true);
-    }
+    cancellationRef.current?.request(activeSessionId);
   }
 
   const selectSession = async (id: string, source = sessions, updateUrl = true, allowUnlisted = false) => {
@@ -540,7 +537,7 @@ function App() {
       dispatchConversation({
         type: 'HYDRATE_SUCCESS', sessionId: id, requestVersion, messages: restoredMessages,
         model: selectedModel, activeDatasetId, feedback: response.pending_feedback,
-        activeRun: effectiveActiveRun, generation,
+        activeRun: effectiveActiveRun, generation, control: response.control,
         preserveMessages: Boolean(effectiveActiveRun && previousRun?.runId === effectiveActiveRun.run_id && previousRun.lastAppliedEventIndex >= 0),
         datasetView: response.dataset_view,
         hasGraph: response.has_graph,
@@ -580,15 +577,14 @@ function App() {
       } else {
         dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: unsupportedGraphView(response.dataset_view) || { status: 'empty', data: null } });
       }
-      if (effectiveActiveRun) {
-        if (isWatchPausePersisted(id)) {
-          setWatchPaused(id, true);
-          dispatchConversation({ type: 'SET_RECEPTION', sessionId: id, generation, reception: 'user_paused', synchronized: false });
-        }
-      } else {
+      isWatchPausePersisted(id);
+      if (!effectiveActiveRun && !cancellationRef.current?.pending(id)) {
         connectionManagerRef.current.abort(id);
-        clearPersistedRun(id);
-        setWatchPaused(id, false);
+        // Retain a launch key until a control query resolves a lost first response.
+        try {
+          const saved = JSON.parse(sessionStorage.getItem(runStorageKey(id)) || 'null');
+          if (!saved?.startRequestId) clearPersistedRun(id);
+        } catch { clearPersistedRun(id); }
       }
     } catch (cause: any) {
       if (controller.signal.aborted || identityRef.current !== userId || hydrationVersionsRef.current.get(id) !== requestVersion) return;
@@ -596,6 +592,7 @@ function App() {
         connectionManagerRef.current.abort(id);
         clearPersistedRun(id);
         dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
+        cancellationRef.current?.forget(id);
         setSessions(current => current.filter(item => item.session_id !== id));
         if (conversationRef.current.activeSessionId === id) showWorkspaceHome(true, true, '该会话不存在或已被删除');
       } else if (!requestWasAborted(cause) && hydrationVersionsRef.current.get(id) === requestVersion) {
@@ -690,10 +687,40 @@ function App() {
   }, [userId, sessions, projects, busy]);
   useEffect(() => () => {
     recoveryRef.current?.reset();
+    cancellationRef.current?.reset();
+    for (const controller of preparationControllersRef.current.values()) controller.abort();
+    preparationControllersRef.current.clear();
+    for (const controller of draftCreationControllersRef.current.values()) controller.abort();
+    draftCreationControllersRef.current.clear();
     for (const controller of hydrationControllersRef.current.values()) controller.abort();
     hydrationControllersRef.current.clear();
     hydrationVersionsRef.current.clear();
   }, [userId]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setCancelEnabled(false);
+    void getCapabilities(controller.signal).then(value => {
+      if (!controller.signal.aborted) setCancelEnabled(value.run_cancel_v1);
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [userId]);
+  useEffect(() => {
+    if (!userId || !cancelEnabled) return;
+    for (const [sid, view] of Object.entries(conversation.viewsBySessionId)) {
+      if (view.hydration !== 'ready') continue;
+      cancellationRef.current?.restore(sid);
+      cancellationRef.current?.observe(sid);
+      if (!view.activeRun && !cancellationRef.current?.pending(sid)) {
+        try {
+          const saved = JSON.parse(sessionStorage.getItem(runStorageKey(sid)) || 'null');
+          if (typeof saved?.startRequestId === 'string') {
+            dispatchConversation({ type: 'BEGIN_RUN_PREPARATION', sessionId: sid, generation: saved.startRequestId });
+            dispatchConversation({ type: 'SET_RECEPTION', sessionId: sid, generation: saved.startRequestId, reception: 'connecting', synchronized: false });
+          }
+        } catch { /* optional identity persistence */ }
+      }
+    }
+  }, [conversation.viewsBySessionId, userId, cancelEnabled]);
   useEffect(() => {
     const manager = connectionManagerRef.current;
     for (const [id, view] of Object.entries(conversation.viewsBySessionId)) {
@@ -701,8 +728,13 @@ function App() {
       if (!run) continue;
       const connection = manager.get(id);
       if (connection && (connection.generation !== run.generation || (run.runId && connection.runId && connection.runId !== run.runId))) manager.abort(id);
-      if (run.runId && ['completed', 'failed', 'cancelled'].includes(run.status) && run.synchronized !== false) clearPersistedRun(id);
-      else if (run.runId) persistRun(id, run.runId, run.lastAppliedEventIndex);
+      if (run.serverCanSend || run.cancellation === 'confirmed' || (run.runId && ['completed', 'failed', 'cancelled'].includes(run.status) && run.synchronized !== false)) clearPersistedRun(id);
+      else if (run.runId || run.startRequestId) persistRun(id, run.runId, run.lastAppliedEventIndex, run.startRequestId);
+      if (!run.runId && run.startRequestId && run.reception === 'connecting' && !manager.get(id) && !manager.isCancelling(id)) {
+        const pending = manager.acquire({ sessionId: id, generation: run.generation, foreground: id === activeSessionId,
+          retry: () => undefined, onDetached: () => dispatchConversation({ type: 'SET_RECEPTION', sessionId: id, generation: run.generation, reception: 'capacity_suspended' }) });
+        if (pending) void recoveryRef.current!.check(pending, true);
+      }
       if (run.runId && run.reception === 'connecting' && !manager.get(id) && !isWatchPausePersisted(id)) {
         openResumeConnection(id, run.generation, { run_id: run.runId, status: run.status === 'awaiting_feedback' ? 'paused' : run.status, last_event_index: run.lastAppliedEventIndex });
       }
@@ -712,7 +744,7 @@ function App() {
     }
   }, [conversation.viewsBySessionId]);
   useEffect(() => {
-    const wake = () => { if (document.visibilityState !== 'hidden') recoveryRef.current?.wake(); };
+    const wake = () => { if (document.visibilityState !== 'hidden') { cancellationRef.current?.wake(); recoveryRef.current?.wake(); } };
     window.addEventListener('online', wake);
     document.addEventListener('visibilitychange', wake);
     return () => { window.removeEventListener('online', wake); document.removeEventListener('visibilitychange', wake); };
@@ -814,6 +846,7 @@ function App() {
     preparationControllersRef.current.delete(id);
     try {
       await removeSession(id);
+      cancellationRef.current?.forget(id);
       connectionManagerRef.current.abort(id);
       hydrationControllersRef.current.get(id)?.abort();
       hydrationControllersRef.current.delete(id);
@@ -867,6 +900,7 @@ function App() {
         : project);
     if (action === 'delete') {
       for (const session of affectedSessions) {
+        cancellationRef.current?.forget(session.session_id);
         connectionManagerRef.current.abort(session.session_id);
         preparationControllersRef.current.get(session.session_id)?.abort();
         preparationControllersRef.current.delete(session.session_id);
@@ -948,6 +982,7 @@ function App() {
     activeDatasetId: string | null,
   ) {
     preparationControllersRef.current.get(sessionId)?.abort();
+    persistRun(sessionId, undefined, -1, generation);
     const preparationController = new AbortController();
     preparationControllersRef.current.set(sessionId, preparationController);
     let attachments = [...initialAttachments];
@@ -973,13 +1008,14 @@ function App() {
       dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'uploading' });
       try {
         const uploaded = await uploadFile(sessionId, pending.file, preparationController.signal);
+        if (preparationController.signal.aborted || conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.generation !== generation) return;
         const attachment = { file_token: uploaded.file_token, filename: uploaded.filename || pending.filename };
         attachments = [...attachments.filter(item => item.file_token !== attachment.file_token), attachment];
         pendingAttachments = pendingAttachments.filter(item => item.localId !== pending.localId);
         dispatchConversation({ type: 'RESOLVE_PENDING_ATTACHMENT', sessionId, localId: pending.localId, attachment });
         persistPendingFirstTurn(sessionId, pendingFirstTurnSnapshot(message, attachments, pendingAttachments, modelValue, projectId, activeDatasetId));
       } catch (cause: any) {
-        if (requestWasAborted(cause)) return;
+        if (preparationController.signal.aborted || conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.generation !== generation || requestWasAborted(cause)) return;
         const errorMessage = cause.message || `附件「${pending.filename}」上传失败`;
         dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'failed', error: errorMessage });
         dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: errorMessage });
@@ -1029,6 +1065,7 @@ function App() {
     if (!message) return;
     if (draftCreationControllersRef.current.has(projectId)) return;
     const creationController = new AbortController();
+    const generation = crypto.randomUUID();
     draftCreationControllersRef.current.set(projectId, creationController);
     dispatchConversation({ type: 'PATCH_DRAFT', projectId, draftId: draft.draftId, patch: { phase: 'creating_session', error: undefined } });
     try {
@@ -1043,7 +1080,6 @@ function App() {
       if (creationController.signal.aborted) return;
       const selectedModel = response.model || draft.model;
       const resolvedProjectId = response.project_id || projectId;
-      const generation = crypto.randomUUID();
       const listedBefore = sessions.some(session => session.session_id === response.session_id);
       const nextSession: Session = {
         session_id: response.session_id,
@@ -1150,6 +1186,7 @@ function App() {
     const attachments = targetView?.attachments || [];
     const generation = crypto.randomUUID();
     const userMessage: Message = { id: `user:${generation}`, role: 'user', content: message };
+    persistRun(sessionId, undefined, -1, generation);
     const assistantMessage: Message = { id: `assistant:${generation}`, role: 'assistant', content: '', streaming: true, tools: [] };
     dispatchConversation({ type: 'START_RUN', sessionId, generation, userMessage, assistantMessage });
     setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, preview: message, last_message: message } : session));
@@ -1505,13 +1542,13 @@ function App() {
           </div>
           <div className="workspace-error">{error && <><Icon name="close" size={14} /> {error}</>}</div>
           {activeDraft
-            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
-            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} watchPaused={watchPaused} canPauseWatching={Boolean(activeView?.activeRun && ['starting', 'streaming', 'reconnecting'].includes(activeView.activeRun.status))} onPauseWatching={pauseRunWatching} onResumeWatching={resumeRunWatching} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={send} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
             : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>开始新的图分析</h1><p>选择左侧已有会话，或创建一个新任务。</p><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button></div></div>}
         </>}
       </div>
-      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
+      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
     </div>
     {datasetOpen && <DatasetPanel datasets={datasets} projectName={workspaceProject?.name} activeDatasetId={activeDatasetId} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, Boolean(activeSession))} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
@@ -1522,8 +1559,9 @@ function App() {
 }
 
 function ChatPaneWithState(props: any) {
-  const summary = props.watchPaused
-    ? '已暂停接收 · Agent 仍在服务器运行'
+  const summary = props.cancellation
+    ? props.cancellation === 'unconfirmed' ? '停止请求尚未确认' : props.cancellation === 'confirmed' ? '任务已结束'
+      : props.cancellation === 'saving' ? '已停止，正在保存结果' : '正在停止…'
     : props.runGateReason === 'awaiting_feedback'
     ? '等待确认：请先批准或拒绝当前操作'
     : props.runGateReason === 'submitting_feedback'

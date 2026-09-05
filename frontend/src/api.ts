@@ -120,6 +120,7 @@ export async function createSession(options: {
 }
 export async function activateSession(id: string, signal?: AbortSignal) {
   return json<{
+    control?: RunControl | null;
     messages?: Message[];
     active_run?: ActiveRun | null;
     pending_feedback?: FeedbackRequest | null;
@@ -290,18 +291,51 @@ export type RunSnapshot = {
   session_id: string; run_id: string; status: string; messages: Message[];
   active_run: ActiveRun | null; pending_feedback: FeedbackRequest | null;
   snapshot_complete: boolean; resume_cursor: number | null;
+  control?: RunControl | null;
 };
+
+export type RunControl = {
+  run_id: string | null; start_request_id: string | null; registration_status: 'not_seen' | 'registered';
+  run_status?: string; cancel_status?: 'none' | 'requested' | 'stopping' | 'confirmed';
+  execution_stopped: boolean; terminal_persisted: boolean; pending_components?: string[];
+  revision: number; active_run?: ActiveRun | null; can_send: boolean;
+  native_run_created?: boolean;
+};
+export type RunTarget = { run_id: string; start_request_id?: never } | { start_request_id: string; run_id?: never };
+export function getCapabilities(signal?: AbortSignal) {
+  return json<{ run_cancel_v1: boolean; job_cancel_v1: boolean }>('/api/capabilities', { signal });
+}
+export function cancelRun(sessionId: string, target: RunTarget, cancelRequestId: string, signal?: AbortSignal) {
+  return json<RunControl>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/cancel`, {
+    method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, cancel_request_id: cancelRequestId }),
+  });
+}
+export function getRunControl(sessionId: string, target: RunTarget, signal?: AbortSignal) {
+  const query = new URLSearchParams(Object.entries(target).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  return json<RunControl>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/control?${query}`, { signal });
+}
+export type JobControl = { job_id: string; execution_stopped: boolean; terminal_persisted: boolean; cancel_status: string };
+export function getJobControl(sessionId: string, jobId: string, signal?: AbortSignal) {
+  return json<JobControl>(`/api/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(jobId)}/control`, { signal });
+}
+export function cancelJob(sessionId: string, jobId: string, cancelRequestId: string, signal?: AbortSignal) {
+  return json<JobControl>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cancel_request_id: cancelRequestId }),
+    });
+}
 
 export function getRunSnapshot(sessionId: string, runId: string, signal?: AbortSignal) {
   return json<RunSnapshot>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/snapshot`, { signal });
 }
 
-export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal) {
+export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
   const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
     method: 'POST', signal, headers,
-    body: JSON.stringify({ message, attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
+    body: JSON.stringify({ message, start_request_id: startRequestId, attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
   });
   await consumeSseResponse(response, sessionId, handlers);
 }

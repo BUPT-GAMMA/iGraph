@@ -8,12 +8,15 @@ from typing import Any, AsyncIterator
 import httpx
 import anyio
 from fastapi import HTTPException, Request
+from execution_protocol import controls_enabled, execution_headers, service_headers
 
 
 def forwarded_headers(request: Request, user_id: str) -> dict[str, str]:
     headers = {
         "X-User-ID": user_id,
         "X-Request-ID": request.headers.get("X-Request-ID", ""),
+        **(service_headers(user_id) if controls_enabled() else {}),
+        **execution_headers.get(),
     }
     authorization = request.headers.get("Authorization", "").strip()
     if authorization:

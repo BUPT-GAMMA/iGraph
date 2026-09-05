@@ -103,29 +103,29 @@ describe('ConversationInputArea', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '配置自定义模型' })).toBeNull());
   });
 
-  it('pauses and resumes only run event watching while keeping the composer locked', () => {
-    const onPauseWatching = vi.fn();
-    const onResumeWatching = vi.fn();
+  it('terminates despite upload and draft gates, and allows idempotent retry when unconfirmed', () => {
+    const onCancel = vi.fn();
     const props = {
       value: '', model: 'model-a', models: ['model-a'], onChange: noop,
       onModelChange: noop, onDataset: noop, onSend: noop, onUpload: noop,
-      onRemoveAttachment: noop, attachments: [], uploading: false, disabled: true,
+      onRemoveAttachment: noop, attachments: [], uploading: true, disabled: true,
       sendBlocked: true, sendBlockedReason: '当前会话已有活动任务',
-      canPauseWatching: true, onPauseWatching, onResumeWatching,
+      canCancel: true, onCancel,
     };
     const { rerender } = render(<Composer {...props} loading />);
 
-    const pause = screen.getByRole('button', { name: '暂停接收（Agent 将继续运行）' }) as HTMLButtonElement;
+    const pause = screen.getByRole('button', { name: '终止当前任务' }) as HTMLButtonElement;
     expect(pause.disabled).toBe(false);
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true);
     fireEvent.click(pause);
-    expect(onPauseWatching).toHaveBeenCalledOnce();
+    expect(onCancel).toHaveBeenCalledOnce();
 
-    rerender(<Composer {...props} loading={false} watchPaused />);
-    expect(screen.getByText('接收已暂停 · Agent 仍在运行')).toBeTruthy();
-    expect(screen.getByText(/仅暂停本页接收/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '继续接收' }));
-    expect(onResumeWatching).toHaveBeenCalledOnce();
+    rerender(<Composer {...props} loading cancellation="stopping" />);
+    expect((screen.getByRole('button', { name: '终止当前任务' }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<Composer {...props} loading cancellation="unconfirmed" />);
+    expect(screen.getByRole('status').textContent).toContain('停止请求尚未确认');
+    fireEvent.click(screen.getByRole('button', { name: '终止当前任务' }));
+    expect(onCancel).toHaveBeenCalledTimes(2);
   });
 
   it('shows the custom model ID instead of its display name', () => {

@@ -61,6 +61,7 @@ export type GraphSnapshot = {
 };
 
 export type Message = {
+  run_id?: string;
   id?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;

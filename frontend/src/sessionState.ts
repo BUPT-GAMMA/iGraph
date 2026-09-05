@@ -1,6 +1,6 @@
 import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
-import type { RunSnapshot } from './api';
+import type { RunSnapshot, RunControl } from './api';
 
 export type ReceptionStatus = 'connecting' | 'receiving' | 'retrying' | 'user_paused' | 'capacity_suspended' | 'snapshot_sync' | 'idle';
 
@@ -17,6 +17,11 @@ export type RunStatus =
 
 export type SessionRunState = {
   runId?: string;
+  startRequestId?: string;
+  cancelRequestId?: string;
+  cancellation?: 'requested' | 'stopping' | 'unconfirmed' | 'saving' | 'confirmed';
+  controlRevision?: number;
+  serverCanSend?: boolean;
   generation: string;
   status: RunStatus;
   lastAppliedEventIndex: number;
@@ -26,6 +31,7 @@ export type SessionRunState = {
   recoveryRequired?: boolean;
   replay?: Pick<SessionViewState, 'messagesById' | 'messageOrder' | 'graph'>;
   assistantMessageId?: string;
+  submittedInput?: string;
   toolsById: Record<string, ToolCall>;
   toolOrder: string[];
   plan: Plan | null;
@@ -78,6 +84,7 @@ export type ConversationAction =
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
       model: string; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
       activeRun?: ActiveRun | null; generation?: string; preserveMessages?: boolean;
+      control?: RunControl | null;
       datasetView?: DatasetView | null; hasGraph?: boolean;
     }
   | { type: 'HYDRATE_FAILED'; sessionId: string; requestVersion: number; error: string }
@@ -93,6 +100,10 @@ export type ConversationAction =
   | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string; restoreDraft?: string; restoreAttachments?: AttachmentRef[] }
   | { type: 'ADOPT_RUN'; sessionId: string; generation: string; activeRun: ActiveRun; feedback?: FeedbackRequest | null }
   | { type: 'SET_RUN_ID'; sessionId: string; generation: string; runId: string; lastAppliedEventIndex?: number }
+  | { type: 'REQUEST_CANCEL'; sessionId: string; generation: string; cancelRequestId: string; startRequestId?: string; runId?: string }
+  | { type: 'CANCEL_UNCONFIRMED'; sessionId: string; generation: string }
+  | { type: 'APPLY_CONTROL'; sessionId: string; generation: string; control: RunControl }
+  | { type: 'MERGE_RUN_SNAPSHOT'; sessionId: string; snapshot: RunSnapshot }
   | { type: 'BEGIN_FEEDBACK_SUBMISSION'; sessionId: string; generation: string; runId: string; callId: string; decisionId: string; decision: 'approve' | 'reject' }
   | { type: 'FEEDBACK_NOT_ACCEPTED'; sessionId: string; generation: string; decisionId: string }
   | { type: 'CLEAR_ACTIVE_RUN'; sessionId: string; generation: string }
@@ -119,7 +130,8 @@ export type BottomInteraction =
 
 export function selectRunGate(view?: SessionViewState | null) {
   const status = view?.activeRun?.status;
-  const unverified = view?.activeRun?.synchronized === false || view?.hydration === 'loading' || view?.hydration === 'failed';
+  const cancelPending = Boolean(view?.activeRun?.cancellation && view.activeRun.serverCanSend !== true);
+  const unverified = cancelPending || view?.activeRun?.serverCanSend === false || (view?.activeRun?.serverCanSend !== true && (view?.activeRun?.synchronized === false || view?.hydration === 'loading' || view?.hydration === 'failed'));
   const reason: RunGateReason = unverified ? 'reconnecting' : status === 'preparing'
     ? 'preparing'
     : status === 'awaiting_feedback'
@@ -139,6 +151,7 @@ export function selectRunGate(view?: SessionViewState | null) {
 
 export function selectBottomInteraction(view?: SessionViewState | null): BottomInteraction {
   const run = view?.activeRun;
+  if (run?.cancellation) return { kind: 'composer' };
   if (run?.synchronized === false && (run.status === 'awaiting_feedback' || run.status === 'submitting_feedback')) return { kind: 'syncing_feedback', reason: 'session_hydration' };
   if (run?.status === 'awaiting_feedback' || run?.status === 'submitting_feedback') {
     if (!run.feedback) return { kind: 'syncing_feedback', reason: 'missing_feedback' };
@@ -303,6 +316,13 @@ function renameAssistantMessage(view: SessionViewState, run: SessionRunState, ne
     view: { ...view, messagesById, messageOrder: view.messageOrder.map(id => id === previousId ? nextId : id) },
     run: { ...run, assistantMessageId: nextId },
   };
+}
+
+function bindRunMessages(view: SessionViewState, run: SessionRunState): SessionViewState {
+  if (!run.runId) return view;
+  const ids = new Set([`user:${run.generation}`, `assistant:${run.generation}`, run.assistantMessageId]);
+  return { ...view, messagesById: Object.fromEntries(Object.entries(view.messagesById).map(([id, message]) =>
+    [id, ids.has(id) ? { ...message, run_id: run.runId } : message])) };
 }
 
 function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: StreamEvent): { view: SessionViewState; run: SessionRunState } {
@@ -474,21 +494,22 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
       messagesById: { ...view.messagesById, [messageId]: { ...current, id: messageId, role: 'assistant', content, streaming: false,
         tools: run.toolOrder.map(id => run.toolsById[id]), plan: run.plan } },
       messageOrder: view.messageOrder.includes(messageId) ? view.messageOrder : [...view.messageOrder, messageId] };
-    run = { ...run, status: 'completed', feedback: null };
+    run = { ...run, status: run.status === 'cancelled' ? 'cancelled' : 'completed', feedback: null };
   }
 
   if (eventType === 'error') {
     const error = String(event.error || '分析失败');
+    const cancelled = Boolean(event.cancelled || eventName.includes('cancel') || run.status === 'cancelled');
     const messageId = run.assistantMessageId || '';
     view = {
       ...view,
-      error,
+      error: cancelled ? undefined : error,
       messagesById: Object.fromEntries(Object.entries(view.messagesById).map(([id, message]) => [
         id,
-        id === messageId && !message.content ? { ...message, content: error, streaming: false } : { ...message, streaming: false },
+        !cancelled && id === messageId && !message.content ? { ...message, content: error, streaming: false } : { ...message, streaming: false },
       ])),
     };
-    run = { ...run, status: event.cancelled || eventName.includes('cancel') ? 'cancelled' : 'failed', feedback: null, error };
+    run = { ...run, status: cancelled ? 'cancelled' : 'failed', feedback: null, error: cancelled ? undefined : error };
   }
 
   return { view, run };
@@ -522,6 +543,8 @@ export function applyBatch(view: SessionViewState, generation: string, batch: St
   const visible = view;
   if (run.replay) view = { ...view, ...run.replay };
   run = { ...run, runId: batch.run_id || run.runId };
+  view = bindRunMessages(view, run);
+  const wasCancelled = run.status === 'cancelled';
   try {
     for (const event of batch.events) {
       const applied = applyStreamEvent(view, run, event);
@@ -534,6 +557,8 @@ export function applyBatch(view: SessionViewState, generation: string, batch: St
   if (!control && batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex)) {
     run = { ...run, lastAppliedEventIndex: eventIndex };
   }
+  if (wasCancelled) run = { ...run, status: 'cancelled', feedback: null };
+  view = bindRunMessages(view, run);
   if (run.replay) return { ...visible, activeRun: { ...run, replay: { messagesById: view.messagesById, messageOrder: view.messageOrder, graph: view.graph } } };
   return { ...view, activeRun: run };
 }
@@ -627,6 +652,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       graph: graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, false),
       activeRun: {
         generation: action.generation,
+        startRequestId: action.generation,
         status: 'preparing',
         lastAppliedEventIndex: -1,
         toolsById: {}, toolOrder: [], plan: null, feedback: null,
@@ -669,6 +695,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'HYDRATE_SUCCESS': {
       if (action.requestVersion !== view.hydrationRequestVersion) return state;
+      if (view.activeRun?.cancellation && view.activeRun.serverCanSend !== true) return state;
       const indexed = action.preserveMessages && view.messageOrder.length
         ? { messagesById: view.messagesById, messageOrder: view.messageOrder }
         : indexMessages(view.sessionId, action.messages);
@@ -696,6 +723,11 @@ export function conversationReducer(state: ConversationState, action: Conversati
             feedbackSubmission: undefined,
           };
         }
+      } else if (action.control?.run_id && !action.control.can_send) {
+        activeRun = { generation: action.generation || `resume:${action.control.run_id}`,
+          runId: action.control.run_id, startRequestId: action.control.start_request_id || undefined,
+          status: 'starting', lastAppliedEventIndex: -1, reception: 'idle', synchronized: true,
+          toolsById: {}, toolOrder: [], plan: null, feedback: null };
       } else activeRun = null;
       const graph = graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, action.hasGraph);
       const latestGraph = action.preserveMessages ? null : latestMessageGraph(action.messages);
@@ -730,6 +762,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
         error: undefined,
         activeRun: {
           generation: action.generation,
+          startRequestId: action.generation,
           status: 'preparing',
           lastAppliedEventIndex: -1,
           toolsById: {}, toolOrder: [], plan: null, feedback: null,
@@ -747,6 +780,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
         activeRun: {
           ...preparingRun,
           status: 'starting',
+          submittedInput: action.userMessage.content,
           assistantMessageId: action.assistantMessage.id,
         },
       };
@@ -754,6 +788,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
     }
     case 'PREPARE_RUN_FAILED':
       if (!view.activeRun || view.activeRun.generation !== action.generation || view.activeRun.status !== 'preparing') return state;
+      if (view.activeRun.cancellation) return state;
       view = { ...view, activeRun: null, error: action.error };
       break;
     case 'SET_PENDING_ATTACHMENT':
@@ -786,7 +821,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
         error: undefined,
         activeRun: {
           generation: action.generation,
+          startRequestId: action.generation,
           status: 'starting',
+          submittedInput: action.userMessage.content,
           lastAppliedEventIndex: -1,
           assistantMessageId: action.assistantMessage.id,
           toolsById: {}, toolOrder: [], plan: null, feedback: null,
@@ -796,6 +833,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
     }
     case 'ROLLBACK_RUN_START': {
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
+      if (view.activeRun.cancellation) return state;
       const removeIds = new Set([`user:${action.generation}`, `assistant:${action.generation}`]);
       const messagesById = { ...view.messagesById };
       for (const id of removeIds) delete messagesById[id];
@@ -836,7 +874,60 @@ export function conversationReducer(state: ConversationState, action: Conversati
           runId: action.runId,
         },
       };
+      view = bindRunMessages(view, view.activeRun!);
       break;
+    case 'REQUEST_CANCEL': {
+      let run = view.activeRun;
+      if (run && run.generation !== action.generation) return state;
+      run ||= { generation: action.generation, runId: action.runId, startRequestId: action.startRequestId,
+        status: 'preparing', lastAppliedEventIndex: -1, toolsById: {}, toolOrder: [], plan: null, feedback: null };
+      view = { ...view, activeRun: { ...run, cancelRequestId: action.cancelRequestId, cancellation: 'requested', serverCanSend: false } };
+      break;
+    }
+    case 'CANCEL_UNCONFIRMED':
+      if (view.activeRun?.generation !== action.generation) return state;
+      view = { ...view, activeRun: { ...view.activeRun, cancellation: 'unconfirmed' } };
+      break;
+    case 'APPLY_CONTROL': {
+      const run = view.activeRun;
+      const control = action.control;
+      if (!run || run.generation !== action.generation || (run.runId && control.run_id && run.runId !== control.run_id)) return state;
+      if (control.revision < (run.controlRevision || 0)) return state;
+      if (control.registration_status === 'not_seen') return state;
+      const safe = control.execution_stopped && control.terminal_persisted;
+      const status = control.run_status === 'cancelled' ? 'cancelled' : control.run_status === 'completed' ? 'completed'
+        : ['failed', 'error'].includes(control.run_status || '') ? 'failed' : run.status;
+      if (safe && control.native_run_created === false) {
+        const remove = new Set([`user:${run.generation}`, `assistant:${run.generation}`]);
+        view = { ...view, messagesById: Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !remove.has(id))),
+          messageOrder: view.messageOrder.filter(id => !remove.has(id)), draft: view.draft || run.submittedInput || '',
+          pendingAttachments: view.pendingAttachments.map(item => item.status === 'uploading'
+            ? { ...item, status: item.file ? 'staged' : 'needs_reselect' } : item) };
+      }
+      view = { ...view, activeRun: { ...run, runId: control.run_id || run.runId, controlRevision: control.revision,
+        serverCanSend: safe && control.can_send, status: run.status === 'cancelled' ? 'cancelled' : status,
+        reception: safe ? 'idle' : run.reception,
+        cancellation: run.cancellation || control.cancel_status !== 'none' ? safe ? 'confirmed' : control.execution_stopped ? 'saving' : 'stopping' : undefined,
+        feedback: control.cancel_status !== 'none' ? null : run.feedback } };
+      view = bindRunMessages(view, view.activeRun!);
+      break;
+    }
+    case 'MERGE_RUN_SNAPSHOT': {
+      const snapshot = action.snapshot;
+      if (!snapshot.snapshot_complete || snapshot.session_id !== view.sessionId) return state;
+      const own = snapshot.messages.filter(message => message.run_id === snapshot.run_id
+        || message.id === `assistant:${snapshot.run_id}` || message.id === `user:${snapshot.run_id}`);
+      const indexed = indexMessages(view.sessionId, own);
+      const replacedIds = new Set(view.messageOrder.filter(id => view.messagesById[id]?.run_id === snapshot.run_id));
+      const position = view.messageOrder.findIndex(id => replacedIds.has(id));
+      const order = view.messageOrder.filter(id => !replacedIds.has(id));
+      order.splice(position < 0 ? order.length : position, 0, ...indexed.messageOrder.filter(id => !order.includes(id)));
+      // A late old-run snapshot only updates its messages. Draft, current graph
+      // version, newer messages and active execution remain untouched.
+      view = { ...view, messagesById: { ...Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !replacedIds.has(id))), ...indexed.messagesById },
+        messageOrder: order };
+      break;
+    }
     case 'BEGIN_FEEDBACK_SUBMISSION': {
       const run = view.activeRun;
       if (!run || run.generation !== action.generation || run.runId !== action.runId || run.status !== 'awaiting_feedback') return state;
@@ -892,9 +983,10 @@ export function conversationReducer(state: ConversationState, action: Conversati
       const run = view.activeRun;
       const snapshot = action.snapshot;
       if (!run || run.generation !== action.generation || run.runId !== snapshot.run_id || snapshot.session_id !== view.sessionId || !snapshot.snapshot_complete) return state;
+      if (snapshot.control && snapshot.control.revision < (run.controlRevision || 0)) return state;
       const active = snapshot.active_run;
       const sameRun = active?.run_id === run.runId;
-      const status = active ? (active.status === 'paused' ? 'awaiting_feedback' : 'streaming')
+      const status = run.status === 'cancelled' && (!active || sameRun) ? 'cancelled' : active ? (active.status === 'paused' ? 'awaiting_feedback' : 'streaming')
         : snapshot.status === 'completed' ? 'completed' : snapshot.status === 'cancelled' ? 'cancelled' : 'failed';
       const indexed = indexMessages(view.sessionId, snapshot.messages);
       const assistant = indexed.messagesById[`assistant:${active?.run_id || run.runId}`];
@@ -902,8 +994,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
       view = { ...view, ...indexed, error: undefined, hydration: 'ready',
         graph: latestMessageGraph(snapshot.messages) ? { status: 'ready', data: latestMessageGraph(snapshot.messages)! } : view.graph,
         activeRun: { ...run, runId: active?.run_id || run.runId,
+          ...(active && !sameRun ? { serverCanSend: false, cancellation: undefined, cancelRequestId: undefined, controlRevision: 0, startRequestId: undefined } : {}),
           generation: active && !sameRun ? `resume:${active.run_id}` : run.generation,
-          status, reception: active && !sameRun ? 'connecting' : 'idle', synchronized: !active || sameRun,
+          status: (!active || sameRun) && run.status === 'cancelled' ? 'cancelled' : status, reception: active && !sameRun ? 'connecting' : 'idle', synchronized: !active || sameRun,
           snapshotOnly: sameRun && snapshot.resume_cursor == null,
           recoveryRequired: false, replay: undefined,
           lastAppliedEventIndex: sameRun && snapshot.resume_cursor != null ? snapshot.resume_cursor : -1,
@@ -954,5 +1047,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
       return { ...state, activeSessionId: state.activeSessionId === action.sessionId ? null : state.activeSessionId, viewsBySessionId };
     }
   }
-  return { ...state, viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view } };
+  const updated = { ...state, viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view } };
+  const control = action.type === 'APPLY_SNAPSHOT' ? action.snapshot.control : action.type === 'HYDRATE_SUCCESS' ? action.control : null;
+  if (control && view.activeRun) return conversationReducer(updated, { type: 'APPLY_CONTROL',
+    sessionId: action.sessionId, generation: view.activeRun.generation, control });
+  return updated;
 }
