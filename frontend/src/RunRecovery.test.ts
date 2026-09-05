@@ -3,14 +3,14 @@ import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
 import { conversationReducer, initialConversationState, selectMessages, selectRunGate } from './sessionState';
 import type { ConversationAction } from './sessionState';
-import { activateSession, ApiError, getRunSnapshot, resumeRun, streamChat, streamFeedback } from './api';
+import { activateSession, ApiError, getRunControl, getRunSnapshot, resumeRun, streamChat, streamFeedback } from './api';
 import type { RunSnapshot, StreamHandlers } from './api';
 
 vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
-  activateSession: vi.fn(), getRunSnapshot: vi.fn(), resumeRun: vi.fn(), streamChat: vi.fn(), streamFeedback: vi.fn() }));
+  activateSession: vi.fn(), getRunControl: vi.fn(), getRunSnapshot: vi.fn(), resumeRun: vi.fn(), streamChat: vi.fn(), streamFeedback: vi.fn() }));
 
 const managers: RunConnectionManager[] = [];
-function harness(cold = false, bind = true) {
+function harness(cold = false, bind = true, controlEnabled = false) {
   let state = conversationReducer(initialConversationState, { type: 'ENSURE_SESSION', sessionId: 'A' });
   const dispatch = (action: ConversationAction) => { state = conversationReducer(state, action); };
   dispatch({ type: 'START_RUN', sessionId: 'A', generation: 'g', userMessage: { id: 'user:g', role: 'user', content: 'question' },
@@ -19,10 +19,11 @@ function harness(cold = false, bind = true) {
   if (!cold) dispatch({ type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: { protocol_version: 2, session_id: 'A', run_id: 'r', event_index: 0, events: [{ type: 'token', content: 'A', message_id: 'assistant:r' }] } });
   let paused = false, identity = 'alice';
   const manager = new RunConnectionManager(); managers.push(manager);
-  const recovery = new RunRecovery({ manager, view: () => state.viewsBySessionId.A, identity: () => identity, paused: () => paused,
-    foreground: () => true, dispatch, accepted: vi.fn(), settled: vi.fn() });
+  const settled = vi.fn(), synchronize = vi.fn();
+  const recovery = new RunRecovery({ controlEnabled, manager, view: () => state.viewsBySessionId.A, identity: () => identity, paused: () => paused,
+    foreground: () => true, dispatch, accepted: vi.fn(), settled, synchronize });
   const open = () => recovery.open('A', 'g', { run_id: 'r', status: 'running', last_event_index: 500 });
-  return { manager, recovery, dispatch, open, view: () => state.viewsBySessionId.A,
+  return { manager, recovery, dispatch, open, settled, synchronize, view: () => state.viewsBySessionId.A,
     pause: () => { paused = true; manager.abort('A'); }, identity: (value: string) => { identity = value; } };
 }
 const snapshot = (complete = true, status = 'completed'): RunSnapshot => ({ session_id: 'A', run_id: 'r', status,
@@ -38,11 +39,71 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.spyOn(Math, 'random').mockReturnValue(.5);
   vi.mocked(resumeRun).mockReset(); vi.mocked(getRunSnapshot).mockReset(); vi.mocked(activateSession).mockReset();
   vi.mocked(streamChat).mockReset(); vi.mocked(streamFeedback).mockReset();
+  vi.mocked(getRunControl).mockReset().mockResolvedValue({ run_id: 'r', start_request_id: 'g', registration_status: 'registered',
+    run_status: 'completed', cancel_status: 'none', execution_stopped: true, terminal_persisted: true, can_send: true, active_run: null, revision: 3 });
   vi.mocked(getRunSnapshot).mockResolvedValue(snapshot(false));
 });
 afterEach(() => { managers.splice(0).forEach(manager => manager.abortAll()); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('single recovery coordinator', () => {
+  it('reopens send on authoritative completion while the stream and content synchronization are still pending', async () => {
+    const h = harness(false, true, true); let handlers!: StreamHandlers;
+    vi.mocked(resumeRun).mockImplementation(async (_s, _r, _c, value) => { handlers = value; await new Promise(() => {}); });
+    h.open();
+    emit(handlers, 1, 'ABC', 'done');
+    await flush();
+    expect(selectRunGate(h.view()).canStartRun).toBe(true);
+    expect(h.manager.all()).toHaveLength(0);
+    expect(getRunSnapshot).not.toHaveBeenCalled();
+    expect(h.synchronize).toHaveBeenCalledWith('A', 'r');
+    expect(h.settled).toHaveBeenCalledOnce();
+  });
+  it('keeps send blocked until native persistence is confirmed and rechecks promptly', async () => {
+    const h = harness(false, true, true); let handlers!: StreamHandlers;
+    vi.mocked(getRunControl).mockResolvedValueOnce({ run_id: 'r', start_request_id: 'g', registration_status: 'registered',
+      run_status: 'completed', cancel_status: 'none', execution_stopped: true, terminal_persisted: false, can_send: false, revision: 2 });
+    vi.mocked(resumeRun).mockImplementation(async (_s, _r, _c, value) => { handlers = value; await new Promise(() => {}); });
+    h.open(); emit(handlers, 1, 'ABC', 'done'); await flush();
+    expect(selectRunGate(h.view()).canStartRun).toBe(false);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(selectRunGate(h.view()).canStartRun).toBe(true);
+    expect(getRunControl).toHaveBeenCalledTimes(2);
+    expect(h.synchronize).toHaveBeenCalledOnce();
+  });
+  it('deduplicates terminal notification and stream closure verification', async () => {
+    const h = harness(false, true, true); let finish!: (value: any) => void;
+    vi.mocked(getRunControl).mockImplementation(async () => new Promise(resolve => { finish = resolve; }));
+    vi.mocked(resumeRun).mockImplementation(async (_s, _r, _c, handlers) => { emit(handlers, 1, 'ABC', 'done'); });
+    h.open(); await flush();
+    expect(getRunControl).toHaveBeenCalledOnce();
+    finish({ run_id: 'r', registration_status: 'registered', run_status: 'completed', cancel_status: 'none',
+      execution_stopped: true, terminal_persisted: true, can_send: true, revision: 3 });
+    await flush();
+    expect(h.synchronize).toHaveBeenCalledOnce();
+    expect(h.settled).toHaveBeenCalledOnce();
+  });
+  it('adopts a newer active run without unlocking or waiting for the older content', async () => {
+    const h = harness(false, true, true);
+    vi.mocked(getRunControl).mockResolvedValue({ run_id: 'r', start_request_id: 'g', registration_status: 'registered', run_status: 'completed', cancel_status: 'none',
+      execution_stopped: true, terminal_persisted: true, can_send: false, revision: 3,
+      active_run: { run_id: 'new', status: 'running', last_event_index: 0 } });
+    vi.mocked(resumeRun).mockImplementation(async (_s, _r, _c, handlers) => { emit(handlers, 1, 'ABC', 'done'); });
+    h.open(); await flush();
+    expect(h.view().activeRun?.runId).toBe('new');
+    expect(selectRunGate(h.view()).canStartRun).toBe(false);
+    expect(h.synchronize).toHaveBeenCalledWith('A', 'r');
+    expect(h.settled).not.toHaveBeenCalled();
+  });
+  it('recovers completed runs created before control registration through their snapshot', async () => {
+    const h = harness(false, true, true);
+    vi.mocked(getRunControl).mockResolvedValue({ run_id: null, start_request_id: null, registration_status: 'not_seen', cancel_status: 'none',
+      execution_stopped: false, terminal_persisted: false, can_send: false, revision: 0 });
+    vi.mocked(getRunSnapshot).mockResolvedValue(snapshot());
+    vi.mocked(resumeRun).mockImplementation(async (_s, _r, _c, handlers) => { emit(handlers, 1, 'ABC', 'done'); });
+    h.open(); await h.recovery.check(h.manager.get('A')!, true);
+    expect(selectRunGate(h.view()).canStartRun).toBe(true);
+    expect(getRunSnapshot).toHaveBeenCalledOnce();
+  });
   it('recovers a lost first response from the newly persisted run without resending', async () => {
     const h = harness(true, false);
     const connection = h.manager.acquire({ sessionId: 'A', generation: 'g', foreground: true, retry: vi.fn(), onDetached: vi.fn() })!;

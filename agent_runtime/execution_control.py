@@ -65,6 +65,7 @@ class ExecutionController:
     def __init__(self, db, store: ExecutionStore, manager: RunCancellationManager, *, pending_directory=None):
         self.db, self.store, self.manager = db, store, manager
         self.tasks: dict[str, asyncio.Task] = {}
+        self.wake_events: dict[str, asyncio.Event] = {}
         self.closed = False
         self.scanner: asyncio.Task | None = None
         self.known_runs: dict[str, dict] = {}
@@ -133,12 +134,16 @@ class ExecutionController:
         return scope
 
     def wake(self, rid):
+        if self.closed:
+            return
+        self.wake_events.setdefault(rid, asyncio.Event()).set()
         task = self.tasks.get(rid)
-        if not self.closed and (task is None or task.done()):
+        if task is None or task.done():
             created = self.tasks[rid] = asyncio.create_task(self._coordinate(rid))
             def forget(done):
                 if self.tasks.get(rid) is done:
                     self.tasks.pop(rid, None)
+                    self.wake_events.pop(rid, None)
             created.add_done_callback(forget)
 
     async def _remote_cancel(self, row, component):
@@ -254,8 +259,10 @@ class ExecutionController:
 
     async def _coordinate(self, rid):
         delay = 1
+        wake = self.wake_events[rid]
         try:
             while not self.closed:
+                wake.clear()
                 row = await self.call(self.store.coordinator_record, rid)
                 if not row or (not row['admission_blocked'] and row['state']['cancel_status'] not in {'requested', 'stopping'}):
                     if row and row['state']['run_status'] in TERMINAL and row['state']['terminal_persisted']:
@@ -277,7 +284,10 @@ class ExecutionController:
                 except Exception:
                     logger.warning("execution_confirmation_pending run_id=%s", rid)
                     delay = min(30, delay * 2)
-                await asyncio.sleep(delay)
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import json
+import os
 import uuid
 from importlib.metadata import version
 
@@ -53,7 +54,7 @@ class BlockingModel(Model):
         return response
 
 
-@pytest.mark.parametrize('iteration', range(20))
+@pytest.mark.parametrize('iteration', range(max(1, int(os.getenv('IGRAPH_CANCEL_TEST_REPETITIONS', '20')))))
 def test_native_background_cancel_retains_partial_and_actually_exits(tmp_path, iteration):
     assert version('agno') == '2.9.0'
     async def scenario():
@@ -65,6 +66,11 @@ def test_native_background_cancel_retains_partial_and_actually_exits(tmp_path, i
         old_manager = cancel.get_cancellation_manager()
         cancel.set_cancellation_manager(manager)
         controller = ExecutionController(db, store, manager)
+        # This contract owns no Graph Engine jobs; their HTTP cancellation is
+        # covered by the full-stack tests instead of relying on external DNS.
+        async def no_remote_jobs(*_):
+            return {}
+        controller._remote_cancel = no_remote_jobs
         row, _ = store.register('alice', 's', str(uuid.uuid4()), 'q')
         rid = row['run_id']
         store.acknowledge('alice', 's', rid, 1, preparation_stopped=True)
@@ -91,8 +97,13 @@ def test_native_background_cancel_retains_partial_and_actually_exits(tmp_path, i
             assert saved.content == 'A'
             events = [json.loads(line[5:])['event'] for frame in frames for line in frame.splitlines() if line.startswith('data:')]
             assert events.index('RunCancelled') < events.index('RunCompleted')
-            row = await controller.reconcile(store.get('alice', 's', run_id=rid))
-            assert store.summary(row)['can_send']
+            # Native exit wakes the existing coordinator. Wait for that owner
+            # rather than racing a second reconciliation and checkpoint write.
+            controller.wake(rid)
+            await asyncio.wait_for(asyncio.shield(controller.tasks[rid]), 3)
+            summary = store.summary(store.get('alice', 's', run_id=rid))
+            assert summary['execution_stopped'] and summary['terminal_persisted'], summary
+            assert summary['cancel_status'] == 'confirmed' and summary['can_send'], summary
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
