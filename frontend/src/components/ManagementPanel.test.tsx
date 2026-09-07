@@ -81,21 +81,21 @@ describe('ManagementPanel', () => {
 
     render(<ManagementPanel onClose={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('暂无匹配的记忆')).toBeTruthy());
-    fireEvent.click(screen.getByRole('tab', { name: /Skills/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /技能/ }));
 
     await waitFor(() => expect(screen.getByText('Graph Audit')).toBeTruthy());
     expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/skills?source=all');
-    fireEvent.change(screen.getByPlaceholderText('搜索 Skill'), { target: { value: 'audit' } });
+    fireEvent.change(screen.getByPlaceholderText('搜索技能'), { target: { value: 'audit' } });
     expect(screen.queryByText('Train Model')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Graph Audit/ }));
-    expect(screen.getByText('builtin · ready')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '关闭 Skill 详情' }));
-    expect(screen.queryByText('builtin · ready')).toBeNull();
+    expect(screen.getByText('内置 · 就绪')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '关闭技能详情' }));
+    expect(screen.queryByText('内置 · 就绪')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Graph Audit/ }));
-    fireEvent.click(screen.getByRole('tab', { name: /Memory/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /记忆/ }));
     await waitFor(() => expect(screen.getByText('暂无匹配的记忆')).toBeTruthy());
-    expect(screen.queryByText('builtin · ready')).toBeNull();
+    expect(screen.queryByText('内置 · 就绪')).toBeNull();
     expect((screen.getByPlaceholderText('搜索记忆内容') as HTMLInputElement).value).toBe('');
   });
 });

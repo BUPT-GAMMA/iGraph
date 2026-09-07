@@ -4,6 +4,57 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('igraph_user_id', 'e2e-user'));
 });
 
+test('composer automatically fits two to six lines, reflows and resets after sending', async ({ page, request }) => {
+  const api = 'http://127.0.0.1:11109/api/sessions';
+  const created = await request.post(api, { data: { client_session_id: 'composer-autosize', project_id: 'project-1' } });
+  expect(created.ok()).toBeTruthy();
+  const { session_id: sid } = await created.json();
+  try {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`/?session=${sid}`);
+    const composer = page.getByPlaceholder('今天帮你分析什么？粘贴边列表，或直接用自然语言提问');
+    const visibleRows = () => composer.evaluate(element => {
+      const style = getComputedStyle(element);
+      return Math.round((element.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / parseFloat(style.lineHeight));
+    });
+    await expect(composer).toHaveCSS('resize', 'none');
+    await expect.poll(visibleRows).toBe(2);
+    for (const count of [1, 2, 3, 6, 9, 3, 0]) {
+      await composer.fill(Array.from({ length: count }, (_, index) => `第 ${index + 1} 行`).join('\n'));
+      await expect.poll(visibleRows).toBe(Math.max(2, Math.min(6, count)));
+      await expect(composer).toHaveCSS('overflow-y', count > 6 ? 'auto' : 'hidden');
+    }
+
+    await composer.fill('1\n2\n3\n4\n5\n6');
+    await composer.press('End');
+    await composer.press('Shift+Enter');
+    await composer.press('7');
+    await expect(composer).toHaveValue('1\n2\n3\n4\n5\n6\n7');
+    await expect.poll(visibleRows).toBe(6);
+    await expect.poll(() => composer.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    await composer.press('Enter');
+    await expect(composer).toHaveValue('');
+    await expect.poll(visibleRows).toBe(2);
+    await expect(composer).toHaveCSS('overflow-y', 'hidden');
+
+    const wrapped = '自动换行'.repeat(30);
+    await composer.fill(wrapped);
+    await expect.poll(visibleRows).toBeGreaterThan(2);
+    await expect.poll(visibleRows).toBeLessThan(6);
+    const desktopRows = await visibleRows();
+    await page.getByRole('button', { name: '收起左侧栏' }).click();
+    await expect.poll(visibleRows).toBeLessThan(desktopRows);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect.poll(visibleRows).toBe(6);
+    await expect(composer).toHaveCSS('overflow-y', 'auto');
+    await composer.fill('简短问题');
+    await expect.poll(visibleRows).toBe(2);
+    await expect(composer).toHaveCSS('overflow-y', 'hidden');
+  } finally {
+    await request.delete(`${api}/${sid}`);
+  }
+});
+
 test('both docked panel toggles remain reachable in the same screen position', async ({ page }) => {
   await page.goto('/?session=session-a');
   await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
@@ -49,6 +100,31 @@ test('both docked panel toggles remain reachable in the same screen position', a
 await expect(page.getByLabel('关闭图工作台')).toHaveCount(0);
 });
 
+test('global new task follows project context while the recent-task action stays independent', async ({ page }) => {
+  await page.goto('/?session=project-session');
+  await page.getByRole('button', { name: '新建任务', exact: true }).click();
+  await expect(page).toHaveURL('/?project=project-1&new=1');
+  await expect(page.getByRole('heading', { name: '开始在 E2E Project 中图分析', exact: true })).toBeVisible();
+  await expect(page.locator('.project-row').filter({ hasText: 'E2E Project' })).toHaveClass(/selected/);
+  const composer = page.getByPlaceholder('今天帮你分析什么？粘贴边列表，或直接用自然语言提问');
+  await composer.fill('项目对话草稿');
+  await page.reload();
+  await expect(composer).toHaveValue('项目对话草稿');
+  await page.locator('.composer-dataset').click();
+  await expect(page.getByRole('dialog', { name: '项目数据集' })).toBeVisible();
+  await page.getByRole('dialog', { name: '项目数据集' }).getByRole('button', { name: '关闭', exact: true }).click();
+  const request = page.waitForRequest(req => req.method() === 'POST' && new URL(req.url()).pathname === '/api/sessions');
+  await composer.press('Enter');
+  expect((await request).postDataJSON().project_id).toBe('project-1');
+  await expect(page.locator('.project-session-list')).toContainText('项目对话草稿');
+
+  await page.getByRole('button', { name: '新建独立会话' }).click();
+  await expect(page).toHaveURL('/?new=1');
+  await expect(page.getByRole('heading', { name: '开始图分析', exact: true })).toBeVisible();
+  await page.locator('.composer-dataset').click();
+  await expect(page.getByRole('dialog', { name: '个人数据集' })).toBeVisible();
+});
+
 test('new conversations stay local until the first prompt is sent', async ({ page }) => {
   let createRequests = 0;
   page.on('request', request => {
@@ -61,7 +137,8 @@ test('new conversations stay local until the first prompt is sent', async ({ pag
   for (let index = 0; index < 10; index += 1) await newInProject.click();
 
   await expect(page).toHaveURL(/\?project=project-1&new=1$/);
-  await expect(page.getByRole('heading', { name: '开始图分析', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '开始在 E2E Project 中图分析', exact: true })).toBeVisible();
+  await expect(page.locator('.project-row').filter({ hasText: 'E2E Project' })).toHaveClass(/selected/);
   await expect(page.locator('.session-row.selected')).toHaveCount(0);
   await expect(page.locator('.session-row')).toHaveCount(sessionsBefore);
   expect(createRequests).toBe(0);
@@ -71,8 +148,8 @@ test('new conversations stay local until the first prompt is sent', async ({ pag
   await composer.press('Enter');
   await expect.poll(() => createRequests).toBe(1);
   await expect(page).toHaveURL(/\?session=[^&]+$/);
-  await expect(page.locator('.session-row')).toHaveCount(sessionsBefore + 1);
-  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('首次问题只创建一次');
+  await expect(page.locator('.session-row')).toHaveCount(sessionsBefore);
+  await expect(page.locator('.project-session-row.selected .project-session-main span')).toHaveText('首次问题只创建一次');
 });
 
 test('the workspace tab indicator slides between tabs', async ({ page }) => {
@@ -84,7 +161,7 @@ test('the workspace tab indicator slides between tabs', async ({ page }) => {
   expect(await indicator.evaluate(element => getComputedStyle(element).transitionDuration)).not.toBe('0s');
   const graphTransform = await indicator.evaluate(element => getComputedStyle(element).transform);
 
-  await page.getByRole('tab', { name: 'Artifacts' }).click();
+  await page.getByRole('tab', { name: '分析产物' }).click();
   await page.waitForTimeout(50);
   const movingTransform = await indicator.evaluate(element => getComputedStyle(element).transform);
   expect(movingTransform).not.toBe(graphTransform);
@@ -92,18 +169,18 @@ test('the workspace tab indicator slides between tabs', async ({ page }) => {
   await page.waitForTimeout(180);
   const artifactsTransform = await indicator.evaluate(element => getComputedStyle(element).transform);
   expect(artifactsTransform).not.toBe(movingTransform);
-  await expect(page.getByRole('tab', { name: 'Artifacts' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: '分析产物' })).toHaveAttribute('aria-selected', 'true');
 });
 
 test('graph collections degrade safely and recover when switching back to a single graph', async ({ page }) => {
   await page.goto('/?session=session-a');
   await expect(page.locator('.graph-canvas svg')).toBeVisible();
-  await page.getByRole('tab', { name: 'Overview' }).click();
-  await expect(page.locator('.stat-grid > div').filter({ hasText: 'Nodes' }).locator('strong')).toHaveText('2,708');
-  await page.getByRole('tab', { name: 'Graph', exact: true }).click();
+  await page.getByRole('tab', { name: '概览' }).click();
+  await expect(page.locator('.stat-grid > div').filter({ hasText: '节点数' }).locator('strong')).toHaveText('2,708');
+  await page.getByRole('tab', { name: '图谱', exact: true }).click();
 
   await page.locator('.composer-dataset').click();
-  const datasetDialog = page.getByRole('dialog', { name: '项目数据集' });
+  const datasetDialog = page.getByRole('dialog', { name: '个人数据集' });
   await datasetDialog.locator('.dataset-row').filter({ hasText: 'hiv' }).locator('.dataset-row-main').click();
 
   await expect(page.locator('#root').first()).not.toBeEmpty();
@@ -112,37 +189,37 @@ test('graph collections degrade safely and recover when switching back to a sing
   await expect(page.locator('.graph-toolbar')).toHaveCount(0);
   await expect(page.locator('.node-inspector')).toHaveCount(0);
 
-  await page.getByRole('tab', { name: 'Overview' }).click();
+  await page.getByRole('tab', { name: '概览' }).click();
   await expect(page.getByText('41,127', { exact: true })).toBeVisible();
   await expect(page.getByText('roc_auc')).toBeVisible();
-  await page.getByRole('tab', { name: 'Data' }).click();
+  await page.getByRole('tab', { name: '数据' }).click();
   await expect(page.getByText('32,901')).toBeVisible();
-  await expect(page.getByText('Node vocab')).toBeVisible();
-  await page.getByRole('tab', { name: 'ML' }).click();
-  await expect(page.locator('.tab-placeholder strong')).toHaveText('Graph ML');
-  await page.getByRole('tab', { name: 'Artifacts' }).click();
-  await expect(page.locator('.tab-placeholder strong')).toHaveText('Artifacts');
+  await expect(page.getByText('节点词表')).toBeVisible();
+  await page.getByRole('tab', { name: '机器学习' }).click();
+  await expect(page.locator('.tab-placeholder strong')).toHaveText('图机器学习');
+  await page.getByRole('tab', { name: '分析产物' }).click();
+  await expect(page.locator('.tab-placeholder strong')).toHaveText('分析产物');
 
   await page.reload();
   await expect(page.getByText('非独立图，无法直接可视化')).toBeVisible();
   await expect(page.locator('.graph-canvas')).toHaveCount(0);
 
   await page.locator('.composer-dataset').click();
-  await page.getByRole('dialog', { name: '项目数据集' }).locator('.dataset-row').filter({ hasText: 'Cora' }).locator('.dataset-row-main').click();
+  await page.getByRole('dialog', { name: '个人数据集' }).locator('.dataset-row').filter({ hasText: 'Cora' }).locator('.dataset-row-main').click();
   await expect(page.getByText('非独立图，无法直接可视化')).toHaveCount(0);
   await expect(page.locator('.graph-canvas svg')).toBeVisible();
 });
 
 test('a selected conversation owns the highlight and dark project fields share one style', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('igraph-theme', 'dark'));
-  await page.goto('/?session=session-a');
-  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
+  await page.goto('/?session=project-session');
+  await expect(page.locator('.project-session-row.selected .project-session-main span')).toHaveText('Project Session');
 
   const projectNode = page.locator('.project-tree-node').filter({ hasText: 'E2E Project' });
   await expect(projectNode.locator(':scope > .project-row')).not.toHaveClass(/selected/);
-  await expect(projectNode.locator('.project-session-row').filter({ hasText: 'Session A' })).toHaveClass(/selected/);
+  await expect(projectNode.locator('.project-session-row').filter({ hasText: 'Project Session' })).toHaveClass(/selected/);
   await expect(projectNode.locator('.project-row-main strong')).toHaveCSS('color', 'rgb(241, 243, 242)');
-  await expect(projectNode.locator('.project-session-row').filter({ hasText: 'Session A' }).locator('.project-session-main span')).toHaveCSS('color', 'rgb(241, 243, 242)');
+  await expect(projectNode.locator('.project-session-row').filter({ hasText: 'Project Session' }).locator('.project-session-main span')).toHaveCSS('color', 'rgb(241, 243, 242)');
 
   await page.getByRole('button', { name: '创建项目' }).click();
   const nameInput = page.getByLabel('项目名称');
@@ -180,11 +257,11 @@ test('mobile navigation and docked drawers keep their exit animation mounted', a
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.locator('.composer-dataset').click();
-  const datasetDialog = page.getByRole('dialog', { name: '项目数据集' });
+  const datasetDialog = page.getByRole('dialog', { name: '个人数据集' });
   await expect(datasetDialog).toBeVisible();
   await expect(datasetDialog.getByText('会话共享项目数据源，但各自维护独立的图运行状态。')).toHaveCount(0);
   await expect(datasetDialog.getByText('默认')).toHaveCount(0);
-  await expect(datasetDialog.getByText('当前')).toBeVisible();
+  await expect(datasetDialog.getByText('当前', { exact: true })).toBeVisible();
   const activeDatasetRow = datasetDialog.locator('.dataset-row.active');
   await expect(activeDatasetRow).toBeVisible();
   const activeDatasetBox = await activeDatasetRow.boundingBox();
@@ -200,13 +277,13 @@ test('mobile navigation and docked drawers keep their exit animation mounted', a
   await expect(datasetDialog).toBeVisible({ timeout: 100 });
   await expect(datasetDialog).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Memory' }).click();
-  const managementDialog = page.getByRole('dialog', { name: 'Memory 与 Skills' });
+  await page.getByRole('button', { name: '记忆' }).click();
+  const managementDialog = page.getByRole('dialog', { name: '记忆与技能' });
   await expect(managementDialog).toBeVisible();
   const managementIndicator = managementDialog.locator('.management-tab-indicator');
   await expect(managementIndicator).toBeVisible();
   const memoryTransform = await managementIndicator.evaluate(element => getComputedStyle(element).transform);
-  await managementDialog.getByRole('tab', { name: 'Skills' }).click();
+  await managementDialog.getByRole('tab', { name: '技能' }).click();
   await page.waitForTimeout(50);
   const managementMovingTransform = await managementIndicator.evaluate(element => getComputedStyle(element).transform);
   expect(managementMovingTransform).not.toBe(memoryTransform);
@@ -246,23 +323,23 @@ test('a paused session replaces Composer while other sessions keep their drafts'
   await composer.fill('draft in session B');
 
   await page.getByTitle('Session C Paused').first().click();
-  await expect(page.getByText('Agent 请求确认')).toBeVisible();
+  await expect(page.getByText('助手请求确认')).toBeVisible();
   await expect(composer).toHaveCount(0);
   await expect(page.getByLabel('上传图文件')).toHaveCount(0);
   await expect(page.getByLabel('选择模型')).toHaveCount(0);
 
   await page.keyboard.press('Enter');
-  await expect(page.getByText('Agent 请求确认')).toBeVisible();
+  await expect(page.getByText('助手请求确认')).toBeVisible();
 
   await page.getByTitle('Session B').first().click();
   await expect(composer).toBeEnabled();
   await expect(composer).toHaveValue('draft in session B');
 
   await page.getByTitle('Session C Paused').first().click();
-  await expect(page.getByText('Agent 请求确认')).toBeVisible();
+  await expect(page.getByText('助手请求确认')).toBeVisible();
 
   await page.getByRole('button', { name: '批准并执行' }).dblclick();
-  await expect(page.getByText('Agent 请求确认')).toHaveCount(0);
+  await expect(page.getByText('助手请求确认')).toHaveCount(0);
   await expect(composer).toBeVisible();
   await expect(page.getByLabel('发送')).toBeEnabled();
 });
@@ -270,7 +347,7 @@ test('a paused session replaces Composer while other sessions keep their drafts'
 test('the approval dock stays inside a mobile viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/?session=session-c');
-  await expect(page.getByText('Agent 请求确认')).toBeVisible();
+  await expect(page.getByText('助手请求确认')).toBeVisible();
   await expect(page.getByPlaceholder('今天帮你分析什么？粘贴边列表，或直接用自然语言提问')).toHaveCount(0);
   await expect(page.locator('.graph-workspace')).toBeHidden();
 
@@ -340,16 +417,16 @@ test('deleting the active session replaces its stale URL with home', async ({ pa
 });
 
 test('deleting a project also clears its active session and route', async ({ page }) => {
-  await page.goto('/?session=session-b');
-  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session B');
+  await page.goto('/?session=project-session');
+  await expect(page.locator('.project-session-row.selected .project-session-main span')).toHaveText('Project Session');
 
   await page.getByRole('button', { name: 'E2E Project 项目操作' }).click();
-  await page.getByRole('button', { name: '删除项目' }).click();
-  await page.getByText('删除项目和全部会话').click();
-  await page.getByRole('button', { name: '继续' }).click();
+  await page.getByRole('menuitem', { name: '删除项目' }).click();
+  await page.getByRole('button', { name: '删除项目及全部内容' }).click();
 
-  await expect(page).toHaveURL('/');
-  await expect(page.getByRole('heading', { name: '开始新的图分析', exact: true })).toBeVisible();
+  await expect(page).toHaveURL('/?new=1');
+  await expect(page.getByRole('heading', { name: '开始图分析', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '新建任务' }).last()).toBeEnabled();
-  await expect(page.getByText('Session B')).toHaveCount(0);
+  await expect(page.getByText('Project Session', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Session B', { exact: true })).toBeVisible();
 });

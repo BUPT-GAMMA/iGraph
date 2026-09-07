@@ -18,14 +18,19 @@ type Props = {
 function datasetSummary(dataset: Dataset) {
   const nodes = Number(dataset.metadata?.num_nodes);
   const edges = Number(dataset.metadata?.num_edges);
-  if (Number.isFinite(nodes) && Number.isFinite(edges)) return `${nodes.toLocaleString()} nodes · ${edges.toLocaleString()} edges`;
-  return `${dataset.original_filename} · ${dataset.status}`;
+  if (Number.isFinite(nodes) && Number.isFinite(edges)) return `${nodes.toLocaleString()} 个节点 · ${edges.toLocaleString()} 条边`;
+  const status = dataset.status === 'ready' ? '就绪'
+    : dataset.status === 'processing' || dataset.status === 'uploading' ? '处理中'
+      : dataset.status === 'failed' || dataset.status === 'error' ? '失败'
+        : dataset.status;
+  return `${dataset.original_filename} · ${status}`;
 }
 
 export function DatasetPanel({ datasets, projectName, activeDatasetId, busy, onSelect, onUpload, onRename, onDelete, onClose }: Props) {
+  const title = projectName ? '项目数据集' : '个人数据集';
   const inputRef = useRef<HTMLInputElement>(null);
-  return <DrawerShell ariaLabel="项目数据集" className="dataset-drawer" onClose={onClose}>{requestClose => <>
-      <div className="drawer-head"><div><strong>项目数据集</strong><span>{projectName || '当前项目'}</span></div><button className="plain-icon" onClick={requestClose} aria-label="关闭"><Icon name="close" size={17} /></button></div>
+  return <DrawerShell ariaLabel={title} className="dataset-drawer" onClose={onClose}>{requestClose => <>
+      <div className="drawer-head"><div><strong>{title}</strong><span>{projectName || '同账号可复用，选择后应用于当前对话'}</span></div><button className="plain-icon" onClick={requestClose} aria-label="关闭"><Icon name="close" size={17} /></button></div>
       <div className="dataset-drawer-actions">
         <input ref={inputRef} type="file" hidden accept=".txt,.csv,.tsv,.edgelist,.dat,.json,.pt,.npz" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
         <button className="primary-command" onClick={() => inputRef.current?.click()} disabled={busy}><Icon name="upload" size={15} /> 添加数据集</button>
@@ -40,7 +45,7 @@ export function DatasetPanel({ datasets, projectName, activeDatasetId, busy, onS
             <button onClick={() => onRename(dataset)} disabled={busy} title="重命名" aria-label={`重命名 ${dataset.name}`}><Icon name="edit" size={14} /></button>
             <button className="danger" onClick={() => onDelete(dataset)} disabled={busy} title="删除" aria-label={`删除 ${dataset.name}`}><Icon name="trash" size={14} /></button>
           </div>
-        </div>) : <div className="drawer-empty"><Icon name="database" size={24} /><strong>暂无项目数据集</strong><span>添加后，同项目中的新会话可直接使用。</span></div>}
+        </div>) : <div className="drawer-empty"><Icon name="database" size={24} /><strong>暂无数据集</strong><span>{projectName ? '添加后，同项目中的新会话可直接使用。' : '上传或选择数据集后，在当前对话中使用。'}</span></div>}
       </div>
   </>}</DrawerShell>;
 }

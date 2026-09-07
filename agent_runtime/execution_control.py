@@ -61,7 +61,10 @@ class WorkerIdentity(BaseModel):
     process_group: int
 
 
-class ExecutionController:
+from agent_runtime.project_control import ProjectDeletionMixin
+
+
+class ExecutionController(ProjectDeletionMixin):
     def __init__(self, db, store: ExecutionStore, manager: RunCancellationManager, *, pending_directory=None):
         self.db, self.store, self.manager = db, store, manager
         self.tasks: dict[str, asyncio.Task] = {}
@@ -71,6 +74,7 @@ class ExecutionController:
         self.known_runs: dict[str, dict] = {}
         self.job_deliveries: dict[str, asyncio.Task] = {}
         self.session_deletions: dict[str, asyncio.Task] = {}
+        self.project_deletions: dict[str, asyncio.Task] = {}
         root = Path(os.getenv('IGRAPH_DATA_ROOT', 'data')).resolve() / 'agent_runtime' / 'pending-writes'
         if store.engine.dialect.name == 'sqlite' and store.engine.url.database not in {None, ':memory:'}:
             root = Path(store.engine.url.database).resolve().parent / 'pending-writes'
@@ -122,7 +126,10 @@ class ExecutionController:
         return session
 
     async def begin(self, uid, sid, rid, *, continuing=False):
-        await self.owned_session(uid, sid)
+        session = await self.owned_session(uid, sid)
+        pid = (session.session_data or {}).get('session_state', {}).get('project_id')
+        if pid:
+            await self.call(self.store.register_project_session, uid, pid, sid)
         row = await self.call(self.store.claim_agent, uid, sid, rid, continuing=continuing)
         self.known_runs[row['run_id']] = row
         scope = RunScope(row["run_id"], uid, sid, row["generation"])
@@ -153,6 +160,9 @@ class ExecutionController:
             self.wake_session_deletion(deletion)
             return deletion
         session = await self.owned_session(uid, sid)
+        pid = (session.session_data or {}).get('session_state', {}).get('project_id')
+        if pid:
+            await self.call(self.store.register_project_session, uid, pid, sid, historical=True)
         active = [run.run_id for run in session.runs or [] if str(getattr(run.status, 'value', run.status)).lower() not in TERMINAL]
         deletion, targets = await self.call(self.store.begin_session_deletion, uid, sid, active)
         # Signal local leaves before returning acceptance. Preparations and
@@ -181,7 +191,8 @@ class ExecutionController:
     async def _delete_graph_session(self, uid, sid):
         base = os.getenv('GRAPH_ENGINE_API_URL', 'http://graph-engine-api:21111').rstrip('/')
         async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
-            response = await client.delete(base + f'/sessions/{sid}', headers=service_headers(uid))
+            response = await client.delete(base + f'/sessions/{sid}', headers=service_headers(uid),
+                                           params={'permanent': 'true'})
             if response.status_code != 404:
                 response.raise_for_status()
 
@@ -199,6 +210,11 @@ class ExecutionController:
                     await asyncio.gather(*(asyncio.shield(task) for task in coordinators))
                 # Preserve native data and graph resources until all executors
                 # and terminal writes have acknowledged. The fence stays durable.
+                membership = await self.call(self.store.session_membership, uid, sid)
+                if membership and membership['state'].get('native_creations'):
+                    owner = membership['state'].get('creation_executor')
+                    if ProcessLease.inspect(self.lease.root, owner) != 'exited':
+                        raise ControlError('SESSION_CREATION_ACTIVE')
                 await self.call(self.store.seal_session, uid, sid)
                 session = await self.call(self.db.get_session, session_id=sid, user_id=uid)
                 if session and any(str(getattr(run.status, 'value', run.status)).lower() not in TERMINAL for run in session.runs or []):
@@ -378,6 +394,8 @@ class ExecutionController:
                     self.wake_job(row['user_id'], row['session_id'], row['job_id'], row['state']['cancel_request_id'])
                 for row in await self.call(self.store.session_deletions, pending_only=True):
                     self.wake_session_deletion(row)
+                for row in await self.call(self.store.project_deletions, pending_only=True):
+                    self.wake_project_deletion(row)
                 delay = 5
             except asyncio.CancelledError:
                 raise
@@ -396,7 +414,7 @@ class ExecutionController:
         if self.scanner:
             self.scanner.cancel()
             await asyncio.gather(self.scanner, return_exceptions=True)
-        tasks = [*self.tasks.values(), *self.job_deliveries.values(), *self.session_deletions.values()]
+        tasks = [*self.tasks.values(), *self.job_deliveries.values(), *self.session_deletions.values(), *self.project_deletions.values()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -412,6 +430,29 @@ def create_control_router(controller: ExecutionController):
         uid = str(getattr(request.state, "user_id", "") or request.headers.get("X-User-ID", ""))
         await controller.owned_session(uid, sid)
         return uid
+
+    @router.post('/internal/projects/{pid}/delete')
+    async def delete_project(pid: str, request: Request):
+        require_service(request)
+        uid = request.headers.get('X-User-ID', '')
+        if not uid:
+            raise HTTPException(401, {'code': 'MISSING_USER_IDENTITY'})
+        body = await request.json()
+        return await controller.request_project_deletion(uid, pid, body.get('preparation_owner'))
+
+    @router.get('/internal/projects/{pid}/deletion')
+    async def project_deletion(pid: str, request: Request):
+        require_service(request)
+        row = await controller.call(controller.store.project_deletion, request.headers.get('X-User-ID', ''), pid)
+        if not row:
+            raise ControlError('PROJECT_DELETE_NOT_FOUND', 404)
+        return row
+
+    @router.get('/internal/sessions/{sid}/admission')
+    async def session_admission(sid: str, request: Request):
+        require_service(request)
+        await controller.call(controller.store.assert_session_open, request.headers.get('X-User-ID', ''), sid)
+        return {'open': True}
 
     @router.get('/internal/capabilities')
     async def capabilities(request: Request):
@@ -531,6 +572,9 @@ def create_control_router(controller: ExecutionController):
     async def register(sid: str, req: RegisterRequest, request: Request):
         uid = await identity(request, sid)
         session = await controller.owned_session(uid, sid)
+        pid = (session.session_data or {}).get('session_state', {}).get('project_id')
+        if pid:
+            await controller.call(controller.store.register_project_session, uid, pid, sid)
         # Legacy/native runs also gate admission during a rolling upgrade.
         existing = await controller.call(controller.store.get, uid, sid, start_request_id=str(req.start_request_id))
         if existing is None and any(str(getattr(run.status, 'value', run.status)).lower() not in TERMINAL for run in session.runs or []):

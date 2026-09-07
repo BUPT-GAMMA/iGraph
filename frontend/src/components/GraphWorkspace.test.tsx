@@ -108,7 +108,7 @@ describe('GraphWorkspace visualization layers', () => {
 
     render(<GraphWorkspace data={null} messages={messages} liveTools={[]} projectId="project-1" sessionId="session-current" tab="ML" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText(/200\/200 epochs/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/200\/200 轮/)).toBeTruthy());
     expect(screen.getByText('已完成')).toBeTruthy();
     fireEvent.click(screen.getByText('项目对比'));
     expect(screen.getAllByText('当前实验').length).toBeGreaterThan(0);

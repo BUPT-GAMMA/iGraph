@@ -1,4 +1,4 @@
-"""Project-owned dataset metadata and source-file storage."""
+"""User-owned datasets, optionally scoped to a project."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 @dataclass
 class ProjectDatasetRecord:
     dataset_id: str
-    project_id: str
+    project_id: str | None
     user_id: str
     name: str
     original_filename: str
@@ -50,23 +50,20 @@ class ProjectDatasetDirectory:
     def _load(self) -> dict[str, ProjectDatasetRecord]:
         if not self.metadata_path.is_file():
             return {}
-        try:
-            payload = json.loads(self.metadata_path.read_text(encoding="utf-8"))
-            return {
-                item["dataset_id"]: ProjectDatasetRecord(**item)
-                for item in payload.get("datasets", [])
-                if isinstance(item, dict)
-                and item.get("dataset_id")
-                and item.get("project_id")
-                and item.get("user_id")
-            }
-        except (OSError, ValueError, TypeError):
-            return {}
+        payload = json.loads(self.metadata_path.read_text(encoding="utf-8"))
+        return {
+            item["dataset_id"]: ProjectDatasetRecord(**item)
+            for item in payload.get("datasets", [])
+            if isinstance(item, dict)
+            and item.get("dataset_id")
+            and item.get("user_id")
+        }
+
 
     def _write(self, records: dict[str, ProjectDatasetRecord]) -> None:
         self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "version": 1,
+            "version": 2,
             "datasets": [asdict(records[key]) for key in sorted(records)],
         }
         fd, tmp_name = tempfile.mkstemp(
@@ -84,7 +81,7 @@ class ProjectDatasetDirectory:
             if os.path.exists(tmp_name):
                 os.unlink(tmp_name)
 
-    def list(self, project_id: str, user_id: str) -> list[ProjectDatasetRecord]:
+    def list(self, project_id: str | None, user_id: str) -> list[ProjectDatasetRecord]:
         rows = [
             item
             for item in self._load().values()
@@ -101,14 +98,14 @@ class ProjectDatasetDirectory:
         item = self._load().get(str(dataset_id or ""))
         if item is None or item.user_id != user_id:
             return None
-        if project_id is not None and item.project_id != project_id:
+        if item.project_id != project_id:
             return None
         return item
 
     def create(
         self,
         *,
-        project_id: str,
+        project_id: str | None,
         user_id: str,
         name: str,
         original_filename: str,
@@ -118,7 +115,8 @@ class ProjectDatasetDirectory:
             records = self._load()
             dataset_id = str(uuid.uuid4())
             safe_name = self._safe_filename(original_filename)
-            dataset_dir = self.storage_root / project_id / "datasets" / dataset_id
+            scope_dir = project_id or ("personal-" + uuid.uuid5(uuid.NAMESPACE_URL, user_id).hex)
+            dataset_dir = self.storage_root / scope_dir / "datasets" / dataset_id
             dataset_dir.mkdir(parents=True, exist_ok=False)
             source_path = dataset_dir / safe_name
             fd, tmp_name = tempfile.mkstemp(prefix="source-", dir=str(dataset_dir))
@@ -167,7 +165,7 @@ class ProjectDatasetDirectory:
             item = records.get(dataset_id)
             if item is None or item.user_id != user_id:
                 return None
-            if project_id is not None and item.project_id != project_id:
+            if item.project_id != project_id:
                 return None
             if name is not None:
                 item.name = name.strip()
@@ -186,20 +184,35 @@ class ProjectDatasetDirectory:
             item = records.get(dataset_id)
             if item is None or item.user_id != user_id:
                 return False
-            if project_id is not None and item.project_id != project_id:
+            if item.project_id != project_id:
                 return False
+            # Keep metadata until files are removed, so a failed cleanup can retry.
+            target = Path(item.storage_path).parent.resolve()
+            if not target.is_relative_to(self.storage_root.resolve()):
+                raise ValueError("DATASET_PATH_OUTSIDE_STORAGE")
+            if target.exists():
+                shutil.rmtree(target)
             del records[dataset_id]
             self._write(records)
-            shutil.rmtree(Path(item.storage_path).parent, ignore_errors=True)
             return True
 
     def delete_project(self, project_id: str, user_id: str) -> int:
         rows = self.list(project_id, user_id)
         for item in rows:
             self.delete(item.dataset_id, user_id, project_id)
-        project_dir = self.storage_root / project_id
-        shutil.rmtree(project_dir, ignore_errors=True)
         return len(rows)
+
+    def migrate_to_personal(self, project_id: str, user_id: str) -> int:
+        """Change ownership metadata while preserving source paths and identities."""
+        with self._lock:
+            records = self._load()
+            matched = [item for item in records.values()
+                       if item.user_id == user_id and item.project_id == project_id]
+            for item in matched:
+                item.project_id = None
+            if matched:
+                self._write(records)
+            return len(matched)
 
     def delete_user(self, user_id: str) -> int:
         rows = [item for item in self._load().values() if item.user_id == user_id]

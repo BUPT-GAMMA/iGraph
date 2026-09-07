@@ -26,8 +26,8 @@ export function ProjectDialog({ project, onClose, onSave }: EditorProps) {
   }
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <form className="project-dialog" onSubmit={submit}>
-      <div className="dialog-head"><div><span>{project ? 'Project settings' : 'New project'}</span><h2>{project ? '编辑项目' : '创建项目'}</h2></div><button type="button" className="dialog-close" title="关闭" aria-label="关闭" onClick={onClose}><Icon name="close" size={17} /></button></div>
-      <label>项目名称<input type="text" autoFocus value={name} disabled={project?.is_default} maxLength={80} onChange={event => setName(event.target.value)} placeholder="例如：GraphAgent Research" /></label>
+      <div className="dialog-head"><div><span>{project ? '项目设置' : '新建项目'}</span><h2>{project ? '编辑项目' : '创建项目'}</h2></div><button type="button" className="dialog-close" title="关闭" aria-label="关闭" onClick={onClose}><Icon name="close" size={17} /></button></div>
+      <label>项目名称<input type="text" autoFocus value={name} maxLength={80} onChange={event => setName(event.target.value)} placeholder="例如：社交网络分析" /></label>
       <label>描述<textarea value={description} maxLength={500} onChange={event => setDescription(event.target.value)} placeholder="这个项目关注的工作内容（可选）" /></label>
       {error && <div className="dialog-error">{error}</div>}
       <div className="dialog-actions"><button type="button" className="secondary-command" onClick={onClose}>取消</button><button className="primary-command" disabled={saving || !name.trim()}>{saving ? '保存中…' : project ? '保存' : '创建'}</button></div>
@@ -35,22 +35,19 @@ export function ProjectDialog({ project, onClose, onSave }: EditorProps) {
   </div>;
 }
 
-export function DeleteProjectDialog({ project, onClose, onConfirm }: { project: Project; onClose: () => void; onConfirm: (action: 'move_to_general' | 'delete') => Promise<void> }) {
-  const [action, setAction] = useState<'move_to_general' | 'delete'>('move_to_general');
+export function DeleteProjectDialog({ project, onClose, onConfirm }: { project: Project; onClose: () => void; onConfirm: () => Promise<void> }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   async function confirm() {
     setSaving(true); setError('');
-    try { await onConfirm(action); } catch (cause: any) { setError(cause.message || '删除项目失败'); setSaving(false); }
+    try { await onConfirm(); } catch (cause: any) { setError(cause.message || '删除项目失败'); setSaving(false); }
   }
   return <div className="modal-backdrop" role="presentation">
     <div className="project-dialog delete-project-dialog">
-      <div className="dialog-head"><div><span>Delete project</span><h2>删除“{project.name}”？</h2></div><button className="dialog-close" title="关闭" aria-label="关闭" onClick={onClose}><Icon name="close" size={17} /></button></div>
-      <p className="dialog-description">该项目包含 {project.conversation_count || 0} 个会话。请选择这些会话的处理方式。</p>
-      <label className={`dialog-choice ${action === 'move_to_general' ? 'selected' : ''}`}><input type="radio" checked={action === 'move_to_general'} onChange={() => setAction('move_to_general')} /><span><strong>移动到 General</strong><small>保留全部会话、消息和图状态。</small></span></label>
-      <label className={`dialog-choice danger-choice ${action === 'delete' ? 'selected' : ''}`}><input type="radio" checked={action === 'delete'} onChange={() => setAction('delete')} /><span><strong>删除项目和全部会话</strong><small>会话历史与对应图状态都会被删除。</small></span></label>
+      <div className="dialog-head"><div><span>删除项目</span><h2>删除“{project.name}”？</h2></div><button className="dialog-close" title="关闭" aria-label="关闭" onClick={onClose}><Icon name="close" size={17} /></button></div>
+      <p className="dialog-description">该项目包含 {project.conversation_count || 0} 个会话、{project.dataset_count || 0} 个数据集。将停止相关任务，删除会话、数据集及训练模型。此操作无法撤销。</p>
       {error && <div className="dialog-error">{error}</div>}
-      <div className="dialog-actions"><button className="secondary-command" onClick={onClose}>取消</button><button className={`primary-command ${action === 'delete' ? 'destructive-command' : ''}`} disabled={saving} onClick={confirm}>{saving ? '处理中…' : '继续'}</button></div>
+      <div className="dialog-actions"><button className="secondary-command" onClick={onClose}>取消</button><button className="primary-command destructive-command" disabled={saving} onClick={confirm}>{saving ? '处理中…' : '删除项目及全部内容'}</button></div>
     </div>
   </div>;
 }

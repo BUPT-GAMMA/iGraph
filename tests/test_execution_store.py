@@ -183,3 +183,44 @@ def test_continue_cancel_boundary_is_atomic_and_never_revives_a_cancelled_run(st
         store.claim_agent('alice', sid, rid, continuing=True)
     revision = row['revision']
     assert store.request_cancel('alice', sid, 'stop', run_id=rid)['revision'] == revision
+
+
+def test_project_reservations_fence_late_creation_and_all_execution_entrypoints(store):
+    sid, pid = str(uuid.uuid4()), str(uuid.uuid4())
+    store.register_project_session('alice', pid, sid)
+    run, _ = store.register('alice', sid, str(uuid.uuid4()), 'question')
+    deletion = store.begin_project_deletion('alice', pid, 'owner')
+    assert store.begin_project_deletion('alice', pid, 'new-owner')['control_id'] == deletion['control_id']
+    assert [row['session_id'] for row in store.project_members('alice', pid)] == [sid]
+    with pytest.raises(ControlError, match='PROJECT_DELETING'):
+        store.register_project_session('alice', pid, 'late')
+    with pytest.raises(ControlError, match='PROJECT_DELETING'):
+        store.claim_agent('alice', sid, run['run_id'])
+    with pytest.raises(ControlError, match='PROJECT_DELETING'):
+        store.register('alice', sid, str(uuid.uuid4()), 'late')
+    assert store.register_project_session('bob', pid, sid)
+    assert store.register('bob', sid, str(uuid.uuid4()), 'other')[1]
+    assert store.project_deletions('bob') == []
+
+
+def test_project_creation_and_delete_share_one_database_boundary(store):
+    import threading
+    pid, sid = str(uuid.uuid4()), str(uuid.uuid4())
+    start = threading.Barrier(2)
+    def create():
+        start.wait()
+        try:
+            return store.register_project_session('alice', pid, sid)['session_id']
+        except ControlError as exc:
+            assert exc.code == 'PROJECT_DELETING'
+            return None
+    def delete():
+        start.wait()
+        return store.begin_project_deletion('alice', pid, 'owner')
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        created, deleted = pool.submit(create), pool.submit(delete)
+        result = created.result()
+        deleted.result()
+    assert [row['session_id'] for row in store.project_members('alice', pid)] == ([sid] if result else [])
+    with pytest.raises(ControlError, match='PROJECT_DELETING'):
+        store.register_project_session('alice', pid, 'late')

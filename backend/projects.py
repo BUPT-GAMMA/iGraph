@@ -22,6 +22,7 @@ class ProjectRecord:
     default_dataset_id: str | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
+    delete_status: str | None = None
 
 
 class ProjectDirectory:
@@ -38,15 +39,13 @@ class ProjectDirectory:
     def _load(self) -> dict[str, ProjectRecord]:
         if not self.path.is_file():
             return {}
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            return {
-                item["project_id"]: ProjectRecord(**item)
-                for item in payload.get("projects", [])
-                if isinstance(item, dict) and item.get("project_id") and item.get("user_id")
-            }
-        except (OSError, ValueError, TypeError):
-            return {}
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        return {
+            item["project_id"]: ProjectRecord(**item)
+            for item in payload.get("projects", [])
+            if isinstance(item, dict) and item.get("project_id") and item.get("user_id")
+        }
+
 
     def _write(self, records: dict[str, ProjectRecord]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,33 +64,16 @@ class ProjectDirectory:
             if os.path.exists(tmp_name):
                 os.unlink(tmp_name)
 
-    def ensure_default(self, user_id: str) -> ProjectRecord:
-        with self._lock:
-            records = self._load()
-            project_id = self.default_project_id(user_id)
-            project = records.get(project_id)
-            if project is None:
-                now = time.time()
-                project = ProjectRecord(
-                    project_id=project_id,
-                    user_id=user_id,
-                    name="General",
-                    description="Default workspace for conversations",
-                    is_default=True,
-                    created_at=now,
-                    updated_at=now,
-                )
-                records[project_id] = project
-                self._write(records)
-            return project
+    @classmethod
+    def is_legacy_default(cls, project: ProjectRecord) -> bool:
+        return project.is_default and project.project_id == cls.default_project_id(project.user_id)
 
     def list(self, user_id: str) -> list[ProjectRecord]:
-        self.ensure_default(user_id)
-        projects = [item for item in self._load().values() if item.user_id == user_id]
-        return sorted(projects, key=lambda item: (not item.is_default, -item.updated_at, item.name.lower()))
+        projects = [item for item in self._load().values()
+                    if item.user_id == user_id and not item.delete_status and not self.is_legacy_default(item)]
+        return sorted(projects, key=lambda item: (-item.updated_at, item.name.lower()))
 
     def get(self, project_id: str, user_id: str) -> ProjectRecord | None:
-        self.ensure_default(user_id)
         project = self._load().get(project_id)
         return project if project and project.user_id == user_id else None
 
@@ -147,11 +129,22 @@ class ProjectDirectory:
         with self._lock:
             records = self._load()
             project = records.get(project_id)
-            if project is None or project.user_id != user_id or project.is_default:
+            if project is None or project.user_id != user_id:
                 return False
             del records[project_id]
             self._write(records)
             return True
+
+    def mark_deleting(self, project_id: str, user_id: str) -> ProjectRecord | None:
+        with self._lock:
+            records = self._load()
+            project = records.get(project_id)
+            if project is None or project.user_id != user_id:
+                return None
+            project.delete_status = "requested"
+            records[project_id] = project
+            self._write(records)
+            return project
 
     def delete_user(self, user_id: str) -> int:
         with self._lock:

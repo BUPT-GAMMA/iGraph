@@ -147,6 +147,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         default_user_model="qwen3.6-plus",
         custom_models_file=tmp_path / "custom_models.json",
     )
+    monkeypatch.setenv("IGRAPH_CONTROL_SERVICE_KEY", "test-project-key")
     monkeypatch.setattr(backend_app, "ServiceClient", FakeServiceClient)
     with TestClient(backend_app.create_app(config)) as test_client:
         yield test_client
@@ -156,16 +157,15 @@ def headers(user_id: str = "admin") -> dict[str, str]:
     return {"X-User-ID": user_id}
 
 
-def test_project_directory_has_stable_per_user_general(tmp_path: Path):
+def test_project_directory_reads_do_not_create_general(tmp_path: Path):
     directory = ProjectDirectory(tmp_path / "projects.json")
-    first = directory.ensure_default("admin")
-    second = directory.ensure_default("admin")
-    other = directory.ensure_default("alice")
-
-    assert first.project_id == second.project_id
-    assert first.project_id != other.project_id
-    assert first.name == "General"
-    assert first.is_default is True
+    assert directory.list("admin") == []
+    assert directory.list("alice") == []
+    assert directory.get(directory.default_project_id("admin"), "admin") is None
+    assert not directory.path.exists()
+    ordinary = directory.create("admin", "General")
+    assert not ordinary.is_default
+    assert directory.delete(ordinary.project_id, "admin")
 
 
 def test_custom_model_api_validates_isolates_syncs_updates_and_deletes(client: TestClient):
@@ -218,61 +218,25 @@ def test_custom_model_api_validates_isolates_syncs_updates_and_deletes(client: T
     assert client.get("/api/models/custom", headers=headers()).json()["models"] == []
 
 
-def test_project_crud_session_move_and_safe_delete(client: TestClient):
-    listed = client.get("/api/projects", headers=headers()).json()["projects"]
-    general = listed[0]
-    assert general["is_default"] is True
-    assert general["conversation_count"] == 1
-
-    created = client.post(
-        "/api/projects",
-        headers=headers(),
-        json={"name": "Graph Research", "description": "Experiments"},
-    ).json()["project"]
-    project_id = created["project_id"]
-
-    renamed = client.patch(
-        f"/api/projects/{project_id}",
-        headers=headers(),
-        json={"name": "GNN Research"},
-    ).json()["project"]
-    assert renamed["name"] == "GNN Research"
-
-    conversation = client.post(
-        "/api/sessions",
-        headers=headers(),
-        json={"project_id": project_id},
-    )
-    assert conversation.status_code == 200
-    session_id = conversation.json()["session_id"]
-
-    project_sessions = client.get(
-        f"/api/projects/{project_id}/conversations",
-        headers=headers(),
-    ).json()["conversations"]
-    assert [item["session_id"] for item in project_sessions] == [session_id]
-
-    moved = client.patch(
-        f"/api/sessions/{session_id}",
-        headers=headers(),
-        json={"project_id": general["project_id"]},
-    )
-    assert moved.status_code == 200
-    assert FakeServiceClient.runtime_sessions[session_id]["session_state"]["project_id"] == general["project_id"]
-
-    another = client.post(
-        "/api/sessions",
-        headers=headers(),
-        json={"project_id": project_id},
-    ).json()["session_id"]
-    deleted = client.request(
-        "DELETE",
-        f"/api/projects/{project_id}",
-        headers=headers(),
-        json={"conversation_action": "move_to_general"},
-    )
-    assert deleted.status_code == 200
-    assert FakeServiceClient.runtime_sessions[another]["session_state"]["project_id"] == general["project_id"]
+def test_project_crud_and_explicit_delete_contract(client: TestClient):
+    assert client.get('/api/projects', headers=headers()).json()['projects'] == []
+    independent = client.post('/api/sessions', headers=headers(), json={}).json()
+    assert independent['project_id'] is None
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Research'}).json()['project']
+    pid = project['project_id']
+    renamed = client.patch(f'/api/projects/{pid}', headers=headers(), json={'name': 'GNN'}).json()['project']
+    assert renamed['name'] == 'GNN'
+    sid = client.post('/api/sessions', headers=headers(), json={'project_id': pid}).json()['session_id']
+    assert [row['session_id'] for row in client.get(f'/api/projects/{pid}/conversations', headers=headers()).json()['conversations']] == [sid]
+    stale = client.request('DELETE', f'/api/projects/{pid}', headers=headers(), json={'conversation_action': 'move_to_general'})
+    assert stale.status_code == 409
+    assert stale.json()['detail']['code'] == 'PROJECT_DELETE_ACTION_CHANGED'
+    assert client.delete(f'/api/projects/{pid}', headers=headers()).status_code == 422
+    assert sid in FakeServiceClient.runtime_sessions
+    assert client.request('DELETE', f'/api/projects/{pid}', headers=headers(), json={'conversation_action': 'delete'}).status_code == 200
+    assert sid not in FakeServiceClient.runtime_sessions
+    assert independent['session_id'] in FakeServiceClient.runtime_sessions
+    assert client.get('/api/projects', headers=headers()).json()['projects'] == []
 
 
 def test_project_training_runs_aggregate_sessions_and_persist_job_status(client: TestClient):
@@ -399,14 +363,7 @@ def test_project_delete_conversations_and_cross_user_isolation(client: TestClien
     assert deleted.status_code == 200
     assert session_id not in FakeServiceClient.runtime_sessions
 
-    general = client.get("/api/projects", headers=headers()).json()["projects"][0]
-    protected = client.request(
-        "DELETE",
-        f"/api/projects/{general['project_id']}",
-        headers=headers(),
-        json={},
-    )
-    assert protected.status_code == 400
+    assert client.get('/api/projects', headers=headers()).json()['projects'] == []
 
 
 def test_project_dataset_upload_inheritance_switch_and_isolation(client: TestClient, tmp_path: Path):
@@ -705,3 +662,131 @@ def test_feedback_continues_in_background_and_keeps_acceptance_guard(client: Tes
     assert FakeServiceClient.runtime_stream_calls[-1]['data']['background'] == 'true'
     assert client.post(f'/api/sessions/{sid}/feedback/stream', headers=headers(), json=body).status_code == 409
     assert len(FakeServiceClient.runtime_stream_calls) == 1
+
+
+def test_personal_datasets_are_reusable_explicit_and_scope_isolated(client):
+    first = client.post('/api/sessions', headers=headers(), json={}).json()
+    assert first['project_id'] is None and first['active_dataset_id'] is None
+    uploaded = client.post('/api/personal-datasets', headers=headers(),
+        files={'file': ('edges.csv', b'A,B\nB,C', 'text/csv')})
+    assert uploaded.status_code == 200, uploaded.text
+    dataset = uploaded.json()['dataset']
+    assert dataset['project_id'] is None and not dataset['is_default']
+    second = client.post('/api/sessions', headers=headers(), json={}).json()
+    assert second['active_dataset_id'] is None
+    selected = client.post('/api/sessions', headers=headers(), json={'active_dataset_id': dataset['dataset_id']}).json()
+    assert selected['active_dataset_id'] == dataset['dataset_id']
+    assert [row['dataset_id'] for row in client.get('/api/personal-datasets', headers=headers()).json()['datasets']] == [dataset['dataset_id']]
+    assert client.get('/api/personal-datasets', headers=headers('alice')).json()['datasets'] == []
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Scoped'}).json()['project']
+    assert client.post('/api/sessions', headers=headers(), json={'project_id': project['project_id'], 'active_dataset_id': dataset['dataset_id']}).status_code == 409
+    foreign = client.post(f"/api/projects/{project['project_id']}/datasets", headers=headers(), files={'file': ('other.csv', b'X,Y', 'text/csv')}).json()['dataset']
+    assert client.patch('/api/personal-datasets/' + foreign['dataset_id'], headers=headers(), json={'name': 'wrong'}).status_code == 404
+    assert client.delete('/api/personal-datasets/' + foreign['dataset_id'], headers=headers()).status_code == 404
+    # A query parameter cannot widen the personal route's ownership scope.
+    assert client.get('/api/personal-datasets', headers=headers(), params={'project_id': project['project_id']}).json()['datasets'][0]['dataset_id'] == dataset['dataset_id']
+    assert client.patch('/api/personal-datasets/' + dataset['dataset_id'], headers=headers(), json={'name': 'Renamed'}).json()['dataset']['name'] == 'Renamed'
+    assert client.delete('/api/personal-datasets/' + dataset['dataset_id'], headers=headers()).status_code == 200
+    assert FakeServiceClient.runtime_sessions[selected['session_id']]['session_state']['active_dataset_id'] is None
+
+
+def test_general_migration_preserves_sources_state_and_named_user_projects(client, tmp_path):
+    from backend.projects import ProjectRecord
+    from backend.project_datasets import ProjectDatasetDirectory
+    directory = ProjectDirectory(tmp_path / 'projects.json')
+    general_id = directory.default_project_id('admin')
+    directory._write({general_id: ProjectRecord(general_id, 'admin', 'General', is_default=True)})
+    named = directory.create('admin', 'General')
+    datasets = ProjectDatasetDirectory(tmp_path / 'project_datasets.json', tmp_path / 'projects')
+    dataset = datasets.create(project_id=general_id, user_id='admin', name='Shared', original_filename='edges.csv', content=b'A,B')
+    state = {'project_id': general_id, 'active_dataset_id': dataset.dataset_id, 'last_message_preview': 'keep', 'graph_version': 9}
+    FakeServiceClient.runtime_sessions['legacy-session']['session_state'] = state.copy()
+    first = client.get('/api/projects', headers=headers())
+    assert first.status_code == 200, first.text
+    assert first.json()['legacy_default_project_id'] == general_id
+    assert [row['project_id'] for row in first.json()['projects']] == [named.project_id]
+    assert FakeServiceClient.runtime_sessions['legacy-session']['session_state'] == {**state, 'project_id': None}
+    migrated = datasets.get(dataset.dataset_id, 'admin', None)
+    assert migrated.storage_path == dataset.storage_path
+    assert Path(migrated.storage_path).read_bytes() == b'A,B'
+    assert datasets.get(dataset.dataset_id, 'admin', general_id) is None
+    backups = list((tmp_path / 'migrations').rglob('session-*.json'))
+    assert len(backups) == 1 and json.loads(backups[0].read_text())['session_state'] == state
+    assert client.get('/api/projects', headers=headers()).json() == first.json()
+    assert Path(dataset.storage_path).exists()
+
+
+def test_standalone_chat_context_excludes_other_conversations(client):
+    first = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    second = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    FakeServiceClient.runtime_runs[first] = [{
+        'run_id': 'private-training', 'status': 'COMPLETED',
+        'tools': [{'tool_name': 'train', 'tool_call_id': 'private-model', 'tool_args': {'task': 'node_classification'},
+                   'result': json.dumps({'success': True, 'model_id': 'private-model', 'metrics': {'val_acc': .9}})}],
+    }]
+    response = client.post(f'/api/sessions/{second}/chat/stream', headers=headers(), json={'message': '你好'})
+    assert response.status_code == 200
+    assert FakeServiceClient.runtime_sessions[second]['session_state']['project_training_summary'] == []
+
+
+def test_general_migration_resumes_artifact_ownership_after_partial_failure(client, tmp_path, monkeypatch):
+    from backend.projects import ProjectRecord
+    directory = ProjectDirectory(tmp_path / 'projects.json')
+    pid = directory.default_project_id('admin')
+    directory._write({pid: ProjectRecord(pid, 'admin', 'General', is_default=True)})
+    FakeServiceClient.runtime_sessions['legacy-session']['session_state'] = {'project_id': pid, 'graph_version': 7}
+    original = FakeServiceClient.request
+    attempts = []
+    async def interrupted(self, method, path, **kwargs):
+        if path == '/internal/artifacts/ownership':
+            attempts.append(kwargs['json_body'])
+            if len(attempts) == 1:
+                raise HTTPException(503, 'injected graph outage')
+        return await original(self, method, path, **kwargs)
+    monkeypatch.setattr(FakeServiceClient, 'request', interrupted)
+    assert client.get('/api/projects', headers=headers()).status_code == 503
+    assert FakeServiceClient.runtime_sessions['legacy-session']['session_state']['project_id'] is None
+    assert directory.get(pid, 'admin') is not None
+    assert client.get('/api/projects', headers=headers()).status_code == 200
+    assert attempts == [{'sessions': [{'session_id': 'legacy-session', 'project_id': None}]}] * 2
+    assert directory.get(pid, 'admin') is None
+    manifest = json.loads(next((tmp_path / 'migrations').rglob('manifest.json')).read_text())
+    assert manifest['conversations'] == 1 and manifest['status'] == 'completed'
+
+
+def test_project_delete_delivery_outage_keeps_queryable_intent(client, monkeypatch):
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Retry'}).json()['project']
+    monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'true')
+    original = FakeServiceClient.request
+    async def unavailable(self, method, path, **kwargs):
+        if path.startswith('/internal/projects/'):
+            raise HTTPException(503, 'injected control outage')
+        return await original(self, method, path, **kwargs)
+    monkeypatch.setattr(FakeServiceClient, 'request', unavailable)
+    url = '/api/projects/' + project['project_id']
+    response = client.request('DELETE', url, headers=headers(), json={'conversation_action': 'delete'})
+    assert response.status_code == 202
+    queried = client.get(url + '/deletion', headers=headers())
+    assert queried.status_code == 200 and queried.json()['delivery_pending']
+    assert client.post('/api/sessions', headers=headers(), json={'project_id': project['project_id']}).status_code == 409
+
+
+def test_recent_sessions_sort_by_activity_before_applying_limit(client):
+    for index in range(210):
+        FakeServiceClient.runtime_sessions[str(index)] = {'session_id': str(index), 'user_id': 'admin',
+            'session_state': {}, 'updated_at': index}
+    rows = client.get('/api/sessions', headers=headers()).json()['sessions']
+    assert len(rows) == 200
+    assert [row['session_id'] for row in rows] == [str(index) for index in range(209, 9, -1)]
+
+
+def test_reused_creation_identity_cannot_change_project_scope(client):
+    import uuid
+    sid = str(uuid.uuid4())
+    body = {'client_session_id': sid}
+    assert client.post('/api/sessions', headers=headers(), json=body).status_code == 200
+    assert client.post('/api/sessions', headers=headers(), json=body).json()['reused'] is True
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Different scope'}).json()['project']
+    conflict = client.post('/api/sessions', headers=headers(), json={**body, 'project_id': project['project_id']})
+    assert conflict.status_code == 409
+    assert FakeServiceClient.runtime_sessions[sid]['session_state']['project_id'] is None

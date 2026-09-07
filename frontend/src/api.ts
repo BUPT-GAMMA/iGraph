@@ -100,12 +100,12 @@ export async function listSessions() { return json<{ success?: boolean; sessions
 export async function createSession(options: {
   clientSessionId?: string;
   model?: string;
-  projectId?: string;
+  projectId?: string | null;
   activeDatasetId?: string | null;
   initialMessagePreview?: string;
   signal?: AbortSignal;
 } = {}) {
-  return json<{ success?: boolean; session_id: string; reused?: boolean; project_id?: string; active_dataset_id?: string | null; dataset_view?: DatasetView | null; model?: string; title?: string }>('/api/sessions', {
+  return json<{ success?: boolean; session_id: string; reused?: boolean; project_id?: string | null; active_dataset_id?: string | null; dataset_view?: DatasetView | null; model?: string; title?: string }>('/api/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: options.signal,
     body: JSON.stringify({
       client_session_id: options.clientSessionId,
@@ -124,7 +124,7 @@ export async function activateSession(id: string, signal?: AbortSignal) {
     messages?: Message[];
     active_run?: ActiveRun | null;
     pending_feedback?: FeedbackRequest | null;
-    project_id?: string;
+    project_id?: string | null;
     active_dataset_id?: string | null;
     has_graph?: boolean;
     dataset_view?: DatasetView | null;
@@ -144,7 +144,7 @@ export async function deleteSession(id: string) {
 }
 
 export async function getMessages(id: string, signal?: AbortSignal) { return json<{ messages?: Message[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`, { signal }); }
-export async function listProjects() { return json<{ success?: boolean; projects?: Project[] }>('/api/projects'); }
+export async function listProjects() { return json<{ success?: boolean; projects?: Project[]; legacy_default_project_id?: string }>('/api/projects'); }
 export async function createProject(name: string, description = '') {
   return json<{ success?: boolean; project: Project }>('/api/projects', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, description }),
@@ -155,36 +155,40 @@ export async function updateProject(id: string, patch: { name?: string; descript
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
   });
 }
-export async function deleteProject(id: string, action: 'move_to_general' | 'delete' = 'move_to_general') {
-  return json<{ success?: boolean; affected_conversations: number; general_project_id: string }>(`/api/projects/${encodeURIComponent(id)}`, {
-    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation_action: action }),
+export async function deleteProject(id: string) {
+  return json<{ success?: boolean; project_id: string; delete_status: 'requested' | 'deleted' }>(`/api/projects/${encodeURIComponent(id)}`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation_action: 'delete' }),
   });
 }
+
 export async function listProjectConversations(id: string) {
   return json<{ success?: boolean; conversations?: Session[] }>(`/api/projects/${encodeURIComponent(id)}/conversations`);
 }
 export async function listProjectTrainingRuns(id: string, signal?: AbortSignal) {
   return json<{ success?: boolean; project_id: string; training_runs?: ProjectTrainingRun[]; has_running?: boolean }>(`/api/projects/${encodeURIComponent(id)}/training-runs`, { signal });
 }
-export async function listProjectDatasets(projectId: string, signal?: AbortSignal) {
-  return json<{ success?: boolean; project_id: string; default_dataset_id?: string | null; datasets?: Dataset[] }>(`/api/projects/${encodeURIComponent(projectId)}/datasets`, { signal });
+function datasetScopeUrl(projectId: string | null) {
+  return projectId ? `/api/projects/${encodeURIComponent(projectId)}/datasets` : '/api/personal-datasets';
 }
-export async function uploadProjectDataset(projectId: string, file: File, sessionId?: string) {
+export async function listProjectDatasets(projectId: string | null, signal?: AbortSignal) {
+  return json<{ success?: boolean; project_id: string | null; default_dataset_id?: string | null; datasets?: Dataset[] }>(datasetScopeUrl(projectId), { signal });
+}
+export async function uploadProjectDataset(projectId: string | null, file: File, sessionId?: string) {
   const body = new FormData();
   body.append('file', file);
   if (sessionId) body.append('session_id', sessionId);
-  return json<{ success?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(`/api/projects/${encodeURIComponent(projectId)}/datasets`, { method: 'POST', body });
+  return json<{ success?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(datasetScopeUrl(projectId), { method: 'POST', body });
 }
-export async function renameProjectDataset(projectId: string, datasetId: string, name: string) {
-  return json<{ success?: boolean; dataset: Dataset }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}`, {
+export async function renameProjectDataset(projectId: string | null, datasetId: string, name: string) {
+  return json<{ success?: boolean; dataset: Dataset }>(`${datasetScopeUrl(projectId)}/${encodeURIComponent(datasetId)}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
   });
 }
 export async function setDefaultProjectDataset(projectId: string, datasetId: string) {
   return json<{ success?: boolean; default_dataset_id: string }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}/set-default`, { method: 'POST' });
 }
-export async function deleteProjectDataset(projectId: string, datasetId: string) {
-  return json<{ success?: boolean; default_dataset_id?: string | null; cleared_conversations?: number }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}`, { method: 'DELETE' });
+export async function deleteProjectDataset(projectId: string | null, datasetId: string) {
+  return json<{ success?: boolean; default_dataset_id?: string | null; cleared_conversations?: number }>(`${datasetScopeUrl(projectId)}/${encodeURIComponent(datasetId)}`, { method: 'DELETE' });
 }
 export async function setSessionDataset(sessionId: string, datasetId: string | null) {
   return json<{ success?: boolean; session_id: string; project_id: string; active_dataset_id?: string | null; dataset_view?: DatasetView | null }>(`/api/sessions/${encodeURIComponent(sessionId)}/dataset`, {

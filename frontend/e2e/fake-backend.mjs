@@ -1,10 +1,11 @@
 import http from 'node:http';
 
 const sessions = [
-  { session_id: 'session-a', project_id: 'project-1', title: 'Session A', updated_at: '2026-08-31T02:00:00Z' },
-  { session_id: 'session-b', project_id: 'project-1', title: 'Session B', updated_at: '2026-08-31T01:00:00Z' },
-  { session_id: 'session-c', project_id: 'project-1', title: 'Session C Paused', updated_at: '2026-08-31T00:00:00Z' },
+  { session_id: 'session-a', project_id: null, title: 'Session A', updated_at: '2026-08-31T02:00:00Z' },
+  { session_id: 'session-b', project_id: null, title: 'Session B', updated_at: '2026-08-31T01:00:00Z' },
+  { session_id: 'session-c', project_id: null, title: 'Session C Paused', updated_at: '2026-08-31T00:00:00Z' },
 ];
+sessions.push({ session_id: 'project-session', project_id: 'project-1', title: 'Project Session', updated_at: '2026-08-31T00:00:00Z' });
 const deletedSessions = new Set();
 const sessionsByClientId = new Map();
 const runs = new Map();
@@ -96,7 +97,7 @@ const server = http.createServer(async (request, response) => {
     const title = String(body.initial_message_preview || '新会话').trim().slice(0, 36) || '新会话';
     const created = {
       session_id: clientSessionId,
-      project_id: body.project_id || 'general',
+      project_id: body.project_id || null,
       active_dataset_id: body.active_dataset_id || null,
       dataset_view: datasetView(body.active_dataset_id || null),
       model: body.model || 'qwen3.6-plus',
@@ -107,18 +108,21 @@ const server = http.createServer(async (request, response) => {
     return json(response, 200, { success: true, ...created, reused: false });
   }
   if (url.pathname === '/api/projects' && request.method === 'GET') return json(response, 200, { success: true, projects: [
-    { project_id: 'general', user_id: 'e2e-user', name: 'General', is_default: true, conversation_count: 0 },
-    ...(!projectDeleted ? [{ project_id: 'project-1', user_id: 'e2e-user', name: 'E2E Project', conversation_count: 3 }] : []),
+    ...(!projectDeleted ? [{ project_id: 'project-1', user_id: 'e2e-user', name: 'E2E Project', conversation_count: sessions.filter(item => item.project_id === 'project-1' && !deletedSessions.has(item.session_id)).length, dataset_count: 2 }] : []),
   ] });
-  if (url.pathname === '/api/projects/project-1/conversations') return json(response, 200, { success: true, conversations: sessions.filter(session => !deletedSessions.has(session.session_id)) });
+  if (url.pathname === '/api/projects/project-1/conversations') return json(response, 200, { success: true, conversations: sessions.filter(session => session.project_id === 'project-1' && !deletedSessions.has(session.session_id)) });
+  if (url.pathname === '/api/personal-datasets') return json(response, 200, { success: true, project_id: null, datasets: [
+    { dataset_id: 'dataset-cora', project_id: null, name: 'Cora', original_filename: 'cora.pt', file_type: 'pt', status: 'ready', metadata: { num_nodes: 2708, num_edges: 10556 } },
+    { dataset_id: 'dataset-hiv', project_id: null, name: 'hiv', original_filename: 'hiv.pt', file_type: 'pt', status: 'ready' },
+  ] });
   if (url.pathname === '/api/projects/project-1/datasets') return json(response, 200, { success: true, project_id: 'project-1', datasets: [
     { dataset_id: 'dataset-cora', project_id: 'project-1', name: 'Cora', original_filename: 'cora.pt', file_type: 'pt', status: 'ready', is_default: true, metadata: { num_nodes: 2708, num_edges: 10556 } },
     { dataset_id: 'dataset-hiv', project_id: 'project-1', name: 'hiv', original_filename: 'hiv.pt', file_type: 'pt', status: 'ready', is_default: false },
   ] });
   if (url.pathname === '/api/projects/project-1' && request.method === 'DELETE') {
     projectDeleted = true;
-    sessions.forEach(session => deletedSessions.add(session.session_id));
-    return json(response, 200, { success: true, project_id: 'project-1', affected_conversations: sessions.length, general_project_id: 'general' });
+    sessions.filter(session => session.project_id === 'project-1').forEach(session => deletedSessions.add(session.session_id));
+    return json(response, 200, { success: true, project_id: 'project-1', delete_status: 'deleted' });
   }
   const activate = /^\/api\/sessions\/([^/]+)\/activate$/.exec(url.pathname);
   // Each explicit activation of this fixture starts its approval scenario.
@@ -130,7 +134,7 @@ const server = http.createServer(async (request, response) => {
     messages: runs.has(activate[1]) ? [{ id: `assistant:${runs.get(activate[1]).run_id}`, role: 'assistant', content: runs.get(activate[1]).content }] : [],
     active_run: runs.has(activate[1]) && runs.get(activate[1]).status !== 'completed' ? { run_id: runs.get(activate[1]).run_id, status: runs.get(activate[1]).status, last_event_index: 8 } : null,
     pending_feedback: activate[1] === 'session-c' ? { run_id: 'run-paused', request_id: 'run-paused', call_id: 'call-train', tool_name: 'train', proposed_args: { epochs: 2 }, description: '确认训练任务' } : null,
-    project_id: 'project-1',
+    project_id: sessions.find(item => item.session_id === activate[1])?.project_id || null,
     active_dataset_id: activeDatasetBySession.get(activate[1]) || null,
     has_graph: activeDatasetBySession.get(activate[1]) === 'dataset-cora',
     dataset_view: datasetView(activeDatasetBySession.get(activate[1]) || null),
@@ -149,7 +153,7 @@ const server = http.createServer(async (request, response) => {
     return json(response, 200, {
       success: true,
       session_id: switchDataset[1],
-      project_id: 'project-1',
+      project_id: sessions.find(item => item.session_id === switchDataset[1])?.project_id || null,
       active_dataset_id: body.active_dataset_id || null,
       dataset_view: datasetView(body.active_dataset_id || null),
     });

@@ -103,6 +103,100 @@ class ExecutionStore:
                              controls.c.session_id == sid, controls.c.kind == 'session')).first()
         if closed:
             raise ControlError('SESSION_DELETING')
+        member = conn.execute(select(controls).where(controls.c.kind == 'member',
+            controls.c.user_id == uid, controls.c.session_id == sid)).mappings().first()
+        if member:
+            project = self._project(conn, uid, member['state']['project_id'])
+            if project:
+                raise ControlError('PROJECT_DELETING')
+
+    def assert_session_open(self, uid, sid):
+        with self.transaction(uid, sid) as conn:
+            self._assert_session_open(conn, uid, sid)
+
+    def _project(self, conn, uid, pid):
+        if not pid:
+            return None
+        row = conn.execute(select(controls).where(controls.c.kind == 'project',
+            controls.c.user_id == uid, controls.c.session_id == 'project:' + pid)).mappings().first()
+        return dict(row) if row else None
+
+    def project_deletion(self, uid, pid):
+        with self.transaction(uid, 'project:' + (pid or '')) as conn:
+            return self._project(conn, uid, pid)
+
+    def register_project_session(self, uid, pid, sid, *, historical=False):
+        """Reserve membership before native creation; deletion uses the same lock."""
+        with self.transaction(uid, 'project:' + (pid or '')) as conn:
+            if self.engine.dialect.name == 'postgresql':
+                lock = int.from_bytes(hashlib.sha256(json.dumps([uid, sid]).encode()).digest()[:8], 'big', signed=True)
+                conn.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': lock})
+            if not historical and self._project(conn, uid, pid):
+                raise ControlError('PROJECT_DELETING')
+            existing = conn.execute(select(controls).where(controls.c.kind == 'member',
+                controls.c.user_id == uid, controls.c.session_id == sid)).mappings().first()
+            if existing:
+                if existing['state']['project_id'] != pid:
+                    raise ControlError('SESSION_PROJECT_CONFLICT')
+                return dict(existing)
+            identity, now = str(uuid.uuid4()), time.time()
+            row = dict(control_id=identity, kind='member', user_id=uid, session_id=sid,
+                run_id=identity, generation=1, revision=1, admission_blocked=False,
+                state={'project_id': pid}, created_at=now, updated_at=now)
+            conn.execute(controls.insert().values(**row))
+            return row
+
+    def session_membership(self, uid, sid):
+        with self.transaction(uid, sid) as conn:
+            row = conn.execute(select(controls).where(controls.c.kind == 'member',
+                controls.c.user_id == uid, controls.c.session_id == sid)).mappings().first()
+            return dict(row) if row else None
+
+    def native_creation(self, uid, sid, *, started):
+        with self.transaction(uid, sid) as conn:
+            row = conn.execute(select(controls).where(controls.c.kind == 'member',
+                controls.c.user_id == uid, controls.c.session_id == sid)).mappings().one()
+            state = dict(row['state'])
+            if started:
+                self._assert_session_open(conn, uid, sid)
+            count = state.get('native_creations', 0) if state.get('creation_executor') == self.instance_id else 0
+            state.update(native_creations=max(0, count + (1 if started else -1)), creation_executor=self.instance_id)
+            return self._update(conn, dict(row), state)
+
+    def project_members(self, uid, pid):
+        with self.transaction(uid, 'project:' + pid) as conn:
+            return [dict(row) for row in conn.execute(select(controls).where(controls.c.kind == 'member',
+                controls.c.user_id == uid, controls.c.state['project_id'].as_string() == pid)).mappings()]
+
+    def begin_project_deletion(self, uid, pid, preparation_owner):
+        with self.transaction(uid, 'project:' + pid) as conn:
+            existing = self._project(conn, uid, pid)
+            if existing:
+                return existing
+            identity, now = str(uuid.uuid4()), time.time()
+            row = dict(control_id=identity, kind='project', user_id=uid, session_id='project:' + pid,
+                run_id=identity, generation=1, revision=1, admission_blocked=False,
+                state={'project_id': pid, 'delete_status': 'requested', 'enumerated': False,
+                       'preparation_owner': preparation_owner, 'resources_deleted': False},
+                created_at=now, updated_at=now)
+            conn.execute(controls.insert().values(**row))
+            return row
+
+    def update_project_deletion(self, uid, pid, **patch):
+        with self.transaction(uid, 'project:' + pid) as conn:
+            row = self._project(conn, uid, pid)
+            if not row:
+                raise ControlError('PROJECT_DELETE_NOT_FOUND', 404)
+            return self._update(conn, row, {**row['state'], **patch})
+
+    def project_deletions(self, uid=None, *, pending_only=False):
+        conditions = [controls.c.kind == 'project']
+        if uid is not None:
+            conditions.append(controls.c.user_id == uid)
+        if pending_only:
+            conditions.append(controls.c.state['delete_status'].as_string() != 'deleted')
+        with self.engine.connect() as conn:
+            return [dict(row) for row in conn.execute(select(controls).where(*conditions)).mappings()]
 
     def seal_session(self, uid, sid):
         """Fence late starts before deleting files/native session records."""

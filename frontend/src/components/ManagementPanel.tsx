@@ -7,6 +7,30 @@ import { SlidingTabs } from './SlidingTabs';
 type MemoryItem = { memory_id?: string; key?: string; value?: string; category?: string; scope?: string };
 type SkillItem = { name?: string; description?: string; source?: string; risk_level?: string; status?: string };
 
+const METADATA_LABELS: Record<string, string> = {
+  fact: '事实',
+  preference: '偏好',
+  profile: '个人信息',
+  long_term: '长期记忆',
+  builtin: '内置',
+  bundled: '内置',
+  custom: '自定义',
+  user: '用户添加',
+  workspace: '工作区',
+  low: '低风险',
+  medium: '中风险',
+  high: '高风险',
+  ready: '就绪',
+  enabled: '已启用',
+  disabled: '已停用',
+  unavailable: '不可用',
+};
+
+function metadataLabel(value: string | undefined, fallback: string) {
+  if (!value) return fallback;
+  return METADATA_LABELS[value] || value;
+}
+
 async function readJson(path: string) {
   const response = await apiFetch(path);
   const data = await response.json().catch(() => ({}));
@@ -43,5 +67,5 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
     if (nextTab === 'memory') setSelectedSkill(null);
   }
 
-  return <DrawerShell ariaLabel="Memory 与 Skills" className="management" onClose={onClose}>{requestClose => <><div className="drawer-head"><strong>Memory 与 Skills</strong><button className="plain-icon" onClick={requestClose} aria-label="关闭管理面板"><Icon name="close" size={17} /></button></div><SlidingTabs ariaLabel="管理内容" className="management-tabs" indicatorClassName="management-tab-indicator" options={[{ value: 'memory', label: <>Memory <span>{memories.length || ''}</span></> }, { value: 'skills', label: <>Skills <span>{skills.length || ''}</span></> }]} value={tab} onChange={changeTab} /><div className="management-search"><Icon name="search" size={14} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tab === 'memory' ? '搜索记忆内容' : '搜索 Skill'} /></div>{error ? <div className="management-error">{error}</div> : loading ? <div className="drawer-empty">正在读取...</div> : tab === 'memory' ? <div className="management-list">{filteredMemories.length ? filteredMemories.map((item, index) => <div className="memory-row" key={item.memory_id || index}><div className="management-icon"><Icon name="spark" size={15} /></div><div><strong>{item.key || '未命名记忆'}</strong><span>{item.value || '暂无内容'}</span><small>{item.category || item.scope || 'fact'}</small></div><button className="plain-icon danger-icon" onClick={() => deleteMemory(item)} aria-label="删除记忆"><Icon name="trash" size={14} /></button></div>) : <div className="drawer-empty">暂无匹配的记忆</div>}</div> : <div className="management-list">{filteredSkills.length ? filteredSkills.map((item, index) => <button className="skill-row" key={`${item.name || 'skill'}-${index}`} onClick={() => setSelectedSkill(item)}><div className="management-icon"><Icon name="cube" size={15} /></div><div><strong>{item.name || '未命名 Skill'}</strong><span>{item.description || '暂无描述'}</span><small>{item.source || 'unknown'}{item.risk_level ? ` · ${item.risk_level}` : ''}</small></div><Icon name="chevron" size={14} /></button>) : <div className="drawer-empty">暂无匹配的 Skill</div>}</div>}{selectedSkill ? <div className="skill-detail"><div className="inspector-title"><strong>{selectedSkill.name || 'Skill'}</strong><button className="plain-icon" onClick={() => setSelectedSkill(null)} aria-label="关闭 Skill 详情"><Icon name="close" size={14} /></button></div><p>{selectedSkill.description || '暂无描述'}</p><span>{selectedSkill.source || 'unknown'}{selectedSkill.status ? ` · ${selectedSkill.status}` : ''}</span></div> : null}</>}</DrawerShell>;
+  return <DrawerShell ariaLabel="记忆与技能" className="management" onClose={onClose}>{requestClose => <><div className="drawer-head"><strong>记忆与技能</strong><button className="plain-icon" onClick={requestClose} aria-label="关闭管理面板"><Icon name="close" size={17} /></button></div><SlidingTabs ariaLabel="管理内容" className="management-tabs" indicatorClassName="management-tab-indicator" options={[{ value: 'memory', label: <>记忆 <span>{memories.length || ''}</span></> }, { value: 'skills', label: <>技能 <span>{skills.length || ''}</span></> }]} value={tab} onChange={changeTab} /><div className="management-search"><Icon name="search" size={14} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tab === 'memory' ? '搜索记忆内容' : '搜索技能'} /></div>{error ? <div className="management-error">{error}</div> : loading ? <div className="drawer-empty">正在读取...</div> : tab === 'memory' ? <div className="management-list">{filteredMemories.length ? filteredMemories.map((item, index) => <div className="memory-row" key={item.memory_id || index}><div className="management-icon"><Icon name="spark" size={15} /></div><div><strong>{item.key || '未命名记忆'}</strong><span>{item.value || '暂无内容'}</span><small>{metadataLabel(item.category || item.scope, '事实')}</small></div><button className="plain-icon danger-icon" onClick={() => deleteMemory(item)} aria-label="删除记忆"><Icon name="trash" size={14} /></button></div>) : <div className="drawer-empty">暂无匹配的记忆</div>}</div> : <div className="management-list">{filteredSkills.length ? filteredSkills.map((item, index) => <button className="skill-row" key={`${item.name || 'skill'}-${index}`} onClick={() => setSelectedSkill(item)}><div className="management-icon"><Icon name="cube" size={15} /></div><div><strong>{item.name || '未命名技能'}</strong><span>{item.description || '暂无描述'}</span><small>{metadataLabel(item.source, '未知来源')}{item.risk_level ? ` · ${metadataLabel(item.risk_level, '')}` : ''}</small></div><Icon name="chevron" size={14} /></button>) : <div className="drawer-empty">暂无匹配的技能</div>}</div>}{selectedSkill ? <div className="skill-detail"><div className="inspector-title"><strong>{selectedSkill.name || '技能'}</strong><button className="plain-icon" onClick={() => setSelectedSkill(null)} aria-label="关闭技能详情"><Icon name="close" size={14} /></button></div><p>{selectedSkill.description || '暂无描述'}</p><span>{metadataLabel(selectedSkill.source, '未知来源')}{selectedSkill.status ? ` · ${metadataLabel(selectedSkill.status, '')}` : ''}</span></div> : null}</>}</DrawerShell>;
 }

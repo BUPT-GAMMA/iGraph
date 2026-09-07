@@ -83,6 +83,10 @@ describe('docked panel controls', () => {
     render(<Sidebar {...sidebarProps} projects={projects} sessions={[]} collapsed={false} onCollapse={noop} onEditProject={onEditProject} onDeleteProject={onDeleteProject} />);
 
     const trigger = screen.getByRole('button', { name: '项目一 项目操作' });
+    expect(Array.from(trigger.closest('.project-row')!.querySelectorAll('.project-inline-action')).map(button => button.getAttribute('aria-label'))).toEqual([
+      '项目一 项目操作',
+      '在 项目一 中新建会话',
+    ]);
     fireEvent.click(trigger);
     const menu = screen.getByRole('menu', { name: '项目一 项目操作' });
     expect(menu.parentElement).toBe(document.body);
@@ -96,15 +100,43 @@ describe('docked panel controls', () => {
     expect(onDeleteProject).toHaveBeenCalledWith(projects[0]);
   });
 
-  it('shows the project name before each recent task title', () => {
+  it('lists independent conversations once and keeps project conversations in their project', () => {
     const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
-    const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '会话一' }];
-    render(<Sidebar {...sidebarProps} projects={projects} sessions={sessions} collapsed={false} onCollapse={noop} />);
+    const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '会话一' }, { session_id: 'standalone', project_id: null, title: '独立对话' }];
+    const { container } = render(<Sidebar {...sidebarProps} projects={projects} sessions={sessions} activeId="session-1" collapsed={false} onCollapse={noop} />);
+    expect(container.querySelector('.sidebar-recents')?.textContent).toContain('独立对话');
+    expect(container.querySelector('.sidebar-recents')?.textContent).not.toContain('会话一');
+    expect(container.querySelector('.project-session-list')?.textContent).toContain('会话一');
+    expect(screen.getAllByText('独立对话')).toHaveLength(1);
+    expect(screen.getAllByText('会话一')).toHaveLength(1);
+  });
 
-    const recent = screen.getByTitle('项目一 / 会话一');
-    expect(recent.querySelector('.recent-project-name')?.textContent).toBe('项目一');
-    expect(recent.querySelector('.recent-session-separator')?.textContent).toBe('/');
-    expect(recent.querySelector('.recent-session-name')?.textContent).toBe('会话一');
+  it('creates tasks in the focused project and keeps the recent-task action independent', () => {
+    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
+    const projectSession = { session_id: 'session-1', project_id: 'project-1', title: '项目会话' };
+    const independentSession = { session_id: 'standalone', project_id: null, title: '独立会话' };
+    const onNew = vi.fn();
+    const onNewInProject = vi.fn();
+    const { rerender } = render(<Sidebar {...sidebarProps} projects={projects} sessions={[]} onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
+
+    expect(screen.getByText('暂无任务')).toBeTruthy();
+    expect(screen.queryByText('点击上方按钮开始新分析')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '新建独立会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    expect(onNew).toHaveBeenCalledTimes(2);
+    expect(onNewInProject).not.toHaveBeenCalled();
+
+    rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[projectSession]} activeProjectId="project-1" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    expect(onNewInProject).toHaveBeenLastCalledWith('project-1');
+
+    rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[projectSession]} activeId="session-1" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    expect(onNewInProject).toHaveBeenLastCalledWith('project-1');
+
+    rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[independentSession]} activeId="standalone" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    expect(onNew).toHaveBeenCalledTimes(3);
   });
 
   it('uses one right panel toggle for both expanded and collapsed states', () => {
@@ -113,9 +145,9 @@ describe('docked panel controls', () => {
     const { rerender } = render(<GraphWorkspace {...graphProps} onTab={onTab} collapsed={false} onToggle={onToggle} />);
 
     expect(screen.getByText('图工作台')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Graph' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: '图谱' }).getAttribute('aria-selected')).toBe('true');
     expect(document.querySelector('.workspace-tab-indicator')).toBeTruthy();
-    fireEvent.click(screen.getByRole('tab', { name: 'Artifacts' }));
+    fireEvent.click(screen.getByRole('tab', { name: '分析产物' }));
     expect(onTab).toHaveBeenCalledWith('Artifacts');
     expect(screen.queryByLabelText('关闭图工作台')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '收起右侧栏' }));
@@ -126,7 +158,7 @@ describe('docked panel controls', () => {
     expect(expandRight).toBeTruthy();
     expect(expandRight.querySelector('path')?.getAttribute('d')).toBe('M15 4v16M10 9l-3 3 3 3');
     expect(screen.getByText('图工作台').classList.contains('workspace-title')).toBe(true);
-    expect(screen.getByText('Overview').closest('.workspace-panel-content')?.getAttribute('aria-hidden')).toBe('true');
+    expect(screen.getByText('概览').closest('.workspace-panel-content')?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('degrades graph collections without mounting a canvas and keeps statistics tabs useful', () => {
