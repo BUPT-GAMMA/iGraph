@@ -43,11 +43,26 @@ def graph_to_networkx(
     # Ordinary graphs retain their historical simple projection. Constructed
     # graphs preserve parallel relationship identities rather than overwriting
     # one relationship's properties with another's.
-    pairs = [tuple(map(int, pair)) if graph.directed else tuple(sorted(map(int, pair)))
-             for pair in graph.edge_index.T] if construction else []
+    # Reverse storage copies of one relationship have the same business ID.
+    # Distinct IDs survive even when endpoints, types and properties coincide.
+    indices = range(graph.num_edges)
+    if construction and graph.edge_names is not None:
+        seen = set()
+        indices = []
+        for index, (source, target) in enumerate(graph.edge_index.T):
+            pair = (int(source), int(target)) if graph.directed else tuple(sorted((int(source), int(target))))
+            identity = (pair, str(graph.edge_names[index]))
+            if identity not in seen:
+                seen.add(identity)
+                indices.append(index)
+    pairs = [(int(graph.edge_index[0, i]), int(graph.edge_index[1, i])) if graph.directed
+             else tuple(sorted((int(graph.edge_index[0, i]), int(graph.edge_index[1, i]))))
+             for i in indices] if construction else []
     multiple = bool(construction and len(pairs) != len(set(pairs)))
     g = (nx.MultiDiGraph() if graph.directed else nx.MultiGraph()) if multiple else (nx.DiGraph() if graph.directed else nx.Graph())
     g.name = graph.name
+    if construction:
+        g.graph["property_graph"] = True
     if graph.graph_desc:
         g.graph["description"] = graph.graph_desc
     if graph.graph_label is not None:
@@ -92,7 +107,7 @@ def graph_to_networkx(
         g.add_node(_nid(i), **attrs)
 
     src_arr, dst_arr = graph.edge_index
-    for j in range(graph.num_edges):
+    for j in indices:
         attrs = {}
         if graph.edge_names is not None:
             attrs["name"] = str(graph.edge_names[j])

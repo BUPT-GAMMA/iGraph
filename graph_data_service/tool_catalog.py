@@ -18,6 +18,7 @@ from typing import List
 
 from graph_engine.construction_catalog import CONSTRUCTION_TOOLS
 from graph_engine.tool_execution import get_tool_execution_metadata
+from graph_engine.analysis_policy import MULTIGRAPH_POLICIES
 
 _REPORTING_TOOLS_ENV = "MCP_ENABLE_REPORTING_TOOLS"
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
@@ -1812,6 +1813,8 @@ INTERNAL_TOOLS: List[dict] = [
 
 for _tool_spec in [*GRAPH_TOOLS, *GRAPH_ML_TOOLS, *REPORTING_TOOLS, *INTERNAL_TOOLS]:
     _tool_spec["execution"] = get_tool_execution_metadata(_tool_spec["name"])
+    if _tool_spec["name"] in MULTIGRAPH_POLICIES:
+        _tool_spec["multigraph_support"] = MULTIGRAPH_POLICIES[_tool_spec["name"]]
 
 
 def _reporting_tools_enabled_from_env() -> bool:

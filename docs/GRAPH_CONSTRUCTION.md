@@ -233,7 +233,33 @@ IGRAPH_DATA_ROOT/
 
 带 Run 身份的加载与提交沿用现有执行控制，转发 `X-Run-ID`、`X-Session-ID`、generation 和 operation 身份，并在提交边界检查取消信号。普通前端加载请求也会检查正在处理的会话作业。
 
-**当前限制：构图会话使用本地 GraphData/NPZ 快照，即使部署同时配置了 Nebula。** 现有 Nebula 投影不能保证保留任意嵌套 JSON 属性，所以不会把它作为构图加载的属性存储替代品。需要 Nebula 原生构图处理时，应先实现并验证完整属性和关系身份的存储、物化及版本契约。部分旧图算法本身要求简单图；平行关系虽完整保存，但具体算子能否处理 MultiGraph 仍取决于该算子的现有支持。
+**当前限制：构图会话使用本地 GraphData/NPZ 快照，即使部署同时配置了 Nebula。** 现有 Nebula 投影不能保证保留任意嵌套 JSON 属性，所以不会把它作为构图加载的属性存储替代品。需要 Nebula 原生构图处理时，应先实现并验证完整属性和关系身份的存储、物化及版本契约。计算入口使用统一的平行关系适配规则，详见下节。
+
+### 平行关系、边权与分析规则
+
+构图边的 `id` 是关系身份。转为无向图时，同一个 ID 的正反向存储记录计为一条关系；不同 ID 始终保留，即使端点、类型和属性完全相同。重复转换、提取子图和 JSON/NPZ 重载遵循同一规则。`num_edge_entries`（以及兼容字段 `num_edges`）表示底层存储条目数，`num_unique_edges` 表示业务关系数；无向自环对度数贡献 2，对关系数贡献 1。
+
+边属性 `properties.weight` 保留为有限数值，省略时计算权重为 1。字符串、布尔值、null、非有限值和超出浮点计算范围的权重在构图发布前拒绝。数字权重同步到 GraphData 数组、NetworkX 和关系查询，保留 JSON 双精度；已有合法快照重载时也会补齐。最短路径、流和中心性等加权分析要求非负权重；最小生成树接受负权重。betweenness 和 load 中心性要求严格正的距离权重，以避免零距离环导致路径计数歧义。
+
+计算投影仅作用于当前调用的临时图，保存的完整关系及属性保持原样。直接调用、HTTP、进程池和隔离 worker 共用同一计算入口。
+
+| 工具或选项 | 平行关系处理 |
+| --- | --- |
+| 最短路径、全部最短路径、Yen K 条最短路径 | 同一方向、同一对端点取最小权重；等权时按关系 ID 确定代表边。单条路径和 Yen 的逐边明细带实际关系 ID 和边权；全部最短路径按节点序列返回。`use_weight=false` 时按跳数计算 |
+| 路径枚举、平均最短路径长度 | 按不同节点序列计算，平行关系产生的同一节点序列只出现一次 |
+| 最大流、指定端点最小割 | 同方向容量求和，沿用 weight 作为容量的约定；返回的流量及割边是端点对的合计值 |
+| 全局最小割 | 使用原有容量求和规则，统计各条真实关系一次 |
+| 最小生成树 / 森林 | 忽略方向后取最小权重，保留最便宜关系的属性 |
+| 度、连通性、拓扑排序、环检测、可达性、ego / 指定节点子图、密度、直径、半径 | 直接使用多重图；度和密度按真实关系计数，密度可大于 1，环按节点序列报告 |
+| betweenness、closeness、harmonic、load 中心性 | 权重作为距离，同向平行关系取最小值 |
+| PageRank、eigenvector、Katz 中心性 | 权重作为连接强度，同向平行关系求和；依赖中显式包含 SciPy |
+| Louvain、greedy_modularity 社区发现 | 忽略方向后对关系权重求和 |
+
+`get_edge_info` 在端点之间存在多条关系时返回 `parallel_edges=true`、`edge_count`、`edges` 和 `truncated`，最多展示 20 条；每条带有自己的 ID、类型、权重及属性。单条关系延续原响应字段。按关系名称读取权重、特征及节点相连关系明细均保留独立 ID。
+
+尚未适配的多重图操作包括最大环、链路预测、团分析、k-core / k-truss / k-corona、聚类系数 / 传递性 / 度同配性、voterank / percolation，以及表中未列出的社区算法。这些操作返回 `success=false`、`code=UNSUPPORTED_MULTIGRAPH_OPERATION`；普通简单图继续沿用原有实现。工具目录的 `multigraph_support` 声明支持范围，成功的多重图计算响应中 `multigraph_policy` 说明实际规则。
+
+输入不满足算法条件、迭代未收敛或结果溢出时返回业务失败，避免把无效数值作为成功结果。超时、取消和隔离进程生命周期继续由现有执行框架管理。
 
 ## 9. MCP 与 Agent Runtime
 
@@ -278,6 +304,8 @@ Agent 应先读取真实图和版本，预览影响，再用相同操作及版�
 python -m pytest \
   tests/servers/test_graph_construction.py \
   tests/servers/test_graph_construction_http.py \
+  tests/servers/test_property_graph_analysis.py \
+  tests/test_isolated_compute.py \
   tests/test_construction_api.py \
   tests/test_graph_construction_runtime.py \
   tests/test_construction_state_hook.py \

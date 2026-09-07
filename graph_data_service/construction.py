@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 import graph_engine.paths as paths
+from graph_engine.analysis_policy import numeric_weight
 
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
@@ -99,6 +100,11 @@ def validate_graph(graph: dict) -> dict:
             _json_keys(row["properties"])
             _json(row["properties"])
             if target == "edges":
+                if "weight" in row["properties"]:
+                    try:
+                        numeric_weight(row["properties"]["weight"])
+                    except ValueError:
+                        _fail(f"Edge {identity} weight must be a finite number.", "invalid_graph")
                 _text(row["source"], "source")
                 _text(row["target"], "target")
                 if row["source"] not in node_ids or row["target"] not in node_ids:
