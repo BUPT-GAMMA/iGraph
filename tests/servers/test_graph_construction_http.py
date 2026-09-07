@@ -134,3 +134,58 @@ def test_parallel_relationships_retain_their_properties_in_networkx():
     assert network.number_of_edges() == 2
     assert {data["id"] for *_ends, data in network.edges(data=True)} == {"knows-1", "knows-2"}
     assert network.edges["alice", "bob", 1]["properties"]["key"] == "business-key"
+
+
+def test_property_analysis_http_uses_same_relationships_after_conversion_and_reload(construction_http):
+    from tests.servers.test_property_graph_analysis import property_graph
+    client, service, store, source, headers = construction_http
+    document = property_graph([('ab2', 'A', 'B', 2), ('ab7', 'A', 'B', 7),
+                               ('bc', 'B', 'C', 12), ('ca', 'C', 'A', 1)]).graph_metadata['construction_graph']
+    store.register_algorithm('csv', lambda _source, _options: copy.deepcopy(document))
+    built = client.post('/construction/ds-analysis/build', headers=headers,
+                        json={'source_path': str(source), 'source_filename': 'people.csv'})
+    assert built.json()['status'] == 'ready'
+    loaded = client.post('/sessions/analysis/graph/load_construction', headers=headers, json={'dataset_id': 'ds-analysis'})
+    assert loaded.status_code == 200 and loaded.json()['success']
+
+    def call(name, arguments):
+        response = client.post(f'/sessions/analysis/tools/{name}', headers=headers, json={'arguments': arguments})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    for directed in (True, False):
+        shortest = call('shortest_path', {'source': 'A', 'target': 'C'})
+        assert shortest['success'] and shortest['total_length'] == (14 if directed else 1)
+        assert sum(e['weight'] for e in shortest['edges']) == shortest['total_length']
+        flow = call('maximum_flow', {'source': 'A', 'sink': 'C'})
+        cut = call('minimum_cut', {'source': 'A', 'sink': 'C'})
+        assert flow['success'] and cut['success']
+        assert flow['max_flow_value'] == cut['min_cut_value'] == (9 if directed else 10)
+        assert call('node_centrality', {'centrality_type': 'eigenvector'})['success']
+        assert call('maximum_cycle', {})['code'] == 'UNSUPPORTED_MULTIGRAPH_OPERATION'
+        info = call('get_node_info', {'node_name': 'B'})
+        assert info['degree'] == 3 and info['incident_edges_total'] == 3
+        edge_info = call('get_edge_info', {'src_name': 'A', 'dst_name': 'B'})
+        assert edge_info['edge_count'] == 2
+        visual = client.post('/sessions/analysis/graph/visualize', headers=headers, json={'arguments': {}}).json()
+        assert len(visual['edges']) == 4
+        restored = GraphSession('analysis', 'alice')
+        assert restored.load_snapshot()
+        snapshot = restored.get_graph()
+        assert snapshot.num_unique_edges == snapshot.to_networkx().number_of_edges() == 4
+        assert snapshot.degree_by_name('B') == 3
+        if directed:
+            converted = client.post('/sessions/analysis/graph/to_undirected', headers=headers)
+            assert converted.status_code == 200 and converted.json()['success']
+            assert not service.get_required('analysis', 'alice').get_graph().directed
+
+
+def test_invalid_weight_cannot_publish_ready_construction(construction_http):
+    client, _service, store, source, headers = construction_http
+    graph = copy.deepcopy(GRAPH)
+    graph['edges'][0]['properties']['weight'] = 'heavy'
+    store.register_algorithm('csv', lambda _source, _options: graph)
+    built = client.post('/construction/ds-invalid-weight/build', headers=headers,
+                        json={'source_path': str(source), 'source_filename': 'people.csv'})
+    assert built.status_code == 200 and built.json()['status'] == 'failed'
+    assert client.get('/construction/ds-invalid-weight/graph', headers=headers).status_code == 409

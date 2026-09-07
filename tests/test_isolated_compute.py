@@ -371,3 +371,35 @@ def test_isolated_graph_classification_train_and_infer_keep_explicit_dataset_con
             await isolated(service, 'infer', {**arguments, 'model_id': 'mdl_not_owned'})
 
     asyncio.run(scenario())
+
+
+def test_property_relationship_analysis_survives_isolated_conversion_and_snapshot(service):
+    from tests.servers.test_property_graph_analysis import property_graph
+    from graph_data_service.compute import run_nx_tool
+    from graph_data_service.session import GraphSession
+    async def scenario():
+        session = service.get_required('s', user_id='alice')
+        session.set_graph(property_graph([('ab2', 'A', 'B', 2), ('ab7', 'A', 'B', 7),
+                                          ('bc', 'B', 'C', 12), ('ca', 'C', 'A', 1)]))
+        for directed in (True, False):
+            network = session.get_graph().to_networkx()
+            version = session.graph_version
+            for name, args in [('shortest_path', {'source': 'A', 'target': 'C'}),
+                               ('maximum_flow', {'source': 'A', 'sink': 'C'}),
+                               ('node_centrality', {'centrality_type': 'eigenvector'}),
+                               ('maximum_cycle', {})]:
+                expected = run_nx_tool(name, network, args)
+                actual = await isolated(service, name, args)
+                assert actual == expected
+                assert session.graph_version == version
+            if directed:
+                converted = await isolated(service, 'to_undirected', {})
+                assert converted['success'], converted
+                assert session.graph_version > version
+                restored = GraphSession('s', user_id='alice')
+                assert restored.load_snapshot()
+                graph = restored.get_graph()
+                assert not graph.directed
+                assert graph.num_unique_edges == graph.to_networkx().number_of_edges() == 4
+                assert graph.degree_by_name('B') == 3
+    asyncio.run(scenario())
