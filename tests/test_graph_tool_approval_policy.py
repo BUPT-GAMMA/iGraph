@@ -13,13 +13,15 @@ from agent_runtime.agent.skills.registry import SkillRegistry
 
 
 class GraphToolApprovalPolicyTest(unittest.TestCase):
-    def test_only_destructive_clear_requires_confirmation(self) -> None:
+    def test_destructive_clear_and_persistent_optimization_require_confirmation(self) -> None:
         self.assertEqual(
             GRAPH_TOOLS_REQUIRING_CONFIRMATION,
-            frozenset({"clear_graph"}),
+            frozenset({"clear_graph", "commit_graph_optimization"}),
         )
         self.assertNotIn("train", GRAPH_TOOLS_REQUIRING_CONFIRMATION)
         self.assertNotIn("infer", GRAPH_TOOLS_REQUIRING_CONFIRMATION)
+        self.assertNotIn("preview_graph_optimization", GRAPH_TOOLS_REQUIRING_CONFIRMATION)
+        self.assertNotIn("load_constructed_graph", GRAPH_TOOLS_REQUIRING_CONFIRMATION)
 
     def test_native_mcp_tools_use_shared_policy(self) -> None:
         calls: list[dict] = []
@@ -27,6 +29,7 @@ class GraphToolApprovalPolicyTest(unittest.TestCase):
         agno_run = ModuleType("agno.run")
         agno_tools = ModuleType("agno.tools")
         agno_tools_mcp = ModuleType("agno.tools.mcp")
+        graph_jobs = ModuleType("agent_runtime.graph_jobs")
 
         class FakeRunContext:
             pass
@@ -37,6 +40,7 @@ class GraphToolApprovalPolicyTest(unittest.TestCase):
 
         agno_run.RunContext = FakeRunContext
         agno_tools_mcp.MCPTools = FakeMCPTools
+        graph_jobs.GraphMCPTools = FakeMCPTools
         config = SimpleNamespace(mcp_url="http://graph-engine-mcp/mcp")
 
         with patch.dict(
@@ -46,6 +50,7 @@ class GraphToolApprovalPolicyTest(unittest.TestCase):
                 "agno.run": agno_run,
                 "agno.tools": agno_tools,
                 "agno.tools.mcp": agno_tools_mcp,
+                "agent_runtime.graph_jobs": graph_jobs,
             },
         ):
             sys.modules.pop("agent_runtime.graph_tools", None)
@@ -67,7 +72,7 @@ class GraphToolApprovalPolicyTest(unittest.TestCase):
 
         self.assertEqual(
             calls[0]["requires_confirmation_tools"],
-            ["clear_graph"],
+            ["clear_graph", "commit_graph_optimization"],
         )
 
     def test_bundled_ml_skills_do_not_restore_confirmation(self) -> None:

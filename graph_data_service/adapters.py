@@ -5,6 +5,7 @@ GraphData 适配层：对外图对象转换（如 NetworkX）
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Optional
+import copy
 
 import numpy as np
 
@@ -36,7 +37,16 @@ def graph_to_networkx(
     except ImportError as e:
         raise ImportError("请先安装 networkx: pip install networkx") from e
 
-    g = nx.DiGraph() if graph.directed else nx.Graph()
+    construction = graph.graph_metadata.get("construction_graph") or {}
+    property_nodes = {row["id"]: row for row in construction.get("nodes", [])} if construction else {}
+    property_edges = {row["id"]: row for row in construction.get("edges", [])} if construction else {}
+    # Ordinary graphs retain their historical simple projection. Constructed
+    # graphs preserve parallel relationship identities rather than overwriting
+    # one relationship's properties with another's.
+    pairs = [tuple(map(int, pair)) if graph.directed else tuple(sorted(map(int, pair)))
+             for pair in graph.edge_index.T] if construction else []
+    multiple = bool(construction and len(pairs) != len(set(pairs)))
+    g = (nx.MultiDiGraph() if graph.directed else nx.MultiGraph()) if multiple else (nx.DiGraph() if graph.directed else nx.Graph())
     g.name = graph.name
     if graph.graph_desc:
         g.graph["description"] = graph.graph_desc
@@ -70,6 +80,15 @@ def graph_to_networkx(
         if graph.node_text is not None:
             attrs["text"] = graph.node_text[i]
 
+        if id2node.get(i) in property_nodes:
+            properties = copy.deepcopy(property_nodes[id2node[i]]["properties"])
+            for key, value in properties.items():
+                if key not in {"node_for_adding"}:
+                    attrs.setdefault(key, value)
+            attrs["properties"] = properties
+            attrs["id"] = id2node[i]
+            attrs["type"] = str(graph.node_type[i]) if graph.node_type is not None else property_nodes[id2node[i]]["type"]
+
         g.add_node(_nid(i), **attrs)
 
     src_arr, dst_arr = graph.edge_index
@@ -89,6 +108,22 @@ def graph_to_networkx(
         if graph.edge_text is not None:
             attrs["text"] = graph.edge_text[j]
 
-        g.add_edge(_nid(int(src_arr[j])), _nid(int(dst_arr[j])), **attrs)
+        edge_id = str(graph.edge_names[j]) if graph.edge_names is not None else ""
+        if edge_id in property_edges:
+            properties = copy.deepcopy(property_edges[edge_id]["properties"])
+            for key, value in properties.items():
+                if key not in {"u_for_edge", "v_for_edge", "u_of_edge", "v_of_edge", "key"}:
+                    attrs.setdefault(key, value)
+            attrs["properties"] = properties
+            attrs["id"] = edge_id
+            attrs["type"] = str(graph.edge_type[j]) if graph.edge_type is not None else property_edges[edge_id]["type"]
+
+        if multiple:
+            # Use an integer multigraph key; business properties may legitimately
+            # contain a property named 'key'. They remain inside properties.
+            attrs.pop("key", None)
+            g.add_edge(_nid(int(src_arr[j])), _nid(int(dst_arr[j])), key=j, **attrs)
+        else:
+            g.add_edge(_nid(int(src_arr[j])), _nid(int(dst_arr[j])), **attrs)
 
     return g

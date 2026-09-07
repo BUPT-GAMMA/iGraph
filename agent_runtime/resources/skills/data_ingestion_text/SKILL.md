@@ -1,6 +1,6 @@
 ---
 name: data_ingestion_text
-description: 从自然语言文本或上传文档中抽取实体关系并建图，覆盖输入路径选择、格式自动检测、抽取质量控制、异步作业轮询、增量合并与失败处理。
+description: 从用户直接粘贴的自然语言或其他已支持文档中抽取关系；SQL/CSV/TXT 上传文件必须转至 graph_construction 数据集流程。
 metadata:
   version: 3.0.0
   domain: data_ingestion
@@ -14,22 +14,27 @@ metadata:
 
 # 文本数据导入
 
+SQL、CSV、TXT 上传文件属于数据集构图流程，优先读取 `graph_construction` Skill。
+ready 数据集可直接复用保存图；构图算法尚未接入时必须明确告知，不调用下述旧上传处理流程，
+也不得复制源文件内容到内联文本/三元组工具绕过该限制。
+
 ## 适用场景
 
 | 用户输入类型 | 推荐工具 |
 |------------|---------|
-| 上传的任意文件（含散文、文章、文档） | `load_graph_from_upload` — 自动检测格式 |
+| SQL、CSV、TXT 上传文件 | `graph_construction` — 检查数据集状态并复用保存图 |
+| 其他已支持上传文件 | `load_graph_from_upload` — 自动检测格式 |
 | 用户直接粘贴的内联文本 | `load_graph_from_text(text=...)` |
-| 已整理好的三元组（CSV / JSON / 手填） | `load_graph_from_triples` |
-| 结构化表格（CSV / Excel 边列表） | 转至 data_ingestion_table skill |
+| 用户直接给出的三元组（JSON / 手填） | `load_graph_from_triples` |
+| 其他已支持结构化表格 | 转至 data_ingestion_table skill |
 
-**关键原则：用户上传了文件，始终优先用 `load_graph_from_upload`，不要把文件内容复制到 `text`。**
+**关键原则：SQL/CSV/TXT 使用数据集构图；其他已支持上传文件才使用 `load_graph_from_upload`，不要把文件内容复制到 `text`。**
 
 ---
 
 ## Step 1 — 上传文件路径
 
-调用 `load_graph_from_upload(filename=...)` 即可，**无需判断格式**。
+确认不是 SQL/CSV/TXT 数据源后，调用 `load_graph_from_upload(filename=...)`。
 
 工具内部会先经过 LLM 预检（FileFormatPreCheckSubAgent），自动识别：
 - **binary / JSON**（.npz / .pt / .json）→ 结构化直接加载，同步返回

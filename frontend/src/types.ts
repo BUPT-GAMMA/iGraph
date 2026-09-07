@@ -161,6 +161,38 @@ export type Dataset = {
   created_at?: string;
   updated_at?: string;
 };
+
+export type ConstructionState = {
+  dataset_id: string;
+  status: 'not_built' | 'algorithm_unavailable' | 'ready' | 'failed';
+  revision: number;
+  node_count?: number;
+  edge_count?: number;
+  directed?: boolean;
+  source_filename?: string;
+  source_type?: string;
+  algorithm_available?: boolean;
+  message?: string;
+};
+export type ConstructionOperation =
+  | { op: 'collapse_node'; node_id: string; edge_type: string }
+  | { op: 'node_property_to_edge'; node_id: string; property: string; edge_ids: string[]; target_property?: string; remove_from_node: boolean }
+  | { op: 'extract_property_node'; node_ids: string[]; property: string; node_type: string; edge_type: string; remove_from_node: boolean }
+  | { op: 'delete'; target: 'node' | 'edge'; ids: string[]; property?: string; cascade?: boolean }
+  | { op: 'reverse_edges'; edge_ids: string[] }
+  | { op: 'rename_type'; target: 'node' | 'edge'; old_type: string; new_type: string };
+export type ConstructionGraph = { dataset_id: string; revision: number; graph: GraphData };
+export type ConstructionResult = ConstructionGraph & {
+  success: boolean;
+  status: 'preview' | 'ready';
+  base_revision: number;
+  summary: {
+    before: { node_count: number; edge_count: number };
+    after: { node_count: number; edge_count: number };
+    changed_nodes: number;
+    changed_edges: number;
+  };
+};
 export type AttachmentRef = { file_token: string; filename: string };
 export type DraftPhase = 'editing' | 'creating_session' | 'uploading' | 'starting_run' | 'failed';
 export type DraftAttachment = {

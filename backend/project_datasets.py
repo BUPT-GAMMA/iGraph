@@ -142,6 +142,10 @@ class ProjectDatasetDirectory:
                 created_at=now,
                 updated_at=now,
             )
+            if record.file_type in {"sql", "csv", "txt"}:
+                record.status = "source_ready"
+                record.metadata = {"construction": {"status": "not_built", "revision": 0,
+                    "source_type": record.file_type}, "dataset_kind": "construction_source"}
             records[dataset_id] = record
             try:
                 self._write(records)

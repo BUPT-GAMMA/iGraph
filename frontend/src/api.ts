@@ -1,6 +1,6 @@
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
-import type { ActiveRun, AttachmentRef, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionState, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
@@ -197,7 +197,32 @@ export async function setSessionDataset(sessionId: string, datasetId: string | n
 }
 export async function uploadFile(sessionId: string, file: File, signal?: AbortSignal) {
   const body = new FormData(); body.append('file', file);
-  return json<{ success: boolean; filename: string; file_token: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/upload`, { method: 'POST', body, signal });
+  return json<{ success: boolean; filename: string; file_token: string; dataset?: Dataset; construction_required?: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/upload`, { method: 'POST', body, signal });
+}
+
+function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
+  return `${datasetScopeUrl(dataset.project_id)}/${encodeURIComponent(dataset.dataset_id)}/construction`;
+}
+export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
+  return json<ConstructionState>(constructionUrl(dataset), { signal });
+}
+export function buildDatasetGraph(dataset: Dataset) {
+  return json<ConstructionState>(`${constructionUrl(dataset)}/build`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+  });
+}
+export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
+  return json<ConstructionGraph>(`${constructionUrl(dataset)}/graph`, { signal });
+}
+export function previewConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[]) {
+  return json<ConstructionResult>(`${constructionUrl(dataset)}/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
+  });
+}
+export function commitConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[]) {
+  return json<ConstructionResult>(`${constructionUrl(dataset)}/commit`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
+  });
 }
 export async function visualizeGraph(sessionId: string, options: Record<string, unknown> = {}, signal?: AbortSignal): Promise<GraphData> {
   const value = await json<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/visualize`, {

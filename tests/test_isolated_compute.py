@@ -271,6 +271,73 @@ def test_document_worker_preserves_history_across_processes_and_atomic_publicati
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('tool', ['upload_document', 'retrieve_context', 'load_graph_classification_dataset'])
+def test_independent_worker_succeeds_while_active_graph_is_replaced(service, tmp_path, monkeypatch, tool):
+    """Resource-independent work must not acquire an implicit graph dependency."""
+    from graph_data_service.graph_data import GraphData
+    from graph_data_service.worker_process import WorkerProcess
+    import numpy as np
+    monkeypatch.setenv('EMBEDDING_PROVIDER', 'lexical')
+
+    async def scenario():
+        session = service.get_required('s', user_id='alice')
+        if tool == 'retrieve_context':
+            loaded = await isolated(service, 'upload_document', {'content': 'independent document content'})
+            assert loaded['success'], loaded
+            arguments = {'query': 'independent document content'}
+        elif tool == 'load_graph_classification_dataset':
+            import torch
+            from tests.fixtures.graph_classification import make_graph_classification_payload
+            source = tmp_path / 'parallel-hiv.pt'
+            torch.save(make_graph_classification_payload(), source)
+            session.register_upload('parallel-hiv', 'parallel-hiv.pt', str(source))
+            arguments = {'filename': 'parallel-hiv.pt', 'dataset_profile': 'hiv'}
+        else:
+            arguments = {'content': 'independent document content'}
+
+        original_version = session.graph_version
+        async def graph_replaced_after_worker_start(_context, _identity):
+            session.set_graph(GraphData(num_nodes=2, edge_index=np.array([[0], [1]])))
+        service._execution_host.worker_started = graph_replaced_after_worker_start
+        worker_run = WorkerProcess.run
+        async def capture_input(worker, payload, *args, **kwargs):
+            assert payload['graph_path'] is None, 'Independent tools must not copy/load a graph snapshot'
+            return await worker_run(worker, payload, *args, **kwargs)
+        monkeypatch.setattr(WorkerProcess, 'run', capture_input)
+
+        result = await isolated(service, tool, arguments)
+        assert result['success'], result
+        assert session.graph_version == original_version + 1
+        assert session.get_graph().num_nodes == 2
+        if tool == 'retrieve_context':
+            assert result['chunks'][0]['text'] == 'independent document content'
+        elif tool == 'upload_document':
+            assert (session._session_dir / 'rag_manifest.json').is_file()
+        else:
+            bundle = service._graph_ml.resolve_graph_classification_dataset('alice:s', result['dataset']['dataset_id'])
+            assert len(bundle.graphs) == 6
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('tool,arguments', [
+    ('degree_analysis', {}), ('load_graph', {'edge_text': 'A B\nB C'}),
+])
+def test_graph_worker_still_rejects_a_changed_input_version(service, tool, arguments):
+    from graph_data_service.graph_data import GraphData
+    import numpy as np
+    async def scenario():
+        session = service.get_required('s', user_id='alice')
+        original_version = session.graph_version
+        async def graph_replaced_after_worker_start(_context, _identity):
+            session.set_graph(GraphData(num_nodes=2, edge_index=np.array([[0], [1]])))
+        service._execution_host.worker_started = graph_replaced_after_worker_start
+        with pytest.raises(ValueError, match='GRAPH_VERSION_CHANGED'):
+            await isolated(service, tool, arguments)
+        assert session.graph_version == original_version + 1
+        assert session.get_graph().num_nodes == 2
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('profile', ['hiv', 'pcba'])
 @pytest.mark.parametrize('model', ['GCN', 'GAT', 'SAGE'])
 def test_isolated_graph_classification_train_and_infer_keep_explicit_dataset_contract(service, tmp_path, profile, model):

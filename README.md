@@ -73,7 +73,7 @@ graph_engine/             Graph Engine 一级入口与基础能力
 graph_data_service/       Graph Engine HTTP 实现兼容命名空间
 mcp_service/              Graph Engine MCP 实现兼容命名空间
 deploy/                   四模块镜像和依赖
-tests/                    旧契约与回归测试（本次重构未在本机运行）
+tests/                    接口契约、构图、DAG 并行、会话与回归测试
 docs/                     设计、迁移和部署文档
 ```
 

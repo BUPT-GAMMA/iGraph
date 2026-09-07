@@ -17,6 +17,7 @@ from agent_runtime.learning import create_learning_machine
 from agent_runtime.model_factory import allowed_model, create_model
 from agent_runtime.skills_runtime import build_skills
 from agent_runtime.cancellation_compat import ControlledAgent, cancellable_tool_hook
+from agent_runtime.construction_state import construction_tool_hook
 
 
 AGENT_ID = "igraph-agent"
@@ -76,7 +77,7 @@ def create_igraph_factory(
             reasoning=options.reasoning_mode == "staged" or options.planning_mode == "always",
             stream_events=True,
             store_events=True,
-            tool_hooks=[cancellable_tool_hook] if execution_controller else None,
+            tool_hooks=([cancellable_tool_hook] if execution_controller else []) + [construction_tool_hook],
         )
         if execution_controller:
             agent.execution_controller = execution_controller

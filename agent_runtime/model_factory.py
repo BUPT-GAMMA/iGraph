@@ -6,6 +6,7 @@ import os
 
 from agno.models.openai.like import OpenAILike
 from agent_runtime.cancellation_compat import CancellableOpenAILike
+from agent_runtime.tool_dag import DAGModelMixin
 from execution_protocol import controls_enabled
 
 from agent_runtime.config import AgentRuntimeConfig
@@ -13,6 +14,14 @@ from agent_runtime.model_registry import SUPPORTED_MODELS, normalize_model_name,
 import re
 
 CUSTOM_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
+
+
+class DAGOpenAILike(DAGModelMixin, OpenAILike):
+    pass
+
+
+class CancellableDAGOpenAILike(DAGModelMixin, CancellableOpenAILike):
+    pass
 
 
 def _first_env(*names: str, fallback: str = "") -> str:
@@ -58,7 +67,7 @@ def create_model(model_id: str, config: AgentRuntimeConfig, custom_model: dict |
     else:
         normalized = normalize_model_name(model_id, default=config.default_model)
         api_key, base_url = _endpoint(normalized, config)
-    constructor = CancellableOpenAILike if controls_enabled() else OpenAILike
+    constructor = CancellableDAGOpenAILike if controls_enabled() else DAGOpenAILike
     return constructor(
         id=normalized,
         api_key=api_key,

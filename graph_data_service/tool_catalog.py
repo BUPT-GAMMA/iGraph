@@ -7,13 +7,17 @@
 新增工具步骤：
   1. 在 graph_data_service/compute.py 实现算法
   2. 在此文件 GRAPH_TOOLS 列表末尾添加一条规格
-  3. 完成 —— MCP 注册、system prompt、native FC 参数全部自动生效
+  3. 在 graph_engine/tool_execution.py 声明读写资源；未经分类的工具按屏障执行
+  4. 完成 —— MCP 注册、system prompt、native FC 参数全部自动生效
 """
 
 from __future__ import annotations
 
 import os
 from typing import List
+
+from graph_engine.construction_catalog import CONSTRUCTION_TOOLS
+from graph_engine.tool_execution import get_tool_execution_metadata
 
 _REPORTING_TOOLS_ENV = "MCP_ENABLE_REPORTING_TOOLS"
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
@@ -1806,6 +1810,10 @@ INTERNAL_TOOLS: List[dict] = [
 ]
 
 
+for _tool_spec in [*GRAPH_TOOLS, *GRAPH_ML_TOOLS, *REPORTING_TOOLS, *INTERNAL_TOOLS]:
+    _tool_spec["execution"] = get_tool_execution_metadata(_tool_spec["name"])
+
+
 def _reporting_tools_enabled_from_env() -> bool:
     value = os.getenv(_REPORTING_TOOLS_ENV, "").strip().lower()
     if value in _FALSE_ENV_VALUES:
@@ -1818,7 +1826,7 @@ def get_all_public_tools(
     include_reporting: bool | None = None,
 ) -> List[dict]:
     """返回对 LLM 暴露的工具规格列表。"""
-    tools = list(GRAPH_TOOLS)
+    tools = [*GRAPH_TOOLS, *CONSTRUCTION_TOOLS]
     if include_reporting is None:
         include_reporting = _reporting_tools_enabled_from_env()
     if include_reporting:

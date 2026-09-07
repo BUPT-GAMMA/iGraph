@@ -11,6 +11,8 @@ import { draftScopeKey, conversationReducer, createSessionView, initialConversat
 import { DatasetPanel } from './components/DatasetPanel';
 import { ChatPane } from './components/ChatPane';
 import { GraphWorkspace } from './components/GraphWorkspace';
+import { GraphConstructionPanel } from './components/GraphConstructionPanel';
+import { constructionLabel, supportsConstruction } from './construction';
 import { BrandLogo, Icon } from './components/Icon';
 import { ManagementPanel } from './components/ManagementPanel';
 import { DeleteProjectDialog, ProjectDialog } from './components/ProjectDialogs';
@@ -174,6 +176,7 @@ function App() {
   const [workspaceError, setWorkspaceError] = useState('');
   const [datasetsByProject, setDatasetsByProject] = useState<Record<string, Dataset[]>>({});
   const [datasetOpen, setDatasetOpen] = useState(false);
+  const [constructionDataset, setConstructionDataset] = useState<Dataset | null>(null);
   const [managementOpen, setManagementOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [managementTab, setManagementTab] = useState<'memory' | 'skills'>('memory');
@@ -1026,6 +1029,10 @@ function App() {
       try {
         const uploaded = await uploadFile(sessionId, pending.file, preparationController.signal);
         if (preparationController.signal.aborted || conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.generation !== generation) return;
+        if (uploaded.dataset) {
+          const sourceDataset = uploaded.dataset;
+          updateProjectDatasets(sourceDataset.project_id, current => [...current.filter(item => item.dataset_id !== sourceDataset.dataset_id), sourceDataset]);
+        }
         const attachment = { file_token: uploaded.file_token, filename: uploaded.filename || pending.filename };
         attachments = [...attachments.filter(item => item.file_token !== attachment.file_token), attachment];
         pendingAttachments = pendingAttachments.filter(item => item.localId !== pending.localId);
@@ -1302,11 +1309,16 @@ function App() {
     dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
     try {
       const uploaded = await uploadFile(sessionId, file);
+      if (uploaded.dataset) {
+        const sourceDataset = uploaded.dataset;
+        updateProjectDatasets(sourceDataset.project_id, current => [...current.filter(item => item.dataset_id !== sourceDataset.dataset_id), sourceDataset]);
+        if (uploaded.construction_required && conversationRef.current.activeSessionId === sessionId) openConstruction(sourceDataset);
+      }
       const attachment = { file_token: uploaded.file_token, filename: uploaded.filename || file.name };
       const currentAttachments = conversationRef.current.viewsBySessionId[sessionId]?.attachments || [];
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [...currentAttachments.filter(item => item.file_token !== attachment.file_token), attachment] } });
       if (!selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
-        dispatchConversation({ type: 'APPEND_MESSAGES', sessionId, messages: [{ role: 'user', content: `上传文件 ${attachment.filename}` }, { role: 'assistant', content: `文件「${attachment.filename}」已上传。请发送加载或分析指令。` }] });
+        dispatchConversation({ type: 'APPEND_MESSAGES', sessionId, messages: [{ role: 'user', content: `上传文件 ${attachment.filename}` }, { role: 'assistant', content: uploaded.construction_required ? `文件「${attachment.filename}」已保存到数据集。可从数据集列表的“构图”入口继续；构图算法接入后即可生成并复用图数据。` : `文件「${attachment.filename}」已上传。请发送加载或分析指令。` }] });
       }
     } catch (cause: any) { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '上传失败' } }); }
     finally { dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } }); }
@@ -1387,6 +1399,7 @@ function App() {
     catch (cause: any) { setWorkspaceError(cause.message || '数据集加载失败'); }
   }
   async function chooseDataset(dataset: Dataset) {
+    if (dataset.status === 'source_ready') { openConstruction(dataset); return; }
     const draftProjectId = conversationRef.current.activeDraftKey;
     const currentDraft = draftProjectId ? conversationRef.current.draftsByScope[draftProjectId] : null;
     if (currentDraft) {
@@ -1448,7 +1461,8 @@ function App() {
       setProjects(current => current.map(project => project.project_id === projectId ? { ...project, default_dataset_id: response.default_dataset_id } : project));
       setActiveProject(current => current?.project_id === projectId ? { ...current, default_dataset_id: response.default_dataset_id } : current);
       const currentDraft = conversationRef.current.draftsByScope[draftScopeKey(projectId)];
-      if (draftProjectId === draftScopeKey(projectId) && currentDraft && currentDraft.draftId === draftId) {
+      if (response.dataset.status === 'source_ready') openConstruction(response.dataset);
+      if (response.dataset.status === 'ready' && draftProjectId === draftScopeKey(projectId) && currentDraft && currentDraft.draftId === draftId) {
         dispatchConversation({ type: 'PATCH_DRAFT', projectId, draftId: currentDraft.draftId, patch: { activeDatasetId: response.dataset.dataset_id, error: undefined } });
       }
       if (response.activated_session_id && sessionId && graphVersion !== undefined) {
@@ -1480,6 +1494,32 @@ function App() {
       setProjects(current => current.map(project => project.project_id === dataset.project_id ? { ...project, default_dataset_id: dataset.dataset_id } : project));
       setActiveProject(current => current?.project_id === dataset.project_id ? { ...current, default_dataset_id: dataset.dataset_id } : current);
     } catch (cause: any) { setWorkspaceError(cause.message || '默认数据集设置失败'); }
+  }
+  function openConstruction(dataset: Dataset) {
+    setDatasetOpen(false);
+    setConstructionDataset(dataset);
+  }
+  function constructionSaved(dataset: Dataset, nextGraph: GraphData, revision: number) {
+    const updated: Dataset = { ...dataset, status: 'ready', metadata: { ...dataset.metadata, num_nodes: nextGraph.nodes.length, num_edges: nextGraph.edges.length, construction: { status: 'ready', revision } } };
+    updateProjectDatasets(dataset.project_id, current => current.map(item => item.dataset_id === dataset.dataset_id ? updated : item));
+    setConstructionDataset(current => current?.dataset_id === dataset.dataset_id ? updated : current);
+  }
+  async function useConstructedDataset(dataset: Dataset) {
+    const current = conversationRef.current;
+    const currentDraft = current.activeDraftKey ? current.draftsByScope[current.activeDraftKey] : null;
+    if (currentDraft) {
+      dispatchConversation({ type: 'PATCH_DRAFT', projectId: currentDraft.projectId, draftId: currentDraft.draftId, patch: { activeDatasetId: dataset.dataset_id, phase: 'editing', error: undefined } });
+      return;
+    }
+    const sessionId = current.activeSessionId;
+    if (!sessionId) return;
+    if (selectRunGate(current.viewsBySessionId[sessionId]).blocksSessionMutation) throw new Error('当前任务完成后才能切换数据集；构图结果已经保存。');
+    await setSessionDataset(sessionId, dataset.dataset_id);
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { activeDatasetId: dataset.dataset_id } });
+    const loaded = await refreshSessionGraph(sessionId, {}, true);
+    if (!loaded) throw new Error('数据集已选中，但图预览加载失败，请稍后重试。');
+    setSessions(previous => previous.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: dataset.dataset_id, has_graph: true } : session));
+    setGraphOpen(true); setGraphTab('Graph');
   }
   async function renameDataset(dataset: Dataset) {
     const name = window.prompt('数据集名称', dataset.name)?.trim();
@@ -1534,7 +1574,7 @@ function App() {
       <div className="main-column">
         {activeProject ? <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
-          <ProjectWorkspace project={activeProject} datasets={datasets} busy={busy || uploading} onUpload={file => addProjectDataset(file, false)} onSetDefault={makeDefaultDataset} onRename={renameDataset} onDelete={removeDataset} />
+          <ProjectWorkspace onConstruct={openConstruction} project={activeProject} datasets={datasets} busy={busy || uploading} onUpload={file => addProjectDataset(file, false)} onSetDefault={makeDefaultDataset} onRename={renameDataset} onDelete={removeDataset} />
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
           {activeDraft
@@ -1544,10 +1584,11 @@ function App() {
             : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>开始新的图分析</h1><p>选择左侧已有会话，或创建一个新任务。</p><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button></div></div>}
         </>}
       </div>
-      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
+      {activeSession && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : '构图'} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
     </div>
     {activeDraft && !activeDraft.projectId && recoveredDrafts.length > 0 && <div className="recovered-draft-notice" role="status"><button className="text-button" onClick={recoverOldDraft}>恢复升级前草稿（{recoveredDrafts.length}）</button></div>}
-    {datasetOpen && <DatasetPanel datasets={datasets} projectName={workspaceProject?.name} activeDatasetId={activeDatasetId} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, Boolean(activeSession))} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
+    {datasetOpen && <DatasetPanel onConstruct={openConstruction} datasets={datasets} projectName={workspaceProject?.name} activeDatasetId={activeDatasetId} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, Boolean(activeSession))} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
+    {constructionDataset && <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onUse={activeSession || activeDraft ? useConstructedDataset : undefined} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
     {projectEditor && <ProjectDialog key={`${projectEditor}-${projectEditorTarget?.project_id || 'new'}`} project={projectEditor === 'edit' ? projectEditorTarget : null} onClose={() => { setProjectEditor(null); setProjectEditorTarget(null); }} onSave={saveProject} />}
     {deleteProjectTarget && <DeleteProjectDialog project={deleteProjectTarget} onClose={() => setDeleteProjectTarget(null)} onConfirm={deleteCurrentProject} />}
