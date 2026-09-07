@@ -6,7 +6,7 @@ import { BrandLogo, Icon } from './Icon';
 function planCard(plan?: Plan | null) {
   if (!plan?.steps?.length) return null;
   const done = plan.steps.filter(step => step.status === 'done' || step.status === 'completed').length;
-  return <div className="plan-card"><div className="card-heading"><strong>分析计划</strong><span>{done} / {plan.steps.length} completed</span></div>{plan.steps.map((step, index) => <div className="plan-step" key={`${step.step_id}-${index}`}><span className={step.status === 'running' ? 'step-dot running' : 'step-dot'}>{step.status === 'done' || step.status === 'completed' ? <Icon name="check" size={12} /> : index + 1}</span><span>{step.goal || step.result_summary || '分析步骤'}</span></div>)}</div>;
+  return <div className="plan-card"><div className="card-heading"><strong>分析计划</strong><span>{done} / {plan.steps.length} 已完成</span></div>{plan.steps.map((step, index) => <div className="plan-step" key={`${step.step_id}-${index}`}><span className={step.status === 'running' ? 'step-dot running' : 'step-dot'}>{step.status === 'done' || step.status === 'completed' ? <Icon name="check" size={12} /> : index + 1}</span><span>{step.goal || step.result_summary || '分析步骤'}</span></div>)}</div>;
 }
 
 function toolList(tools?: ToolCall[]) {
@@ -16,7 +16,7 @@ function toolList(tools?: ToolCall[]) {
     const epoch = Number(progress.epoch);
     const epochs = Number(progress.epochs);
     const hasEpoch = Number.isFinite(epoch) && Number.isFinite(epochs) && epochs > 0;
-    const progressLabel = hasEpoch ? `epoch ${epoch}/${epochs}` : progress.message;
+    const progressLabel = hasEpoch ? `轮次 ${epoch}/${epochs}` : progress.message;
     return <div className="tool-row" key={`${tool.tool}-${index}`}>
       <span className={tool.done ? 'tool-state done' : 'tool-state'}>{tool.done ? <Icon name="check" size={12} /> : <span className="loader" />}</span>
       <span>{tool.tool || 'graph_tool'}</span>
@@ -131,6 +131,7 @@ function renderContent(content: string, role: Message['role']) { return role ===
 export type ChatPaneProps = ConversationInputAreaProps & {
   messages: Message[];
   conversationKey?: string;
+  emptyProjectName?: string;
   hasGraph: boolean;
   onOpenGraph: () => void;
   runTools?: ToolCall[];
@@ -143,7 +144,7 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', hasGraph, onOpenGraph, runTools, plan, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, ...inputProps }: ChatPaneProps) {
   const composerAvailable = inputProps.interaction.kind === 'composer';
   const scrollRef = useRef<HTMLDivElement>(null);
   const sticksToBottomRef = useRef(true);
@@ -192,7 +193,7 @@ export function ChatPane({ messages, conversationKey = 'default', hasGraph, onOp
 
   return <main className="chat-pane">
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>开始图分析</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange('请检查当前图的结构和基本属性')}>检查图结构</button><button onClick={() => inputProps.onChange('请计算节点的度数并找出最大度节点')}>计算图节点度数</button><button onClick={() => inputProps.onChange('请帮我进行社区检测')}>进行社区检测</button></div> : null}</div> : messages.map((message, index) => <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}><div className={`message-avatar ${message.role}`}>{message.role === 'assistant' ? <Icon name="spark" size={15} /> : 'A'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'iGraph Agent' : '你'}</div><div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{planCard(message.plan)}{toolList(message.tools)}{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>)}
+      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>开始在 <span className="empty-project-name">{emptyProjectName}</span> 中图分析</> : '开始图分析'}</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange('请检查当前图的结构和基本属性')}>检查图结构</button><button onClick={() => inputProps.onChange('请计算节点的度数并找出最大度节点')}>计算图节点度数</button><button onClick={() => inputProps.onChange('请帮我进行社区检测')}>进行社区检测</button></div> : null}</div> : messages.map((message, index) => <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}><div className={`message-avatar ${message.role}`}>{message.role === 'assistant' ? <Icon name="spark" size={15} /> : 'A'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'iGraph 助手' : '你'}</div><div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{planCard(message.plan)}{toolList(message.tools)}{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>)}
       {inputProps.loading && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{planCard(plan)}{toolList(runTools)}</div> : null}
       {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图已加载 · 在右侧工作台查看</button> : null}
     </div>

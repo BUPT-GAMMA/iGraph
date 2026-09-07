@@ -52,8 +52,8 @@ describe('conversationReducer session/run isolation', () => {
     let state = conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft: draftA });
     state = conversationReducer(state, { type: 'OPEN_DRAFT', draft: { ...draftA, draftId: 'replacement', text: '' } });
 
-    expect(state.draftsByProjectId['project-a']).toEqual(draftA);
-    expect(state.activeDraftProjectId).toBe('project-a');
+    expect(state.draftsByScope['project-a']).toEqual(draftA);
+    expect(state.activeDraftKey).toBe('project-a');
     expect(state.activeSessionId).toBeNull();
     expect(state.viewsBySessionId).toEqual({});
   });
@@ -62,9 +62,9 @@ describe('conversationReducer session/run isolation', () => {
     let state = conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft: { draftId: 'A', projectId: 'project-a', phase: 'editing', text: 'A text', model: 'm', activeDatasetId: null, attachments: [] } });
     state = conversationReducer(state, { type: 'OPEN_DRAFT', draft: { draftId: 'B', projectId: 'project-b', phase: 'editing', text: 'B text', model: 'm', activeDatasetId: null, attachments: [] } });
 
-    expect(state.activeDraftProjectId).toBe('project-b');
-    expect(state.draftsByProjectId['project-a'].text).toBe('A text');
-    expect(state.draftsByProjectId['project-b'].text).toBe('B text');
+    expect(state.activeDraftKey).toBe('project-b');
+    expect(state.draftsByScope['project-a'].text).toBe('A text');
+    expect(state.draftsByScope['project-b'].text).toBe('B text');
   });
 
   it('materializes a draft atomically into one preparing session', () => {
@@ -80,8 +80,8 @@ describe('conversationReducer session/run isolation', () => {
     });
     state = conversationReducer(state, { type: 'MATERIALIZE_DRAFT', projectId: 'project-a', draftId: 'session-new', sessionId: 'session-new', generation: 'gen', model: 'm', activeDatasetId: 'dataset-a' });
 
-    expect(state.draftsByProjectId['project-a']).toBeUndefined();
-    expect(state.activeDraftProjectId).toBeNull();
+    expect(state.draftsByScope['project-a']).toBeUndefined();
+    expect(state.activeDraftKey).toBeNull();
     expect(state.activeSessionId).toBe('session-new');
     expect(state.viewsBySessionId['session-new']).toEqual(expect.objectContaining({
       draft: 'first turn',

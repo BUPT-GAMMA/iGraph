@@ -5,6 +5,7 @@ GraphData FastAPI app factory.
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import os
 import threading
@@ -46,7 +47,7 @@ from graph_data_service.job_manager import JobManager
 from graph_data_service.execution_host import GraphExecutionHost, JobContext, job_context
 from graph_data_service.worker_contract import ISOLATED_DATA_TOOLS
 from graph_data_service.async_work import run_sync
-from execution_protocol import controls_enabled, require_service
+from execution_protocol import controls_enabled, require_service, service_headers
 from graph_data_service.rag import LightweightRAG
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
 from graph_data_service.session import GraphSession, UploadFileRecord
@@ -262,6 +263,8 @@ class GraphDataService:
         migrate_storage: bool = True,
     ) -> None:
         self._sessions: Dict[str, GraphSession] = {}
+        self._deleted_sessions: set[str] = set()
+        self._session_lifecycle_lock = threading.RLock()
         self._compute = GraphCompute()
         self._graph_ml = GraphMLModule(get_session=self._get_graph_ml_session)
         # Copy legacy datasets and per-user graph snapshots into the
@@ -400,10 +403,13 @@ class GraphDataService:
 
     def get_or_create(self, session_id: str, user_id: str = "") -> GraphSession:
         key = self._session_key(session_id, user_id)
-        if key not in self._sessions:
-            self._sessions[key] = GraphSession(session_id=session_id, user_id=user_id)
-            self._sessions[key].load_snapshot()
-        return self._sessions[key]
+        with self._session_lifecycle_lock:
+            if key in self._deleted_sessions:
+                raise HTTPException(409, {'code': 'SESSION_DELETING'})
+            if key not in self._sessions:
+                self._sessions[key] = GraphSession(session_id=session_id, user_id=user_id)
+                self._sessions[key].load_snapshot()
+            return self._sessions[key]
 
     def get_required(self, session_id: str, user_id: str = "") -> GraphSession:
         key = self._session_key(session_id, user_id)
@@ -412,11 +418,19 @@ class GraphDataService:
             raise HTTPException(status_code=404, detail="会话不存在")
         return session
 
-    def delete_session(self, session_id: str, user_id: str = "") -> None:
+    def delete_session(self, session_id: str, user_id: str = "", *, permanent: bool = False) -> None:
+        with self._session_lifecycle_lock:
+            self._delete_session(session_id, user_id, permanent=permanent)
+
+    def _delete_session(self, session_id: str, user_id: str, *, permanent: bool) -> None:
         if self._execution_host and any(job.user_id == user_id and job.status not in {'done', 'failed', 'cancelled'}
                                        for job in self._job_manager.list_jobs(session_id)):
             raise HTTPException(409, {'code': 'SESSION_EXECUTION_ACTIVE'})
         key = self._session_key(session_id, user_id)
+        if permanent:
+            # Runtime supplies the durable fence after restart. This local fence
+            # also rejects requests admitted remotely just before deletion.
+            self._deleted_sessions.add(key)
         self._graph_ml.release_session(key)
         session = self._sessions.pop(key, None)
         if session is None:
@@ -3413,15 +3427,63 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             raise HTTPException(409, {'code': 'JOB_CANCEL_UNAVAILABLE'})
         return svc._execution_host.cancel_job(_get_user_id(request), sid, jid)
 
+    @app.get('/internal/sessions/{sid}/resource-status')
+    def session_resource_status(sid: str, request: Request):
+        require_service(request)
+        uid = _get_user_id(request)
+        pending = [job.job_id for job in svc._job_manager.list_jobs(sid)
+                   if job.user_id == uid and job.status not in {'done', 'failed', 'cancelled'}]
+        return {'execution_stopped': not pending, 'pending_jobs': pending}
+
+    @app.post('/internal/artifacts/ownership')
+    async def record_artifact_owners(request: Request):
+        require_service(request)
+        uid = request.headers.get('X-User-ID', '')
+        body = await request.json()
+        for item in body.get('sessions', []):
+            svc._graph_ml._store.record_owner(svc._session_key(item['session_id'], uid), uid,
+                                              item['session_id'], item.get('project_id'))
+        return {'success': True}
+
+    @app.delete('/internal/projects/{project_id}/artifacts')
+    async def delete_project_artifacts(project_id: str, request: Request):
+        require_service(request)
+        uid = request.headers.get('X-User-ID', '')
+        body = await request.json()
+        targets = svc._graph_ml._store.project_targets(uid, project_id, body.get('session_ids', []))
+        for owner in targets.values():
+            sid = owner['session_id']
+            if any(job.user_id == uid and job.status not in {'done', 'failed', 'cancelled'}
+                   for job in svc._job_manager.list_jobs(sid)):
+                raise HTTPException(409, {'code': 'SESSION_EXECUTION_ACTIVE'})
+        count = await run_sync(svc._graph_ml._store.delete_project, uid, project_id, body.get('session_ids', []))
+        return {'success': True, 'deleted_sessions': count}
+
+    @app.get('/internal/artifacts/ownership-report')
+    def artifact_ownership_report(request: Request):
+        require_service(request)
+        return svc._graph_ml._store.ownership_report()
+
     @app.get("/datasets")
     def list_datasets_endpoint(request: Request):
         user_id = _get_user_id(request)
         return svc.do_list_datasets(user_id=user_id)
 
     @app.post("/sessions/{session_id}")
-    def create_session(session_id: str, request: Request):
+    async def create_session(session_id: str, request: Request):
         user_id = _get_user_id(request)
-        session = svc.get_or_create(session_id, user_id=user_id)
+        if svc._execution_host:
+            require_service(request)
+            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                response = await client.get(svc._execution_host.runtime_url + f'/internal/sessions/{session_id}/admission',
+                                            headers=service_headers(user_id))
+                if response.status_code >= 400:
+                    raise HTTPException(response.status_code, response.json().get('detail'))
+        body = await request.json() if await request.body() else {}
+        with svc._session_lifecycle_lock:
+            session = svc.get_or_create(session_id, user_id=user_id)
+            if 'project_id' in body:
+                svc._graph_ml._store.record_owner(svc._session_key(session_id, user_id), user_id, session_id, body['project_id'])
         _service_logger(session_id, "graph_data", user_id=user_id).event(
             "SESSION_CREATE", graph_version=session.graph_version
         )
@@ -3434,7 +3496,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @app.patch("/sessions/{session_id}/config")
     def update_session_config(session_id: str, body: dict, request: Request):
         user_id = _get_user_id(request)
-        session = svc.get_or_create(session_id, user_id=user_id)
+        session = svc.get_required(session_id, user_id=user_id)
         if "llm_model" in body:
             session.llm_model = str(body["llm_model"] or "")
         return {"success": True, "session_id": session_id}
@@ -3445,10 +3507,12 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         return svc.do_delete_dataset(dataset_id, user_id=user_id)
 
     @app.delete("/sessions/{session_id}")
-    def delete_session(session_id: str, request: Request):
+    def delete_session(session_id: str, request: Request, permanent: bool = False):
         user_id = _get_user_id(request)
+        if permanent:
+            require_service(request)
         _service_logger(session_id, "graph_data", user_id=user_id).event("SESSION_DELETE")
-        svc.delete_session(session_id, user_id=user_id)
+        svc.delete_session(session_id, user_id=user_id, permanent=permanent)
         close_service_loggers(session_id)
         return {"success": True, "session_id": session_id}
 

@@ -97,6 +97,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     if controller:
         @app.middleware('http')
         async def protect_native_execution(request: Request, call_next):
+            creating = None
             path = request.url.path.removeprefix(request.scope.get('root_path', '')).strip('/').split('/')
             if request.method == 'POST' and path == ['sessions']:
                 uid = str(getattr(request.state, 'user_id', '') or request.headers.get('X-User-ID', ''))
@@ -105,9 +106,24 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
                 except ValueError:
                     body = None  # Keep native request validation for malformed JSON.
                 if uid and isinstance(body, dict) and isinstance(body.get('session_id'), str):
+                    pid = (body.get('session_state') or {}).get('project_id')
+                    try:
+                        require_service(request)
+                        if body.get('user_id') and body['user_id'] != uid:
+                            raise ControlError('EXECUTION_OWNER_MISMATCH', 403)
+                        await controller.call(controller.store.register_project_session, uid, pid, body['session_id'])
+                    except ControlError as exc:
+                        return JSONResponse({'detail': {'code': exc.code}}, status_code=exc.status)
+                    except HTTPException as exc:
+                        return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
                     deletion = await controller.call(controller.store.session_deletion, uid, body['session_id'])
                     if deletion:
                         return JSONResponse({'detail': {'code': 'SESSION_DELETING'}}, status_code=409)
+                    try:
+                        await controller.call(controller.store.native_creation, uid, body['session_id'], started=True)
+                        creating = (uid, body['session_id'])
+                    except ControlError as exc:
+                        return JSONResponse({'detail': {'code': exc.code}}, status_code=exc.status)
             if request.method == 'GET' and len(path) >= 2 and path[0] == 'sessions':
                 uid = str(getattr(request.state, 'user_id', '') or request.headers.get('X-User-ID', ''))
                 if uid:
@@ -150,7 +166,11 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
                     return JSONResponse({'detail': {'code': exc.code}}, status_code=exc.status)
                 except HTTPException as exc:
                     return JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
-            return await call_next(request)
+            try:
+                return await call_next(request)
+            finally:
+                if creating:
+                    await asyncio.shield(controller.call(controller.store.native_creation, *creating, started=False))
     return app
 
 

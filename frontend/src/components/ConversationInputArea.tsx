@@ -60,7 +60,7 @@ export function ConversationInputArea({ interaction, onFeedback, ...composerProp
     <section className="confirmation-card" aria-labelledby="feedback-approval-heading" aria-busy={submitting} onKeyDownCapture={blockEnter}>
       <div ref={headingRef} tabIndex={-1} className="confirmation-heading" id="feedback-approval-heading">
         <span className="confirmation-mark"><Icon name="settings" size={15} /></span>
-        <div><strong>{submitting ? '正在提交确认' : 'Agent 请求确认'}</strong><span>{feedback.tool_name || '图机器学习工具'}</span></div>
+        <div><strong>{submitting ? '正在提交确认' : '助手请求确认'}</strong><span>{feedback.tool_name || '图机器学习工具'}</span></div>
       </div>
       <p>{feedback.description || '该操作可能消耗较多计算资源，请确认是否继续。'}</p>
       {args ? <details className="confirmation-arguments" open><summary>查看操作参数</summary><pre>{args}</pre></details> : null}

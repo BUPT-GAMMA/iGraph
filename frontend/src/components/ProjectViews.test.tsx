@@ -30,31 +30,31 @@ describe('project dialogs', () => {
     expect(screen.getByText('保存中…')).toBeTruthy();
   });
 
-  it('shows save failures and supports editing default projects', async () => {
+  it('shows save failures and allows renaming ordinary projects', async () => {
     const onSave = vi.fn().mockRejectedValue(new Error('名称重复'));
-    const existing = { ...project, is_default: true };
+    const existing = { ...project };
     const { container } = render(<ProjectDialog project={existing} onClose={vi.fn()} onSave={onSave} />);
 
     expect(screen.getByText('编辑项目')).toBeTruthy();
-    expect((screen.getByLabelText('项目名称') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('项目名称') as HTMLInputElement).disabled).toBe(false);
     fireEvent.submit(container.querySelector('form')!);
     await waitFor(() => expect(screen.getByText('名称重复')).toBeTruthy());
     expect(screen.getByRole('button', { name: '保存' })).toBeTruthy();
   });
 
-  it('chooses how to delete a project and reports failures', async () => {
+  it('confirms the complete deletion scope and retries failures', async () => {
     const onConfirm = vi.fn().mockRejectedValueOnce(new Error('删除失败')).mockResolvedValueOnce(undefined);
     render(<DeleteProjectDialog project={project} onClose={vi.fn()} onConfirm={onConfirm} />);
 
-    expect(screen.getByText('该项目包含 2 个会话。请选择这些会话的处理方式。')).toBeTruthy();
-    fireEvent.click(screen.getByRole('radio', { name: /删除项目和全部会话/ }));
-    fireEvent.click(screen.getByRole('button', { name: '继续' }));
+    expect(screen.getByText(/该项目包含 2 个会话、0 个数据集/)).toBeTruthy();
+    expect(screen.getByText(/停止相关任务.*训练模型/)).toBeTruthy();
+    expect(screen.queryByRole('radio')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '删除项目及全部内容' }));
     await waitFor(() => expect(screen.getByText('删除失败')).toBeTruthy());
-    expect(onConfirm).toHaveBeenNthCalledWith(1, 'delete');
+    expect(onConfirm).toHaveBeenNthCalledWith(1);
 
-    fireEvent.click(screen.getByRole('radio', { name: /移动到 General/ }));
-    fireEvent.click(screen.getByRole('button', { name: '继续' }));
-    await waitFor(() => expect(onConfirm).toHaveBeenNthCalledWith(2, 'move_to_general'));
+    fireEvent.click(screen.getByRole('button', { name: '删除项目及全部内容' }));
+    await waitFor(() => expect(onConfirm).toHaveBeenNthCalledWith(2));
   });
 });
 
@@ -73,11 +73,13 @@ describe('project workspace and top bar', () => {
     const { container, rerender } = render(<ProjectWorkspace project={project} datasets={[]} {...callbacks} />);
 
     expect(screen.getByText('还没有数据集')).toBeTruthy();
-    expect(screen.getByText('No default selected')).toBeTruthy();
+    expect(screen.queryByText('上传第一个数据集后，它会自动成为项目默认数据集。')).toBeNull();
+    expect(screen.queryByText('未设置默认数据集')).toBeNull();
+    expect(screen.queryByText('项目中的会话可选择这些数据源，并保持各自的运行时状态。')).toBeNull();
     rerender(<ProjectWorkspace project={project} datasets={datasets} {...callbacks} />);
-    expect(screen.getByText('1,000 nodes · 2,000 edges')).toBeTruthy();
+    expect(screen.getByText('1,000 个节点 · 2,000 条边')).toBeTruthy();
     expect(screen.getByText('notes.csv')).toBeTruthy();
-    expect(screen.getByText('Default ready')).toBeTruthy();
+    expect(screen.queryByText('已设置默认数据集')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '设为默认' }));
     fireEvent.click(screen.getAllByTitle('重命名')[1]);
@@ -91,13 +93,13 @@ describe('project workspace and top bar', () => {
     expect(callbacks.onUpload).toHaveBeenCalledWith(file);
   });
 
-  it('renders default project fallbacks and disables actions while busy', () => {
-    const defaultProject = { ...project, description: '', is_default: true, conversation_count: 0 };
+  it('omits project fallback copy and disables actions while busy', () => {
+    const defaultProject = { ...project, description: '', conversation_count: 0 };
     const dataset: Dataset = { dataset_id: 'dataset-1', project_id: project.project_id, name: 'Cora', original_filename: 'cora.pt', file_type: 'pt', status: 'ready' };
     render(<ProjectWorkspace project={defaultProject} datasets={[dataset]} busy onUpload={vi.fn()} onSetDefault={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} />);
 
-    expect(screen.getByText('集中管理这个项目中的图分析会话。')).toBeTruthy();
-    expect(screen.getByText('General workspace')).toBeTruthy();
+    expect(screen.queryByText('集中管理这个项目中的图分析会话。')).toBeNull();
+    expect(screen.queryByText('项目工作区')).toBeNull();
     expect((screen.getByRole('button', { name: /添加数据集/ }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '设为默认' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTitle('重命名') as HTMLButtonElement).disabled).toBe(true);

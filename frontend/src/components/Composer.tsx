@@ -1,10 +1,28 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { CustomModel } from '../api';
 import type { AttachmentRef, DraftAttachment } from '../types';
 import { Icon } from './Icon';
 
 export type ComposerAttachment = AttachmentRef | DraftAttachment;
+
+function resizeComposerInput(textarea: HTMLTextAreaElement | null) {
+  if (!textarea || !textarea.clientWidth) return;
+  const style = getComputedStyle(textarea);
+  const lineHeight = parseFloat(style.lineHeight);
+  const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+  const minimum = 2 * lineHeight + padding + border;
+  const maximum = 6 * lineHeight + padding + border;
+  const scrollTop = textarea.scrollTop;
+  // Measure wrapped content at the current width, including pasted text.
+  textarea.style.overflowY = 'hidden';
+  textarea.style.height = 'auto';
+  const contentHeight = textarea.value ? textarea.scrollHeight + border : minimum;
+  textarea.style.height = `${Math.min(maximum, Math.max(minimum, contentHeight))}px`;
+  textarea.style.overflowY = contentHeight > maximum ? 'auto' : 'hidden';
+  textarea.scrollTop = scrollTop;
+}
 
 function attachmentId(attachment: ComposerAttachment) {
   return 'localId' in attachment ? attachment.localId : attachment.file_token;
@@ -62,6 +80,23 @@ export function Composer({ value, model, models, customModels = [], activeDatase
   const runControlLabel = '终止当前任务';
   const cancellationLabel = cancellation === 'unconfirmed' ? '停止请求尚未确认，可点击方块重试'
     : cancellation === 'saving' ? '已停止，正在保存结果' : stopping ? '正在停止…' : cancellation === 'confirmed' ? '任务已结束' : '';
+  useLayoutEffect(() => { resizeComposerInput(textareaRef.current); }, [value]);
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const resize = () => resizeComposerInput(textarea);
+    let lastWidth = 0;
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(entries => {
+      const width = entries[0].contentRect.width;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      resize();
+    });
+    // Only width changes need another measurement; height changes are our output.
+    observer?.observe(textarea.parentElement!);
+    window.addEventListener('resize', resize);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', resize); };
+  }, []);
   useEffect(() => { if (!disabled) textareaRef.current?.focus(); }, [focusRequest, disabled]);
   useEffect(() => {
     if (!modelOpen) return;
@@ -115,7 +150,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
         const id = attachmentId(attachment);
         return <div className={`attachment-chip ${status ? 'has-status' : ''}`} key={id}><Icon name="file" size={14} /><span title={attachment.filename}>{attachment.filename}</span>{status && <em>{status}</em>}<button type="button" onClick={() => onRemoveAttachment(id)} aria-label={`移除 ${attachment.filename}`} title="移除附件" disabled={loading || uploading}><Icon name="close" size={13} /></button></div>;
       })}</div> : null}
-      <textarea ref={textareaRef} value={value} disabled={disabled} rows={3} placeholder="今天帮你分析什么？粘贴边列表，或直接用自然语言提问" onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (!sendBlocked) onSend(); } }} />
+      <textarea ref={textareaRef} value={value} disabled={disabled} rows={2} placeholder="今天帮你分析什么？粘贴边列表，或直接用自然语言提问" onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (!sendBlocked) onSend(); } }} />
       <div className="composer-toolbar">
         <input ref={inputRef} type="file" hidden accept=".txt,.csv,.edgelist,.dat,.json,.xlsx,.pdf,.pt,.npz" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
         <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title="上传图文件" aria-label="上传图文件" disabled={disabled || uploading}>{uploading ? <span className="loader" /> : <Icon name="plus" size={20} />}</button>
@@ -135,7 +170,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
           </div> : null}
         </div>
         <div className="composer-spacer" />
-        <span className="auto-mode" role="status">{cancellationLabel || '◉ Auto'}</span>
+        <span className="auto-mode" role="status">{cancellationLabel || '◉ 自动'}</span>
         <button
           className={`send-button ${runControl ? 'stop' : ''}`}
           onClick={runControl ? onCancel : onSend}
@@ -147,11 +182,11 @@ export function Composer({ value, model, models, customModels = [], activeDatase
     </div>
     {configOpen ? <div className="modal-backdrop custom-model-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeCustomModelDialog(); }}>
       <form className="project-dialog custom-model-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-model-dialog-title" onSubmit={(event: FormEvent) => { event.preventDefault(); void saveCustom(); }}>
-        <div className="dialog-head"><div><span>Custom model</span><h2 id="custom-model-dialog-title">配置自定义模型</h2></div><button type="button" className="dialog-close" title="关闭" aria-label="关闭自定义模型配置" onClick={closeCustomModelDialog} disabled={savingModel}><Icon name="close" size={17} /></button></div>
+        <div className="dialog-head"><div><span>自定义模型</span><h2 id="custom-model-dialog-title">配置自定义模型</h2></div><button type="button" className="dialog-close" title="关闭" aria-label="关闭自定义模型配置" onClick={closeCustomModelDialog} disabled={savingModel}><Icon name="close" size={17} /></button></div>
         <div className="custom-model-fields">
           <label className="custom-model-wide">模型 ID<input type="text" autoFocus autoComplete="off" value={customDraft.model_id} onChange={event => setCustomDraft(current => ({ ...current, model_id: event.target.value }))} placeholder="例如：deepseek-chat 或 llama-3.1-8b" /></label>
-          <label className="custom-model-wide">Base URL<input type="url" autoComplete="url" value={customDraft.base_url} onChange={event => setCustomDraft(current => ({ ...current, base_url: event.target.value }))} placeholder="https://api.example.com/v1" /></label>
-          <label className="custom-model-wide">API Key<input type="password" autoComplete="new-password" value={customDraft.api_key} onChange={event => setCustomDraft(current => ({ ...current, api_key: event.target.value }))} placeholder="输入 API Key" /></label>
+          <label className="custom-model-wide">接口地址<input type="url" autoComplete="url" value={customDraft.base_url} onChange={event => setCustomDraft(current => ({ ...current, base_url: event.target.value }))} placeholder="https://api.example.com/v1" /></label>
+          <label className="custom-model-wide">访问密钥<input type="password" autoComplete="new-password" value={customDraft.api_key} onChange={event => setCustomDraft(current => ({ ...current, api_key: event.target.value }))} placeholder="输入访问密钥" /></label>
         </div>
         {modelError ? <div className="dialog-error">{modelError}</div> : null}
         <div className="dialog-actions"><button type="button" className="secondary-command" onClick={closeCustomModelDialog} disabled={savingModel}>取消</button><button type="submit" className="primary-command" disabled={savingModel || !customDraft.model_id.trim() || !customDraft.base_url.trim() || !customDraft.api_key.trim()}>{savingModel ? '保存中…' : '保存模型'}</button></div>

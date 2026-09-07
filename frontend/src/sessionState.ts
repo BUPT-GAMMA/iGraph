@@ -2,6 +2,9 @@ import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
 import type { RunSnapshot, RunControl } from './api';
 
+export const PERSONAL_DRAFT_KEY = 'personal';
+export function draftScopeKey(projectId: string | null | undefined) { return projectId || PERSONAL_DRAFT_KEY; }
+
 export type ReceptionStatus = 'connecting' | 'receiving' | 'retrying' | 'user_paused' | 'capacity_suspended' | 'snapshot_sync' | 'idle';
 
 export type RunStatus =
@@ -67,18 +70,18 @@ export type SessionViewState = {
 
 export type ConversationState = {
   activeSessionId: string | null;
-  activeDraftProjectId: string | null;
+  activeDraftKey: string | null;
   viewsBySessionId: Record<string, SessionViewState>;
-  draftsByProjectId: Record<string, NewConversationDraft>;
+  draftsByScope: Record<string, NewConversationDraft>;
 };
 
 export type ConversationAction =
   | { type: 'ENSURE_SESSION'; sessionId: string; model?: string; accessedAt?: number }
   | { type: 'SET_ACTIVE_SESSION'; sessionId: string | null; model?: string; accessedAt?: number }
   | { type: 'OPEN_DRAFT'; draft: NewConversationDraft }
-  | { type: 'PATCH_DRAFT'; projectId: string; draftId: string; patch: Partial<Pick<NewConversationDraft, 'phase' | 'text' | 'model' | 'activeDatasetId' | 'attachments' | 'error'>> }
-  | { type: 'REMOVE_DRAFT'; projectId: string; draftId?: string }
-  | { type: 'MATERIALIZE_DRAFT'; projectId: string; draftId: string; sessionId: string; generation: string; model: string; activeDatasetId?: string | null; datasetView?: DatasetView | null; accessedAt?: number }
+  | { type: 'PATCH_DRAFT'; projectId: string | null; draftId: string; patch: Partial<Pick<NewConversationDraft, 'phase' | 'text' | 'model' | 'activeDatasetId' | 'attachments' | 'error'>> }
+  | { type: 'REMOVE_DRAFT'; projectId: string | null; draftId?: string }
+  | { type: 'MATERIALIZE_DRAFT'; projectId: string | null; draftId: string; sessionId: string; generation: string; model: string; activeDatasetId?: string | null; datasetView?: DatasetView | null; accessedAt?: number }
   | { type: 'HYDRATE_START'; sessionId: string; requestVersion: number }
   | {
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
@@ -165,7 +168,7 @@ export function selectBottomInteraction(view?: SessionViewState | null): BottomI
   return { kind: 'composer' };
 }
 
-export const initialConversationState: ConversationState = { activeSessionId: null, activeDraftProjectId: null, viewsBySessionId: {}, draftsByProjectId: {} };
+export const initialConversationState: ConversationState = { activeSessionId: null, activeDraftKey: null, viewsBySessionId: {}, draftsByScope: {} };
 
 export function createSessionView(sessionId: string, model = 'qwen3.6-plus', accessedAt = 0): SessionViewState {
   return {
@@ -603,39 +606,39 @@ function graphStateAfterHydration(
 
 export function conversationReducer(state: ConversationState, action: ConversationAction): ConversationState {
   if (action.type === 'OPEN_DRAFT') {
-    const current = state.draftsByProjectId[action.draft.projectId];
+    const current = state.draftsByScope[draftScopeKey(action.draft.projectId)];
     const draft = current || action.draft;
     return {
       ...state,
       activeSessionId: null,
-      activeDraftProjectId: draft.projectId,
-      draftsByProjectId: current ? state.draftsByProjectId : { ...state.draftsByProjectId, [draft.projectId]: draft },
+      activeDraftKey: draftScopeKey(draft.projectId),
+      draftsByScope: current ? state.draftsByScope : { ...state.draftsByScope, [draftScopeKey(draft.projectId)]: draft },
     };
   }
   if (action.type === 'PATCH_DRAFT') {
-    const current = state.draftsByProjectId[action.projectId];
+    const current = state.draftsByScope[draftScopeKey(action.projectId)];
     if (!current || current.draftId !== action.draftId) return state;
     return {
       ...state,
-      draftsByProjectId: {
-        ...state.draftsByProjectId,
-        [action.projectId]: { ...current, ...action.patch },
+      draftsByScope: {
+        ...state.draftsByScope,
+        [draftScopeKey(action.projectId)]: { ...current, ...action.patch },
       },
     };
   }
   if (action.type === 'REMOVE_DRAFT') {
-    const current = state.draftsByProjectId[action.projectId];
+    const current = state.draftsByScope[draftScopeKey(action.projectId)];
     if (!current || (action.draftId && current.draftId !== action.draftId)) return state;
-    const draftsByProjectId = { ...state.draftsByProjectId };
-    delete draftsByProjectId[action.projectId];
+    const draftsByScope = { ...state.draftsByScope };
+    delete draftsByScope[draftScopeKey(action.projectId)];
     return {
       ...state,
-      activeDraftProjectId: state.activeDraftProjectId === action.projectId ? null : state.activeDraftProjectId,
-      draftsByProjectId,
+      activeDraftKey: state.activeDraftKey === draftScopeKey(action.projectId) ? null : state.activeDraftKey,
+      draftsByScope,
     };
   }
   if (action.type === 'MATERIALIZE_DRAFT') {
-    const draft = state.draftsByProjectId[action.projectId];
+    const draft = state.draftsByScope[draftScopeKey(action.projectId)];
     if (!draft || draft.draftId !== action.draftId) return state;
     const uploaded = draft.attachments
       .filter(item => Boolean(item.fileToken))
@@ -658,20 +661,20 @@ export function conversationReducer(state: ConversationState, action: Conversati
         toolsById: {}, toolOrder: [], plan: null, feedback: null,
       },
     };
-    const draftsByProjectId = { ...state.draftsByProjectId };
-    delete draftsByProjectId[action.projectId];
-    const wasActive = state.activeDraftProjectId === action.projectId;
+    const draftsByScope = { ...state.draftsByScope };
+    delete draftsByScope[draftScopeKey(action.projectId)];
+    const wasActive = state.activeDraftKey === draftScopeKey(action.projectId);
     return evictViews({
       ...state,
       activeSessionId: wasActive ? action.sessionId : state.activeSessionId,
-      activeDraftProjectId: wasActive ? null : state.activeDraftProjectId,
-      draftsByProjectId,
+      activeDraftKey: wasActive ? null : state.activeDraftKey,
+      draftsByScope,
       viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view },
     });
   }
   if (action.type === 'ENSURE_SESSION' || action.type === 'SET_ACTIVE_SESSION') {
     const sessionId = action.sessionId;
-    if (sessionId === null) return { ...state, activeSessionId: null, activeDraftProjectId: null };
+    if (sessionId === null) return { ...state, activeSessionId: null, activeDraftKey: null };
     const current = state.viewsBySessionId[sessionId];
     const view = current
       ? { ...current, model: action.model || current.model, lastAccessedAt: action.accessedAt ?? current.lastAccessedAt }
@@ -679,7 +682,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
     return evictViews({
       ...state,
       activeSessionId: action.type === 'SET_ACTIVE_SESSION' ? sessionId : state.activeSessionId,
-      activeDraftProjectId: action.type === 'SET_ACTIVE_SESSION' ? null : state.activeDraftProjectId,
+      activeDraftKey: action.type === 'SET_ACTIVE_SESSION' ? null : state.activeDraftKey,
       viewsBySessionId: { ...state.viewsBySessionId, [sessionId]: view },
     });
   }

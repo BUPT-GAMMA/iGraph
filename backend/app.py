@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import uuid
@@ -24,6 +25,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
+from backend.general_migration import GeneralMigration
 from backend.config import BackendConfig
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, translate_sse
@@ -67,7 +69,7 @@ class SessionDatasetReq(BaseModel):
 
 
 class DeleteProjectReq(BaseModel):
-    conversation_action: Literal["move_to_general", "delete"] = "move_to_general"
+    conversation_action: Literal["move_to_general", "delete"]
 
 
 class MoveSessionReq(BaseModel):
@@ -577,7 +579,7 @@ def _sft_row(run: dict, output_format: str) -> dict | None:
     }
 
 
-def _session_row(session: dict, default_model: str, default_project_id: str = "") -> dict:
+def _session_row(session: dict, default_model: str) -> dict:
     state = _state(session)
     messages = _messages(session)
     preview = str(state.get("last_message_preview") or "")
@@ -585,7 +587,7 @@ def _session_row(session: dict, default_model: str, default_project_id: str = ""
         preview = str(messages[-1].get("content") or "")[:120]
     return {
         "session_id": session.get("session_id"),
-        "project_id": str(state.get("project_id") or default_project_id),
+        "project_id": state.get("project_id") or None,
         "active_dataset_id": state.get("active_dataset_id"),
         "title": session.get("session_name") or "新会话",
         "last_message_preview": preview,
@@ -598,6 +600,18 @@ def _session_row(session: dict, default_model: str, default_project_id: str = ""
         "archived": bool(state.get("archived", False)),
         "active": False,
     }
+
+
+def _session_activity(session: dict) -> float:
+    value = session.get('updated_at') or session.get('created_at') or 0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        try:
+            parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).timestamp()
+        except ValueError:
+            return 0
 
 
 def _project_row(project: ProjectRecord, conversation_count: int = 0) -> dict:
@@ -726,6 +740,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     )
     runtime = ServiceClient(settings.agent_runtime_url, settings.request_timeout, settings.stream_timeout)
     graph = ServiceClient(settings.graph_engine_url, settings.request_timeout, settings.stream_timeout)
+    general_migration = GeneralMigration(projects, project_datasets, runtime, settings.agent_id, graph if os.getenv("IGRAPH_CONTROL_SERVICE_KEY") else None)
+    project_requests: dict[tuple[str, str], set[asyncio.Task]] = {}
+    project_reconciler = None
     run_locks: dict[tuple[str, str], asyncio.Lock] = {}
     run_locks_guard = asyncio.Lock()
     session_creation_locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -754,10 +771,15 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app):
+        nonlocal project_reconciler
+        if controls_enabled():
+            project_reconciler = asyncio.create_task(reconcile_project_deletions())
         try:
             yield
         finally:
             tasks = set(launch_tasks) | set(preparations.values())
+            if project_reconciler:
+                tasks.add(project_reconciler)
             for values in starting_tasks.values():
                 tasks.update(values)
             tasks.discard(asyncio.current_task())
@@ -995,6 +1017,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         )
         if str(payload.get("user_id") or "") not in {"", user_id}:
             raise HTTPException(status_code=404, detail="会话不存在")
+        pid = _state(payload).get('project_id')
+        if pid:
+            project_or_404(pid, user_id)
         return payload
 
     async def graph_loaded(session_id: str, request: Request, user_id: str) -> bool:
@@ -1076,13 +1101,26 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
     def project_or_404(project_id: str, user_id: str) -> ProjectRecord:
         project = projects.get(project_id, user_id)
-        if project is None:
+        if project is None or projects.is_legacy_default(project):
             raise HTTPException(status_code=404, detail="项目不存在")
+        if project.delete_status:
+            raise HTTPException(409, {"code": "PROJECT_DELETING"})
+        task = asyncio.current_task()
+        if task:
+            key = (user_id, project_id)
+            active = project_requests.setdefault(key, set())
+            if task not in active:
+                active.add(task)
+                def forget(done):
+                    active.discard(done)
+                    if not active and project_requests.get(key) is active:
+                        project_requests.pop(key, None)
+                task.add_done_callback(forget)
         return project
 
     def project_dataset_or_404(
         dataset_id: str,
-        project_id: str,
+        project_id: str | None,
         user_id: str,
     ) -> ProjectDatasetRecord:
         dataset = project_datasets.get(dataset_id, user_id, project_id)
@@ -1090,8 +1128,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="项目数据集不存在或不属于当前项目")
         return dataset
 
-    def session_project_id(session: dict, user_id: str) -> str:
-        return str(_state(session).get("project_id") or projects.default_project_id(user_id))
+    def session_project_id(session: dict, user_id: str) -> str | None:
+        return _state(session).get("project_id") or None
 
     async def write_session_state(
         session_id: str,
@@ -1412,19 +1450,18 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         )
         return await graph_loaded(session_id, request, user_id)
 
-    async def user_sessions(request: Request, user_id: str, limit: int = 1000) -> list[dict]:
-        payload = await runtime.request(
-            "GET",
-            "/sessions",
-            headers=forwarded_headers(request, user_id),
-            params={"type": "agent", "component_id": settings.agent_id, "user_id": user_id, "limit": limit},
-        )
-        rows = _data_rows(payload)
+    async def user_sessions(request: Request, user_id: str, limit: int | None = None) -> list[dict]:
+        rows = await general_migration.sessions(user_id)
         if controls_enabled():
             deleting = await runtime.request('GET', '/internal/sessions/deleting', headers=forwarded_headers(request, user_id))
             hidden = set(deleting.get('session_ids', []))
             rows = [row for row in rows if row.get('session_id') not in hidden]
-        return rows
+        deleting_projects = {p.project_id for p in projects._load().values() if p.user_id == user_id and p.delete_status}
+        rows = [row for row in rows if session_project_id(row, user_id) not in deleting_projects]
+        # Enumeration uses stable IDs; the UI still needs the newest activity,
+        # including when its limited result spans multiple native pages.
+        rows.sort(key=_session_activity, reverse=True)
+        return rows[:limit] if limit else rows
 
     async def delete_owned_session(session_id: str, request: Request, user_id: str, *, verify: bool = True) -> None:
         if verify:
@@ -1447,6 +1484,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.get("/api/projects")
     async def list_projects(request: Request):
         user = current_user(request, users)
+        migration = await general_migration.run(user.user_id)
         rows = await user_sessions(request, user.user_id)
         counts: dict[str, int] = {}
         for session in rows:
@@ -1454,7 +1492,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             counts[project_id] = counts.get(project_id, 0) + 1
         return {
             "success": True,
-            "projects": [_project_row(project, counts.get(project.project_id, 0)) for project in projects.list(user.user_id)],
+            "projects": [{**_project_row(project, counts.get(project.project_id, 0)), "dataset_count": len(project_datasets.list(project.project_id, user.user_id))} for project in projects.list(user.user_id)],
+            "legacy_default_project_id": migration.get("legacy_default_project_id"),
         }
 
     @app.post("/api/projects")
@@ -1475,30 +1514,32 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return {"success": True, "project": _project_row(project, count)}
 
     @app.get("/api/projects/{project_id}/datasets")
-    async def list_project_datasets(project_id: str, request: Request):
+    async def list_project_datasets(request: Request, project_id: str | None = None):
         user = current_user(request, users)
-        project = project_or_404(project_id, user.user_id)
+        project = project_or_404(project_id, user.user_id) if project_id else None
+        default_dataset_id = project.default_dataset_id if project else None
         rows = project_datasets.list(project_id, user.user_id)
         return {
             "success": True,
             "project_id": project_id,
-            "default_dataset_id": project.default_dataset_id,
+            "default_dataset_id": project.default_dataset_id if project else None,
             "datasets": [
-                _project_dataset_row(item, project.default_dataset_id) for item in rows
+                _project_dataset_row(item, default_dataset_id) for item in rows
             ],
         }
 
     @app.post("/api/projects/{project_id}/datasets")
     async def create_project_dataset(
-        project_id: str,
         request: Request,
+        project_id: str | None = None,
         file: UploadFile = File(...),
         name: str = Form(""),
         set_as_default: bool = Form(False),
         session_id: str = Form(""),
     ):
         user = current_user(request, users)
-        project = project_or_404(project_id, user.user_id)
+        project = project_or_404(project_id, user.user_id) if project_id else None
+        default_dataset_id = project.default_dataset_id if project else None
         target_session = None
         normalized_session_id = session_id.strip()
         if normalized_session_id:
@@ -1509,6 +1550,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="数据集文件不能为空")
+        if project_id:
+            project_or_404(project_id, user.user_id)
         dataset = project_datasets.create(
             project_id=project_id,
             user_id=user.user_id,
@@ -1516,8 +1559,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             original_filename=filename,
             content=content,
         )
-        previous_default_dataset_id = project.default_dataset_id
-        if project.default_dataset_id is None or set_as_default:
+        previous_default_dataset_id = default_dataset_id
+        if project and (project.default_dataset_id is None or set_as_default):
             project = projects.set_default_dataset(project_id, user.user_id, dataset.dataset_id) or project
         activated_session_id = None
         dataset_view = None
@@ -1530,32 +1573,33 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                     user.user_id,
                 )
             except asyncio.CancelledError:
-                if project.default_dataset_id == dataset.dataset_id:
+                if project and project.default_dataset_id == dataset.dataset_id:
                     projects.set_default_dataset(project_id, user.user_id, previous_default_dataset_id)
                 raise
             except Exception:
-                if project.default_dataset_id == dataset.dataset_id:
+                if project and project.default_dataset_id == dataset.dataset_id:
                     projects.set_default_dataset(project_id, user.user_id, previous_default_dataset_id)
                 raise
             activated_session_id = normalized_session_id
             dataset = project_datasets.get(dataset.dataset_id, user.user_id, project_id) or dataset
         return {
             "success": True,
-            "dataset": _project_dataset_row(dataset, project.default_dataset_id),
-            "default_dataset_id": project.default_dataset_id,
+            "dataset": _project_dataset_row(dataset, project.default_dataset_id if project else None),
+            "default_dataset_id": project.default_dataset_id if project else None,
             "activated_session_id": activated_session_id,
             "dataset_view": dataset_view,
         }
 
     @app.patch("/api/projects/{project_id}/datasets/{dataset_id}")
     async def update_project_dataset(
-        project_id: str,
         dataset_id: str,
         req: ProjectDatasetPatchReq,
         request: Request,
+        project_id: str | None = None,
     ):
         user = current_user(request, users)
-        project = project_or_404(project_id, user.user_id)
+        project = project_or_404(project_id, user.user_id) if project_id else None
+        default_dataset_id = project.default_dataset_id if project else None
         project_dataset_or_404(dataset_id, project_id, user.user_id)
         dataset = project_datasets.update(
             dataset_id,
@@ -1565,7 +1609,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         )
         return {
             "success": True,
-            "dataset": _project_dataset_row(dataset, project.default_dataset_id),
+            "dataset": _project_dataset_row(dataset, project.default_dataset_id if project else None),
         }
 
     @app.post("/api/projects/{project_id}/datasets/{dataset_id}/set-default")
@@ -1583,12 +1627,24 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         }
 
     @app.delete("/api/projects/{project_id}/datasets/{dataset_id}")
-    async def delete_project_dataset(project_id: str, dataset_id: str, request: Request):
+    async def delete_project_dataset(dataset_id: str, request: Request, project_id: str | None = None):
         user = current_user(request, users)
-        project = project_or_404(project_id, user.user_id)
+        project = project_or_404(project_id, user.user_id) if project_id else None
+        default_dataset_id = project.default_dataset_id if project else None
         project_dataset_or_404(dataset_id, project_id, user.user_id)
         affected = 0
-        for session in await user_sessions(request, user.user_id):
+        referencing = [row for row in await user_sessions(request, user.user_id)
+                       if session_project_id(row, user.user_id) == project_id
+                       and _state(row).get('active_dataset_id') == dataset_id]
+        for row in referencing:
+            if _active_run_record(await get_session_runs(row['session_id'], request, user.user_id)):
+                raise HTTPException(409, {'code': 'DATASET_IN_USE', 'message': '请先结束使用此数据集的任务'})
+            if controls_enabled():
+                status = await graph.request('GET', f"/internal/sessions/{row['session_id']}/resource-status",
+                                             headers=service_headers(user.user_id))
+                if not status.get('execution_stopped'):
+                    raise HTTPException(409, {'code': 'DATASET_IN_USE', 'message': '请先结束使用此数据集的后台作业'})
+        for session in referencing:
             state = _state(session)
             if session_project_id(session, user.user_id) != project_id:
                 continue
@@ -1611,7 +1667,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 str(state.get("model") or ""),
             )
             affected += 1
-        if project.default_dataset_id == dataset_id:
+        if project and project.default_dataset_id == dataset_id:
             projects.set_default_dataset(project_id, user.user_id, None)
         if not project_datasets.delete(dataset_id, user.user_id, project_id):
             raise HTTPException(status_code=409, detail="项目数据集删除失败")
@@ -1619,15 +1675,31 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "success": True,
             "dataset_id": dataset_id,
             "cleared_conversations": affected,
-            "default_dataset_id": None if project.default_dataset_id == dataset_id else project.default_dataset_id,
+            "default_dataset_id": None if default_dataset_id == dataset_id else default_dataset_id,
         }
+
+    @app.get("/api/personal-datasets")
+    async def list_personal_datasets(request: Request):
+        return await list_project_datasets(request)
+
+    @app.post("/api/personal-datasets")
+    async def create_personal_dataset(request: Request, file: UploadFile = File(...),
+                                      name: str = Form(""), session_id: str = Form("")):
+        return await create_project_dataset(request, file=file, name=name, session_id=session_id,
+                                            set_as_default=False)
+
+    @app.patch("/api/personal-datasets/{dataset_id}")
+    async def update_personal_dataset(dataset_id: str, req: ProjectDatasetPatchReq, request: Request):
+        return await update_project_dataset(dataset_id, req, request)
+
+    @app.delete("/api/personal-datasets/{dataset_id}")
+    async def delete_personal_dataset(dataset_id: str, request: Request):
+        return await delete_project_dataset(dataset_id, request)
 
     @app.patch("/api/projects/{project_id}")
     async def update_project(project_id: str, req: ProjectPatchReq, request: Request):
         user = current_user(request, users)
         current = project_or_404(project_id, user.user_id)
-        if current.is_default and req.name is not None and req.name.strip() != current.name:
-            raise HTTPException(status_code=400, detail="General 项目不能重命名")
         if req.name is not None and not req.name.strip():
             raise HTTPException(status_code=400, detail="项目名称不能为空")
         project = projects.update(
@@ -1647,22 +1719,26 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         rows = await user_sessions(request, user.user_id)
         available_models = available_models_for(user)
         default_model = available_models[0] if available_models else "qwen3.6-plus"
-        default_project_id = projects.default_project_id(user.user_id)
         sessions = [
-            _session_row(session, default_model, default_project_id)
+            _session_row(session, default_model)
             for session in rows
             if session_project_id(session, user.user_id) == project_id
         ]
         return {"success": True, "project_id": project_id, "conversations": sessions}
 
     @app.get("/api/projects/{project_id}/training-runs")
-    async def project_training_runs(project_id: str, request: Request):
+    async def get_project_training_runs(project_id: str, request: Request):
+        return await project_training_runs(project_id, request)
+
+    async def project_training_runs(project_id: str | None, request: Request, *, current_session_id: str | None = None):
         user = current_user(request, users)
-        project_or_404(project_id, user.user_id)
+        if project_id:
+            project_or_404(project_id, user.user_id)
         rows = [
             session
             for session in await user_sessions(request, user.user_id)
             if session_project_id(session, user.user_id) == project_id
+            and (project_id is not None or session.get('session_id') == current_session_id)
         ]
         dataset_names = {
             dataset.dataset_id: dataset.name
@@ -1765,51 +1841,102 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "has_running": any(not bool(card.get("done")) for card in training_runs),
         }
 
-    @app.delete("/api/projects/{project_id}")
-    async def delete_project(project_id: str, request: Request, req: DeleteProjectReq | None = None):
+    async def submit_project_deletion(project):
+        return await runtime.request('POST', f'/internal/projects/{project.project_id}/delete',
+            headers=service_headers(project.user_id), json_body={'preparation_owner': preparation_instance})
+
+    async def reconcile_project_deletions():
+        while True:
+            for project in projects._load().values():
+                if project.delete_status:
+                    try:
+                        await submit_project_deletion(project)
+                    except Exception:
+                        logging.getLogger(__name__).warning('project_delete_delivery_pending project_id=%s', project.project_id)
+            await asyncio.sleep(5)
+
+    @app.post('/internal/projects/{project_id}/cancel-preparations')
+    async def cancel_project_preparations(project_id: str, request: Request):
+        require_service(request)
+        uid = request.headers.get('X-User-ID', '')
+        body = await request.json()
+        active = project_requests.get((uid, project_id), set())
+        for task in tuple(active):
+            if not task.done():
+                task.cancel()
+        owner = body.get('preparation_owner')
+        known_exit = owner == preparation_instance or previous_preparation_exit(owner)
+        return {'execution_stopped': bool(known_exit) and not any(not task.done() for task in active)}
+
+    @app.delete('/internal/projects/{project_id}/resources')
+    async def delete_project_resources(project_id: str, request: Request):
+        require_service(request)
+        uid = request.headers.get('X-User-ID', '')
+        record = await runtime.request('GET', f'/internal/projects/{project_id}/deletion', headers=service_headers(uid))
+        if not record['state'].get('sessions_deleted'):
+            raise HTTPException(409, {'code': 'PROJECT_DELETE_NOT_READY'})
+        project_datasets.delete_project(project_id, uid)
+        projects.delete(project_id, uid)
+        return {'success': True}
+
+    @app.get('/api/projects/{project_id}/deletion')
+    async def project_deletion_status(project_id: str, request: Request):
         user = current_user(request, users)
-        project = project_or_404(project_id, user.user_id)
-        if project.is_default:
-            raise HTTPException(status_code=400, detail="General 项目不能删除")
-        action = (req or DeleteProjectReq()).conversation_action
-        rows = await user_sessions(request, user.user_id)
-        contained = [session for session in rows if session_project_id(session, user.user_id) == project_id]
-        general_id = projects.ensure_default(user.user_id).project_id
-        for session in contained:
-            session_id = str(session.get("session_id") or "")
-            if not session_id:
-                continue
-            if action == "delete":
-                await delete_owned_session(session_id, request, user.user_id, verify=False)
-            else:
-                general = projects.ensure_default(user.user_id)
-                state = await write_session_state(
-                    session_id,
-                    session,
-                    request,
-                    user.user_id,
-                    {
-                        "project_id": general_id,
-                        "active_dataset_id": general.default_dataset_id,
-                    },
-                )
-                await reset_graph_runtime(
-                    session_id,
-                    request,
-                    user.user_id,
-                    str(state.get("model") or ""),
-                )
-        if not projects.delete(project_id, user.user_id):
-            raise HTTPException(status_code=409, detail="项目删除失败")
-        deleted_datasets = project_datasets.delete_project(project_id, user.user_id)
-        return {
-            "success": True,
-            "project_id": project_id,
-            "conversation_action": action,
-            "affected_conversations": len(contained),
-            "deleted_datasets": deleted_datasets,
-            "general_project_id": general_id,
-        }
+        try:
+            record = await runtime.request('GET', f'/internal/projects/{project_id}/deletion',
+                headers=forwarded_headers(request, user.user_id))
+        except Exception:
+            project = projects.get(project_id, user.user_id)
+            if project and project.delete_status:
+                return {'project_id': project_id, 'delete_status': project.delete_status,
+                        'resources_deleted': False, 'delivery_pending': True}
+            raise
+        return {'project_id': project_id, **record['state']}
+
+    @app.delete("/api/projects/{project_id}")
+    async def delete_project(project_id: str, request: Request, req: DeleteProjectReq):
+        user = current_user(request, users)
+        if req.conversation_action != 'delete':
+            raise HTTPException(409, {'code': 'PROJECT_DELETE_ACTION_CHANGED', 'message': '请刷新页面后确认删除项目及全部内容'})
+        project = projects.get(project_id, user.user_id)
+        if project is None:
+            if controls_enabled():
+                return await project_deletion_status(project_id, request)
+            raise HTTPException(404, '项目不存在')
+        if projects.is_legacy_default(project):
+            raise HTTPException(409, {'code': 'GENERAL_MIGRATION_REQUIRED'})
+        if not controls_enabled():
+            # Compatibility deployments may delete only idle sessions. Production
+            # uses the durable cancellation coordinator below.
+            if not os.getenv('IGRAPH_CONTROL_SERVICE_KEY'):
+                raise HTTPException(409, {'code': 'PROJECT_CANCEL_UNAVAILABLE'})
+            contained = [row for row in await user_sessions(request, user.user_id)
+                         if session_project_id(row, user.user_id) == project_id]
+            for row in contained:
+                runs = await get_session_runs(row['session_id'], request, user.user_id)
+                if _active_run_record(runs):
+                    raise HTTPException(409, {'code': 'PROJECT_CANCEL_UNAVAILABLE'})
+            for row in contained:
+                await delete_owned_session(row['session_id'], request, user.user_id, verify=False)
+            await graph.request('DELETE', f'/internal/projects/{project_id}/artifacts',
+                headers=service_headers(user.user_id),
+                json_body={'session_ids': [row['session_id'] for row in contained]})
+            project_datasets.delete_project(project_id, user.user_id)
+            projects.delete(project_id, user.user_id)
+            return {'success': True, 'project_id': project_id, 'delete_status': 'deleted'}
+        projects.mark_deleting(project_id, user.user_id)
+        # Signal BFF preparations immediately; Runtime delivers all remaining
+        # cancellations and confirms actual exit independently of this request.
+        for task in tuple(project_requests.get((user.user_id, project_id), set())):
+            if task is not asyncio.current_task():
+                task.cancel()
+        try:
+            record = await submit_project_deletion(project)
+            status = record['state']['delete_status']
+        except Exception:
+            status = 'requested'
+        return JSONResponse({'success': True, 'project_id': project_id, 'delete_status': status},
+                            status_code=200 if status == 'deleted' else 202)
 
     @app.get("/api/sessions")
     async def list_sessions(request: Request):
@@ -1817,8 +1944,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         rows = await user_sessions(request, user.user_id, limit=200)
         available_models = available_models_for(user)
         default_model = available_models[0] if available_models else "qwen3.6-plus"
-        default_project_id = projects.ensure_default(user.user_id).project_id
-        return {"success": True, "sessions": [_session_row(row, default_model, default_project_id) for row in rows]}
+        return {"success": True, "sessions": [_session_row(row, default_model) for row in rows]}
 
     @app.post("/api/sessions")
     async def create_session(req: CreateSessionReq, request: Request):
@@ -1827,10 +1953,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         model = req.model or (available_models[0] if available_models else "qwen3.6-plus")
         if model not in available_models:
             raise HTTPException(status_code=403, detail=f"用户无权使用模型 {model}")
-        project = project_or_404(
-            req.project_id or projects.ensure_default(user.user_id).project_id,
-            user.user_id,
-        )
+        project = project_or_404(req.project_id, user.user_id) if req.project_id else None
+        project_id = project.project_id if project else None
+        default_dataset_id = project.default_dataset_id if project else None
         client_session_id = str(req.client_session_id or "").strip()
         if client_session_id:
             try:
@@ -1840,18 +1965,18 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         else:
             session_id = str(uuid.uuid4())
 
-        active_dataset_id = req.active_dataset_id if req.active_dataset_id is not None else project.default_dataset_id
+        active_dataset_id = req.active_dataset_id if req.active_dataset_id is not None else default_dataset_id
         active_dataset = None
         if active_dataset_id:
-            active_dataset = project_datasets.get(active_dataset_id, user.user_id, project.project_id)
+            active_dataset = project_datasets.get(active_dataset_id, user.user_id, project_id)
             if active_dataset is None or active_dataset.status != "ready":
                 raise HTTPException(
                     status_code=409,
                     detail={
                         "code": "DRAFT_DATASET_STALE",
                         "message": "新会话选择的数据集已失效，请重新选择",
-                        "project_id": project.project_id,
-                        "active_dataset_id": project.default_dataset_id,
+                        "project_id": project_id,
+                        "active_dataset_id": default_dataset_id,
                     },
                 )
 
@@ -1877,13 +2002,16 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                             },
                         )
                     existing_state = _state(existing)
+                    if (existing_state.get('project_id') or None) != project_id:
+                        raise HTTPException(409, {'code': 'SESSION_CREATION_CONFLICT',
+                                                  'message': '该草稿已在其他范围创建会话'})
                     existing_model = str(existing_state.get("model") or model)
                     try:
                         await graph.request("GET", f"/sessions/{session_id}/graph/info", headers=headers)
                     except HTTPException as exc:
                         if exc.status_code != 404:
                             raise
-                        await graph.request("POST", f"/sessions/{session_id}", headers=headers, json_body={})
+                        await graph.request("POST", f"/sessions/{session_id}", headers=headers, json_body={"project_id": project_id})
                     await graph.request(
                         "PATCH",
                         f"/sessions/{session_id}/config",
@@ -1894,7 +2022,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
             state = {
                 "model": model,
-                "project_id": project.project_id,
+                "project_id": project_id,
                 "active_dataset_id": active_dataset_id,
                 "reasoning_mode": req.reasoning_mode,
                 "planning_mode": req.planning_mode,
@@ -1926,7 +2054,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                     ) from exc
                 raise
             try:
-                await graph.request("POST", f"/sessions/{session_id}", headers=headers, json_body={})
+                await graph.request("POST", f"/sessions/{session_id}", headers=headers, json_body={"project_id": project_id})
                 await graph.request(
                     "PATCH",
                     f"/sessions/{session_id}/config",
@@ -1978,7 +2106,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             session, reused = await create_or_reuse()
 
         state = _state(session)
-        response_project_id = str(state.get("project_id") or project.project_id)
+        response_project_id = state.get("project_id") or None
         response_dataset_id = state.get("active_dataset_id")
         response_dataset = (
             project_datasets.get(str(response_dataset_id), user.user_id, response_project_id)
@@ -2133,30 +2261,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.patch("/api/sessions/{session_id}")
     async def move_session(session_id: str, req: MoveSessionReq, request: Request):
         user = current_user(request, users)
-        project = project_or_404(req.project_id, user.user_id)
         session = await get_session(session_id, request, user.user_id)
-        state = await write_session_state(
-            session_id,
-            session,
-            request,
-            user.user_id,
-            {
-                "project_id": project.project_id,
-                "active_dataset_id": project.default_dataset_id,
-            },
-        )
-        await reset_graph_runtime(
-            session_id,
-            request,
-            user.user_id,
-            str(state.get("model") or ""),
-        )
-        return {
-            "success": True,
-            "session_id": session_id,
-            "project_id": project.project_id,
-            "active_dataset_id": project.default_dataset_id,
-        }
+        if session_project_id(session, user.user_id) != req.project_id:
+            raise HTTPException(409, {'code': 'SESSION_MOVE_UNSUPPORTED', 'message': '请在目标项目中新建会话'})
+        return {'success': True, 'session_id': session_id, 'project_id': req.project_id}
 
     @app.patch("/api/sessions/{session_id}/dataset")
     async def set_session_dataset(session_id: str, req: SessionDatasetReq, request: Request):
@@ -2195,7 +2303,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "output_format": req.output_format,
         }
         project_id = session_project_id(session, user.user_id)
-        training_payload = await project_training_runs(project_id, request)
+        training_payload = await project_training_runs(project_id, request, current_session_id=session_id)
         training_summary = _project_training_summary(training_payload.get("training_runs") or [])
         await sync_custom_model(user, str(options["model"]), request)
         next_state = {

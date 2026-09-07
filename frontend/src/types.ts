@@ -1,6 +1,6 @@
 export type Session = {
   session_id: string;
-  project_id?: string;
+  project_id?: string | null;
   title?: string;
   preview?: string;
   last_message?: string;
@@ -19,6 +19,7 @@ export type Project = {
   is_default?: boolean;
   default_dataset_id?: string | null;
   conversation_count?: number;
+  dataset_count?: number;
   created_at?: string;
   updated_at?: string;
 };
@@ -150,7 +151,7 @@ export function isGraphData(value: unknown): value is GraphData {
 
 export type Dataset = {
   dataset_id: string;
-  project_id: string;
+  project_id: string | null;
   name: string;
   original_filename: string;
   file_type: string;
@@ -172,7 +173,7 @@ export type DraftAttachment = {
 };
 export type NewConversationDraft = {
   draftId: string;
-  projectId: string;
+  projectId: string | null;
   phase: DraftPhase;
   text: string;
   model: string;

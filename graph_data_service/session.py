@@ -635,7 +635,8 @@ class GraphSession:
                 raise ValueError(
                     f"refusing to delete storage outside session root: {resolved}"
                 )
-            shutil.rmtree(resolved, ignore_errors=True)
+            if resolved.exists():
+                shutil.rmtree(resolved)
 
     def _migrate_legacy_session_storage(self) -> None:
         if (self._session_dir / "graph_current.npz").exists():

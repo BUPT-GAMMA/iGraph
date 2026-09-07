@@ -36,6 +36,16 @@ const approval = {
 };
 
 describe('ConversationInputArea', () => {
+  it('uses a project-aware heading only for project drafts', () => {
+    const { rerender } = render(<ChatPane {...baseChatProps} />);
+    expect(screen.getByRole('heading', { name: '开始图分析' })).toBeTruthy();
+
+    rerender(<ChatPane {...baseChatProps} emptyProjectName="test" />);
+    expect(screen.getByRole('heading', { name: '开始在 test 中图分析' })).toBeTruthy();
+    expect(screen.getByText('test').classList.contains('empty-project-name')).toBe(true);
+    expect(screen.queryByRole('heading', { name: '开始图分析' })).toBeNull();
+  });
+
   it('keeps normal Composer behavior outside feedback states', () => {
     const onChange = vi.fn();
     const onSend = vi.fn();
@@ -92,8 +102,8 @@ describe('ConversationInputArea', () => {
     expect(screen.queryByRole('listbox', { name: '可用模型' })).toBeNull();
     expect(screen.getByRole('dialog', { name: '配置自定义模型' })).toBeTruthy();
     fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'llama-3.1-8b' } });
-    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://api.example.com/v1' } });
-    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'test-key' } });
+    fireEvent.change(screen.getByLabelText('接口地址'), { target: { value: 'https://api.example.com/v1' } });
+    fireEvent.change(screen.getByLabelText('访问密钥'), { target: { value: 'test-key' } });
     fireEvent.click(screen.getByRole('button', { name: '保存模型' }));
 
     await waitFor(() => expect(onSaveCustomModel).toHaveBeenCalledWith({
@@ -165,7 +175,7 @@ describe('ConversationInputArea', () => {
       interaction={approval}
     />);
 
-    expect(screen.getByText('Agent 请求确认')).toBeTruthy();
+    expect(screen.getByText('助手请求确认')).toBeTruthy();
     expect(screen.getByText('草稿已保存 · 1 个附件已保存')).toBeTruthy();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.queryByLabelText('发送')).toBeNull();
