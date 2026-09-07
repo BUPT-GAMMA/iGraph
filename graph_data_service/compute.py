@@ -217,6 +217,8 @@ class GraphCompute:
             "success": True,
             "node": display_name,
             "node_id": nid,
+            "properties": next((row["properties"] for row in gd.graph_metadata.get("construction_graph", {}).get("nodes", [])
+                                if row["id"] == display_name), {}),
             "directed": gd.directed,
             "semantic_type": gd.semantic_type,
             "storage_type": gd.storage_type,
@@ -266,6 +268,8 @@ class GraphCompute:
             "edge_name": edge.get("name"),
             "edge_label": self._serialize_label(edge.get("label")),
             "edge_type": edge.get("type"),
+            "properties": next((row["properties"] for row in gd.graph_metadata.get("construction_graph", {}).get("edges", [])
+                                if row["id"] == edge.get("name")), {}),
         }
 
     @staticmethod
@@ -1512,6 +1516,8 @@ class GraphCompute:
                         pass
             # Fallback：从 NetworkX 节点属性读取（adapters.py 已将属性存入节点）
             nx_attrs = g.nodes[node]
+            if isinstance(nx_attrs.get("properties"), dict):
+                attrs["properties"] = nx_attrs["properties"]
             if not attrs.get("type") and nx_attrs.get("node_type"):
                 attrs["type"] = str(nx_attrs["node_type"])
             if not attrs.get("label") and nx_attrs.get("node_label") is not None:
@@ -1535,6 +1541,8 @@ class GraphCompute:
                 "src": u,
                 "dst": v,
                 "weight": data.get("weight", 1.0),
+                **({"id": data.get("id"), "type": data.get("type"), "properties": data["properties"]}
+                   if "properties" in data else {}),
             })
 
         # 社区检测（可选）

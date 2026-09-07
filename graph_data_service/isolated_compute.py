@@ -15,6 +15,7 @@ from graph_data_service.execution_host import job_context
 from graph_data_service.worker_process import WorkerProcess
 from graph_data_service.worker_data import LazyGraphs, read_bundle
 from graph_engine.paths import safe_path_component
+from graph_engine.tool_execution import execution_policy
 from execution_lifecycle import atomic_json
 
 
@@ -28,6 +29,8 @@ async def run_isolated(service, session_id, user_id, tool, arguments, progress=N
         if job:
             progress = service._job_manager._make_progress_callback(job)
     version = session.graph_version
+    policy = execution_policy(tool, arguments)
+    uses_graph = policy.barrier or "graph" in policy.reads | policy.writes
     runtime_id = service._cache_key(session_id, user_id)
     dataset_generation = service._graph_ml._dataset_store.generation_token(runtime_id)
     root = Path(service._graph_ml._store.root_dir)
@@ -60,7 +63,9 @@ async def run_isolated(service, session_id, user_id, tool, arguments, progress=N
         signal = service._job_manager._cancel_signals.get(context.job_id)
         if signal and signal.is_set():
             raise InterruptedError('JOB_CANCELLED')
-        if service.get_required(session_id, user_id=user_id) is not session or session.graph_version != version:
+        if service.get_required(session_id, user_id=user_id) is not session:
+            raise ValueError('GRAPH_VERSION_CHANGED')
+        if uses_graph and session.graph_version != version:
             raise ValueError('GRAPH_VERSION_CHANGED')
     def pin(source):
         # Read-only descriptors pin the immutable inode even if version
@@ -72,7 +77,10 @@ async def run_isolated(service, session_id, user_id, tool, arguments, progress=N
             raise ValueError('INVALID_WORKER_INPUT')
         return f'/dev/fd/{descriptor}'
     try:
-        if session.get_graph() is not None:
+        # Documents and classification-bundle loading have their own resources.
+        # They neither need a graph-sized input nor depend on its version; a
+        # concurrent graph replacement must not invalidate their results.
+        if uses_graph and session.get_graph() is not None:
             source = session._snapshots_dir / f'v{version:03d}.npz'
             graph_path = pin(source)
         payload = {'tool': tool, 'arguments': service._strip_internal_graph_ml_args(arguments),
@@ -151,8 +159,7 @@ async def run_isolated(service, session_id, user_id, tool, arguments, progress=N
                                   lease_root=getattr(service._execution_host, 'worker_root', Path(os.getenv('IGRAPH_DATA_ROOT', 'data')).resolve() / 'graph_engine' / 'executors' / 'workers'),
                                   job_id=context.job_id)
         await service._execution_host.before_start(context)
-        if session.graph_version != version:
-            raise ValueError('GRAPH_VERSION_CHANGED')
+        commit_allowed()
         if (payload.get('dataset_directory') or payload.get('loaded_dataset')) and service._graph_ml._dataset_store.generation_token(runtime_id) != dataset_generation:
             raise ValueError('DATASET_GENERATION_CHANGED')
         if not result.get('success'):

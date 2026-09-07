@@ -378,7 +378,7 @@ def test_project_dataset_upload_inheritance_switch_and_isolation(client: TestCli
         f"/api/projects/{project['project_id']}/datasets",
         headers=headers(),
         data={"session_id": session_a},
-        files={"file": ("cora.txt", b"A B\nB C\n", "text/plain")},
+        files={"file": ("cora.edgelist", b"A B\nB C\n", "text/plain")},
     )
     assert uploaded.status_code == 200
     dataset = uploaded.json()["dataset"]
@@ -386,7 +386,7 @@ def test_project_dataset_upload_inheritance_switch_and_isolation(client: TestCli
     assert FakeServiceClient.runtime_sessions[session_a]["session_state"]["active_dataset_id"] == dataset["dataset_id"]
     assert FakeServiceClient.graph_loaded[session_a] is True
 
-    sources = list((tmp_path / "projects" / project["project_id"] / "datasets").rglob("cora.txt"))
+    sources = list((tmp_path / "projects" / project["project_id"] / "datasets").rglob("cora.edgelist"))
     assert len(sources) == 1
     assert sources[0].read_bytes() == b"A B\nB C\n"
 
@@ -426,9 +426,9 @@ def test_project_dataset_delete_clears_sessions_but_conversation_delete_preserve
     dataset = client.post(
         f"/api/projects/{project['project_id']}/datasets",
         headers=headers(),
-        files={"file": ("graph.csv", b"source,target\nA,B\n", "text/csv")},
+        files={"file": ("graph.edgelist", b"A B\nB C\n", "text/plain")},
     ).json()["dataset"]
-    source = next((tmp_path / "projects" / project["project_id"] / "datasets").rglob("graph.csv"))
+    source = next((tmp_path / "projects" / project["project_id"] / "datasets").rglob("graph.edgelist"))
 
     client.delete(f"/api/sessions/{session_id}", headers=headers())
     assert source.is_file()
@@ -668,7 +668,7 @@ def test_personal_datasets_are_reusable_explicit_and_scope_isolated(client):
     first = client.post('/api/sessions', headers=headers(), json={}).json()
     assert first['project_id'] is None and first['active_dataset_id'] is None
     uploaded = client.post('/api/personal-datasets', headers=headers(),
-        files={'file': ('edges.csv', b'A,B\nB,C', 'text/csv')})
+        files={'file': ('edges.edgelist', b'A B\nB C', 'text/plain')})
     assert uploaded.status_code == 200, uploaded.text
     dataset = uploaded.json()['dataset']
     assert dataset['project_id'] is None and not dataset['is_default']

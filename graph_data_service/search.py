@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -54,6 +55,7 @@ class EntitySearchIndex:
         self._node_matrix = np.empty((0, getattr(provider, "dim", 384)), dtype=np.float32)
         self._edge_matrix = np.empty((0, getattr(provider, "dim", 384)), dtype=np.float32)
         self._query_vec_cache: dict[str, np.ndarray] = {}
+        self._query_vec_cache_lock = Lock()
         self._build()
 
     def is_stale(self, version: int) -> bool:
@@ -352,15 +354,23 @@ class EntitySearchIndex:
         return [(self._edge_docs[idx], 0.0) for idx in indices]
 
     def _query_vector(self, query: str) -> np.ndarray:
-        cached = self._query_vec_cache.get(query)
-        if cached is not None:
-            return cached
+        with self._query_vec_cache_lock:
+            cached = self._query_vec_cache.get(query)
+            if cached is not None:
+                return cached
+        # Model inference / remote embedding requests must not block cache hits
+        # or other independent searches while holding the bookkeeping lock.
         q = np.asarray(self._provider.encode([query]), dtype=np.float32)
         vec = self._normalize_rows(q)[0]
-        if len(self._query_vec_cache) >= 128:
-            self._query_vec_cache.pop(next(iter(self._query_vec_cache)))
-        self._query_vec_cache[query] = vec
-        return vec
+        with self._query_vec_cache_lock:
+            # Another reader may have filled the same key while encoding.
+            cached = self._query_vec_cache.get(query)
+            if cached is not None:
+                return cached
+            if len(self._query_vec_cache) >= 128:
+                self._query_vec_cache.pop(next(iter(self._query_vec_cache)))
+            self._query_vec_cache[query] = vec
+            return vec
 
     def _exact_node_id(self, query: str) -> int | None:
         if not query:

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { listProjectTrainingRuns } from '../api';
 import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, ProjectTrainingRun, ToolCall } from '../types';
@@ -20,7 +20,7 @@ const TAB_LABELS: Record<Tab, string> = {
 function nodeId(node: Record<string, unknown>, index: number) { return String(node.id ?? node.label ?? index); }
 
 const COMMUNITY_COLORS = ['#3b82f6', '#f97316', '#10b981', '#a855f7', '#eab308', '#ef4444', '#06b6d4', '#ec4899'];
-const DEFAULT_HIGHLIGHT_COLORS: Record<string, string> = { node: '#0f766e', path: '#d97706', subgraph: '#7c3aed' };
+const DEFAULT_HIGHLIGHT_COLORS: Record<string, string> = { node: 'var(--accent, #2563eb)', path: '#d97706', subgraph: '#7c3aed' };
 
 function normalizeHighlights(value: GraphData['highlights']): Highlight[] {
   if (Array.isArray(value)) return value;
@@ -91,6 +91,9 @@ type GraphWorkspaceProps = {
   onExpand?: (node: Record<string, unknown>) => void;
   layoutVersion?: number;
   onStopJob?: StopJob;
+  embedded?: boolean;
+  onConstruct?: () => void;
+  constructionLabel?: string;
 };
 
 function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWorkspaceProps) {
@@ -103,12 +106,14 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
     && previous.projectId === next.projectId
     && previous.sessionId === next.sessionId
     && previous.onStopJob === next.onStopJob;
+  if (previous.embedded !== next.embedded || previous.onConstruct !== next.onConstruct || previous.constructionLabel !== next.constructionLabel || previous.datasetName !== next.datasetName) return false;
   if (!coreEqual) return false;
   if (next.tab === 'ML' || next.tab === 'Artifacts') return previous.messages === next.messages && previous.liveTools === next.liveTools;
   return true;
 }
 
-export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob }: GraphWorkspaceProps) {
+export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob, embedded, onConstruct, constructionLabel = '构图' }: GraphWorkspaceProps) {
+  const arrowId = `graph-arrow-${useId().replace(/:/g, '')}`;
   const incomingDataSignature = useMemo(() => data ? JSON.stringify(data) : 'empty', [data]);
   const stableDataRef = useRef<{ signature: string; data: GraphData | null }>({ signature: incomingDataSignature, data });
   if (stableDataRef.current.signature !== incomingDataSignature) stableDataRef.current = { signature: incomingDataSignature, data };
@@ -120,11 +125,23 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   const [query, setQuery] = useState('');
   const [layout, setLayout] = useState<LayoutMode>('force');
   const [connectedOnly, setConnectedOnly] = useState(false);
+  const [canvasBounds, setCanvasBounds] = useState('');
+  const [fitVersion, setFitVersion] = useState(0);
   const [projectTrainingRuns, setProjectTrainingRuns] = useState<ProjectTrainingRun[]>([]);
   const [projectTrainingLoading, setProjectTrainingLoading] = useState(false);
   const [projectTrainingError, setProjectTrainingError] = useState('');
   const hasPendingLiveTraining = liveTools.some(tool => String(tool.tool || '') === 'train' && !tool.done);
   useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
+  useEffect(() => {
+    const host = canvas.current?.parentElement;
+    if (!embedded || collapsed || tab !== 'Graph' || !host || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(entries => {
+      const size = entries[0]?.contentRect;
+      if (size) setCanvasBounds(`${Math.round(size.width)}:${Math.round(size.height)}`);
+    });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [embedded, collapsed, tab, renderedData]);
   const layoutLabel = layout === 'force' ? '力导向' : layout === 'radial' ? '径向' : '环形';
   const communityById = useMemo(() => {
     const raw = renderedData?.community || renderedData?.communities;
@@ -199,6 +216,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   useEffect(() => {
     if (collapsed || !canvas.current || !renderedData?.nodes?.length || tab !== 'Graph') return;
     const svg = d3.select(canvas.current); svg.selectAll('*').remove();
+    if (renderedData.directed) svg.append('defs').append('marker').attr('id', arrowId).attr('viewBox', '0 -5 10 10').attr('refX', 19).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto').append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--graph-edge-stroke, #94a3b8)');
     const host = canvas.current.parentElement; const width = host?.clientWidth || 360; const height = host?.clientHeight || 420;
     const viewport = svg.append('g').attr('class', 'graph-viewport').attr('transform', zoomTransformRef.current.toString());
     const zoom = d3.zoom<SVGSVGElement, unknown>().extent([[0, 0], [width, height]]).scaleExtent([.25, 6]).on('zoom', event => { zoomTransformRef.current = event.transform; viewport.attr('transform', event.transform.toString()); });
@@ -216,6 +234,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     const hullLayer = viewport.append('g').attr('class', 'graph-subgraph-hulls');
     const subgraphHulls = visibleHighlights.filter(highlight => highlight.type === 'subgraph').map((highlight, index) => ({ highlight, path: hullLayer.append('path').attr('class', 'graph-subgraph-hull').attr('fill', highlight.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('stroke', highlight.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('aria-label', highlight.label || `子图 ${index + 1}`) }));
     const link = viewport.append('g').selectAll('line').data(edges).join('line').attr('class', 'graph-link')
+      .attr('marker-end', renderedData.directed ? `url(#${arrowId})` : null)
       .attr('stroke', edge => highlightedEdgeColor(pathPairs, edge.source, edge.target) || highlightedEdgeColor(subgraphPairs, edge.source, edge.target) || null)
       .classed('is-path-highlight', edge => Boolean(highlightedEdgeColor(pathPairs, edge.source, edge.target)))
       .classed('is-subgraph-highlight', edge => !highlightedEdgeColor(pathPairs, edge.source, edge.target) && Boolean(highlightedEdgeColor(subgraphPairs, edge.source, edge.target)));
@@ -229,6 +248,10 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     node.append('circle').attr('class', 'graph-node-halo').attr('r', (item: any) => highlightByNode.has(item.id) ? 13 : 0).attr('fill', item => highlightByNode.get(item.id)?.[0]?.color || DEFAULT_HIGHLIGHT_COLORS.node).attr('opacity', .2);
     node.append('text').attr('dy', 20).text((item: any) => String(item.label ?? item.id).slice(0, 12));
     const renderFrame = () => {
+      if (embedded) nodes.forEach((item: any) => {
+        item.x = Math.max(24, Math.min(width - 24, item.x));
+        item.y = Math.max(24, Math.min(height - 30, item.y));
+      });
       link.attr('x1', (edge: any) => edge.source.x).attr('y1', (edge: any) => edge.source.y).attr('x2', (edge: any) => edge.target.x).attr('y2', (edge: any) => edge.target.y);
       node.attr('transform', (item: any) => `translate(${item.x},${item.y})`);
       subgraphHulls.forEach(({ highlight, path }) => {
@@ -240,7 +263,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     simulation.tick();
     renderFrame();
     return () => { simulation.stop(); svg.on('.zoom', null); };
-  }, [collapsed, renderedData, tab, layoutVersion, layout, visibleNodes, highlights, communityById, highlightByNode]);
+  }, [collapsed, renderedData, tab, layoutVersion, layout, visibleNodes, highlights, communityById, highlightByNode, embedded, canvasBounds, fitVersion]);
   useEffect(() => {
     if (!canvas.current || collapsed || tab !== 'Graph') return;
     const selectedId = String(selected?.id ?? '');
@@ -248,9 +271,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
       .attr('r', item => String(item.id ?? '') === selectedId ? 13 : 8)
       .attr('fill', item => String(item.id ?? '') === selectedId ? 'var(--graph-node-selected-fill)' : communityColor(communityById.get(String(item.id ?? ''))));
   }, [selected, communityById, collapsed, tab]);
-  const tabs: Tab[] = ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
-  return <aside className={`graph-workspace ${collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图工作台</strong><button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={collapsed ? '展开右侧栏' : '收起右侧栏'} title={collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={21} /></button></div><div className="workspace-panel-content" aria-hidden={collapsed}><SlidingTabs ariaLabel="图工作台视图" className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: TAB_LABELS[item] }))} value={tab} onChange={onTab} />
-    {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={projectTrainingError} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图</strong></div> : view?.status === 'failed' ? <div className="graph-empty"><strong>图加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>暂无图</strong><span>加载数据或发送建图请求后，这里会显示图分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button></div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} aria-label="图谱画布，可拖动平移并使用滚轮缩放" /></div>{(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? '已选节点')}</strong><span>已选择</span></div><div className="inspector-row"><span>节点 ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>类型</span><strong>{String(selected.type ?? selected.category ?? '节点')}</strong></div><div className="inspector-row"><span>度数</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} />}
+  const tabs: Tab[] = embedded ? ['Graph', 'Overview', 'Data'] : ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
+  return <aside className={`graph-workspace ${collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图工作台</strong>{onConstruct && !collapsed && <button className="workspace-construction-button" onClick={onConstruct} title={datasetName ? `${constructionLabel}：${datasetName}` : '选择数据集并构图'}><Icon name="graph" size={14} />{constructionLabel}</button>}<button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={collapsed ? '展开右侧栏' : '收起右侧栏'} title={collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={21} /></button></div><div className="workspace-panel-content" aria-hidden={collapsed}><SlidingTabs ariaLabel="图工作台视图" className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: TAB_LABELS[item] }))} value={tab} onChange={onTab} />
+    {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={projectTrainingError} /> : tab === 'Artifacts' ? <ArtifactsTab messages={messages} /> : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图</strong></div> : view?.status === 'failed' ? <div className="graph-empty"><strong>图加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>暂无图</strong><span>加载数据或发送建图请求后，这里会显示图分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button>{embedded && <button onClick={() => { zoomTransformRef.current = d3.zoomIdentity; setFitVersion(current => current + 1); }}>适应画布</button>}</div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} aria-label="图谱画布，可拖动平移并使用滚轮缩放" /></div>{(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? '已选节点')}</strong><span>已选择</span></div><div className="inspector-row"><span>节点 ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>类型</span><strong>{String(selected.type ?? selected.category ?? '节点')}</strong></div><div className="inspector-row"><span>度数</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} />}
   </div></aside>;
 }, graphWorkspacePropsEqual);
 
@@ -288,7 +311,7 @@ const METRIC_LABELS: Record<string, string> = {
   best_epoch: '最佳轮次', trained_epochs: '训练轮次', num_classes: '类别数',
   num_train: '训练样本数', num_val: '验证样本数', num_test: '测试样本数',
 };
-const CHART_COLORS = ['#109c90', '#d97745', '#4476b8', '#bd4f6c', '#7b6cb7'];
+const CHART_COLORS = ['var(--accent, #2563eb)', '#d97745', '#0891b2', '#bd4f6c', '#7b6cb7'];
 
 function recordValue(value: unknown): Record<string, any> {
   if (typeof value === 'string') {

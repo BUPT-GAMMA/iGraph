@@ -38,11 +38,8 @@ def graph_identity_headers(
 
 
 def create_graph_tools(config: AgentRuntimeConfig) -> MCPTools:
-    constructor = MCPTools
-    if controls_enabled():
-        from agent_runtime.mcp_compat import OwnedMCPTools
-        constructor = OwnedMCPTools
-    return constructor(
+    from agent_runtime.graph_jobs import GraphMCPTools
+    return GraphMCPTools(
         url=config.mcp_url,
         header_provider=graph_identity_headers,
         requires_confirmation_tools=sorted(GRAPH_TOOLS_REQUIRING_CONFIRMATION),

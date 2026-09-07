@@ -131,6 +131,7 @@ test('new conversations stay local until the first prompt is sent', async ({ pag
     if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions') createRequests += 1;
   });
   await page.goto('/?session=session-a');
+  await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
   const sessionsBefore = await page.locator('.session-row').count();
   const newInProject = page.getByRole('button', { name: '在 E2E Project 中新建会话' });
 
@@ -218,8 +219,8 @@ test('a selected conversation owns the highlight and dark project fields share o
   const projectNode = page.locator('.project-tree-node').filter({ hasText: 'E2E Project' });
   await expect(projectNode.locator(':scope > .project-row')).not.toHaveClass(/selected/);
   await expect(projectNode.locator('.project-session-row').filter({ hasText: 'Project Session' })).toHaveClass(/selected/);
-  await expect(projectNode.locator('.project-row-main strong')).toHaveCSS('color', 'rgb(241, 243, 242)');
-  await expect(projectNode.locator('.project-session-row').filter({ hasText: 'Project Session' }).locator('.project-session-main span')).toHaveCSS('color', 'rgb(241, 243, 242)');
+  await expect(projectNode.locator('.project-row-main strong')).toHaveCSS('color', 'rgb(241, 245, 249)');
+  await expect(projectNode.locator('.project-session-row').filter({ hasText: 'Project Session' }).locator('.project-session-main span')).toHaveCSS('color', 'rgb(147, 197, 253)');
 
   await page.getByRole('button', { name: '创建项目' }).click();
   const nameInput = page.getByLabel('项目名称');
@@ -266,8 +267,7 @@ test('mobile navigation and docked drawers keep their exit animation mounted', a
   await expect(activeDatasetRow).toBeVisible();
   const activeDatasetBox = await activeDatasetRow.boundingBox();
   expect(activeDatasetBox!.height).toBeLessThanOrEqual(70);
-  const activeBackground = await activeDatasetRow.evaluate(element => getComputedStyle(element).backgroundColor.match(/\d+/g)?.map(Number) || []);
-  expect(Math.max(...activeBackground.slice(0, 3)) - Math.min(...activeBackground.slice(0, 3))).toBeLessThanOrEqual(2);
+  await expect(activeDatasetRow).toHaveCSS('background-color', 'rgb(241, 245, 249)');
   const mainCenter = await activeDatasetRow.locator('.dataset-row-main').evaluate(element => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; });
   const actionsCenter = await activeDatasetRow.locator('.dataset-row-actions').evaluate(element => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; });
   expect(Math.abs(mainCenter - actionsCenter)).toBeLessThanOrEqual(1);

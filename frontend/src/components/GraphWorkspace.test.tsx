@@ -14,6 +14,14 @@ afterEach(() => {
 });
 
 describe('GraphWorkspace visualization layers', () => {
+  it('shows directed edge arrows with a marker unique to each canvas', async () => {
+    const graph = { nodes: [{ id: 'a' }, { id: 'b' }], edges: [{ source: 'a', target: 'b' }], directed: true };
+    const { container } = render(<><GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} /><GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} embedded /></>);
+    await waitFor(() => expect(container.querySelectorAll('marker')).toHaveLength(2));
+    const markers = Array.from(container.querySelectorAll('marker'), item => item.id);
+    expect(new Set(markers).size).toBe(2);
+    expect(Array.from(container.querySelectorAll('.graph-link'), item => item.getAttribute('marker-end'))).toEqual(markers.map(id => `url(#${id})`));
+  });
   it('renders community colors, node halos, path edges, subgraph hulls, and legends', async () => {
     const { container } = render(<GraphWorkspace
       data={{
@@ -85,7 +93,7 @@ describe('GraphWorkspace visualization layers', () => {
     render(<GraphWorkspace data={null} messages={[]} liveTools={[]} projectId="project-1" sessionId="session-new" tab="ML" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText('项目对比')).toBeTruthy());
-    expect(screen.getAllByText('GCN 实验').length).toBeGreaterThan(0);
+    expect((await screen.findAllByText('GCN 实验')).length).toBeGreaterThan(0);
     expect(screen.getAllByText('77.3%').length).toBeGreaterThan(0);
   });
 

@@ -9,7 +9,8 @@ import os
 from typing import Any, Dict, Optional
 
 import httpx
-from execution_protocol import execution_headers
+from execution_protocol import execution_headers, service_headers
+from mcp_service.construction_tools import CONSTRUCTION_TOOL_NAMES, construction_request, construction_source_type
 
 
 def _env_float(name: str, default: float) -> float:
@@ -140,12 +141,45 @@ class GraphDataClient:
         user_id: str = "",
         run_id: str = "",
     ) -> Dict[str, Any]:
+        args = arguments or {}
+        if tool_name in CONSTRUCTION_TOOL_NAMES:
+            return await self.call_construction_tool(session_id, tool_name, args, user_id=user_id, run_id=run_id)
+        if tool_name == "load_graph_from_upload":
+            source_type = construction_source_type(args.get("filename"))
+            if source_type:
+                return {
+                    "success": False,
+                    "code": "CONSTRUCTION_REQUIRED",
+                    "source_type": source_type,
+                    "error": "SQL/CSV/TXT 文件需要在数据集面板中构图；先检查已保存构图状态，ready 时直接加载复用。"
+                             "尚未接入的构图算法不能通过旧文件加载或文本抽取代替。",
+                }
         return await self._post(
             f"/sessions/{session_id}/tools/{tool_name}",
             {"arguments": arguments or {}},
             user_id=user_id,
             run_id=run_id,
         )
+
+    async def call_construction_tool(
+        self, session_id: str, tool_name: str, arguments: dict,
+        user_id: str = "", run_id: str = "",
+    ) -> Dict[str, Any]:
+        if not user_id.strip():
+            return {"success": False, "code": "USER_ID_REQUIRED", "error": "访问构图数据集需要已认证用户。"}
+        try:
+            method, path, body = construction_request(tool_name, session_id, arguments)
+        except ValueError as exc:
+            return {"success": False, "code": "INVALID_CONSTRUCTION_ARGUMENTS", "error": str(exc)}
+        headers = {**execution_headers.get(), **service_headers(user_id), "X-Session-ID": session_id}
+        token = execution_headers.set(headers)
+        try:
+            # A commit/load may already have reached the engine when a response
+            # fails. Do not blindly replay persistent or session mutations.
+            return await self._request(method, path, body, user_id=user_id, run_id=run_id,
+                                       retry_errors=tool_name not in {"commit_graph_optimization", "load_constructed_graph"})
+        finally:
+            execution_headers.reset(token)
 
     async def _get(self, path: str, user_id: str = "", run_id: str = "") -> Dict[str, Any]:
         return await self._request("GET", path, user_id=user_id, run_id=run_id)
@@ -166,6 +200,7 @@ class GraphDataClient:
         data: Optional[dict] = None,
         user_id: str = "",
         run_id: str = "",
+        retry_errors: bool = True,
     ) -> Dict[str, Any]:
         url = f"{self.base_url}{path}"
         is_heavy_tool = _is_heavy_tool_path(path)
@@ -189,10 +224,12 @@ class GraphDataClient:
 
                 if response.status_code >= 500:
                     last_error = _payload_error(payload)
-                    if not is_heavy_tool and attempt < GRAPH_DATA_MAX_RETRIES:
+                    if retry_errors and not is_heavy_tool and attempt < GRAPH_DATA_MAX_RETRIES:
                         await asyncio.sleep(_retry_delay(attempt))
                         continue
                     return {
+                        **(payload.get("detail", payload) if isinstance(payload, dict)
+                           and isinstance(payload.get("detail", payload), dict) else {}),
                         "success": False,
                         "error": (
                             "GraphData Server 请求失败"
@@ -204,6 +241,8 @@ class GraphDataClient:
                 if response.status_code >= 400:
                     error = _payload_error(payload)
                     return {
+                        **(payload.get("detail", payload) if isinstance(payload, dict)
+                           and isinstance(payload.get("detail", payload), dict) else {}),
                         "success": False,
                         "error": error,
                         "status_code": response.status_code,
@@ -226,12 +265,14 @@ class GraphDataClient:
                 }
             except httpx.RequestError as e:
                 last_error = _exception_message(e)
-                if attempt < GRAPH_DATA_MAX_RETRIES:
+                if retry_errors and attempt < GRAPH_DATA_MAX_RETRIES:
                     await asyncio.sleep(_retry_delay(attempt))
                     continue
                 return {
                     "success": False,
                     "error": (
+                        "GraphData Server 连接失败"
+                        f"(已尝试 {attempt} 次): {last_error}" if not retry_errors else
                         "GraphData Server 连接失败"
                         f"(已重试 {GRAPH_DATA_MAX_RETRIES} 次): {last_error}"
                     ),

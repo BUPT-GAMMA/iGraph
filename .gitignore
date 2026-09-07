@@ -71,3 +71,6 @@ coverage/
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
+
+# Local construction feature verification files and SSH tunnel state
+/.construction-test/

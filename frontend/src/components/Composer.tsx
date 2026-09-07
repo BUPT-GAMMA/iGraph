@@ -152,7 +152,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
       })}</div> : null}
       <textarea ref={textareaRef} value={value} disabled={disabled} rows={2} placeholder="今天帮你分析什么？粘贴边列表，或直接用自然语言提问" onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (!sendBlocked) onSend(); } }} />
       <div className="composer-toolbar">
-        <input ref={inputRef} type="file" hidden accept=".txt,.csv,.edgelist,.dat,.json,.xlsx,.pdf,.pt,.npz" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
+        <input ref={inputRef} type="file" hidden accept=".sql,.txt,.csv,.edgelist,.dat,.json,.xlsx,.pdf,.pt,.npz" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
         <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title="上传图文件" aria-label="上传图文件" disabled={disabled || uploading}>{uploading ? <span className="loader" /> : <Icon name="plus" size={20} />}</button>
         <button className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={onDataset} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? `当前数据集：${activeDatasetName}` : '选择项目数据集'}><Icon name="database" size={14} /><span>{activeDatasetName || '数据集'}</span></button>
         <div ref={modelPickerRef} className={`composer-model ${modelOpen ? 'is-open' : ''}`}>

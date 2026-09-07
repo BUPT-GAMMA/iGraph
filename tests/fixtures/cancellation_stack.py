@@ -23,7 +23,7 @@ async def cancellation_stack(root: Path, url: str, *, learning=False):
     from backend.config import BackendConfig
     from backend.users import UserDirectory, UserRecord
     from agent_runtime.config import AgentRuntimeConfig
-    from agent_runtime.cancellation_compat import CancellableOpenAILike
+    from agent_runtime.model_factory import CancellableDAGOpenAILike
     from graph_data_service.app import GraphDataService, create_app as graph_app
     from tests.servers.test_graph_ml_legacy_regression import _request
     from mcp_service.graph_data_client import GraphDataClient
@@ -60,7 +60,7 @@ async def cancellation_stack(root: Path, url: str, *, learning=False):
         else:
             db = SqliteDb(db_file=str(root / 'native.db'))
         stack.enter_context(patch.object(os_app, 'create_db', lambda _: db))
-        stack.enter_context(patch.object(agno_factory, 'create_model', lambda *_: CancellableOpenAILike(
+        stack.enter_context(patch.object(agno_factory, 'create_model', lambda *_: CancellableDAGOpenAILike(
             id='qwen3.6-plus', api_key='test-only', base_url=url + '/model/v1', timeout=30)))
         if not learning:
             stack.enter_context(patch.object(agno_factory, 'create_learning_machine', lambda *_args, **_kwargs: None))

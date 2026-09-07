@@ -5,21 +5,25 @@ GraphData FastAPI app factory.
 from __future__ import annotations
 
 import asyncio
+import anyio
 import httpx
 import json
 import os
 import threading
 import time
+import tempfile
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 import graph_engine.paths as _dp
 from graph_engine.observability import close_service_loggers, get_service_logger
+from graph_engine.tool_execution import execution_policy
 from graph_engine.model_support import DEFAULT_MODEL, ProviderGateway, normalize_model_name, provider_for_model
 from graph_engine.extraction import FileFormatPreCheckSubAgent, TextGraphExtractionSubAgent
 from graph_data_service.data_pipeline import GraphBuilder
@@ -47,10 +51,12 @@ from graph_data_service.job_manager import JobManager
 from graph_data_service.execution_host import GraphExecutionHost, JobContext, job_context
 from graph_data_service.worker_contract import ISOLATED_DATA_TOOLS
 from graph_data_service.async_work import run_sync
+from graph_data_service.tool_scheduler import ToolResourceScheduler
 from execution_protocol import controls_enabled, require_service, service_headers
 from graph_data_service.rag import LightweightRAG
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
 from graph_data_service.session import GraphSession, UploadFileRecord
+from graph_data_service.construction import ConstructionStore, ConstructionError, to_graph_data
 from graph_data_service.storage.nebula_backend import (
     NebulaGraphRepository,
     NebulaRepositoryError,
@@ -97,6 +103,30 @@ class LoadGraphUploadReq(BaseModel):
 
 class ToolInvokeReq(BaseModel):
     arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ConstructionBuildReq(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_path: str | None = None
+    source_filename: str | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConstructionSourceReq(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_path: str
+    source_filename: str
+
+
+class ConstructionOptimizeReq(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_revision: int = Field(strict=True, ge=1)
+    operations: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+
+
+class ConstructionLoadReq(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dataset_id: str = Field(min_length=1)
 
 
 class _NullTraceLogger:
@@ -261,8 +291,10 @@ class GraphDataService:
         nebula_repository: NebulaGraphRepository | None = None,
         storage_backend: str | None = None,
         migrate_storage: bool = True,
+        construction_store: ConstructionStore | None = None,
     ) -> None:
         self._sessions: Dict[str, GraphSession] = {}
+        self._construction = construction_store or ConstructionStore()
         self._deleted_sessions: set[str] = set()
         self._session_lifecycle_lock = threading.RLock()
         self._compute = GraphCompute()
@@ -304,11 +336,13 @@ class GraphDataService:
         self._graph_write_locks: dict[str, threading.RLock] = {}
         self._graph_write_locks_guard = threading.Lock()
         self._compute_global_sem = asyncio.Semaphore(_env_int("GRAPH_COMPUTE_GLOBAL_CONCURRENCY", _workers))
-        self._compute_per_user_limit = _env_int("GRAPH_COMPUTE_PER_USER_CONCURRENCY", 1)
+        self._compute_per_user_limit = _env_int("GRAPH_COMPUTE_PER_USER_CONCURRENCY", min(4, _workers))
         self._compute_user_sems: dict[str, asyncio.Semaphore] = {}
         self._heavy_global_sem = asyncio.Semaphore(_env_int("GRAPH_HEAVY_GLOBAL_CONCURRENCY", max(1, min(2, _workers))))
         self._heavy_per_user_limit = _env_int("GRAPH_HEAVY_PER_USER_CONCURRENCY", 1)
         self._heavy_user_sems: dict[str, asyncio.Semaphore] = {}
+        self._tool_scheduler = ToolResourceScheduler()
+        self._tool_reservations: set[asyncio.Task] = set()
         self._restore_sessions_from_disk()
 
     @staticmethod
@@ -394,6 +428,90 @@ class GraphDataService:
         async with user_sem:
             async with self._heavy_global_sem:
                 return await fn()
+
+    async def _wait_tool_job(self, job_id: str) -> None:
+        """A submitted child can itself return a background job handle."""
+        seen = set()
+        while job_id and job_id not in seen:
+            seen.add(job_id)
+            await self._job_manager.wait(job_id)
+            job = self._job_manager.status(job_id)
+            result = job.result if job else None
+            job_id = str(result.get("job_id") or "") if isinstance(result, dict) and result.get("async") else ""
+
+    async def _run_with_tool_policy(self, session_id, tool_name, arguments, user_id, invoke):
+        reservation = await self._tool_scheduler.acquire(
+            (str(user_id or "").strip(), str(session_id or "").strip()),
+            execution_policy(tool_name, arguments),
+        )
+        retained = False
+        try:
+            result = await invoke()
+            if isinstance(result, dict) and result.get("async") and result.get("job_id"):
+                # The worker does not re-enter dispatch_tool. Transfer this
+                # reservation to its actual lifetime without blocking the
+                # submitting request or making the worker wait on itself.
+                async def finish():
+                    try:
+                        await self._wait_tool_job(str(result["job_id"]))
+                    finally:
+                        self._tool_scheduler.release(reservation)
+
+                task = asyncio.create_task(finish())
+                self._tool_reservations.add(task)
+                task.add_done_callback(self._tool_reservations.discard)
+                retained = True
+            return result
+        except asyncio.CancelledError:
+            # Registration deliberately survives cancellation. Drain any
+            # pending child handoff before releasing its parent's resources.
+            context = job_context.get()
+            if context and self._execution_host:
+                pending = [task for key, (_, task) in self._execution_host.launches.items()
+                           if key[:4] == (context.user_id, context.session_id, context.run_id, context.generation)
+                           and not task.done()]
+                for task in pending:
+                    while not task.done():
+                        try:
+                            await asyncio.shield(task)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
+                children = [job.job_id for job in self._job_manager.list_jobs(session_id)
+                            if job.user_id == user_id and job.parent_job_id == context.job_id]
+                for job_id in children:
+                    task = asyncio.create_task(self._wait_tool_job(job_id))
+                    while not task.done():
+                        try:
+                            await asyncio.shield(task)
+                        except asyncio.CancelledError:
+                            continue
+            raise
+        finally:
+            if not retained:
+                self._tool_scheduler.release(reservation)
+
+    async def _run_nx_in_pool(self, tool_name, nx_graph, arguments):
+        future = asyncio.get_running_loop().run_in_executor(
+            self._process_pool, run_nx_tool, tool_name, nx_graph, arguments
+        )
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            # ProcessPool cannot stop a running function. Retain both capacity
+            # and its graph reservation until the process really completes.
+            with anyio.CancelScope(shield=True):
+                while not future.done():
+                    try:
+                        await asyncio.shield(future)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+            if not future.cancelled():
+                future.exception()
+            raise
 
     def _get_user_dataset_registry(self, user_id: str) -> DatasetRegistry:
         if user_id not in self._user_dataset_registries:
@@ -512,7 +630,7 @@ class GraphDataService:
                 for session_dir in root.iterdir():
                     if not session_dir.is_dir():
                         continue
-                    has_local = (session_dir / "graph_current.npz").exists()
+                    has_local = (session_dir / "graph_current.npz").exists() or (session_dir / "graph_versions.json").exists()
                     has_remote = False
                     meta_path = session_dir / "session_meta.json"
                     if meta_path.exists():
@@ -538,6 +656,13 @@ class GraphDataService:
         )
 
     def _require_graph(self, session_id: str, user_id: str = ""):
+        # Build each version's cached NetworkX snapshot once, off the event
+        # loop. Dispatch reservations keep the selected version stable until
+        # its readers finish; this lock also protects simultaneous cache fills.
+        with self._graph_write_lock(session_id, user_id):
+            return self._resolve_graph_snapshot(session_id, user_id)
+
+    def _resolve_graph_snapshot(self, session_id: str, user_id: str):
         session = self.get_required(session_id, user_id=user_id)
         gd = session.get_graph()
         if gd is None and session.is_remote:
@@ -1429,12 +1554,96 @@ class GraphDataService:
             **self._graph_counts_payload(new_gd),
         }
 
+    def do_get_graph_construction_status(self, dataset_id: str, user_id: str = "") -> dict:
+        return self._construction.status(user_id, dataset_id)
+
+    def do_get_constructed_graph(self, dataset_id: str, user_id: str = "") -> dict:
+        return self._construction.graph(user_id, dataset_id)
+
+    def do_preview_graph_optimization(self, dataset_id: str, base_revision: int, operations: list, user_id: str = "") -> dict:
+        return self._construction.optimize(user_id, dataset_id, base_revision, operations)
+
+    def do_commit_graph_optimization(self, dataset_id: str, base_revision: int, operations: list, user_id: str = "") -> dict:
+        context = job_context.get()
+        def before_commit():
+            if context:
+                signal = self._job_manager._cancel_signals.get(context.job_id)
+                if signal and signal.is_set():
+                    raise InterruptedError("JOB_CANCELLED")
+        receipt = None
+        if context and self._execution_host:
+            receipt = {"run_id": context.run_id, "job_id": context.job_id, "generation": context.generation}
+            proof = self._construction._directory(user_id, dataset_id) / "record.json"
+            self._execution_host.prepare_commit(context, proof)
+        result = self._construction.optimize(user_id, dataset_id, base_revision, operations, commit=True,
+                                              before_commit=before_commit, receipt=receipt)
+        if context:
+            job = self._job_manager.status(context.job_id)
+            if job:
+                job.result = dict(result)
+        return result
+
+    def do_load_constructed_graph(self, session_id: str, dataset_id: str, user_id: str = "") -> dict:
+        """Activate an immutable dataset revision, preserving the property document.
+
+        Property graph snapshots stay local even when a deployment also exposes
+        Nebula: its current projection cannot retain arbitrary JSON properties.
+        Use the existing atomic session version manifest as the commit boundary.
+        """
+        from graph_data_service.graph_snapshot import snapshot_summary
+
+        document = self._construction.graph(user_id, dataset_id)
+        graph = to_graph_data(document)
+        session = self.get_or_create(session_id, user_id=user_id)
+        context = job_context.get()
+        version = session.graph_version
+        result = {"success": True, "session_id": session_id, "dataset_id": dataset_id,
+                  "construction_dataset_id": dataset_id, "construction_revision": document["revision"],
+                  "dataset_version": str(document["revision"]), "backend": "local", **self._graph_counts_payload(graph)}
+        receipt = {"result": result}
+        if context:
+            receipt.update(run_id=context.run_id, job_id=context.job_id, generation=context.generation)
+        def commit_allowed():
+            if context:
+                signal = self._job_manager._cancel_signals.get(context.job_id)
+                if signal and signal.is_set():
+                    raise InterruptedError("JOB_CANCELLED")
+            if self.get_required(session_id, user_id) is not session or session.graph_version != version:
+                raise ConstructionError("graph_version_changed", "Session graph changed while loading the dataset.", 409)
+        descriptor, staging = tempfile.mkstemp(prefix=".construction-load-", suffix=".npz", dir=session._session_dir)
+        os.close(descriptor)
+        try:
+            graph.save(staging)
+            with self._session_lifecycle_lock, self._graph_write_lock(session_id, user_id):
+                commit_allowed()
+                if context and self._execution_host:
+                    self._execution_host.prepare_commit(context, session._versions_path())
+                result["graph_version"] = session.publish_snapshot(
+                    staging, snapshot_summary(graph), expected_version=version, receipt=receipt,
+                    description=f"加载构图数据集 {dataset_id}@{document['revision']}", before_commit=commit_allowed)
+                self._compute.invalidate(self._cache_key(session_id, user_id))
+                self._search_index_cache.pop(self._cache_key(session_id, user_id), None)
+                session.bind_dataset(dataset_id, str(document["revision"]))
+                if context:
+                    job = self._job_manager.status(context.job_id)
+                    if job:
+                        job.result = dict(result)
+            return result
+        finally:
+            Path(staging).unlink(missing_ok=True)
+
     def do_list_datasets(self, user_id: str = "") -> dict:
         global_metas = self._dataset_registry.list_datasets()
         global_dicts = [dict(m.to_dict(), scope="global") for m in global_metas]
         if user_id:
             user_metas = self._get_user_dataset_registry(user_id).list_datasets()
             user_dicts = [dict(m.to_dict(), scope="user") for m in user_metas]
+            existing = {row["dataset_id"] for row in user_dicts}
+            user_dicts.extend({**row, "name": row["source_filename"] or row["dataset_id"], "scope": "user",
+                               "source_type": "construction", "is_directed": row["directed"],
+                               "versions": [str(row["revision"])], "storage_backend": "construction",
+                               "load_tool": "load_constructed_graph"}
+                              for row in self._construction.list_ready(user_id) if row["dataset_id"] not in existing)
         else:
             user_dicts = []
         return {
@@ -1443,6 +1652,11 @@ class GraphDataService:
         }
 
     def do_load_dataset(self, session_id: str, dataset_id: str, version: str = "latest", user_id: str = "") -> dict:
+        if user_id:
+            state = self._construction.status(user_id, dataset_id)
+            if state["status"] == "ready":
+                return {"success": False, "code": "USE_CONSTRUCTED_GRAPH_LOADER", "dataset_id": dataset_id,
+                        "error": "已构图数据集请使用 load_constructed_graph 加载，以同步当前会话的数据集选择。"}
         session = self.get_or_create(session_id, user_id=user_id)
         # Check user's registry first, then global.
         registry = None
@@ -2229,6 +2443,8 @@ class GraphDataService:
         preview_payload = self._graph_preview(gd)
         ml_readiness = graph_ml_readiness_for_graph(gd)
         graph_info_payload = {
+            "construction_dataset_id": gd.graph_metadata.get("construction_dataset_id"),
+            "construction_revision": gd.graph_metadata.get("construction_revision"),
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
             "num_edge_entries": summary.num_edge_entries,
@@ -2270,6 +2486,8 @@ class GraphDataService:
             "loaded": True,
             "session_id": session_id,
             "graph_version": summary.graph_version,
+            "construction_dataset_id": gd.graph_metadata.get("construction_dataset_id"),
+            "construction_revision": gd.graph_metadata.get("construction_revision"),
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
             "num_edge_entries": summary.num_edge_entries,
@@ -3136,7 +3354,8 @@ class GraphDataService:
     ) -> dict:
         if job_context.get() and self._execution_host:
             from graph_data_service.isolated_compute import run_isolated
-            return await self._run_with_heavy_limits(user_id, lambda: run_isolated(self, session_id, user_id, tool_name, arguments))
+            return await self._run_with_tool_policy(session_id, tool_name, arguments, user_id,
+                lambda: self._run_with_heavy_limits(user_id, lambda: run_isolated(self, session_id, user_id, tool_name, arguments)))
         runtime_key = self._cache_key(session_id, user_id)
         key = (runtime_key, tool_name, self._canonical_tool_arguments(arguments))
         async with self._graph_ml_inflight_lock:
@@ -3160,7 +3379,8 @@ class GraphDataService:
                         arguments,
                     )
                 task = asyncio.create_task(
-                    self._run_with_heavy_limits(user_id, invoke)
+                    self._run_with_tool_policy(session_id, tool_name, arguments, user_id,
+                        lambda: self._run_with_heavy_limits(user_id, invoke))
                 )
                 self._graph_ml_inflight[key] = task
 
@@ -3211,7 +3431,39 @@ class GraphDataService:
         )
 
     async def dispatch_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
-        """统一工具分发入口。"""
+        """Admit independent tools concurrently and serialize resource conflicts."""
+        if tool_name in {"get_job_status", "cancel_job"}:
+            # Job control must remain available while a background writer owns
+            # the graph reservation. Task.cancel()/Event.set() also belong to
+            # this event loop, rather than the synchronous worker thread.
+            return self._dispatch_graph_tool(session_id, tool_name, arguments, user_id)
+        if tool_name in _GRAPH_ML_HEAVY_TOOLS and not self._wants_graph_ml_async_job(arguments):
+            # Identical training/inference requests share the existing inflight
+            # task. Reserve resources inside that task, once per computation.
+            return await self._dispatch_heavy_graph_ml_tool_once(session_id, tool_name, arguments, user_id)
+        return await self._run_with_tool_policy(session_id, tool_name, arguments, user_id,
+            lambda: self._dispatch_tool_unlocked(session_id, tool_name, arguments, user_id))
+
+    async def _dispatch_tool_unlocked(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
+        """Execute an admitted tool; child jobs inherit its reservation."""
+        if tool_name == "load_dataset" and user_id:
+            dataset_id = _required_str(arguments, "dataset_id")
+            state = await run_sync(self._construction.status, user_id, dataset_id)
+            if state["status"] == "ready":
+                return await run_sync(self.do_load_dataset, session_id, dataset_id, arguments.get("version", "latest"), user_id)
+        if tool_name == "get_graph_construction_capabilities":
+            return self._construction.capabilities()
+        if tool_name in {"get_graph_construction_status", "get_constructed_graph", "load_constructed_graph",
+                         "preview_graph_optimization", "commit_graph_optimization"}:
+            dataset_id = _required_str(arguments, "dataset_id")
+            if tool_name == "get_graph_construction_status":
+                return await run_sync(self.do_get_graph_construction_status, dataset_id, user_id)
+            if tool_name == "get_constructed_graph":
+                return await run_sync(self.do_get_constructed_graph, dataset_id, user_id)
+            if tool_name == "load_constructed_graph":
+                return await run_sync(self.do_load_constructed_graph, session_id, dataset_id, user_id)
+            method = self.do_preview_graph_optimization if tool_name == "preview_graph_optimization" else self.do_commit_graph_optimization
+            return await run_sync(method, dataset_id, arguments.get("base_revision"), arguments.get("operations"), user_id)
         if job_context.get() and self._execution_host and tool_name in NX_TOOL_NAMES | ISOLATED_DATA_TOOLS:
             session = self.get_required(session_id, user_id=user_id)
             if not session.is_remote:
@@ -3274,7 +3526,7 @@ class GraphDataService:
                 return await self._submit_graph_ml_tool_job(session_id, tool_name, arguments, user_id=user_id)
             if tool_name in _GRAPH_ML_HEAVY_TOOLS:
                 return await self._dispatch_heavy_graph_ml_tool_once(session_id, tool_name, arguments, user_id=user_id)
-            return self._dispatch_graph_ml_tool(session_id, tool_name, arguments, user_id=user_id)
+            return await run_sync(self._dispatch_graph_ml_tool, session_id, tool_name, arguments, user_id=user_id)
         if tool_name == "shortest_path" and not _optional_bool(arguments, "use_weight", True):
             session = self.get_required(session_id, user_id=user_id)
             if session.is_remote:
@@ -3317,7 +3569,7 @@ class GraphDataService:
                 except NebulaRepositoryError as exc:
                     return exc.to_dict()
             else:
-                _, _, nx_graph = self._require_graph(session_id, user_id=user_id)
+                _, _, nx_graph = await run_sync(self._require_graph, session_id, user_id=user_id)
             if scope_meta.get("target_in_scope") is False:
                 if tool_name == "all_shortest_paths":
                     return {
@@ -3340,12 +3592,9 @@ class GraphDataService:
                     else:
                         base.update({"count": 0, "paths": [], "truncated": False})
                     return base
-            loop = asyncio.get_running_loop()
             result = await self._run_with_compute_limits(
                 user_id,
-                lambda: loop.run_in_executor(
-                    self._process_pool, run_nx_tool, tool_name, nx_graph, arguments
-                ),
+                lambda: self._run_nx_in_pool(tool_name, nx_graph, arguments),
             )
             if scope_meta and isinstance(result, dict):
                 result.update(scope_meta)
@@ -3366,8 +3615,10 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         # SIGTERM 时取消所有后台 Job 的 asyncio Task（底层线程会随进程退出）
         cancelled = svc._job_manager.cancel_all()
         if cancelled:
-            # 让 CancelledError 传播一个调度周期
-            await asyncio.sleep(0)
+            await asyncio.gather(*(svc._job_manager.wait(job_id)
+                for job_id in list(svc._job_manager._tasks)), return_exceptions=True)
+        if svc._tool_reservations:
+            await asyncio.gather(*svc._tool_reservations, return_exceptions=True)
         # 不等待 ProcessPool worker 进程自然结束，直接让 OS 回收
         svc._process_pool.shutdown(wait=False, cancel_futures=True)
         svc._nebula.close()
@@ -3383,8 +3634,23 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     def _get_user_id(request: Request) -> str:
         return request.headers.get("X-User-ID", "").strip()
 
+    @app.exception_handler(ConstructionError)
+    async def construction_error(_request: Request, exc: ConstructionError):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    def construction_user(request: Request):
+        require_service(request)
+        uid = _get_user_id(request)
+        if not uid:
+            raise HTTPException(401, {"code": "user_required", "message": "A dataset owner is required."})
+        return uid
+
     async def controlled_tool(session_id, tool_name, arguments, request):
         uid = _get_user_id(request)
+        if tool_name in {"get_graph_construction_capabilities", "get_graph_construction_status", "get_constructed_graph",
+                         "load_constructed_graph", "preview_graph_optimization", "commit_graph_optimization"}:
+            uid = construction_user(request)
         rid = request.headers.get('X-Run-ID', '')
         if svc._execution_host and tool_name == 'cancel_job':
             require_service(request)
@@ -3403,6 +3669,55 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
                 return await svc.dispatch_tool(session_id, tool_name, arguments, user_id=uid)
             return await svc._execution_host.execute(ctx, tool_name, arguments, invoke)
         return await svc.dispatch_tool(session_id, tool_name, arguments, user_id=uid)
+
+    @app.get("/construction/capabilities")
+    def construction_capabilities(request: Request):
+        construction_user(request)
+        return svc._construction.capabilities()
+
+    @app.get("/construction/{dataset_id}")
+    def construction_status(dataset_id: str, request: Request):
+        return svc.do_get_graph_construction_status(dataset_id, construction_user(request))
+
+    @app.post("/construction/{dataset_id}/source")
+    def construction_source(dataset_id: str, req: ConstructionSourceReq, request: Request):
+        return svc._construction.register_source(construction_user(request), dataset_id, req.source_path, req.source_filename)
+
+    @app.post("/construction/{dataset_id}/build")
+    def construction_build(dataset_id: str, req: ConstructionBuildReq, request: Request):
+        return svc._construction.build(construction_user(request), dataset_id, req.source_path, req.source_filename, req.options)
+
+    @app.get("/construction/{dataset_id}/graph")
+    def constructed_graph(dataset_id: str, request: Request):
+        return svc.do_get_constructed_graph(dataset_id, construction_user(request))
+
+    @app.post("/construction/{dataset_id}/preview")
+    def construction_preview(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
+        return svc.do_preview_graph_optimization(dataset_id, req.base_revision, req.operations, construction_user(request))
+
+    @app.post("/construction/{dataset_id}/commit")
+    async def construction_commit(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
+        uid = construction_user(request)
+        if request.headers.get("X-Run-ID") and svc._execution_host:
+            sid = request.headers.get("X-Session-ID", "")
+            if not sid:
+                raise HTTPException(422, {"code": "INVALID_EXECUTION_IDENTITY"})
+            return await controlled_tool(sid, "commit_graph_optimization", {"dataset_id": dataset_id, **req.model_dump()}, request)
+        return await run_sync(svc.do_commit_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
+
+    @app.delete("/construction/{dataset_id}")
+    def construction_delete(dataset_id: str, request: Request):
+        return svc._construction.delete(construction_user(request), dataset_id)
+
+    @app.post("/sessions/{session_id}/graph/load_construction")
+    async def load_constructed_graph(session_id: str, req: ConstructionLoadReq, request: Request):
+        uid = construction_user(request)
+        if not request.headers.get("X-Run-ID"):
+            active = [job for job in svc._job_manager.list_jobs(session_id)
+                      if job.user_id == uid and job.status not in {"done", "failed", "cancelled"}]
+            if active:
+                raise HTTPException(409, {"code": "SESSION_EXECUTION_ACTIVE", "message": "The session is processing a graph."})
+        return await controlled_tool(session_id, "load_constructed_graph", {"dataset_id": req.dataset_id}, request)
 
     @app.get('/internal/capabilities')
     async def control_capabilities(request: Request):
@@ -3594,47 +3909,38 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         }
 
     @app.post("/sessions/{session_id}/graph/load_text")
-    def load_graph_text(session_id: str, req: LoadGraphTextReq, request: Request):
-        user_id = _get_user_id(request)
-        return svc.do_load_graph_text(session_id, req.edge_text, req.append, user_id=user_id)
+    async def load_graph_text(session_id: str, req: LoadGraphTextReq, request: Request):
+        return await controlled_tool(session_id, "load_graph", req.model_dump(), request)
 
     @app.post("/sessions/{session_id}/graph/load_upload")
     async def load_graph_upload(session_id: str, req: LoadGraphUploadReq, request: Request):
-        user_id = _get_user_id(request)
-        if svc._execution_host and request.headers.get('X-Run-ID'):
-            return await controlled_tool(session_id, 'load_graph_from_upload', {'filename': req.filename, 'append': req.append}, request)
-        return await svc.do_load_graph_from_upload(session_id, req.filename, req.append, user_id=user_id)
+        return await controlled_tool(session_id, 'load_graph_from_upload', req.model_dump(), request)
 
     @app.post("/sessions/{session_id}/graph/clear")
-    def clear_graph(session_id: str, request: Request):
-        user_id = _get_user_id(request)
-        return svc.do_clear_graph(session_id, user_id=user_id)
+    async def clear_graph(session_id: str, request: Request):
+        return await controlled_tool(session_id, "clear_graph", {}, request)
 
     @app.post("/sessions/{session_id}/graph/to_undirected")
-    def to_undirected(session_id: str, request: Request):
-        user_id = _get_user_id(request)
-        return svc.do_to_undirected(session_id, user_id=user_id)
+    async def to_undirected(session_id: str, request: Request):
+        return await controlled_tool(session_id, "to_undirected", {}, request)
 
     @app.get("/sessions/{session_id}/graph/info")
-    def graph_info(session_id: str, request: Request):
-        user_id = _get_user_id(request)
-        return svc.do_get_graph_info(session_id, user_id=user_id)
+    async def graph_info(session_id: str, request: Request):
+        return await controlled_tool(session_id, "get_graph_info", {}, request)
 
     @app.post("/sessions/{session_id}/graph/visualize")
-    def visualize_graph(session_id: str, request: Request, req: ToolInvokeReq = None):
+    async def visualize_graph(session_id: str, request: Request, req: ToolInvokeReq = None):
         """获取图的完整结构用于可视化渲染（直接端点）。"""
         arguments = req.arguments if req else {}
-        node_names = arguments.get("node_names")
-        if node_names is not None:
-            node_names = list(node_names)
-        include_community = bool(arguments.get("include_community", False))
-        highlights = arguments.get("highlights")
-        max_nodes = arguments.get("max_nodes")
-        user_id = _get_user_id(request)
-        return svc.do_visualize_subgraph(session_id, node_names, include_community, highlights, max_nodes=max_nodes, user_id=user_id)
+        return await controlled_tool(session_id, "visualize_subgraph", arguments, request)
 
     @app.get("/sessions/{session_id}/graph/document")
-    def graph_document(session_id: str, request: Request):
+    async def graph_document(session_id: str, request: Request):
+        user_id = _get_user_id(request)
+        return await svc._run_with_tool_policy(session_id, "get_graph_info", {}, user_id,
+            lambda: run_sync(graph_document_snapshot, session_id, request))
+
+    def graph_document_snapshot(session_id: str, request: Request):
         user_id = _get_user_id(request)
         session = svc.get_required(session_id, user_id=user_id)
         gd = session.get_graph()
@@ -3697,6 +4003,8 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             duration_ms = int((time.monotonic() - t0) * 1000)
             svc_log.response(tool_name, result, duration_ms)
             return result
+        except ConstructionError:
+            raise
         except ValueError as e:
             svc_log.error(tool_name, str(e))
             return {"success": False, "error": str(e)}

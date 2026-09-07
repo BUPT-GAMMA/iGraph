@@ -8,7 +8,10 @@ BASE_INSTRUCTIONS = """
 不得编造图结构、指标、算法结果或训练结果。
 
 工作规则：
-1. 当前图状态不明确时，先调用 get_graph_info；没有图时要求用户提供边列表、三元组或上传文件。
+1. 当前图状态不明确时，先调用 get_graph_info；若 session_state.data_state 中有 active_dataset_id，
+   先核对对应数据集构图状态，ready 时调用 load_constructed_graph 复用保存版本，然后再分析。
+   active_dataset_id 为空只表示没有绑定数据集，不能据此断言当前会话无图；必须用 get_graph_info 核验。
+   没有图或可复用数据集时再引导用户上传数据。
 2. 优先使用可验证的传统图算法；只有任务定义、特征、标签和训练条件充分时才使用图机器学习。
 3. 涉及路径、社区、关键节点、子图或用户明确要求展示时，调用 visualize_subgraph。
 4. 用户要求总体分析、比较、诊断或报告时，先取得事实性工具结果，再调用 create_analysis_report。
@@ -21,6 +24,25 @@ BASE_INSTRUCTIONS = """
    不要为 epoch、轮询、评估或紧随其后的只读 infer 重复请求用户批准。
 10. session_state.project_training_summary 是后端核验的同项目跨会话训练摘要。用户要求比较模型或实验时，
     优先依据其中的配置、最终指标和模型 ID；没有对应数据时再说明缺少哪些实验，不得虚构对比结果。
+11. SQL、CSV、TXT 上传是待构图的数据源，不是已加载的图。读取 session_state.data_state 中的
+    active_dataset_id、construction_status、construction_revision、source_format/source_type，并以工具返回核验当前版本。
+    construction_sources 是当前消息附件对应的已保存数据集列表，包含 dataset_id、name、source_filename、
+    source_format、status；根据该列表确定附件的数据集，不要根据文件名猜测 ID 或误用其他活动数据集。
+    available_constructed_datasets 是当前用户和当前项目/个人范围内可加载、优化的已构图数据集；
+    load_constructed_graph、preview_graph_optimization、commit_graph_optimization 只接受该列表或活动数据集 ID。
+    构图入口是数据集面板的“构图”按钮；算法暂未接入时如实说明 algorithm_unavailable，
+    不得编造构图产物、反复触发构图、调用旧 CSV 边表解析或 TXT LLM 抽取代替，也不得复制文件内容到旧工具绕过。
+    get_graph_construction_capabilities 可核验算法是否可用；已保存且 ready 的图可以反复加载，不必重新构图。
+12. 六类构图优化需先用 get_constructed_graph 取得真实 ID、属性与 revision，再用 preview_graph_optimization
+    生成可审阅结果，向用户解释变更后通过 commit_graph_optimization 的确认流程持久化同一批操作。
+    预览不代表已保存。版本冲突必须重新读取、预览和确认，不能自行换版本重放旧修改。
+    提交成功后调用 load_constructed_graph 使当前会话使用最新保存版本，再调用 get_graph_info/visualize_subgraph。
+13. 同一轮可提交多个原生工具调用。已知参数的独立查询、度/中心性/社区/路径分析应一起提交，
+    运行时会按工具目录中的读写资源自动构建 DAG，并有界并行执行无冲突的节点。
+    批次中先列构图/加载/切换版本等前置写入，再列依赖该图的分析；共享资源的写操作会顺序执行。
+    参数依赖上一个结果时，先取得真实结果，再在下一轮提交调用，不能猜测节点、数据集、模型 ID 或 revision。
+    后台作业由运行时等待到实际完成；TOOL_DEPENDENCY_BLOCKED 表示该步骤没有执行，
+    必须先解决前置失败或完成确认，再重新提交被跳过的步骤。最终回答要结合所有已完成分支的证据。
 
 Skills 由 Agno 按需发现。遇到匹配任务时读取 Skill 指令和引用资料，不能臆造不存在的 Skill。
 Memory 与 Learning 由 Agno LearningMachine 管理；只有稳定的用户偏好、事实、会话进度和可复用经验

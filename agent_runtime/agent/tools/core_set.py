@@ -3,6 +3,8 @@ from __future__ import annotations
 
 CORE_TOOL_NAMES: set[str] = {
     "get_graph_info",
+    "get_graph_construction_status",
+    "load_constructed_graph",
     "skills_list",
     "skill_view",
     "skill_manage",

@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from backend.general_migration import GeneralMigration
 from backend.config import BackendConfig
+from backend.construction import install_construction_routes, sync_record as sync_construction_record
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, translate_sse
 from backend.identity import current_user, public_user, require_admin
@@ -696,9 +697,11 @@ def _message_with_attachments(req: ChatReq) -> str:
     hints: list[str] = []
     for name in names:
         suffix = Path(name).suffix.lower()
-        if suffix == ".pt":
+        if suffix in {".sql", ".csv", ".txt"}:
+            hint = "源文件已保存到数据集；从 data_state.construction_sources 获取 dataset_id，检查构图状态。算法待接入时引导用户使用数据集旁的构图按钮，不调用旧上传构图工具"
+        elif suffix == ".pt":
             hint = "多图分类数据集使用 load_graph_classification_dataset；普通单图使用 load_graph_from_upload"
-        elif suffix in {".npz", ".json", ".csv", ".tsv", ".txt", ".edgelist", ".dat"}:
+        elif suffix in {".npz", ".json", ".tsv", ".edgelist", ".dat"}:
             hint = "使用 load_graph_from_upload 自动检测并加载"
         else:
             hint = "根据文件格式选择上传文件加载工具"
@@ -1004,6 +1007,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         await runtime.request("DELETE", f"/internal/skills/users/{user_id}/all", headers=headers)
         for item in custom_models.list(user_id):
             custom_models.delete(user_id, item.model_id)
+        for item in project_datasets._load().values():
+            if item.user_id == user_id and "construction" in item.metadata:
+                await graph.request("DELETE", f"/construction/{item.dataset_id}", headers=service_headers(user_id))
         project_datasets.delete_user(user_id)
         projects.delete_user(user_id)
         return {"success": users.delete(user_id), "user_id": user_id}
@@ -1139,6 +1145,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         patch: dict[str, Any],
     ) -> dict:
         state = {**_state(session), **patch}
+        if "active_dataset_id" in patch:
+            active = project_datasets.get(str(patch["active_dataset_id"]), user_id,
+                session_project_id(session, user_id)) if patch["active_dataset_id"] else None
+            state["data_state"] = dataset_runtime_state(active)
         await runtime.request(
             "PATCH",
             f"/sessions/{session_id}",
@@ -1147,6 +1157,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             json_body={"session_state": state},
         )
         return state
+
+    def dataset_runtime_state(dataset: ProjectDatasetRecord | None) -> dict:
+        construction = dataset.metadata.get("construction", {}) if dataset else {}
+        return {"active_dataset_id": dataset.dataset_id if dataset else None,
+            "construction_status": construction.get("status"),
+            "construction_revision": construction.get("revision"),
+            "source_format": dataset.file_type if dataset else None}
 
     async def reset_graph_runtime(
         session_id: str,
@@ -1183,6 +1200,16 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="会话不能加载其他项目的数据集")
         if dataset.status != "ready":
             raise HTTPException(status_code=409, detail=f"数据集当前状态为 {dataset.status}，尚不可加载")
+        if dataset.metadata.get("construction", {}).get("status") == "ready":
+            if reset:
+                await reset_graph_runtime(session_id, request, user_id, str(_state(session).get("model") or ""))
+            result = await graph.request("POST", f"/sessions/{session_id}/graph/load_construction",
+                headers={**forwarded_headers(request, user_id), **service_headers(user_id)},
+                json_body={"dataset_id": dataset.dataset_id})
+            if not isinstance(result, dict) or result.get("success") is False:
+                raise HTTPException(502, "已保存的构图结果加载失败")
+            result["dataset_view"] = _dataset_view(dataset)
+            return result
         source_path = Path(dataset.storage_path)
         if not source_path.is_file():
             project_datasets.update(
@@ -1433,14 +1460,28 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         request: Request,
         user_id: str,
     ) -> bool:
-        if await graph_loaded(session_id, request, user_id):
-            return True
+        loaded = await graph_loaded(session_id, request, user_id)
         state = _state(session)
         dataset_id = str(state.get("active_dataset_id") or "").strip()
         if not dataset_id:
-            return False
+            return loaded
         project_id = session_project_id(session, user_id)
         dataset = project_dataset_or_404(dataset_id, project_id, user_id)
+        if "construction" in dataset.metadata:
+            latest = await graph.request("GET", f"/construction/{dataset_id}",
+                headers={**forwarded_headers(request, user_id), **service_headers(user_id)})
+            dataset = sync_construction_record(project_datasets, dataset, latest)
+            if loaded:
+                info = await graph.request("GET", f"/sessions/{session_id}/graph/info", headers=forwarded_headers(request, user_id))
+                if (info.get("construction_dataset_id") == dataset_id
+                        and info.get("construction_revision") == latest.get("revision")):
+                    return True
+                # Running analysis keeps its snapshot; a subsequent Run loads the saved revision.
+                active = _active_run_record(await get_session_runs(session_id, request, user_id))
+                if active and str(active.get("run_id")) != execution_headers.get().get("X-Run-ID"):
+                    return True
+        elif loaded:
+            return True
         await load_project_dataset_into_session(
             session_id,
             session,
@@ -1560,11 +1601,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             content=content,
         )
         previous_default_dataset_id = default_dataset_id
-        if project and (project.default_dataset_id is None or set_as_default):
+        if dataset.status == "ready" and project and (project.default_dataset_id is None or set_as_default):
             project = projects.set_default_dataset(project_id, user.user_id, dataset.dataset_id) or project
         activated_session_id = None
         dataset_view = None
-        if target_session is not None:
+        if target_session is not None and dataset.status == "ready":
             try:
                 _, dataset_view = await switch_session_dataset(
                     normalized_session_id,
@@ -1588,6 +1629,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "default_dataset_id": project.default_dataset_id if project else None,
             "activated_session_id": activated_session_id,
             "dataset_view": dataset_view,
+            "construction_required": dataset.status == "source_ready",
         }
 
     @app.patch("/api/projects/{project_id}/datasets/{dataset_id}")
@@ -1669,6 +1711,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             affected += 1
         if project and project.default_dataset_id == dataset_id:
             projects.set_default_dataset(project_id, user.user_id, None)
+        removed_dataset = project_dataset_or_404(dataset_id, project_id, user.user_id)
+        if "construction" in removed_dataset.metadata:
+            await graph.request("DELETE", f"/construction/{dataset_id}", headers=service_headers(user.user_id))
         if not project_datasets.delete(dataset_id, user.user_id, project_id):
             raise HTTPException(status_code=409, detail="项目数据集删除失败")
         return {
@@ -1875,6 +1920,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         record = await runtime.request('GET', f'/internal/projects/{project_id}/deletion', headers=service_headers(uid))
         if not record['state'].get('sessions_deleted'):
             raise HTTPException(409, {'code': 'PROJECT_DELETE_NOT_READY'})
+        await delete_project_constructions(project_id, uid)
         project_datasets.delete_project(project_id, uid)
         projects.delete(project_id, uid)
         return {'success': True}
@@ -1921,6 +1967,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             await graph.request('DELETE', f'/internal/projects/{project_id}/artifacts',
                 headers=service_headers(user.user_id),
                 json_body={'session_ids': [row['session_id'] for row in contained]})
+            await delete_project_constructions(project_id, user.user_id)
             project_datasets.delete_project(project_id, user.user_id)
             projects.delete(project_id, user.user_id)
             return {'success': True, 'project_id': project_id, 'delete_status': 'deleted'}
@@ -2306,11 +2353,27 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         training_payload = await project_training_runs(project_id, request, current_session_id=session_id)
         training_summary = _project_training_summary(training_payload.get("training_runs") or [])
         await sync_custom_model(user, str(options["model"]), request)
+        data_state = dataset_runtime_state(project_datasets.get(str(state.get("active_dataset_id")),
+            user.user_id, project_id) if state.get("active_dataset_id") else None)
+        attachment_tokens = {item.file_token for item in (req.attachments or [])}
+        data_state["construction_sources"] = [
+            {"dataset_id": item.dataset_id, "name": item.name, "source_filename": item.original_filename,
+             "source_format": item.file_type, "status": item.metadata.get("construction", {}).get("status", "not_built")}
+            for item in project_datasets.list(project_id, user.user_id)
+            if item.metadata.get("attachment_file_token") in attachment_tokens
+        ]
+        data_state["available_constructed_datasets"] = [
+            {"dataset_id": item.dataset_id, "name": item.name, "source_format": item.file_type,
+             "revision": item.metadata["construction"].get("revision")}
+            for item in project_datasets.list(project_id, user.user_id)
+            if item.status == "ready" and item.metadata.get("construction", {}).get("status") == "ready"
+        ]
         next_state = {
             **state,
             **options,
             "last_message_preview": req.message.strip()[:120],
             "project_training_summary": training_summary,
+            "data_state": data_state,
         }
         session_name = str(session.get("session_name") or "").strip()
         session_patch: dict[str, Any] = {"session_state": next_state}
@@ -3203,7 +3266,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.post("/api/sessions/{session_id}/upload")
     async def upload(session_id: str, request: Request, file: UploadFile = File(...)):
         user = current_user(request, users)
-        await get_session(session_id, request, user.user_id)
+        session = await get_session(session_id, request, user.user_id)
         file_token = uuid.uuid4().hex
         content = await file.read()
         filename = file.filename or f"upload-{file_token}.bin"
@@ -3212,7 +3275,29 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             data={"file_token": file_token, "original_filename": filename},
             files={"file": (filename, content, file.content_type or "application/octet-stream")},
         )
-        return {"success": True, "filename": filename, "file_token": file_token, "graph_engine": payload}
+        dataset = None
+        if Path(filename).suffix.lower() in {".sql", ".csv", ".txt"}:
+            if not content:
+                raise HTTPException(400, "数据集文件不能为空")
+            project_id = session_project_id(session, user.user_id)
+            if project_id:
+                project_or_404(project_id, user.user_id)
+            dataset = project_datasets.create(project_id=project_id, user_id=user.user_id,
+                name=Path(filename).stem, original_filename=filename, content=content)
+            dataset = project_datasets.update(dataset.dataset_id, user.user_id, project_id=project_id,
+                metadata={**dataset.metadata, "attachment_file_token": file_token}) or dataset
+        return {"success": True, "filename": filename, "file_token": file_token, "graph_engine": payload,
+                "dataset": _project_dataset_row(dataset) if dataset else None,
+                "construction_required": dataset is not None}
+
+    install_construction_routes(app, graph=graph, directory=project_datasets,
+        user_for=lambda request: current_user(request, users), project_for=project_or_404,
+        dataset_for=project_dataset_or_404)
+
+    async def delete_project_constructions(project_id: str, user_id: str):
+        for item in project_datasets.list(project_id, user_id):
+            if "construction" in item.metadata:
+                await graph.request("DELETE", f"/construction/{item.dataset_id}", headers=service_headers(user_id))
 
     return app
 

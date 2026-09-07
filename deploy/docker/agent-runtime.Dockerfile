@@ -9,6 +9,8 @@ WORKDIR /app
 COPY deploy/requirements/agent-runtime.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 COPY agent_runtime /app/agent_runtime
+# Shared execution policies are standard-library-only; no graph compute stack.
+COPY graph_engine/__init__.py graph_engine/tool_execution.py /app/graph_engine/
 COPY execution_protocol.py /app/execution_protocol.py
 COPY execution_lifecycle.py /app/execution_lifecycle.py
 
