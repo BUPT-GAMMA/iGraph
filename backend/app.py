@@ -29,7 +29,7 @@ from backend.general_migration import GeneralMigration
 from backend.config import BackendConfig
 from backend.construction import install_construction_routes, sync_record as sync_construction_record
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
-from backend.event_mapper import feedback_request_from_payload, translate_sse
+from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, translate_sse
 from backend.identity import current_user, public_user, require_admin
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
 from backend.projects import ProjectDirectory, ProjectRecord
@@ -348,10 +348,10 @@ def _merge_training_job_card(card: dict, status_result: dict) -> None:
     history.extend(
         item
         for item in (status_result.get("progress_updates") or [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and item.get("kind") in {None, "train_epoch"}
     )
     detail = job.get("detail") if isinstance(job.get("detail"), dict) else {}
-    if detail.get("epoch") is not None:
+    if detail.get("epoch") is not None and detail.get("kind") in {None, "train_epoch"}:
         history.append(detail)
     by_epoch: dict[int, dict] = {}
     without_epoch: list[dict] = []
@@ -519,6 +519,64 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
                     })
             elif name == "create_analysis_report" and isinstance(result.get("report"), dict):
                 reports.append(result["report"])
+
+        # Custom progress events are native, persisted run events. Rebuild the
+        # same card by tool-call ID, including snapshots taken before completion.
+        cards_by_id = {str(card.get("call_id") or ""): card for card in tool_cards}
+        completed_results = {card["call_id"]: card["result"] for card in tool_cards
+                             if card.get("result") is not None and card.get("done")}
+        progress_calls = set()
+        for event in run.get("events") or []:
+            if not isinstance(event, dict):
+                continue
+            progress_content = graph_job_progress_payload(event)
+            if progress_content is None:
+                continue
+            call_id = str(event.get("tool_call_id") or "")
+            if not call_id:
+                continue
+            progress_calls.add(call_id)
+            card = cards_by_id.get(call_id)
+            if card is None:
+                card = {"tool": progress_content.get("tool_name") or progress_content["job"].get("tool_name"),
+                        "args": progress_content.get("tool_args") or {}, "call_id": call_id,
+                        "done": False, "result": None}
+                cards_by_id[call_id] = card
+                tool_cards.append(card)
+            job = progress_content["job"]
+            if card["tool"] == "train":
+                _merge_training_job_card(card, {"job": {**job, "tool_name": "train"},
+                                               "progress_updates": progress_content.get("progress_updates") or []})
+            else:
+                card["progress"] = {**(job.get("detail") or {}), "job_id": job["job_id"],
+                                    "status": job.get("status"), "progress": job.get("progress", 0),
+                                    "message": job.get("message", "")}
+                card["done"] = job.get("status") in {"done", "failed", "cancelled"}
+            card["job_id"] = job["job_id"]
+            if progress_content.get("progress_has_more") or progress_content.get("job_chain_continues"):
+                card["done"] = False
+            if not card["done"] and status in {"cancelled", "failed", "error"}:
+                card["done"] = True
+                card["progress"]["status"] = "cancelled" if status == "cancelled" else "failed"
+                if isinstance(card.get("result"), dict):
+                    card["result"]["job_status"] = card["progress"]["status"]
+
+        for call_id in progress_calls & completed_results.keys():
+            # A persisted native completion is newer than intermediate progress,
+            # including when polling failed before a terminal progress event.
+            card = cards_by_id[call_id]
+            final = completed_results[call_id]
+            card["done"] = True
+            if isinstance(final, dict):
+                current = card.get("result") if isinstance(card.get("result"), dict) else {}
+                card["result"] = {**current, **final}
+                if final.get("success") is not False:
+                    card["progress"].update(status="done", progress=1)
+                elif final.get("status") in {"failed", "cancelled", "canceled"}:
+                    card["progress"]["status"] = "cancelled" if final["status"] == "canceled" else final["status"]
+                card["result"]["job_status"] = card["progress"]["status"]
+            else:
+                card["result"] = final
 
         feedback_requests = (
             [feedback_request_from_payload(run)]

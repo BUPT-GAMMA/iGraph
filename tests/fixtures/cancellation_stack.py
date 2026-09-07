@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 
 
 @asynccontextmanager
-async def cancellation_stack(root: Path, url: str, *, learning=False):
+async def cancellation_stack(root: Path, url: str, *, learning=False, training_epochs=100000):
     from agno.db.sqlite import SqliteDb
     from agno.run import cancel
     from backend.config import BackendConfig
@@ -120,7 +120,7 @@ async def cancellation_stack(root: Path, url: str, *, learning=False):
                     if (key.startswith('train') or key.startswith('background') or key.startswith('approval')) and count == 1:
                         tool = 'clear_graph' if key.startswith('approval') else 'train'
                         args = {} if tool == 'clear_graph' else _request('node_classification').model_dump(mode='json')
-                        if tool == 'train': args['train_config']['epochs'] = 100000
+                        if tool == 'train': args['train_config']['epochs'] = training_epochs
                         metrics['tool_calls'][key] = metrics['tool_calls'].get(key, 0) + 1
                         yield frame({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'call-' + str(count), 'type': 'function',
                                       'function': {'name': tool, 'arguments': json.dumps(args)}}]})

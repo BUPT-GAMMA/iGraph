@@ -12,15 +12,17 @@ import copy
 import json
 import logging
 import os
+from time import time
 from contextlib import aclosing
 from contextvars import ContextVar
 from collections.abc import AsyncIterator
 
 from agno.models.message import Message
 from agno.models.response import ModelResponse, ModelResponseEvent
-from agno.run.agent import ToolExecution
+from agno.run.agent import CustomEvent, ToolExecution
 
 from agent_runtime.construction_state import _result_payload
+from agent_runtime.graph_progress import progress_sink
 from graph_engine.tool_execution import tool_execution_policy, tools_conflict
 
 log = logging.getLogger(__name__)
@@ -114,6 +116,12 @@ class DAGModelMixin:
                 fc.function._run_context = copy.copy(context)
                 if context.messages is not None:
                     fc.function._run_context.messages = list(context.messages)
+            async def progress(payload):
+                event = CustomEvent(created_at=int(time()), tool_call_id=fc.call_id,
+                                    content={"kind": "graph_job_progress", "tool_name": fc.function.name,
+                                             "tool_args": fc.arguments or {}, **payload})
+                await queue.put(("event", index, event))
+            progress_token = progress_sink.set(progress)
             paused = False
             generator_owners = set()
             owner_token = _generator_owners.set(generator_owners)
@@ -135,6 +143,7 @@ class DAGModelMixin:
                 if consumers:
                     await asyncio.gather(*consumers, return_exceptions=True)
                 _generator_owners.reset(owner_token)
+                progress_sink.reset(progress_token)
 
         try:
             for index, fc in enumerate(calls):

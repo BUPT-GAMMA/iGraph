@@ -16,6 +16,7 @@ import anyio
 import psutil
 from anyio.streams.text import TextReceiveStream
 from execution_lifecycle import ProcessLease, atomic_json
+from graph_data_service.async_work import run_sync
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,16 @@ class WorkerProcess:
         if proc.stdin:
             with suppress(Exception):
                 await proc.stdin.send(b'{"control":"cancel"}\n')
+        # The progress consumer has stopped. Drain remaining stdout so a full
+        # pipe cannot prevent process.wait() from observing transport shutdown.
+        async def discard_output():
+            stdout = getattr(proc, 'stdout', None)
+            if stdout is not None:
+                with suppress(anyio.EndOfStream, anyio.ClosedResourceError):
+                    while True:
+                        await stdout.receive()
+                        await asyncio.sleep(0)
+        drain = asyncio.create_task(discard_output())
         waiter = asyncio.create_task(proc.wait())
         try:
             for duration, sig in [(self.grace, signal.SIGTERM), (self.terminate_grace, signal.SIGKILL), (self.reap_grace, signal.SIGKILL)]:
@@ -151,6 +162,8 @@ class WorkerProcess:
                 await asyncio.sleep(1)
             await waiter
         finally:
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
             if not waiter.done():
                 # A live waiter must remain owned; a timeout is not an exit ack.
                 waiter.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
@@ -192,7 +205,9 @@ class WorkerProcess:
                     line, pending = pending.split('\n', 1)
                     frame = json.loads(line)
                     if frame.get('type') == 'progress' and progress:
-                        progress(frame['value'])
+                        # Journaling can fsync. Keep the event loop available
+                        # for cancellation and concurrent status/control reads.
+                        await run_sync(progress, frame['value'])
                     elif frame.get('type') == 'result':
                         result = frame['value']
             code = await proc.wait()

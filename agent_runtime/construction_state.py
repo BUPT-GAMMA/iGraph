@@ -21,7 +21,11 @@ def _result_payload(value):
         if "success" in value:
             return value
         if isinstance(value.get("structuredContent"), dict):
-            return _result_payload(value["structuredContent"])
+            structured = _result_payload(value["structuredContent"])
+            if structured is not None:
+                return structured
+            # FastMCP string-returning handlers expose {"result": "..."}
+            # alongside the canonical text blocks. Fall back to those blocks.
         # Agno's actual MCP entrypoint wraps the wire response in ToolResult,
         # whose model_dump() contains a JSON *string* in content.
         if isinstance(value.get("content"), (str, list, dict)):

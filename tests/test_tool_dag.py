@@ -180,7 +180,7 @@ def test_cancellation_drains_started_tools_and_never_starts_dependents():
 def test_background_result_waits_and_propagates_final_payload(state):
     async def scenario():
         count = 0
-        async def poll(job_id):
+        async def poll(job_id, *, after_seq=0):
             nonlocal count
             count += 1
             assert job_id == "j1"
@@ -235,7 +235,7 @@ def test_real_agent_stores_all_parallel_tool_results(tmp_path):
 def test_background_job_chains_are_resolved_before_dependencies(cycle):
     async def scenario():
         calls = []
-        async def poll(job_id):
+        async def poll(job_id, *, after_seq=0):
             calls.append(job_id)
             result = {"success": True, "async": True, "job_id": "parent" if cycle else "child"}
             if job_id == "child":

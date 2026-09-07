@@ -319,7 +319,7 @@ class GraphDataService:
             llm_factory=text_graph_llm_factory,
             provider_gateway=_pg,
         )
-        self._job_manager = JobManager()
+        self._job_manager = JobManager(progress_root=_dp.data_root() / "graph_engine" / "job_progress")
         self._execution_host = GraphExecutionHost(self._job_manager) if controls_enabled() else None
         self._nebula = nebula_repository or NebulaGraphRepository()
         backend = str(storage_backend or os.getenv("GRAPH_STORAGE_BACKEND", "local")).strip().lower()
@@ -549,6 +549,7 @@ class GraphDataService:
             # Runtime supplies the durable fence after restart. This local fence
             # also rejects requests admitted remotely just before deletion.
             self._deleted_sessions.add(key)
+            self._job_manager.delete_progress(session_id, user_id)
         self._graph_ml.release_session(key)
         session = self._sessions.pop(key, None)
         if session is None:
@@ -2895,12 +2896,14 @@ class GraphDataService:
         if tool_name == "get_job_status":
             job_id = _required_str(arguments, "job_id")
             job = self._job_manager.owned(job_id, session_id, user_id)
-            pending = self._job_manager.drain_pending_progress(job_id) if job else []
-            return {
-                "success": bool(job),
-                "job": job.to_dict() if job else None,
-                "progress_updates": pending,
-            }
+            if job is None:
+                return {"success": False, "job": None, "progress_updates": []}
+            try:
+                limit = arguments.get("progress_limit")
+                return self._job_manager.progress_status(job, after_seq=arguments.get("after_seq"),
+                                                         limit=200 if limit is None else limit)
+            except ValueError as exc:
+                return {"success": False, "code": "INVALID_PROGRESS_CURSOR", "error": str(exc)}
 
         if tool_name == "cancel_job":
             job_id = _required_str(arguments, "job_id")
@@ -3432,10 +3435,11 @@ class GraphDataService:
 
     async def dispatch_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
         """Admit independent tools concurrently and serialize resource conflicts."""
-        if tool_name in {"get_job_status", "cancel_job"}:
-            # Job control must remain available while a background writer owns
-            # the graph reservation. Task.cancel()/Event.set() also belong to
-            # this event loop, rather than the synchronous worker thread.
+        if tool_name == "get_job_status":
+            # Cursor reads touch the durable journal without reserving the graph.
+            return await run_sync(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id)
+        if tool_name == "cancel_job":
+            # Task.cancel()/Event.set() belong to this event loop.
             return self._dispatch_graph_tool(session_id, tool_name, arguments, user_id)
         if tool_name in _GRAPH_ML_HEAVY_TOOLS and not self._wants_graph_ml_async_job(arguments):
             # Identical training/inference requests share the existing inflight

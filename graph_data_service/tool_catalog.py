@@ -1086,10 +1086,12 @@ GRAPH_TOOLS: List[dict] = [
     },
     {
         "name": "get_job_status",
-        "description": "查询异步作业状态。",
+        "description": "查询异步作业状态。传 after_seq=0 开始独立读取完整进度，再用 progress_cursor 读取后续页；progress_has_more=true 时继续读取。省略游标保留旧增量队列行为。",
         "inputSchema": {
             "type": "object",
-            "properties": {"job_id": {"type": "string"}},
+            "properties": {"job_id": {"type": "string"},
+                           "after_seq": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
+                           "progress_limit": {"type": "integer", "minimum": 1, "maximum": 1000}},
             "required": ["job_id"],
         },
         "category": "system",

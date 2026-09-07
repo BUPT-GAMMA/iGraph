@@ -129,6 +129,43 @@ def feedback_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def graph_job_progress_payload(payload: dict[str, Any]) -> dict | None:
+    if payload.get("event") != "CustomEvent":
+        return None
+    content = _decoded_container(payload.get("content"))
+    if not isinstance(content, dict) or content.get("kind") != "graph_job_progress":
+        return None
+    job = content.get("job")
+    if not isinstance(job, dict) or not job.get("job_id"):
+        return None
+    return content
+
+
+def _graph_job_progress_events(payload: dict[str, Any], content: dict) -> list[dict]:
+    job = content["job"]
+    name = str(content.get("tool_name") or job.get("tool_name") or "")
+    common = {key: payload[key] for key in ("run_id", "session_id", "event_index") if payload.get(key) is not None}
+    identity = {"type": "tool_progress", "tool": name,
+                "call_id": str(payload.get("tool_call_id") or job["job_id"]), **common}
+    updates = [row for row in (content.get("progress_updates") or []) if isinstance(row, dict)]
+    rows = [{**identity, "progress": {**update, "job_id": job["job_id"], "status": job.get("status"),
+                                     "progress": update.get("progress", job.get("progress", 0)),
+                                     "message": update.get("message", job.get("message", ""))}}
+            for update in updates]
+    terminal = _terminal_job_status(job.get("status")) and not content.get("progress_has_more") and not content.get("job_chain_continues")
+    if terminal or not updates:
+        state = job.get("status")
+        kind = "job_queued" if state == "queued" else "job_progress"
+        if terminal:
+            kind = ("train_done" if name == "train" else "job_done") if state == "done" else "job_" + str(state)
+        rows.append({**identity, "progress": {
+            "kind": kind, "job_id": job["job_id"], "status": state,
+            "progress": 1 if terminal and state == "done" else job.get("progress", 0),
+            "message": job.get("message", ""),
+        }})
+    return rows
+
+
 def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
     variants = _payload_variants(payload)
     event = str(_first_value(variants, "event", "type", "event_name") or "")
@@ -225,6 +262,9 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Restore product UI events that used to be emitted by the legacy runtime."""
 
     event = str(payload.get("event") or payload.get("type") or "")
+    progress_content = graph_job_progress_payload(payload)
+    if progress_content is not None:
+        return _graph_job_progress_events(payload, progress_content)
     if "ToolCallCompleted" not in event:
         return []
     tool = _tool(payload)

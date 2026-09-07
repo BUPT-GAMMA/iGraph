@@ -223,7 +223,12 @@ def test_disconnect_and_new_run_stop_leave_previous_background_training_alive(tm
     async def scenario():
         async with running_stack(tmp_path) as (client, sid, graph, controller, metrics):
             first = {'start_request_id': str(uuid4())}
-            response = await client.post(f'/api/sessions/{sid}/chat/stream', json={'message': 'background-training', **first})
+            # Explicitly exercise a legacy detached job. Native DAG tools now
+            # wait for job completion; this test covers jobs from older clients.
+            async def detached_result(result, _poll, **_kwargs):
+                return result
+            with patch('agent_runtime.graph_jobs.completed_graph_result', detached_result):
+                response = await client.post(f'/api/sessions/{sid}/chat/stream', json={'message': 'background-training', **first})
             assert response.status_code == 200, response.text
             async def first_completed():
                 response = await client.get(f'/api/sessions/{sid}/runs/control', params=first)
