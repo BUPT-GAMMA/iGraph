@@ -286,6 +286,21 @@ Runtime 的 `construction_tool_hook` 对加载、预览和提交检查该会话�
 
 Agent 应先读取真实图和版本，预览影响，再用相同操作及版本提交并经过工具确认。冲突需要重新读取、预览和确认；网络状态未知时先核对保存状态，不能盲目重试提交。保存后使用 `load_constructed_graph`、`get_graph_info`、`visualize_subgraph` 完成加载核验和展示。
 
+### 异步作业进度与 DAG 完成条件
+
+Runtime 等待后台作业期间，将进度作为原生 Agno `CustomEvent` 发出；BFF 转为 `tool_progress`，保留原工具调用的 `call_id`。同名工具的进度按调用 ID 归属，训练轮次按 epoch 去重。依赖节点在父作业返回最终结果后才执行；早停通知只更新进度，作业实际结束后才标记完成。
+
+`get_job_status` 支持独立读取游标：
+
+- 首次传 `job_id`、`after_seq=0`，后续传上次返回的 `progress_cursor`。
+- 每条 `progress_updates` 带单调递增的 `progress_seq`。`progress_limit` 默认 200，可取 1–1000；`progress_has_more=true` 时继续读取，包括已经结束的作业。
+- 同一游标可以重复读取，不清除其他读者的进度。省略 `after_seq` 保留旧接口的清空队列行为，旧队列仍最多保留 100 条；新 Runtime 始终传游标。
+- 读取继续校验用户与会话归属；传输异常最多重试三次，重试保持相同作业 ID 和游标。取消会终止等待。
+
+进度日志使用 Python 标准库 SQLite，保存在 `IGRAPH_DATA_ROOT/graph_engine/job_progress/progress.sqlite3`，按作业分页读取；永久删除会话时清理对应日志。文件写入与读取在工作线程执行，作业取消时排空剩余进程输出，避免密集进度阻塞服务或阻碍进程退出。写入失败会反馈为失败，游标不会确认未落盘的进度。
+
+原生事件参与现有 SSE 游标重放及已持久化会话恢复，训练曲线从事件重建；早停的最佳指标不会覆盖实际 epoch 指标。该机制保留进度记录，计算进程重启后的作业处置仍由既有执行控制与恢复协议负责。
+
 ## 10. 源码与验证入口
 
 | 范围 | 主要文件 |

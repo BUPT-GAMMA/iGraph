@@ -399,3 +399,46 @@ describe('conversationReducer session/run isolation', () => {
     expect(state.viewsBySessionId.S2).toBeDefined();
   });
 });
+
+describe('background job progress', () => {
+  it('keeps same-name calls separate and replays epoch frames exactly once', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    const apply = (index: number, events: StreamEvent[]) => {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: batch('A', 'r', index, events) });
+    };
+    apply(0, [
+      { type: 'tool_call', tool: 'train', call_id: 'first', args: {} },
+      { type: 'tool_call', tool: 'train', call_id: 'second', args: {} },
+    ]);
+    const progress: StreamEvent = { type: 'tool_progress', tool: 'train', call_id: 'first',
+      progress: { kind: 'train_epoch', epoch: 1, val_acc: 0.5, job_id: 'job-first', progress_seq: 1, status: 'running' } };
+    apply(1, [progress]);
+    apply(1, [progress]);
+    apply(2, [{ type: 'tool_progress', tool: 'train', call_id: 'second',
+      progress: { kind: 'train_epoch', epoch: 1, val_acc: 0.9, job_id: 'job-second', progress_seq: 1, status: 'running' } }]);
+    const tools = state.viewsBySessionId.A.activeRun!.toolsById;
+    expect(tools.first.history).toHaveLength(1);
+    expect(tools.first.history?.[0].val_acc).toBe(0.5);
+    expect(tools.second.history?.[0].val_acc).toBe(0.9);
+    expect(tools.first.done).toBe(false);
+  });
+
+  it('waits for the job terminal event after early stopping and retains the curve', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    const events: StreamEvent[][] = [
+      [{ type: 'tool_call', tool: 'train', call_id: 'train', args: {} }],
+      [{ type: 'tool_progress', tool: 'train', call_id: 'train', progress: { kind: 'train_epoch', epoch: 1, val_acc: .7 } }],
+      [{ type: 'tool_progress', tool: 'train', call_id: 'train', progress: { kind: 'train_early_stop', status: 'running' } }],
+      [{ type: 'tool_progress', tool: 'train', call_id: 'train', progress: { kind: 'train_done', status: 'done', progress: 1 } },
+       { type: 'tool_result', tool: 'train', call_id: 'train', result: { success: true, model_id: 'm' }, done: true }],
+    ];
+    for (const [index, value] of events.entries()) {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: batch('A', 'r', index, value) });
+      if (index === 2) expect(state.viewsBySessionId.A.activeRun!.toolsById.train.done).toBe(false);
+    }
+    const tool = state.viewsBySessionId.A.activeRun!.toolsById.train;
+    expect(tool.done).toBe(true);
+    expect(tool.history).toHaveLength(1);
+    expect(tool.result).toEqual({ success: true, model_id: 'm' });
+  });
+});

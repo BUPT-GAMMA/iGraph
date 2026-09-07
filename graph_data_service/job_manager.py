@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import threading
 import uuid
@@ -37,11 +38,15 @@ class Job:
 
 
 class JobManager:
-    def __init__(self) -> None:
+    def __init__(self, *, progress_root=None) -> None:
         self._jobs: dict[str, Job] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._pending_progress: dict[str, list[dict[str, Any]]] = {}
-        self._progress_lock = threading.Lock()
+        self._deleted_progress_sessions: set[tuple[str, str]] = set()
+        self._progress_history: dict[str, list[dict[str, Any]]] = {}
+        from graph_data_service.job_progress import JobProgressStore
+        self._progress_store = JobProgressStore(progress_root) if progress_root is not None else None
+        self._progress_lock = threading.RLock()
         self._cancel_signals: dict[str, asyncio.Event] = {}
         self.execution_host = None
         self.load_saved = None
@@ -61,6 +66,8 @@ class JobManager:
             self._cancel_signals.pop(oldest, None)
             with self._progress_lock:
                 self._pending_progress.pop(oldest, None)
+                if self._progress_store is not None:
+                    self._progress_history.pop(oldest, None)
 
     async def submit(
         self,
@@ -140,21 +147,62 @@ class JobManager:
 
     def _make_progress_callback(self, job: Job) -> Callable[[dict[str, Any]], None]:
         def _callback(update: dict[str, Any]) -> None:
-            if not isinstance(update, dict) or job.status != "running":
+            if not isinstance(update, dict):
                 return
-            progress = update.get("progress")
-            if isinstance(progress, (int, float)):
-                job.progress = max(0.0, min(1.0, float(progress)))
-            message = update.get("message")
-            if message is not None:
-                job.message = str(message)
-            job.detail = dict(update)
+            row = copy.deepcopy(update)
             with self._progress_lock:
+                if job.status != "running" or (job.user_id, job.session_id) in self._deleted_progress_sessions:
+                    return
+                if self._progress_store is not None:
+                    sequence = self._progress_store.append(job.job_id, row, user_id=job.user_id, session_id=job.session_id)
+                else:
+                    history = self._progress_history.setdefault(job.job_id, [])
+                    sequence = len(history) + 1
+                    history.append({**row, "progress_seq": sequence})
+                row["progress_seq"] = sequence
+                progress = row.get("progress")
+                if isinstance(progress, (int, float)):
+                    job.progress = max(0.0, min(1.0, float(progress)))
+                message = row.get("message")
+                if message is not None:
+                    job.message = str(message)
+                job.detail = row
                 updates = self._pending_progress.setdefault(job.job_id, [])
-                updates.append(dict(update))
-                del updates[:-100]
-
+                updates.append(copy.deepcopy(row))
+                del updates[:-100]  # Compatibility queue; cursor readers use the full journal.
         return _callback
+
+    def read_progress(self, job_id: str, *, after_seq: int = 0, limit: int = 200) -> dict:
+        if isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= 2**63 - 1:
+            raise ValueError("after_seq must be a nonnegative signed 64-bit integer")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("progress_limit must be an integer between 1 and 1000")
+        with self._progress_lock:
+            if self._progress_store is not None:
+                return self._progress_store.read(job_id, after_seq, limit)
+            rows = self._progress_history.get(job_id, [])[after_seq:after_seq + limit + 1]
+            page = copy.deepcopy(rows[:limit])
+            return {"progress_updates": page,
+                    "progress_cursor": page[-1]["progress_seq"] if page else after_seq,
+                    "progress_has_more": len(rows) > limit}
+
+    def delete_progress(self, session_id: str, user_id: str) -> None:
+        with self._progress_lock:
+            self._deleted_progress_sessions.add((user_id, session_id))
+            if self._progress_store is not None:
+                self._progress_store.delete_session(session_id, user_id)
+            for job in self._jobs.values():
+                if (job.user_id, job.session_id) == (user_id, session_id):
+                    self._pending_progress.pop(job.job_id, None)
+                    self._progress_history.pop(job.job_id, None)
+
+    def progress_status(self, job: Job, *, after_seq=None, limit=200) -> dict:
+        # The terminal state and last page must be read together: otherwise an
+        # epoch arriving between the two reads could be skipped on completion.
+        with self._progress_lock:
+            page = (self.read_progress(job.job_id, after_seq=after_seq, limit=limit) if after_seq is not None
+                    else {"progress_updates": self.drain_pending_progress(job.job_id)})
+            return {"success": True, "job": job.to_dict(), **page}
 
     def drain_pending_progress(self, job_id: str) -> list[dict[str, Any]]:
         """Return and clear all queued progress updates for a job."""

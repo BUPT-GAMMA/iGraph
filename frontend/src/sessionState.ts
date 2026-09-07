@@ -409,7 +409,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
         };
       } else {
         const progress = event.progress && typeof event.progress === 'object' ? event.progress as Record<string, unknown> : {};
-        const terminal = progress.kind === 'train_done' || progress.kind === 'train_early_stop';
+        const terminal = ['train_done', 'job_done', 'job_failed', 'job_cancelled'].includes(String(progress.kind || ''));
         run = {
           ...run,
           toolsById: {
