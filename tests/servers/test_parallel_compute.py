@@ -181,6 +181,27 @@ class ParallelGraphComputeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graph.num_nodes, 12)
         self.assertEqual(graph.num_edges, 12)
 
+    async def test_queued_append_rechecks_graph_after_an_earlier_write(self):
+        from tests.servers.test_property_graph_analysis import property_graph
+
+        lease = await self.service._tool_scheduler.acquire(("u", "s"), execution_policy("load_graph"))
+        task = asyncio.create_task(self.service.dispatch_tool(
+            "s", "load_graph", {"edge_text": "B C 1", "append": True}, "u"))
+        try:
+            await asyncio.sleep(0.02)
+            self.assertFalse(task.done())
+            session = self.service.get_required("s", "u")
+            protected = property_graph([("ab2", "A", "B", 2), ("ab7", "A", "B", 7)])
+            session.set_graph(protected)
+            version = session.graph_version
+        finally:
+            self.service._tool_scheduler.release(lease)
+        result = await asyncio.wait_for(task, 2)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["code"], "UNSUPPORTED_PROPERTY_GRAPH_APPEND")
+        self.assertIs(session.get_graph(), protected)
+        self.assertEqual(session.graph_version, version)
+
     async def test_direct_http_write_obeys_active_read_reservation(self):
         import httpx
         lease = await self.service._tool_scheduler.acquire(("u", "s"), execution_policy("degree_analysis"))

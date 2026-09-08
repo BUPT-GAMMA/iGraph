@@ -2,6 +2,8 @@
 
 本功能把 SQL、CSV、TXT 文件的构图流程接入前端、BFF、Graph Engine 和 Agent Runtime。构图结果归属于原 dataset，可保存、重新加载并继续优化；会话只是加载该数据集的某个版本进行分析。
 
+通用加载工具 `load_graph`、`load_graph_from_text`、`load_graph_from_triples` 和 `load_graph_from_upload` 的追加模式仅支持普通图合并。当前图或待合并图包含构图属性图时，返回 `success=false`、`code=UNSUPPORTED_PROPERTY_GRAPH_APPEND`，保留当前会话图、版本及构图数据集。检查覆盖工具执行、底层合并与上传解析，属性图关系编号、类型、属性和平行边不会进入有损转换。空会话直接加载属性图文件仍受支持；普通图追加及显式覆盖保持既有行为。Agent 遇到该错误应说明限制，覆盖或清空图需用户明确要求。完整属性图追加需要另行定义关系身份和属性冲突规则。
+
 **目前 SQL、CSV、TXT 三种构图算法均未实现，也未注册生产算法。** 当前交付的是数据源保存、算法扩展接口、图结果持久化、可视化、六类优化，以及会话和 Agent 调用链路。未接入算法时，页面显示“构图算法待接入”；API 明确返回 `algorithm_unavailable`，不会用旧 CSV 边表解析、TXT 文本抽取或演示数据代替构图结果。
 
 ## 1. 数据源与已有数据的兼容

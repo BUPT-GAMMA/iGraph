@@ -22,6 +22,11 @@ from graph_engine.analysis_policy import MULTIGRAPH_POLICIES
 
 _REPORTING_TOOLS_ENV = "MCP_ENABLE_REPORTING_TOOLS"
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+_APPEND_COMPATIBILITY = (
+    "\n追加模式仅支持普通图合并。当前图或待合并图包含构图属性图时，"
+    "返回 UNSUPPORTED_PROPERTY_GRAPH_APPEND 并保留原图。"
+    "此时向用户说明限制；覆盖或清空图需要用户明确要求。"
+)
 
 # ─────────────────────────────────────────────────────────────────
 # 图分析工具（对外暴露给 LLM）
@@ -39,7 +44,7 @@ GRAPH_TOOLS: List[dict] = [
             "  - true: 追加到当前图。\n\n"
             "返回:\n"
             "- JSON 字符串，包含加载状态、图版本和提示信息。\n"
-            "- 图规模/结构详情请调用 `get_graph_info`。"
+            "- 图规模/结构详情请调用 `get_graph_info`。" + _APPEND_COMPATIBILITY
         ),
         "inputSchema": {
             "type": "object",
@@ -76,7 +81,7 @@ GRAPH_TOOLS: List[dict] = [
             "- local 模式的 binary/edge_list/triple：加载状态、检测格式、图版本；\n"
             "- freetext、graph_classification_dataset 或 nebula 模式的 binary："
             "async=true、job_id、status='queued'；Agent 会在后端自动监控，直接 API 调用方可低频使用 get_job_status/get_job_result 查询，模型无需反复调用；\n"
-            "- 图规模/结构详情请调用 `get_graph_info`。"
+            "- 图规模/结构详情请调用 `get_graph_info`。" + _APPEND_COMPATIBILITY
         ),
         "inputSchema": {
             "type": "object",
@@ -1006,7 +1011,7 @@ GRAPH_TOOLS: List[dict] = [
             "从自然语言文本中通过 LLM 抽取实体关系并构建图到当前会话。\n"
             "支持长文本自动分块、逐块抽取、去重和规范化。\n"
             "可传入 text（内联文本）或 filename（已上传文件名）之一，避免 LLM 重复输出文件内容。\n"
-            "返回摘要统计，不返回中间完整三元组。"
+            "返回摘要统计，不返回中间完整三元组。" + _APPEND_COMPATIBILITY
         ),
         "inputSchema": {
             "type": "object",
@@ -1032,7 +1037,7 @@ GRAPH_TOOLS: List[dict] = [
     },
     {
         "name": "load_graph_from_triples",
-        "description": "从结构化实体关系三元组构建图并加载到当前会话。",
+        "description": "从结构化实体关系三元组构建图并加载到当前会话。" + _APPEND_COMPATIBILITY,
         "inputSchema": {
             "type": "object",
             "properties": {

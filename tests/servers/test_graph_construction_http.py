@@ -148,6 +148,159 @@ def test_parallel_relationships_retain_their_properties_in_networkx():
     assert network.edges["alice", "bob", 1]["properties"]["key"] == "business-key"
 
 
+@pytest.mark.parametrize("directed", [True, False])
+@pytest.mark.parametrize("endpoint, arguments", [
+    ("graph/load_text", {"edge_text": "B C 1"}),
+    ("tools/load_graph", {"edge_text": "B C 1"}),
+    ("tools/load_graph_from_triples", {"triples": [{"source": "B", "relation": "REL", "target": "C"}]}),
+    ("tools/load_graph_from_text", {"text": "B connects to C"}),
+    ("tools/load_graph_from_upload", {"filename": "incoming.txt"}),
+])
+def test_append_to_constructed_graph_preserves_properties_versions_and_analysis(
+    construction_http, monkeypatch, directed, endpoint, arguments,
+):
+    import networkx as nx
+    from tests.servers.test_property_graph_analysis import property_graph
+
+    client, service, store, source, headers = construction_http
+    document = property_graph([("ab2", "A", "B", 2), ("ab7", "A", "B", 7)],
+                              directed=directed).graph_metadata["construction_graph"]
+    document["nodes"][0]["properties"] = {"nested": {"kept": True}}
+    store.register_algorithm("csv", lambda _source, _options: copy.deepcopy(document))
+    built = client.post("/construction/ds-people/build", headers=headers,
+                        json={"source_path": str(source), "source_filename": "people.csv"})
+    assert built.status_code == 200 and built.json()["status"] == "ready"
+    loaded = client.post("/sessions/session-one/graph/load_construction", headers=headers,
+                         json={"dataset_id": "ds-people"})
+    assert loaded.status_code == 200 and loaded.json()["success"]
+    session = service.get_required("session-one", user_id="alice")
+    version = session.graph_version
+    manifest = session._versions_path().read_bytes()
+    current = session.get_graph()
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("Rejected append must not parse files, extract text or commit a graph")
+
+    monkeypatch.setattr(service, "_commit_graph", unexpected)
+    monkeypatch.setattr(session, "resolve_upload_by_name", unexpected)
+    monkeypatch.setattr(service, "do_load_graph_from_text", unexpected)
+    params = {**arguments, "append": True}
+    response = client.post(f"/sessions/session-one/{endpoint}", headers=headers,
+                           json={"arguments": params} if endpoint.startswith("tools/") else params)
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert response.json()["code"] == "UNSUPPORTED_PROPERTY_GRAPH_APPEND"
+    assert session.get_graph() is current
+    assert session.graph_version == version
+    assert session._versions_path().read_bytes() == manifest
+    assert store.graph("alice", "ds-people")["graph"] == document
+
+    restored = GraphSession("session-one", "alice")
+    assert restored.load_snapshot()
+    for graph in (current, restored.get_graph()):
+        assert graph.graph_metadata["construction_graph"] == document
+        assert list(graph.edge_names) == ["ab2", "ab7"]
+        assert list(graph.edge_type) == ["REL", "REL"]
+        assert graph.directed == directed
+        network = graph.to_networkx()
+        assert network.number_of_edges() == 2
+        assert network.is_multigraph()
+        assert nx.shortest_path_length(network, "A", "B", weight="weight") == 2
+
+
+@pytest.mark.parametrize("suffix", ["npz", "json"])
+def test_uploaded_property_graph_cannot_be_merged_but_can_be_loaded(construction_http, tmp_path, suffix):
+    from tests.servers.test_property_graph_analysis import property_graph
+
+    client, service, _store, _source, headers = construction_http
+    incoming = property_graph([("ab2", "A", "B", 2), ("ab7", "A", "B", 7)])
+    path = tmp_path / f"incoming.{suffix}"
+    incoming.save(str(path))
+    expected_metadata = GraphData.load(str(path)).graph_metadata
+    session = service.get_or_create("session-one", user_id="alice")
+    session.register_upload(file_token="incoming", original_filename=path.name, saved_path=str(path))
+    original = GraphDataService._graph_from_edgelist("C D 1")
+    session.set_graph(original)
+    version = session.graph_version
+    manifest = session._versions_path().read_bytes()
+    response = client.post("/sessions/session-one/graph/load_upload", headers=headers,
+                           json={"filename": path.name, "append": True})
+    assert response.status_code == 200
+    assert response.json()["code"] == "UNSUPPORTED_PROPERTY_GRAPH_APPEND"
+    assert response.json()["success"] is False
+    assert session.get_graph() is original
+    assert session.graph_version == version
+    assert session._versions_path().read_bytes() == manifest
+
+    # Explicit replacement is still supported and retains the entire document.
+    response = client.post("/sessions/session-one/graph/load_upload", headers=headers,
+                           json={"filename": path.name, "append": False})
+    assert response.status_code == 200 and response.json()["success"]
+    assert session.get_graph().graph_metadata == expected_metadata
+    assert list(session.get_graph().edge_names) == ["ab2", "ab7"]
+    assert session.get_graph().to_networkx().number_of_edges() == 2
+
+    # append=true in an empty session performs a load, with no lossy merge.
+    empty = service.get_or_create("empty", user_id="alice")
+    empty.register_upload(file_token="incoming", original_filename=path.name, saved_path=str(path))
+    response = client.post("/sessions/empty/graph/load_upload", headers=headers,
+                           json={"filename": path.name, "append": True})
+    assert response.status_code == 200 and response.json()["success"]
+    assert empty.get_graph().graph_metadata == expected_metadata
+
+
+def test_low_level_append_guards_cover_legacy_and_background_merges(construction_http, tmp_path):
+    from graph_data_service.property_graph import UnsupportedPropertyGraphAppend
+    from tests.servers.test_property_graph_analysis import property_graph
+
+    _client, service, _store, _source, _headers = construction_http
+    protected = property_graph([("ab2", "A", "B", 2), ("ab7", "A", "B", 7)])
+    plain = GraphDataService._graph_from_edgelist("B C 1")
+    with pytest.raises(UnsupportedPropertyGraphAppend):
+        GraphDataService._graph_from_edgelist("B C 1", existing=protected)
+    for existing, incoming in ((protected, plain), (plain, protected)):
+        with pytest.raises(UnsupportedPropertyGraphAppend):
+            GraphDataService._merge_graphs(existing, incoming, directed=True)
+
+    session = service.get_or_create("session-one", user_id="alice")
+    session.set_graph(protected)
+    version = session.graph_version
+    with pytest.raises(UnsupportedPropertyGraphAppend):
+        session._parse_edgelist("B C 1", append=True)
+    assert session.get_graph() is protected and session.graph_version == version
+
+    # The background binary loader checks both inputs after reading the file,
+    # before any storage import or version publication can occur.
+    for existing, incoming in ((protected, plain), (plain, protected)):
+        session.set_graph(existing)
+        version = session.graph_version
+        path = tmp_path / "background.npz"
+        incoming.save(str(path))
+        result = service._do_load_graph_from_upload_binary_job(
+            session, str(path), path.name, "background", True, "alice")
+        assert result["success"] is False
+        assert result["code"] == "UNSUPPORTED_PROPERTY_GRAPH_APPEND"
+        assert session.get_graph() is existing and session.graph_version == version
+
+
+def test_plain_graph_append_and_explicit_replacement_remain_supported(construction_http):
+    import networkx as nx
+    from tests.servers.test_property_graph_analysis import property_graph
+
+    client, service, _store, _source, headers = construction_http
+    session = service.get_or_create("session-one", user_id="alice")
+    session.set_graph(GraphDataService._graph_from_edgelist("A B 2"))
+    response = client.post("/sessions/session-one/tools/load_graph", headers=headers,
+                           json={"arguments": {"edge_text": "B C 1", "append": True}})
+    assert response.status_code == 200 and response.json()["success"]
+    assert nx.shortest_path_length(session.get_graph().to_networkx(), "A", "C", weight="weight") == 3
+    session.set_graph(property_graph([("ab2", "A", "B", 2), ("ab7", "A", "B", 7)]))
+    response = client.post("/sessions/session-one/tools/load_graph", headers=headers,
+                           json={"arguments": {"edge_text": "B C 1", "append": False}})
+    assert response.status_code == 200 and response.json()["success"]
+    assert set(session.get_graph().to_networkx().edges()) == {("B", "C")}
+
+
 def test_property_analysis_http_uses_same_relationships_after_conversion_and_reload(construction_http):
     from tests.servers.test_property_graph_analysis import property_graph
     client, service, store, source, headers = construction_http
