@@ -91,14 +91,30 @@ docs/                     设计、迁移和部署文档
 
 ## 部署
 
-复制 `.env.example` 为 `.env`，配置一个模型供应商的 API Key/Base URL。若需要
-LearnedKnowledge 的语义检索，再配置 `EMBEDDING_API_KEY`、`EMBEDDING_BASE_URL` 和
+复制 `.env.example` 为 `.env`，配置一个模型供应商的 API Key/Base URL，并设置
+`IGRAPH_CONTROL_SERVICE_KEY`。使用下面的命令生成一次随机服务密钥，把输出填入
+`.env` 对应配置项；Backend、Agent Runtime、Graph Engine API 和 MCP 使用同一个值。
+
+```sh
+python -c 'import secrets; print(secrets.token_hex(32))'
+```
+
+服务密钥是完整部署的必填项，`IGRAPH_RUN_CANCEL_ENABLED=false` 时也需要配置。
+Compose 在启动前检查是否填写，各服务启动时检查非空、无空白的 ASCII 格式，
+错误消息包含配置项名称和修复提示。修改已有密钥时应同步更新并重启四个服务。
+独立使用 Uvicorn 时通过 `--env-file .env` 传入配置。
+
+若需要 LearnedKnowledge 的语义检索，再配置 `EMBEDDING_API_KEY`、`EMBEDDING_BASE_URL` 和
 `EMBEDDING_MODEL`；未配置 embedding 时 UserProfile、UserMemory、SessionContext 和
 DecisionLog 仍启用，只有 LearnedKnowledge 关闭。然后使用：
 
 ```text
 docker compose up --build -d
 ```
+
+个人／项目数据集 HTTP API、Agent 工具和旧客户端的迁移约定见
+[数据集接口迁移](docs/DATASET_API_MIGRATION.md)。旧 HTTP 入口目前保留兼容，
+响应头和 OpenAPI 会标注弃用；Agent 数据集工具继续维护。
 
 Compose 启动六个进程容器，但仍是四个业务模块：
 

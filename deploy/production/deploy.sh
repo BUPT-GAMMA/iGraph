@@ -53,6 +53,9 @@ compose=(
 services=(frontend backend agent-runtime graph-engine-api graph-engine-mcp)
 max_pull_attempts=6
 
+# Validate required credentials before any image pull or rollback handling.
+"${compose[@]}" config -q
+
 previous_tag=""
 previous_release=""
 if [[ -f "${state_file}" ]]; then
@@ -87,8 +90,6 @@ rollback() {
   exit "${status}"
 }
 trap rollback ERR
-
-"${compose[@]}" config -q
 
 pull_service() {
   local service="$1"

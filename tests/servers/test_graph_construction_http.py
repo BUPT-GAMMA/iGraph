@@ -5,6 +5,11 @@ import copy
 from types import SimpleNamespace
 
 import pytest
+import httpx
+
+from backend.project_datasets import ProjectDatasetRecord
+from graph_data_service.construction_access import ConstructionAccessClient
+from tests.fixtures.construction_scope import authority
 from fastapi.testclient import TestClient
 
 from graph_data_service.app import GraphDataService, create_app
@@ -31,6 +36,12 @@ def construction_http(tmp_path, monkeypatch):
     source = tmp_path / "people.csv"
     source.write_text("id,phone\nalice,123\n", encoding="utf-8")
     headers = {"X-iGraph-Service-Key": "construction-test-secret", "X-User-ID": "alice"}
+    auth, directory, _ = authority(tmp_path, {sid: {"session_id": sid, "user_id": "alice", "session_state": {}}
+        for sid in ("session-one", "session-two", "analysis")})
+    directory._write({did: ProjectDatasetRecord(dataset_id=did, user_id="alice", project_id=None, name=did,
+        original_filename="people.csv", file_type="csv", storage_path=str(source)) for did in ("ds-people", "ds-analysis", "ds-invalid-weight")})
+    service._construction_access = ConstructionAccessClient("http://authority", transport=httpx.ASGITransport(app=auth))
+    headers["X-iGraph-Construction-Scope"] = "personal"
     with TestClient(create_app(service)) as client:
         yield client, service, store, source, headers
 
@@ -99,8 +110,9 @@ def test_construction_http_preview_commit_reload_properties_and_session_snapshot
     assert restored.load_snapshot()
     assert restored.get_graph().graph_metadata["construction_revision"] == 2
     assert ConstructionStore(tmp_path).graph("alice", "ds-people")["revision"] == 2
-    assert any(row["dataset_id"] == "ds-people" for row in service.do_list_datasets("alice")["datasets"])
-    assert service.do_load_dataset("session-two", "ds-people", user_id="alice")["code"] == "USE_CONSTRUCTED_GRAPH_LOADER"
+    assert any(row["dataset_id"] == "ds-people" for row in client.get("/datasets", headers=headers).json()["datasets"])
+    assert client.post("/sessions/session-two/tools/load_dataset", headers=headers,
+        json={"arguments": {"dataset_id": "ds-people"}}).json()["code"] == "USE_CONSTRUCTED_GRAPH_LOADER"
     assert service.do_load_constructed_graph("session-two", "ds-people", user_id="alice")["construction_revision"] == 2
 
 
@@ -114,12 +126,12 @@ def test_construction_http_invalid_batch_is_atomic_and_cross_user_isolated(const
     assert response.json()["detail"]["operation_index"] == 1
     assert store.graph("alice", "ds-people")["graph"] == GRAPH
     other = {**headers, "X-User-ID": "bob"}
-    assert client.get("/construction/ds-people", headers=other).json()["status"] == "not_built"
-    assert client.get("/construction/ds-people/graph", headers=other).status_code == 409
+    assert client.get("/construction/ds-people", headers=other).status_code == 404
+    assert client.get("/construction/ds-people/graph", headers=other).status_code == 404
     monkeypatch.setattr(service._job_manager, "list_jobs", lambda _sid: [SimpleNamespace(user_id="alice", status="running")])
     assert client.post("/sessions/session-one/graph/load_construction", headers=headers,
                        json={"dataset_id": "ds-people"}).status_code == 409
-    assert client.delete("/construction/ds-people", headers=other).json()["deleted"] is False
+    assert client.delete("/construction/ds-people", headers=other).status_code == 404
     assert client.delete("/construction/ds-people", headers=headers).json()["deleted"] is True
     assert source.exists()
 
@@ -189,3 +201,22 @@ def test_invalid_weight_cannot_publish_ready_construction(construction_http):
                         json={'source_path': str(source), 'source_filename': 'people.csv'})
     assert built.status_code == 200 and built.json()['status'] == 'failed'
     assert client.get('/construction/ds-invalid-weight/graph', headers=headers).status_code == 409
+
+
+def test_build_without_path_reuses_authorized_registered_source(construction_http):
+    client, _service, store, source, headers = construction_http
+    unregistered = client.post('/construction/ds-people/build', headers=headers, json={})
+    assert unregistered.status_code == 409
+    assert unregistered.json()['detail']['code'] == 'source_not_registered'
+    registered = client.post('/construction/ds-people/source', headers=headers,
+        json={'source_path': str(source), 'source_filename': 'people.csv'})
+    assert registered.status_code == 200
+    unavailable = client.post('/construction/ds-people/build', headers=headers, json={})
+    assert unavailable.json()['status'] == 'algorithm_unavailable'
+    store.register_algorithm('csv', lambda _source, _options: copy.deepcopy(GRAPH))
+    built = client.post('/construction/ds-people/build', headers=headers, json={})
+    assert built.status_code == 200 and built.json()['status'] == 'ready'
+    reused = client.post('/construction/ds-people/build', headers=headers, json={})
+    assert reused.status_code == 200 and reused.json()['reused']
+    for body in ({'source_path': '\u0000'}, {'source_filename': 'other.csv'}):
+        assert client.post('/construction/ds-people/build', headers=headers, json=body).status_code == 403

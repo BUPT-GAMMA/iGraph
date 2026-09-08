@@ -108,12 +108,26 @@ BFF 根据登录用户、dataset 和项目归属完成授权，再从服务器�
 
 ## 5. Graph Engine 内部 API
 
-所有构图专用接口要求有效的 `X-iGraph-Service-Key` 和非空 `X-User-ID`。服务密钥由 `IGRAPH_CONTROL_SERVICE_KEY` 配置，不能依赖取消功能开关来决定是否发送此身份。BFF 和 Engine 必须能够以有效路径访问共享的 `IGRAPH_DATA_ROOT`；构图源文件必须位于该根目录内部。
+所有构图专用接口要求有效的 `X-iGraph-Service-Key` 和非空 `X-User-ID`。服务密钥由 `IGRAPH_CONTROL_SERVICE_KEY` 配置，不能依赖取消功能开关来决定是否发送此身份。BFF 和 Engine 必须能够以有效路径访问共享的 `IGRAPH_DATA_ROOT`；构图源文件必须位于该根目录内部，且提供的路径和文件名必须匹配 BFF 中该 dataset 的源记录。省略 build 的源路径时继续复用已登记的 Engine 源副本。
+
+### 项目与个人空间的范围校验
+
+BFF 的 `ProjectDatasetDirectory` 是数据集归属的唯一依据。Engine 在返回构图状态、图内容、列表或执行修改前，调用受服务密钥保护的 `POST /internal/construction/access` 核验范围：
+
+- 会话工具使用可信的 `X-Session-ID`（通用工具路由使用 URL 中的会话 ID），BFF 读取原生 Runtime 已保存会话，核对用户并确定项目或个人空间。模型参数和缓存的 `data_state` 不提供最终授权。
+- 数据集面板可以没有会话。BFF 完成公开路由的归属校验后，生成 `X-iGraph-Construction-Scope: project:<项目 ID>` 或 `personal`；浏览器传来的同名头不作为权限依据。同时提供会话和范围时，两者必须一致。
+- `list_datasets` 仅加入授权范围内的构图记录；公共示例与原有账户级 Dataset Registry 保持既有语义。无范围的 Engine `GET /datasets` 只返回原有 Registry；BFF `GET /api/datasets` 显式使用个人范围。
+- 缺少可信范围、会话不存在或跨项目 ID 均拒绝访问。已删除目录记录及跨范围迁移会撤销后续读取权限，残留的 Engine 文件不提供权限。排队任务在实际执行时复核；已完成作业重放也复核数据集权限，重放列表按当前范围过滤。
+- 删除构图使用单独的 `cleanup` 授权：必须提供显式范围和 dataset ID，且继续核对用户、项目及数据集归属。项目标记删除后可清理构图文件，普通读取返回 `PROJECT_DELETING`。目录记录仍存在时，重复清理构图保持幂等。
+
+Engine 的权限请求总时限为 5 秒；BFF 查询会话限时 4 秒。权限服务故障返回 `503 DATASET_AUTHORIZATION_UNAVAILABLE`，不会使用过期授权或放宽到整个用户目录。权限响应中的服务器路径仅供内部源校验使用。
+
+部署需同步更新 BFF、Runtime、MCP 和 Engine。`IGRAPH_CONTROL_SERVICE_KEY` 是四个服务共同的必填配置，即使关闭取消功能也必须填写；Compose 和服务启动阶段会检查配置，具体步骤见 [部署说明](../README.md#部署)。Engine 需能访问 `BACKEND_CONTROL_URL`：本地使用 `.env.example` 中的 `http://127.0.0.1:21109`，Compose 已设置为 `http://backend:21109`。无需迁移既有构图文件。旧 HTTP 路径的兼容边界及替代路径见 [数据集接口迁移](DATASET_API_MIGRATION.md)。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/construction/capabilities` | 返回各格式 `algorithm_available`、支持的操作及 `schema` |
-| `GET` | `/construction/{dataset_id}` | 未登记的数据集返回 `not_built`、`revision=0` |
+| `GET` | `/construction/{dataset_id}` | 已授权且尚无构图记录的数据源返回 `not_built`、`revision=0` |
 | `POST` | `/construction/{dataset_id}/source` | 可信源登记：`source_path`、`source_filename` |
 | `POST` | `/construction/{dataset_id}/build` | 可同时登记源；请求为 `source_path?`、`source_filename?`、`options` |
 | `GET` | `/construction/{dataset_id}/graph` | 返回第 3 节图文档；无图时返回 `409 graph_not_ready` |
@@ -155,7 +169,10 @@ BFF 根据登录用户、dataset 和项目归属完成授权，再从服务器�
 | `409 source_conflict` | 已构图 dataset 不能绑定不同内容或格式的源文件 |
 | `409 graph_not_ready` / `source_not_registered` | 先处理源登记和构图状态 |
 | `422 invalid_operation` / `property_conflict` / `invalid_graph` | 根据具体错误修改操作或算法输出 |
-| `403 invalid_source` | 检查可信源位置、文件是否存在以及共享存储挂载 |
+| `403 invalid_source` | 检查源路径与目录记录是否一致、文件是否存在及共享存储挂载 |
+| `403/404 DATASET_SCOPE_REQUIRED` | 核对当前会话及数据集所属项目/个人空间 |
+| `409 PROJECT_DELETING` | 项目删除中，停止读取及编辑 |
+| `503 DATASET_AUTHORIZATION_UNAVAILABLE` | 检查 BFF / Runtime 可达性与服务配置，恢复后重试 |
 | `409 SESSION_EXECUTION_ACTIVE` | 当前会话处理完成后再切换加载图 |
 
 ## 6. 六类优化的精确操作
@@ -280,9 +297,10 @@ BFF 在 Run 的 `session_state.data_state` 中传入：
 
 - `active_dataset_id`、`construction_status`、`construction_revision`、`source_format`。
 - `construction_sources`：当前消息附件对应的 dataset ID、文件名、格式与状态，用于避免 Agent 误用另一个已活动图回答新附件的问题。
+- `available_construction_sources`：当前范围内所有 SQL/CSV/TXT 数据源 ID，支持后续消息查询尚未构图的数据源状态。
 - `available_constructed_datasets`：当前用户及当前项目/个人范围内可用的已构图数据集。
 
-Runtime 的 `construction_tool_hook` 对加载、预览和提交检查该会话范围，拒绝模型猜测其他项目的 dataset ID。成功加载后更新原生 Agno `session_state` 的活动 dataset 与 revision；提交本身不把保存动作冒充当前会话已加载。
+Runtime 的 `construction_tool_hook` 对状态读取、图读取、加载、预览和提交检查该会话范围，拒绝模型猜测其他项目的 dataset ID。状态读取也允许当前范围内尚未构图的数据源；图读取及修改使用可用构图列表，Engine 再按最新目录复核。成功加载后更新原生 Agno `session_state` 的活动 dataset 与 revision；提交本身不把保存动作冒充当前会话已加载。
 
 Agent 应先读取真实图和版本，预览影响，再用相同操作及版本提交并经过工具确认。冲突需要重新读取、预览和确认；网络状态未知时先核对保存状态，不能盲目重试提交。保存后使用 `load_constructed_graph`、`get_graph_info`、`visualize_subgraph` 完成加载核验和展示。
 
@@ -308,6 +326,7 @@ Runtime 等待后台作业期间，将进度作为原生 Agno `CustomEvent` 发�
 | 前端入口与工作台 | `frontend/src/main.tsx`、`frontend/src/construction.ts`、`frontend/src/components/GraphConstructionPanel.tsx`、`DatasetPanel.tsx`、`ProjectWorkspace.tsx`、`GraphWorkspace.tsx` |
 | 前端请求和类型 | `frontend/src/api.ts`、`frontend/src/types.ts` |
 | BFF 数据源与目录 | `backend/project_datasets.py`、`backend/construction.py`、`backend/app.py` |
+| 构图范围授权 | `construction_access.py`、`backend/construction_access.py`、`graph_data_service/construction_access.py` |
 | 构图与优化核心 | `graph_data_service/construction.py` |
 | Engine API、会话与读取适配 | `graph_data_service/app.py`、`graph_data_service/adapters.py`、`graph_data_service/compute.py` |
 | 工具契约与 MCP 转发 | `graph_engine/construction_catalog.py`、`graph_data_service/tool_catalog.py`、`mcp_service/graph_data_client.py`、`mcp_service/server.py` |
@@ -322,6 +341,8 @@ python -m pytest \
   tests/servers/test_property_graph_analysis.py \
   tests/test_isolated_compute.py \
   tests/test_construction_api.py \
+  tests/test_construction_access.py \
+  tests/test_construction_scope_http.py \
   tests/test_graph_construction_runtime.py \
   tests/test_construction_state_hook.py \
   tests/test_construction_native_hook.py \
@@ -329,6 +350,8 @@ python -m pytest \
 ```
 
 Engine 测试覆盖三种格式未实现状态、测试专用算法注入成功路径、源副本保留、重启读取、用户隔离、六种操作、属性冲突、非法批次不保存、并发 revision 冲突、HTTP 鉴权、session 快照加载、平行关系属性和可视化输出。成功路径中的小图仅用于自动化测试，不会被装入生产算法注册表。
+
+范围隔离测试覆盖同账号两个项目及个人空间、未知与外用户会话、伪造范围、旧会话缓存、未构图源、并发与排队请求、已完成作业重放、删除/迁移后的撤权、内部 HTTP 入口、权限服务超时和异常响应。`test_construction_scope_http.py` 使用真实 HTTP 服务、MCP 协议、原生 Agno 会话数据库及项目删除协调器；构图算法和模型供应商为测试专用实现。
 
 前端测试入口为 `construction.api.test.ts`、`components/ConstructionEntrypoints.test.tsx` 和 `components/GraphConstructionPanel.test.tsx`；另应继续运行既有上传、图会话、数据集与 Runtime 回归，验证旧 CSV/TXT 已加载数据集的兼容性。
 
