@@ -29,6 +29,11 @@ iGraph 版本可供回滚。
 
 ## 一次性准备
 
+生产 `.env` 必须设置随机 `IGRAPH_CONTROL_SERVICE_KEY`，由 Backend、Agent Runtime、
+Graph Engine API 和 MCP 共用，取消功能关闭时同样必填。生成步骤见
+[项目部署说明](../../README.md#部署)。Compose 会在拉取、更新服务前拒绝空配置；
+各服务启动时进一步校验格式。已有部署应保留当前有效凭据，变更时同步更新四个服务。
+
 ### 1. 更换已经出现在截图中的 ngrok authtoken
 
 当前 ngrok authtoken 曾完整出现在终端截图里。正式上线前应更换：

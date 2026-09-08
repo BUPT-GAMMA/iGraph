@@ -42,7 +42,8 @@ class ConstructionStateHookTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(run.session_state["project_id"], "project-a")
 
     async def test_other_project_dataset_cannot_be_loaded_previewed_or_committed(self):
-        for tool in ("load_constructed_graph", "preview_graph_optimization", "commit_graph_optimization"):
+        for tool in ("get_graph_construction_status", "get_constructed_graph", "load_constructed_graph",
+                     "preview_graph_optimization", "commit_graph_optimization"):
             run = context()
             before = copy.deepcopy(run.session_state)
             call = AsyncMock()
@@ -57,6 +58,33 @@ class ConstructionStateHookTest(unittest.IsolatedAsyncioTestCase):
             result = await construction_tool_hook("load_constructed_graph", call, {"dataset_id": "dataset-a"}, run)
             self.assertFalse(json.loads(result)["success"])
             call.assert_not_awaited()
+
+    async def test_status_allows_current_scope_unbuilt_sources_on_followup_turns(self):
+        for field in ("available_construction_sources", "construction_sources"):
+            run = context()
+            run.session_state["data_state"][field] = [{"dataset_id": "unbuilt"}]
+            before = copy.deepcopy(run.session_state)
+            call = AsyncMock(return_value={"status": "not_built", "revision": 0})
+            result = await construction_tool_hook("get_graph_construction_status", call, {"dataset_id": "unbuilt"}, run)
+            self.assertEqual(result["status"], "not_built")
+            call.assert_awaited_once()
+            call.reset_mock()
+            result = await construction_tool_hook("get_constructed_graph", call, {"dataset_id": "unbuilt"}, run)
+            self.assertEqual(json.loads(result)["code"], "DATASET_SCOPE_REQUIRED")
+            call.assert_not_awaited()
+            self.assertEqual(run.session_state, before)
+
+    async def test_read_tools_require_context_and_preserve_selection(self):
+        for tool in ("get_graph_construction_status", "get_constructed_graph"):
+            call = AsyncMock(return_value={"success": True})
+            self.assertEqual(json.loads(await construction_tool_hook(tool, call, {"dataset_id": "dataset-a"}, None))["code"],
+                             "DATASET_SCOPE_REQUIRED")
+            call.assert_not_awaited()
+            run = context()
+            before = copy.deepcopy(run.session_state)
+            await construction_tool_hook(tool, call, {"dataset_id": "dataset-b"}, run)
+            call.assert_awaited_once()
+            self.assertEqual(run.session_state, before)
 
     async def test_failed_load_keeps_previous_selection_and_revision(self):
         run = context()
@@ -82,7 +110,7 @@ class ConstructionStateHookTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.session_state["data_state"]["source_format"], "csv")
 
     async def test_readonly_and_existing_analysis_tools_keep_existing_identity_boundary(self):
-        for tool in ("get_graph_construction_status", "get_constructed_graph", "get_graph_info", "train"):
+        for tool in ("get_graph_info", "train"):
             call = AsyncMock(return_value="original-result")
             self.assertEqual(await construction_tool_hook(tool, call, {"dataset_id": "other"}, None), "original-result")
             call.assert_awaited_once_with(dataset_id="other")

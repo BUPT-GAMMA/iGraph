@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.service_client import forwarded_headers
 from execution_protocol import service_headers
+from construction_access import scope_headers
+from backend.dataset_api import legacy_dataset_api_notice
 
 
 class BuildRequest(BaseModel):
@@ -57,27 +59,21 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
             raise HTTPException(422, "构图支持 SQL、CSV 和 TXT 数据源")
         return user, dataset
 
-    def headers(request, user_id):
-        return {**forwarded_headers(request, user_id), **service_headers(user_id)}
+    def headers(request, user_id, project_id):
+        return {**forwarded_headers(request, user_id), **service_headers(user_id), **scope_headers(project_id)}
 
     async def state_for(dataset, request, user_id):
-        try:
-            result = await graph.request("GET", f"/construction/{dataset.dataset_id}",
-                                         headers=headers(request, user_id))
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            result = {"dataset_id": dataset.dataset_id, "status": "not_built", "revision": 0,
-                      "node_count": 0, "edge_count": 0}
+        result = await graph.request("GET", f"/construction/{dataset.dataset_id}",
+                                     headers=headers(request, user_id, dataset.project_id))
         if not result.get("source_type"):
-            capabilities = await graph.request("GET", "/construction/capabilities", headers=headers(request, user_id))
+            capabilities = await graph.request("GET", "/construction/capabilities", headers=headers(request, user_id, dataset.project_id))
             available = next((item.get("algorithm_available", False) for item in capabilities.get("formats", [])
                               if item.get("source_type") == dataset.file_type), False)
             result = {**result, "algorithm_available": available}
         return {**result, "source_filename": dataset.original_filename, "source_type": dataset.file_type}
 
     @app.get("/api/personal-datasets/{dataset_id}/construction")
-    @app.get("/api/datasets/{dataset_id}/construction")
+    @app.get("/api/datasets/{dataset_id}/construction", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction")
     async def status(dataset_id: str, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
@@ -88,39 +84,39 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
         return state
 
     @app.post("/api/personal-datasets/{dataset_id}/construction/build")
-    @app.post("/api/datasets/{dataset_id}/construction/build")
+    @app.post("/api/datasets/{dataset_id}/construction/build", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.post("/api/projects/{project_id}/datasets/{dataset_id}/construction/build")
     async def build(dataset_id: str, req: BuildRequest, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
         # Browser input never chooses a server-side path or another owner.
         result = await graph.request("POST", f"/construction/{dataset_id}/build",
-            headers=headers(request, user.user_id), json_body={"source_path": dataset.storage_path,
+            headers=headers(request, user.user_id, project_id), json_body={"source_path": dataset.storage_path,
                 "source_filename": dataset.original_filename, "options": req.options})
         sync_record(directory, dataset, result)
         return result
 
     @app.get("/api/personal-datasets/{dataset_id}/construction/graph")
-    @app.get("/api/datasets/{dataset_id}/construction/graph")
+    @app.get("/api/datasets/{dataset_id}/construction/graph", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction/graph")
     async def read_graph(dataset_id: str, request: Request, project_id: str | None = None):
         user, _ = owned(dataset_id, request, project_id)
-        return await graph.request("GET", f"/construction/{dataset_id}/graph", headers=headers(request, user.user_id))
+        return await graph.request("GET", f"/construction/{dataset_id}/graph", headers=headers(request, user.user_id, project_id))
 
     @app.post("/api/personal-datasets/{dataset_id}/construction/preview")
-    @app.post("/api/datasets/{dataset_id}/construction/preview")
+    @app.post("/api/datasets/{dataset_id}/construction/preview", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.post("/api/projects/{project_id}/datasets/{dataset_id}/construction/preview")
     async def preview(dataset_id: str, req: EditRequest, request: Request, project_id: str | None = None):
         user, _ = owned(dataset_id, request, project_id)
         return await graph.request("POST", f"/construction/{dataset_id}/preview",
-            headers=headers(request, user.user_id), json_body=req.model_dump())
+            headers=headers(request, user.user_id, project_id), json_body=req.model_dump())
 
     @app.post("/api/personal-datasets/{dataset_id}/construction/commit")
-    @app.post("/api/datasets/{dataset_id}/construction/commit")
+    @app.post("/api/datasets/{dataset_id}/construction/commit", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.post("/api/projects/{project_id}/datasets/{dataset_id}/construction/commit")
     async def commit(dataset_id: str, req: EditRequest, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
         result = await graph.request("POST", f"/construction/{dataset_id}/commit",
-            headers=headers(request, user.user_id), json_body=req.model_dump())
+            headers=headers(request, user.user_id, project_id), json_body=req.model_dump())
         saved_graph = result.get("graph", {})
         sync_record(directory, dataset, {**dataset.metadata.get("construction", {}),
             "status": "ready", "revision": result["revision"],

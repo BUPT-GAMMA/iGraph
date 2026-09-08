@@ -144,6 +144,13 @@ class GraphDataClient:
         args = arguments or {}
         if tool_name in CONSTRUCTION_TOOL_NAMES:
             return await self.call_construction_tool(session_id, tool_name, args, user_id=user_id, run_id=run_id)
+        if tool_name in {"list_datasets", "load_dataset"}:
+            token = execution_headers.set({**execution_headers.get(), **service_headers(user_id)})
+            try:
+                return await self._post(f"/sessions/{session_id}/tools/{tool_name}", {"arguments": args},
+                                        user_id=user_id, run_id=run_id)
+            finally:
+                execution_headers.reset(token)
         if tool_name == "load_graph_from_upload":
             source_type = construction_source_type(args.get("filename"))
             if source_type:

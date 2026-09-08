@@ -52,10 +52,12 @@ from graph_data_service.execution_host import GraphExecutionHost, JobContext, jo
 from graph_data_service.worker_contract import ISOLATED_DATA_TOOLS
 from graph_data_service.async_work import run_sync
 from graph_data_service.tool_scheduler import ToolResourceScheduler
-from execution_protocol import controls_enabled, require_service, service_headers
+from execution_protocol import controls_enabled, require_service, service_headers, validate_service_configuration
 from graph_data_service.rag import LightweightRAG
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
 from graph_data_service.session import GraphSession, UploadFileRecord
+from construction_access import DATASET_TOOLS, SCOPE_HEADER
+from graph_data_service.construction_access import ConstructionAccessClient
 from graph_data_service.construction import ConstructionStore, ConstructionError, to_graph_data
 from graph_data_service.storage.nebula_backend import (
     NebulaGraphRepository,
@@ -292,9 +294,11 @@ class GraphDataService:
         storage_backend: str | None = None,
         migrate_storage: bool = True,
         construction_store: ConstructionStore | None = None,
+        construction_access: ConstructionAccessClient | None = None,
     ) -> None:
         self._sessions: Dict[str, GraphSession] = {}
         self._construction = construction_store or ConstructionStore()
+        self._construction_access = construction_access or ConstructionAccessClient()
         self._deleted_sessions: set[str] = set()
         self._session_lifecycle_lock = threading.RLock()
         self._compute = GraphCompute()
@@ -1633,7 +1637,7 @@ class GraphDataService:
         finally:
             Path(staging).unlink(missing_ok=True)
 
-    def do_list_datasets(self, user_id: str = "") -> dict:
+    def do_list_datasets(self, user_id: str = "", construction_ids: tuple[str, ...] = ()) -> dict:
         global_metas = self._dataset_registry.list_datasets()
         global_dicts = [dict(m.to_dict(), scope="global") for m in global_metas]
         if user_id:
@@ -1644,7 +1648,8 @@ class GraphDataService:
                                "source_type": "construction", "is_directed": row["directed"],
                                "versions": [str(row["revision"])], "storage_backend": "construction",
                                "load_tool": "load_constructed_graph"}
-                              for row in self._construction.list_ready(user_id) if row["dataset_id"] not in existing)
+                              for row in (self._construction.status(user_id, dataset_id) for dataset_id in construction_ids)
+                              if row["status"] == "ready" and row["dataset_id"] not in existing)
         else:
             user_dicts = []
         return {
@@ -1653,11 +1658,6 @@ class GraphDataService:
         }
 
     def do_load_dataset(self, session_id: str, dataset_id: str, version: str = "latest", user_id: str = "") -> dict:
-        if user_id:
-            state = self._construction.status(user_id, dataset_id)
-            if state["status"] == "ready":
-                return {"success": False, "code": "USE_CONSTRUCTED_GRAPH_LOADER", "dataset_id": dataset_id,
-                        "error": "已构图数据集请使用 load_constructed_graph 加载，以同步当前会话的数据集选择。"}
         session = self.get_or_create(session_id, user_id=user_id)
         # Check user's registry first, then global.
         registry = None
@@ -3433,7 +3433,8 @@ class GraphDataService:
             ),
         )
 
-    async def dispatch_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
+    async def dispatch_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "",
+                            *, construction_scope: str | None = None) -> dict:
         """Admit independent tools concurrently and serialize resource conflicts."""
         if tool_name == "get_job_status":
             # Cursor reads touch the durable journal without reserving the graph.
@@ -3446,20 +3447,30 @@ class GraphDataService:
             # task. Reserve resources inside that task, once per computation.
             return await self._dispatch_heavy_graph_ml_tool_once(session_id, tool_name, arguments, user_id)
         return await self._run_with_tool_policy(session_id, tool_name, arguments, user_id,
-            lambda: self._dispatch_tool_unlocked(session_id, tool_name, arguments, user_id))
+            lambda: self._dispatch_tool_unlocked(session_id, tool_name, arguments, user_id, construction_scope=construction_scope))
 
-    async def _dispatch_tool_unlocked(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
+    async def _dispatch_tool_unlocked(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "",
+                                      *, construction_scope: str | None = None) -> dict:
         """Execute an admitted tool; child jobs inherit its reservation."""
+        # Resolve after queue admission so an earlier catalog/grant cannot keep a
+        # deleted or migrated dataset accessible to a waiting tool.
+        if tool_name == "list_datasets" and user_id:
+            grant = await self._construction_access.authorize(user_id, session_id=session_id, scope=construction_scope)
+            return await run_sync(self.do_list_datasets, user_id, tuple(grant.dataset_ids))
         if tool_name == "load_dataset" and user_id:
             dataset_id = _required_str(arguments, "dataset_id")
             state = await run_sync(self._construction.status, user_id, dataset_id)
             if state["status"] == "ready":
-                return await run_sync(self.do_load_dataset, session_id, dataset_id, arguments.get("version", "latest"), user_id)
+                await self._construction_access.authorize(user_id, session_id=session_id,
+                    scope=construction_scope, dataset_id=dataset_id)
+                return {"success": False, "code": "USE_CONSTRUCTED_GRAPH_LOADER", "dataset_id": dataset_id,
+                        "error": "已构图数据集请使用 load_constructed_graph 加载，以同步当前会话的数据集选择。"}
         if tool_name == "get_graph_construction_capabilities":
             return self._construction.capabilities()
-        if tool_name in {"get_graph_construction_status", "get_constructed_graph", "load_constructed_graph",
-                         "preview_graph_optimization", "commit_graph_optimization"}:
+        if tool_name in DATASET_TOOLS:
             dataset_id = _required_str(arguments, "dataset_id")
+            await self._construction_access.authorize(user_id, session_id=session_id,
+                scope=construction_scope, dataset_id=dataset_id)
             if tool_name == "get_graph_construction_status":
                 return await run_sync(self.do_get_graph_construction_status, dataset_id, user_id)
             if tool_name == "get_constructed_graph":
@@ -3611,6 +3622,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        validate_service_configuration()
         if svc._execution_host:
             await svc._execution_host.restore()
         yield
@@ -3652,9 +3664,17 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
 
     async def controlled_tool(session_id, tool_name, arguments, request):
         uid = _get_user_id(request)
-        if tool_name in {"get_graph_construction_capabilities", "get_graph_construction_status", "get_constructed_graph",
-                         "load_constructed_graph", "preview_graph_optimization", "commit_graph_optimization"}:
+        scoped = tool_name in DATASET_TOOLS or (uid and tool_name in {"list_datasets", "load_dataset"})
+        if scoped or tool_name == "get_graph_construction_capabilities":
             uid = construction_user(request)
+        if scoped and request.headers.get("X-Session-ID", session_id) != session_id:
+            raise HTTPException(403, {"code": "DATASET_SCOPE_REQUIRED"})
+
+        async def dispatch():
+            if scoped:
+                return await svc.dispatch_tool(session_id, tool_name, arguments, user_id=uid,
+                    construction_scope=request.headers.get(SCOPE_HEADER))
+            return await svc.dispatch_tool(session_id, tool_name, arguments, user_id=uid)
         rid = request.headers.get('X-Run-ID', '')
         if svc._execution_host and tool_name == 'cancel_job':
             require_service(request)
@@ -3669,10 +3689,38 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
                                  str(uuid.UUID(request.headers['X-Operation-ID'])))
             except (ValueError, KeyError):
                 raise HTTPException(422, {'code': 'INVALID_EXECUTION_IDENTITY'})
-            async def invoke():
-                return await svc.dispatch_tool(session_id, tool_name, arguments, user_id=uid)
-            return await svc._execution_host.execute(ctx, tool_name, arguments, invoke)
-        return await svc.dispatch_tool(session_id, tool_name, arguments, user_id=uid)
+            if tool_name in DATASET_TOOLS:
+                # An idempotent replay can return a completed job without
+                # invoking dispatch. Revalidate before exposing that result.
+                await svc._construction_access.authorize(uid, session_id=session_id,
+                    scope=request.headers.get(SCOPE_HEADER), dataset_id=_required_str(arguments, "dataset_id"))
+            result = await svc._execution_host.execute(ctx, tool_name, arguments, dispatch)
+            if tool_name == "list_datasets" and uid and isinstance(result, dict) and isinstance(result.get("datasets"), list):
+                grant = await svc._construction_access.authorize(uid, session_id=session_id,
+                    scope=request.headers.get(SCOPE_HEADER))
+                allowed = set(grant.dataset_ids)
+                result = {**result, "datasets": [row for row in result["datasets"]
+                    if row.get("storage_backend") != "construction" or row.get("dataset_id") in allowed]}
+            return result
+        return await dispatch()
+
+    async def construction_grant(request, dataset_id=None, *, cleanup=False):
+        uid = construction_user(request)
+        grant = await svc._construction_access.authorize(uid,
+            session_id=request.headers.get("X-Session-ID"), scope=request.headers.get(SCOPE_HEADER),
+            dataset_id=dataset_id, cleanup=cleanup)
+        return uid, grant
+
+    def check_source(req, grant):
+        source = grant.source
+        try:
+            invalid = (source is None
+                or (req.source_path is not None and Path(req.source_path).resolve() != Path(source.source_path).resolve())
+                or (req.source_filename is not None and req.source_filename != source.source_filename))
+        except (OSError, ValueError, RuntimeError):
+            invalid = True
+        if invalid:
+            raise HTTPException(403, {"code": "invalid_source", "message": "数据源与已授权数据集不匹配。"})
 
     @app.get("/construction/capabilities")
     def construction_capabilities(request: Request):
@@ -3680,24 +3728,33 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         return svc._construction.capabilities()
 
     @app.get("/construction/{dataset_id}")
-    def construction_status(dataset_id: str, request: Request):
-        return svc.do_get_graph_construction_status(dataset_id, construction_user(request))
+    async def construction_status(dataset_id: str, request: Request):
+        uid, _ = await construction_grant(request, dataset_id)
+        return await run_sync(svc.do_get_graph_construction_status, dataset_id, uid)
 
     @app.post("/construction/{dataset_id}/source")
-    def construction_source(dataset_id: str, req: ConstructionSourceReq, request: Request):
-        return svc._construction.register_source(construction_user(request), dataset_id, req.source_path, req.source_filename)
+    async def construction_source(dataset_id: str, req: ConstructionSourceReq, request: Request):
+        uid, grant = await construction_grant(request, dataset_id)
+        check_source(req, grant)
+        return await run_sync(svc._construction.register_source, uid, dataset_id, grant.source.source_path, grant.source.source_filename)
 
     @app.post("/construction/{dataset_id}/build")
-    def construction_build(dataset_id: str, req: ConstructionBuildReq, request: Request):
-        return svc._construction.build(construction_user(request), dataset_id, req.source_path, req.source_filename, req.options)
+    async def construction_build(dataset_id: str, req: ConstructionBuildReq, request: Request):
+        uid, grant = await construction_grant(request, dataset_id)
+        check_source(req, grant)
+        # An omitted path keeps the registered source/ready-result reuse contract.
+        source_path = grant.source.source_path if req.source_path is not None else None
+        return await run_sync(svc._construction.build, uid, dataset_id, source_path, grant.source.source_filename, req.options)
 
     @app.get("/construction/{dataset_id}/graph")
-    def constructed_graph(dataset_id: str, request: Request):
-        return svc.do_get_constructed_graph(dataset_id, construction_user(request))
+    async def constructed_graph(dataset_id: str, request: Request):
+        uid, _ = await construction_grant(request, dataset_id)
+        return await run_sync(svc.do_get_constructed_graph, dataset_id, uid)
 
     @app.post("/construction/{dataset_id}/preview")
-    def construction_preview(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
-        return svc.do_preview_graph_optimization(dataset_id, req.base_revision, req.operations, construction_user(request))
+    async def construction_preview(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
+        uid, _ = await construction_grant(request, dataset_id)
+        return await run_sync(svc.do_preview_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
 
     @app.post("/construction/{dataset_id}/commit")
     async def construction_commit(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
@@ -3707,11 +3764,13 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             if not sid:
                 raise HTTPException(422, {"code": "INVALID_EXECUTION_IDENTITY"})
             return await controlled_tool(sid, "commit_graph_optimization", {"dataset_id": dataset_id, **req.model_dump()}, request)
+        uid, _ = await construction_grant(request, dataset_id)
         return await run_sync(svc.do_commit_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
 
     @app.delete("/construction/{dataset_id}")
-    def construction_delete(dataset_id: str, request: Request):
-        return svc._construction.delete(construction_user(request), dataset_id)
+    async def construction_delete(dataset_id: str, request: Request):
+        uid, _ = await construction_grant(request, dataset_id, cleanup=True)
+        return await run_sync(svc._construction.delete, uid, dataset_id)
 
     @app.post("/sessions/{session_id}/graph/load_construction")
     async def load_constructed_graph(session_id: str, req: ConstructionLoadReq, request: Request):
@@ -3784,9 +3843,13 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         return svc._graph_ml._store.ownership_report()
 
     @app.get("/datasets")
-    def list_datasets_endpoint(request: Request):
-        user_id = _get_user_id(request)
-        return svc.do_list_datasets(user_id=user_id)
+    async def list_datasets_endpoint(request: Request):
+        if request.headers.get("X-Session-ID") or request.headers.get(SCOPE_HEADER):
+            uid, grant = await construction_grant(request)
+            return await run_sync(svc.do_list_datasets, uid, tuple(grant.dataset_ids))
+        # Legacy registry requests without scope retain their public/account
+        # catalog. Construction entries always require an explicit grant.
+        return await run_sync(svc.do_list_datasets, _get_user_id(request))
 
     @app.post("/sessions/{session_id}")
     async def create_session(session_id: str, request: Request):

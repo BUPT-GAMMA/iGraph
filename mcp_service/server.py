@@ -16,12 +16,14 @@ import logging
 import os
 import sys
 from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
 
 from fastmcp import Context, FastMCP
 
 from graph_engine.observability import get_service_logger, close_service_loggers
 import graph_engine.paths as _dp
 from graph_engine.env import load_environment
+from execution_protocol import validate_service_configuration
 from mcp_service.config import MCPConfig
 from mcp_service.graph_data_client import GraphDataClient
 from mcp_service.session_registry import SessionRegistry
@@ -59,9 +61,17 @@ logger = _setup_logging()
 config = MCPConfig.from_env()
 logger.info("GraphData target configured: %s", config.graph_data_url)
 
+
+@asynccontextmanager
+async def service_lifespan(_server):
+    validate_service_configuration()
+    yield {}
+
+
 mcp = FastMCP(
     "iGraph",
     instructions="图论分析与图机器学习工具集。工具规格由 tool_catalog 统一定义，动态注册到 MCP。",
+    lifespan=service_lifespan,
 )
 
 _graph_data = GraphDataClient(config.graph_data_url)
@@ -329,6 +339,7 @@ async def set_session_config(llm_model: Optional[str], ctx: Context) -> str:
 
 
 if __name__ == "__main__":
+    validate_service_configuration()
     transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
     logger.info("mcp_server starting  transport=%s", transport)
     if transport in ("streamable-http", "http"):

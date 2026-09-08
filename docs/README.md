@@ -64,6 +64,6 @@
 
 ## 快速开始
 
-1. 复制 `.env.example` 为 `.env` 并配置模型与 embedding 端点。
+1. 复制 `.env.example` 为 `.env`，配置模型与 embedding 端点，并为四个服务设置同一随机 `IGRAPH_CONTROL_SERVICE_KEY`（完整部署必填）。
 2. 使用 `docker compose up --build -d` 启动四个业务模块及 PostgreSQL。
 3. 打开 `http://localhost:21108`。

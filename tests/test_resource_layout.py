@@ -10,6 +10,27 @@ from backend.migration import migrate_bundled_skills
 from agent_runtime.agent.skills.registry import SkillRegistry
 
 
+# Keep the shipped inventory explicit so missing, unexpected or duplicate skills
+# are reported by name, including the graph-construction workflow.
+EXPECTED_BUNDLED_SKILLS = (
+    "data_ingestion_table",
+    "data_ingestion_text",
+    "dataset_management",
+    "experiment_reporting",
+    "gnn_node_classification_training",
+    "graph_analysis_centrality",
+    "graph_analysis_community",
+    "graph_construction",
+    "graph_ml_inference",
+    "graph_ml_training",
+    "graph_path_connectivity",
+    "graph_rag",
+    "graph_state_check",
+    "graph_statistical_reporting",
+    "graph_visualization",
+)
+
+
 class ResourceLayoutTest(unittest.TestCase):
     def test_registry_reads_bundled_skills_without_runtime_initialization(self) -> None:
         specs = SkillRegistry(skill_dirs=[]).discover()
@@ -17,8 +38,9 @@ class ResourceLayoutTest(unittest.TestCase):
 
         specs = SkillRegistry().discover()
         bundled = [spec for spec in specs if spec.source == "bundled"]
-        self.assertEqual(len(bundled), 14)
-        self.assertIn("graph_ml_training", {spec.name for spec in bundled})
+        self.assertCountEqual(
+            [spec.name for spec in bundled], EXPECTED_BUNDLED_SKILLS
+        )
 
     def test_bundled_skills_seed_an_empty_runtime_data_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -30,10 +52,7 @@ class ResourceLayoutTest(unittest.TestCase):
                 path.parent.name for path in skills_dir.glob("*/SKILL.md")
             )
 
-        self.assertEqual(len(skill_names), 14)
-        self.assertIn("graph_path_connectivity", skill_names)
-        self.assertIn("graph_ml_training", skill_names)
-        self.assertNotIn("user_test_skill", skill_names)
+        self.assertCountEqual(skill_names, EXPECTED_BUNDLED_SKILLS)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,8 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       CI: "true"
+      # Disposable test credential; production supplies its own random secret.
+      IGRAPH_CONTROL_SERVICE_KEY: ci-service-configuration-only
       IGRAPH_CONTROL_TEST_DATABASE_URL: postgresql+psycopg://postgres:cancellation-ci-only@127.0.0.1:5432/cancellation_tests
       IGRAPH_CANCEL_TEST_REPETITIONS: ${{ inputs.full == true && '20' || '1' }}
       FULL_REGRESSION: ${{ inputs.full == true && 'true' || 'false' }}

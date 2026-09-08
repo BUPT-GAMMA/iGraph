@@ -13,6 +13,22 @@ from pydantic import BaseModel, model_validator
 execution_headers: ContextVar[dict[str, str]] = ContextVar("igraph_execution_headers", default={})
 
 
+def validate_service_configuration() -> None:
+    """Fail before serving traffic when internal service authentication is unusable.
+
+    The credential is required independently of the optional run-cancellation
+    feature. Never include its value in errors or silently normalize it.
+    """
+    secret = os.getenv("IGRAPH_CONTROL_SERVICE_KEY", "")
+    if not secret or not secret.isascii() or any(not 33 <= ord(char) <= 126 for char in secret):
+        raise RuntimeError(
+            "IGRAPH_CONTROL_SERVICE_KEY is required and must contain printable ASCII "
+            "characters without whitespace. Configure the same random secret for "
+            "Backend, Agent Runtime, Graph Engine API and MCP, even when "
+            "IGRAPH_RUN_CANCEL_ENABLED=false."
+        )
+
+
 def controls_enabled() -> bool:
     return os.getenv("IGRAPH_RUN_CANCEL_ENABLED", "false").lower() in {"true", "1", "yes"} and bool(os.getenv("IGRAPH_CONTROL_SERVICE_KEY", ""))
 

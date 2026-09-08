@@ -9,7 +9,7 @@ WORKDIR /app
 COPY deploy/requirements/backend.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 COPY backend /app/backend
-COPY execution_protocol.py /app/execution_protocol.py
+COPY execution_protocol.py construction_access.py /app/
 COPY execution_lifecycle.py /app/execution_lifecycle.py
 COPY config /app/config
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 
+from construction_access import DATASET_TOOLS
 
-_SCOPED_TOOLS = frozenset({"load_constructed_graph", "preview_graph_optimization", "commit_graph_optimization"})
+_SCOPED_TOOLS = DATASET_TOOLS
 
 
 def _result_payload(value):
@@ -56,7 +57,7 @@ def _allowed_datasets(state):
 
 
 async def construction_tool_hook(function_name, function_call, arguments, run_context):
-    """Guard writes/loads by BFF scope, and let Agno persist a successful load.
+    """Guard dataset reads/writes by BFF scope and persist a successful load.
 
     The BFF refreshes this list for the current user and project on every run.
     An LLM-supplied ID cannot choose another project merely by sharing an owner.
@@ -65,11 +66,19 @@ async def construction_tool_hook(function_name, function_call, arguments, run_co
         return await function_call(**arguments)
     state = getattr(run_context, "session_state", None)
     allowed = _allowed_datasets(state)
+    if function_name == "get_graph_construction_status" and isinstance(state, dict):
+        data = state.get("data_state")
+        if isinstance(data, dict):
+            for field in ("available_construction_sources", "construction_sources"):
+                rows = data.get(field)
+                if isinstance(rows, list):
+                    allowed.update({row["dataset_id"]: row for row in rows
+                        if isinstance(row, dict) and isinstance(row.get("dataset_id"), str)})
     dataset_id = arguments.get("dataset_id")
     if not isinstance(dataset_id, str) or dataset_id not in allowed:
         return json.dumps({
             "success": False, "code": "DATASET_SCOPE_REQUIRED",
-            "error": "此数据集不在当前会话范围的可用构图数据集中。请先在数据集面板选择当前项目/个人范围内的已构图数据集。",
+            "error": "此数据集不在当前会话的可用数据范围内。请在当前项目或个人空间的数据集面板确认数据集及构图状态。",
         }, ensure_ascii=False)
     result = await function_call(**arguments)
     payload = _result_payload(result)

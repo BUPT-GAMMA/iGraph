@@ -19,7 +19,7 @@ from agent_runtime.execution_store import ExecutionStore, ControlError
 from agent_runtime.execution_store import TERMINAL
 from agent_runtime.execution_scope import RunCancellationManager
 from agno.run.cancel import set_cancellation_manager
-from execution_protocol import controls_enabled, require_service
+from execution_protocol import controls_enabled, require_service, validate_service_configuration
 
 
 class RuntimeCustomModelReq(BaseModel):
@@ -41,6 +41,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app):
+        validate_service_configuration()
         if controller:
             await asyncio.to_thread(controller.store.migrate)
             await controller.restore()
