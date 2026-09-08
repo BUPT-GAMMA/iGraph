@@ -14,6 +14,26 @@ GHCR，再使用现有可登录服务器的 SSH 密钥部署同一个 SHA。
 部署任务串行执行，健康检查失败时会恢复上一次成功版本。第一次部署没有旧的
 iGraph 版本可供回滚。
 
+## Docker Action 升级验证
+
+Docker 构建依赖先在独立分支验证，再合入 `dev`，随正常发布进入 `main`。
+`Docker action compatibility` 是必需 CI：在 runner 本机的带认证临时仓库中
+执行登录、构建、缓存导出、推送、拉取及文件内容核验，并对 5 个生产 Dockerfile
+执行 Buildx `--check`。此检查仅使用一次性测试凭据，镜像推送目标为 `localhost:5000`。
+生产镜像发布和 SSH 部署继续仅在 `main` 的 push 事件触发。
+
+当前固定版本为 build-push-action 7.3.0、login-action 4.6.0、setup-buildx-action 4.3.0。
+三者均使用 Node.js 24，要求 Actions Runner 至少为 2.327.1；本项目使用 GitHub 托管的
+`ubuntu-24.04` runner。升级保留了现用输入参数；项目未使用已移除的 Buildx 旧配置项、
+`DOCKER_BUILD_NO_SUMMARY` 或 `DOCKER_BUILD_EXPORT_RETENTION_DAYS`。
+官方说明：[构建](https://github.com/docker/build-push-action/releases/tag/v7.0.0)、
+[登录](https://github.com/docker/login-action/releases/tag/v4.0.0)、
+[Buildx](https://github.com/docker/setup-buildx-action/releases/tag/v4.0.0)。
+
+验证覆盖 Action 工具链及 Dockerfile 静态检查；完整业务镜像构建、GHCR 写入权限和
+生产部署仍由发布流程验证。Dependabot 配置已声明 `target-branch: dev`，该设置需随
+正常发布进入默认分支 `main` 后才由 GitHub 读取；已有 PR 可单独改为面向 `dev`。
+
 ## 已确认的服务器条件
 
 - SSH：`keyuyang@hdssh01.casdao.com:63125`
