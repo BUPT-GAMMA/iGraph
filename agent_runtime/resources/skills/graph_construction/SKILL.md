@@ -28,6 +28,7 @@ SQL、CSV、TXT 文件作为原始数据源保存到数据集。构图算法有�
 3. `ready`：通过 `load_constructed_graph(dataset_id)` 加载已保存的版本，再使用现有图分析和可视化工具。切换会话也可以复用同一数据集，无需重复构图。
 4. `not_built`：引导用户在数据集面板中点击“构图”。`algorithm_unavailable`：说明该格式的构图算法尚未接入，原文件仍保留，不得描述成成功。`failed`：报告实际错误。
 5. 不能用 `load_graph_from_upload` 处理这些源文件，也不能读取后复制到 `load_graph_from_text`、`load_graph` 或三元组工具绕开构图入口。用户直接粘贴的独立内联数据按已有导入流程处理。
+6. 已加载构图属性图时，通用加载工具的 `append=true` 会返回 `UNSUPPORTED_PROPERTY_GRAPH_APPEND` 并保留原图。向用户说明追加限制，并使用本技能支持的优化操作处理适用的编辑需求。覆盖或清空当前图需要用户明确要求，不能作为追加失败的自动重试方式。
 
 ## 六类编辑
 

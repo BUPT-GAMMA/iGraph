@@ -103,6 +103,7 @@ load_graph_from_text(
 **append**（默认 `false`）
 - 首次建图 → 使用默认 `false`，覆盖当前会话图
 - 追加新文档到已有图 → `append=true`，新图与现有图合并去重，不删除已有节点
+- 属性图追加限制：当前图为构图属性图时，追加返回 `UNSUPPORTED_PROPERTY_GRAPH_APPEND`，原图保持不变。向用户解释该限制；覆盖或清空图需要用户明确要求，禁止自动切换为 `append=false` 重试。
 
 ---
 

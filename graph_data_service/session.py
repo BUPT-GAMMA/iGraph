@@ -19,6 +19,7 @@ import numpy as np
 
 import graph_engine.paths as _dp
 from graph_data_service.graph_data import GraphData
+from graph_data_service.property_graph import require_lossless_append
 from graph_data_service.graph_snapshot import GraphSnapshot, snapshot_summary
 from execution_lifecycle import atomic_json
 
@@ -265,6 +266,8 @@ class GraphSession:
 
     def _parse_edgelist(self, text: str, append: bool = False) -> Tuple[int, int]:
         """从文本边列表建图，返回 (节点数, 边数)。"""
+        if append:
+            require_lossless_append(self._graph)
         raw_edges: List[Tuple[str, str, float]] = []
         for line in text.strip().splitlines():
             line = line.strip()
@@ -328,6 +331,8 @@ class GraphSession:
 
     def load_graph_from_upload_path(self, saved_path: str, append: bool = False) -> Tuple[int, int]:
         """从上传文件路径加载图，支持文本格式、.npz 与 .json（graph_data.v1）格式。"""
+        if append:
+            require_lossless_append(self._graph)
         resolved_path = self._resolve_existing_upload_path(saved_path)
         if resolved_path is None:
             raise FileNotFoundError(f"文件不存在: {saved_path}")
@@ -336,6 +341,7 @@ class GraphSession:
         if lower_path.endswith(".npz") or lower_path.endswith(".pt"):
             loaded = GraphData.load(resolved_path)
             if append and self._graph is not None:
+                require_lossless_append(self._graph, loaded)
                 existing_text = self._graph_to_text(self._graph)
                 new_text = self._graph_to_text(loaded)
                 return self._parse_edgelist(existing_text + "\n" + new_text, append=False)
@@ -352,6 +358,7 @@ class GraphSession:
             try:
                 loaded = GraphData.load(resolved_path)
                 if append and self._graph is not None:
+                    require_lossless_append(self._graph, loaded)
                     existing_text = self._graph_to_text(self._graph)
                     new_text = self._graph_to_text(loaded)
                     return self._parse_edgelist(existing_text + "\n" + new_text, append=False)

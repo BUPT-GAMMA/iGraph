@@ -54,6 +54,7 @@ from graph_data_service.async_work import run_sync
 from graph_data_service.tool_scheduler import ToolResourceScheduler
 from execution_protocol import controls_enabled, require_service, service_headers, validate_service_configuration
 from graph_data_service.rag import LightweightRAG
+from graph_data_service.property_graph import UnsupportedPropertyGraphAppend, require_lossless_append
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
 from graph_data_service.session import GraphSession, UploadFileRecord
 from construction_access import DATASET_TOOLS, SCOPE_HEADER
@@ -790,6 +791,7 @@ class GraphDataService:
 
     @staticmethod
     def _graph_from_edgelist(text: str, existing: Optional[GraphData] = None) -> GraphData:
+        require_lossless_append(existing)
         node2id: dict[str, int] = dict(existing.node2id) if existing is not None else {}
         id2node: dict[int, str] = dict(existing.id2node) if existing is not None else {}
         pairs: list[tuple[int, int]] = list(existing.all_edges()) if existing is not None else []
@@ -1099,6 +1101,8 @@ class GraphDataService:
                 "graph_version": session.graph_version,
                 "filename": original_filename,
             }
+        except UnsupportedPropertyGraphAppend as exc:
+            return {**exc.to_dict(), "session_id": session.session_id, "graph_version": session.graph_version}
         except Exception as exc:
             svc_log.event(
                 "UPLOAD_LOAD_ERROR",
@@ -1277,6 +1281,8 @@ class GraphDataService:
                     "filename": record.original_filename,
                     "error": str(exc),
                 }
+            except UnsupportedPropertyGraphAppend:
+                raise
             except Exception as exc:
                 svc_log.event(
                     "UPLOAD_LOAD_ERROR",
@@ -1377,6 +1383,8 @@ class GraphDataService:
                     description=f"从上传边列表加载图: {record.original_filename}",
                 )
                 n, e = graph.num_nodes, graph.num_edges
+            except UnsupportedPropertyGraphAppend:
+                raise
             except Exception as exc:
                 svc_log.event("UPLOAD_LOAD_ERROR", filename=record.original_filename, format="edge_list", error=str(exc))
                 raise HTTPException(status_code=500, detail=f"边列表解析失败: {exc}")
@@ -2253,6 +2261,7 @@ class GraphDataService:
 
     @classmethod
     def _merge_graphs(cls, existing: GraphData, incoming: GraphData, *, directed: bool) -> GraphData:
+        require_lossless_append(existing, incoming)
         triples = cls._graph_to_triples(existing) + cls._graph_to_triples(incoming)
         if not directed:
             triples = cls._collapse_undirected_triples(triples)
@@ -3446,12 +3455,20 @@ class GraphDataService:
             # Identical training/inference requests share the existing inflight
             # task. Reserve resources inside that task, once per computation.
             return await self._dispatch_heavy_graph_ml_tool_once(session_id, tool_name, arguments, user_id)
-        return await self._run_with_tool_policy(session_id, tool_name, arguments, user_id,
-            lambda: self._dispatch_tool_unlocked(session_id, tool_name, arguments, user_id, construction_scope=construction_scope))
+        try:
+            return await self._run_with_tool_policy(session_id, tool_name, arguments, user_id,
+                lambda: self._dispatch_tool_unlocked(session_id, tool_name, arguments, user_id, construction_scope=construction_scope))
+        except UnsupportedPropertyGraphAppend as exc:
+            return exc.to_dict()
 
     async def _dispatch_tool_unlocked(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "",
                                       *, construction_scope: str | None = None) -> dict:
         """Execute an admitted tool; child jobs inherit its reservation."""
+        if tool_name in {"load_graph", "load_graph_from_upload", "load_graph_from_text", "load_graph_from_triples"} and _optional_bool(arguments, "append", False):
+            # Check after queue admission and before file parsing/LLM extraction.
+            # Merge helpers also check both inputs immediately before conversion.
+            session = self.get_or_create(session_id, user_id=user_id)
+            await run_sync(require_lossless_append, session.get_graph())
         # Resolve after queue admission so an earlier catalog/grant cannot keep a
         # deleted or migrated dataset accessible to a waiting tool.
         if tool_name == "list_datasets" and user_id:
