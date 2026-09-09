@@ -157,6 +157,48 @@ describe('long-running graph construction', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(milliseconds); });
   }
 
+  it('shows a capacity rejection without polling or automatically retrying', async () => {
+    mocks.build.mockRejectedValue(new ApiError(429, '构图资源繁忙，本次未启动，请稍后重试。', null, null, null, 'construction_capacity_exhausted'));
+    await show();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(screen.getByRole('alert').textContent).toContain('本次未启动');
+    expect(screen.getByRole('button', { name: '开始构图' }).matches(':disabled')).toBe(false);
+    await tick(12000);
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let an old failure discard the success of a pending retry', async () => {
+    const failed = { ...notBuilt, status: 'failed', build_id: 'previous', message: '上次失败' };
+    mocks.state.mockResolvedValue(failed);
+    let finish!: (value: unknown) => void;
+    mocks.build.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const saved = vi.fn();
+    await show(saved);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
+    await tick();
+    expect(saved).not.toHaveBeenCalled();
+    await act(async () => { finish({ ...ready, build_id: 'current' }); });
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('已保存 · 版本 3')).toBeTruthy();
+  });
+
+  it('associates a duplicate response and polling with the existing build id', async () => {
+    mocks.build.mockResolvedValue({ ...building, build_id: 'current' });
+    mocks.state.mockResolvedValueOnce(notBuilt)
+      .mockResolvedValueOnce({ ...notBuilt, status: 'failed', build_id: 'previous' })
+      .mockResolvedValue({ ...ready, build_id: 'current' });
+    const saved = vi.fn();
+    await show(saved);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    await tick();
+    expect(saved).not.toHaveBeenCalled();
+    expect(screen.getByText('构图进行中')).toBeTruthy();
+    await tick();
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
   it.each([15, 23])('sends the configured query count (%s) and domain with exactly one build request', async count => {
     mocks.build.mockResolvedValue(ready);
     const saved = vi.fn();

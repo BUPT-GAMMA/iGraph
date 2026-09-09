@@ -303,6 +303,8 @@ class GraphDataService:
             self._construction = register_builtin_algorithms(ConstructionStore())
         else:
             self._construction = construction_store
+        from graph_data_service.construction_coordinator import ConstructionCoordinator
+        self._construction_coordinator = ConstructionCoordinator(self._construction)
         self._construction_access = construction_access or ConstructionAccessClient()
         self._deleted_sessions: set[str] = set()
         self._session_lifecycle_lock = threading.RLock()
@@ -3644,9 +3646,11 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         validate_service_configuration()
+        await svc._construction_coordinator.restore()
         if svc._execution_host:
             await svc._execution_host.restore()
         yield
+        await svc._construction_coordinator.close()
         if svc._execution_host:
             await svc._execution_host.close()
         # SIGTERM 时取消所有后台 Job 的 asyncio Task（底层线程会随进程退出）
@@ -3751,12 +3755,13 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @app.get("/construction/{dataset_id}")
     async def construction_status(dataset_id: str, request: Request):
         uid, _ = await construction_grant(request, dataset_id)
-        return await run_sync(svc.do_get_graph_construction_status, dataset_id, uid)
+        return await svc._construction_coordinator.status(uid, dataset_id)
 
     @app.post("/construction/{dataset_id}/source")
     async def construction_source(dataset_id: str, req: ConstructionSourceReq, request: Request):
         uid, grant = await construction_grant(request, dataset_id)
         check_source(req, grant)
+        svc._construction_coordinator.ensure_writable(uid, dataset_id)
         return await run_sync(svc._construction.register_source, uid, dataset_id, grant.source.source_path, grant.source.source_filename)
 
     @app.post("/construction/{dataset_id}/build")
@@ -3765,7 +3770,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         check_source(req, grant)
         # An omitted path keeps the registered source/ready-result reuse contract.
         source_path = grant.source.source_path if req.source_path is not None else None
-        return await run_sync(svc._construction.build, uid, dataset_id, source_path, grant.source.source_filename, req.options)
+        return await svc._construction_coordinator.build(uid, dataset_id, source_path, grant.source.source_filename, req.options)
 
     @app.get("/construction/{dataset_id}/graph")
     async def constructed_graph(dataset_id: str, request: Request):
@@ -3775,6 +3780,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @app.post("/construction/{dataset_id}/preview")
     async def construction_preview(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
         uid, _ = await construction_grant(request, dataset_id)
+        svc._construction_coordinator.ensure_writable(uid, dataset_id)
         return await run_sync(svc.do_preview_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
 
     @app.post("/construction/{dataset_id}/commit")
@@ -3786,11 +3792,13 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
                 raise HTTPException(422, {"code": "INVALID_EXECUTION_IDENTITY"})
             return await controlled_tool(sid, "commit_graph_optimization", {"dataset_id": dataset_id, **req.model_dump()}, request)
         uid, _ = await construction_grant(request, dataset_id)
+        svc._construction_coordinator.ensure_writable(uid, dataset_id)
         return await run_sync(svc.do_commit_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
 
     @app.delete("/construction/{dataset_id}")
     async def construction_delete(dataset_id: str, request: Request):
         uid, _ = await construction_grant(request, dataset_id, cleanup=True)
+        svc._construction_coordinator.ensure_writable(uid, dataset_id)
         return await run_sync(svc._construction.delete, uid, dataset_id)
 
     @app.post("/sessions/{session_id}/graph/load_construction")

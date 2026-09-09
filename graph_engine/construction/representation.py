@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+from .budget import checked
 
 
 class RepresentationError(ValueError):
@@ -26,19 +27,19 @@ def resolve_rows(graph: dict) -> list[dict]:
     are omitted. Malformed, ambiguous, conflicting or detached storage fails
     explicitly instead of being repaired from provenance or source tables.
     """
-    nodes = {node["id"]: node for node in graph["nodes"]}
+    nodes = {node["id"]: node for node in checked(graph["nodes"])}
     if len(nodes) != len(graph["nodes"]):
         raise RepresentationError("Duplicate current node identifiers.")
-    edge_ids = {edge["id"] for edge in graph["edges"]}
+    edge_ids = {edge["id"] for edge in checked(graph["edges"])}
     if len(edge_ids) != len(graph["edges"]):
         raise RepresentationError("Duplicate current edge identifiers.")
-    for edge in graph["edges"]:
+    for edge in checked(graph["edges"]):
         if edge["source"] not in nodes or edge["target"] not in nodes:
             raise RepresentationError("Current graph edge has a missing endpoint.")
     rows = {}
     row_node_ids = set()
     for is_edge, entities in ((False, graph["nodes"]), (True, graph["edges"])):
-        for entity in entities:
+        for entity in checked(entities):
             props = entity["properties"]
             if "table" not in props and "row_index" not in props:
                 continue
@@ -97,7 +98,7 @@ def resolve_rows(graph: dict) -> list[dict]:
             raise RepresentationError("Current row and attribute entity contain conflicting cell values.")
         data[column] = copy.deepcopy(value)
 
-    for edge in graph["edges"]:
+    for edge in checked(graph["edges"]):
         properties = edge["properties"]
         if "extracted_attribute" in properties:
             attribute = properties["extracted_attribute"]

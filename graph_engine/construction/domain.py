@@ -13,6 +13,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from typing import Any
+from .budget import checked
 
 
 DOMAIN_KEYS = ("finance", "academic", "commerce", "healthcare", "social", "general")
@@ -250,8 +251,8 @@ def _strategy_signature(tool: str, args: dict, source: Any, graph: dict, queries
         strategy, operations = tool, [args]
     if strategy not in STRATEGY_IDS:
         return None
-    by_id = {node["id"]: node for node in graph.get("nodes", [])}
-    edges = {edge["id"]: edge for edge in graph.get("edges", [])}
+    by_id = {node["id"]: node for node in checked(graph.get("nodes", []))}
+    edges = {edge["id"]: edge for edge in checked(graph.get("edges", []))}
     affected, references, selected_nodes, selected_edges = set(), set(), set(), set()
     pattern = {}
 
@@ -297,7 +298,7 @@ def _strategy_signature(tool: str, args: dict, source: Any, graph: dict, queries
             add_table(start)
             add_table(end)
             counts = Counter()
-            for edge in edges.values():
+            for edge in checked(edges.values()):
                 fk = edge.get("properties", {}).get("foreign_key")
                 if fk is not None and _fk_key(fk) == key:
                     counts[edge["target"] if reverse else edge["source"]] += 1
@@ -328,7 +329,7 @@ def _strategy_signature(tool: str, args: dict, source: Any, graph: dict, queries
         for op in operations:
             if strategy == "collapse_node":
                 add_node(op["node_id"])
-                incident = [edge for edge in edges.values() if op["node_id"] in (edge["source"], edge["target"])]
+                incident = [edge for edge in checked(edges.values()) if op["node_id"] in (edge["source"], edge["target"])]
                 for edge in incident:
                     add_edge(edge["id"])
                 pattern.update(join_hops=2, relationship_shape="bridge" if len(incident) == 2 else "star",
@@ -442,7 +443,7 @@ def rank_candidates(examples: list[dict], profile: dict, learned: list[dict], so
     priors = {p["strategy_id"]: p for p in _priors(key)}
     confidence = _finite(profile.get("confidence", 0) if isinstance(profile, dict) else 0, 0, 1)
     ranked = []
-    for original in examples:
+    for original in checked(examples):
         example = copy.deepcopy(original)
         signature = strategy_signature(example.get("tool"), example.get("arguments", {}), source, graph, queries)
         prior = priors.get(signature["strategy_id"]) if signature else None

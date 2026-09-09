@@ -85,6 +85,26 @@ class ConstructionTimeoutRouteTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 422)
         self.graph.request.assert_not_awaited()
 
+    async def test_capacity_rejection_is_forwarded_without_changing_metadata(self):
+        detail = {"code": "construction_capacity_exhausted", "message": "本次未启动，请稍后重试", "retryable": True}
+        self.graph.request.side_effect = HTTPException(429, detail)
+        with patch("backend.construction.sync_record") as sync:
+            response = await self.request("POST", self.endpoint + "/build", json={"options": {}})
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()["detail"], detail)
+        sync.assert_not_called()
+        self.graph.request.assert_awaited_once()
+
+    async def test_duplicate_build_response_preserves_existing_build_identity(self):
+        state = {"dataset_id": "dataset-1", "status": "building", "revision": 0,
+                 "build_id": "existing-build", "failure_code": None}
+        self.graph.request.return_value = state
+        with patch("backend.construction.sync_record") as sync:
+            response = await self.request("POST", self.endpoint + "/build", json={"options": {}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), state)
+        self.assertEqual(sync.call_args.args[-1], state)
+
 
 class ServiceClientTimeoutTest(unittest.IsolatedAsyncioTestCase):
     async def test_override_is_per_request_and_default_is_unchanged(self):

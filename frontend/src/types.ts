@@ -164,6 +164,8 @@ export type Dataset = {
 
 export type ConstructionState = {
   dataset_id: string;
+  build_id?: string | null;
+  failure_code?: string | null;
   status: 'not_built' | 'algorithm_unavailable' | 'building' | 'ready' | 'failed';
   revision: number;
   node_count?: number;

@@ -13,6 +13,7 @@ from collections import defaultdict
 
 from graph_data_service.construction import optimize_graph, validate_graph
 from graph_engine.construction.sources import foreign_key_pairs, source_integrity_errors
+from .budget import checked, check_deadline
 
 
 def _key(value):
@@ -25,12 +26,12 @@ def _id(prefix, *values):
 
 def graph_schema(graph):
     nodes, edges = {}, {}
-    for node in graph["nodes"]:
+    for node in checked(graph["nodes"]):
         row = nodes.setdefault(node["type"], {"count": 0, "properties": set()})
         row["count"] += 1
         row["properties"].update(node["properties"].get("data", node["properties"]))
-    by_id = {node["id"]: node for node in graph["nodes"]}
-    for edge in graph["edges"]:
+    by_id = {node["id"]: node for node in checked(graph["nodes"])}
+    for edge in checked(graph["edges"]):
         row = edges.setdefault(edge["type"], {"count": 0, "endpoints": set()})
         row["count"] += 1
         row["endpoints"].add((by_id[edge["source"]]["type"], by_id[edge["target"]]["type"]))
@@ -39,7 +40,7 @@ def graph_schema(graph):
 
 
 def _rows(graph, table):
-    return [n for n in graph["nodes"] if n["properties"].get("table") == table and "data" in n["properties"]]
+    return [n for n in checked(graph["nodes"]) if n["properties"].get("table") == table and "data" in n["properties"]]
 
 
 def fidelity_errors(source, graph):
@@ -65,7 +66,7 @@ def _column(source, table, columns):
 
 def _without_shortcuts(graph):
     result = copy.deepcopy(graph)
-    result["edges"] = [e for e in result["edges"] if "materialized_join" not in e["properties"]]
+    result["edges"] = [e for e in checked(result["edges"]) if "materialized_join" not in e["properties"]]
     return result
 
 
@@ -90,7 +91,7 @@ def materialize_join(graph, source, args, *, deadline=None):
             raise ValueError("FK path is not contiguous")
         previous = end
         adjacency = defaultdict(list)
-        for edge in graph["edges"]:
+        for edge in checked(graph["edges"]):
             if edge["properties"].get("foreign_key") == fk:
                 a, b = (edge["target"], edge["source"]) if reverse else (edge["source"], edge["target"])
                 adjacency[a].append(b)
@@ -117,8 +118,7 @@ def materialize_join(graph, source, args, *, deadline=None):
 
 
 def _budget(deadline):
-    if deadline is not None and time.monotonic() >= deadline:
-        raise ValueError("Construction transformation deadline exceeded")
+    check_deadline(deadline)
 
 
 def _business_operations(graph, source, operations, deadline=None):
@@ -136,7 +136,7 @@ def _business_operations(graph, source, operations, deadline=None):
         if not isinstance(operation, dict):
             raise ValueError("Operation must be an object")
         kind = operation.get("op")
-        by_id = {n["id"]: n for n in result["nodes"]}
+        by_id = {n["id"]: n for n in checked(result["nodes"])}
         node = by_id.get(operation.get("node_id", ""))
         prop = operation.get("property")
         if kind == "collapse_node" and node and node["properties"].get("table") in source.tables:
@@ -144,7 +144,7 @@ def _business_operations(graph, source, operations, deadline=None):
             table = node["properties"]["table"]
             if any(f.ref_table == table for t in source.tables.values() for f in t.foreign_keys):
                 raise ValueError("Cannot turn a referenced row into an edge: incoming FK identities must remain nodes")
-            incident = [e for e in result["edges"] if node["id"] in (e["source"], e["target"])]
+            incident = [e for e in checked(result["edges"]) if node["id"] in (e["source"], e["target"])]
             if len(incident) != 2 or any(e["properties"].get("foreign_key", {}).get("table") != table for e in incident):
                 raise ValueError("A bridge row must have exactly two current FK relationships and no other incident edges")
             endpoints = []
