@@ -23,6 +23,7 @@ from graph_engine.construction.tools import TRANSFORM_NAMES, fidelity_errors, gr
 from graph_engine.construction.workload import evaluate_workload, generate_workload, validate_queries
 from graph_engine.construction.domain import domain_profile, workload_context, strategy_signature, rank_candidates
 from graph_engine.construction.experience import DomainExperienceStore
+from graph_engine.construction.budget import checked, check_deadline, current_deadline, set_deadline, reset_deadline, ConstructionBudgetExceeded
 
 
 SYSTEM_PROMPT = """You are iGraph's private tabular graph construction subagent.
@@ -170,7 +171,7 @@ def _experience_source_key(source):
                   "collations": table.column_collations, "primary_key": table.primary_key,
                   "foreign_keys": sorted([asdict(fk) for fk in table.foreign_keys], key=_json)}
         digest.update(_json(schema).encode("utf-8"))
-        for row_hash in sorted(_fingerprint(row) for row in table.rows):
+        for row_hash in checked(sorted(_fingerprint(row) for row in checked(table.rows))):
             digest.update(row_hash.encode("ascii"))
     return digest.hexdigest()
 
@@ -227,6 +228,7 @@ def _candidate_examples(source, graph, queries):
     These examples are proposals only: tools and the oracle still execute and
     decide each one after the LLM chooses it. FK direction never swaps fields.
     """
+    check_deadline()
     examples, seen = [], set()
     for query in queries:
         joins = query.get("joins", [])
@@ -241,14 +243,21 @@ def _candidate_examples(source, graph, queries):
             if len(examples) >= 3:
                 break
     incoming_tables = {f.ref_table for t in source.tables.values() for f in t.foreign_keys}
+    nodes_by_table, incident_by_node = {}, {}
+    key_columns_by_table = {t.name: set(t.primary_key) | {c for f in t.foreign_keys for c in f.columns}
+                            for t in source.tables.values()}
+    for node in checked(graph["nodes"]):
+        nodes_by_table.setdefault(node["properties"].get("table"), []).append(node)
+    for edge in checked(graph["edges"]):
+        incident_by_node.setdefault(edge["source"], []).append(edge)
+        if edge["target"] != edge["source"]:
+            incident_by_node.setdefault(edge["target"], []).append(edge)
     for table in source.tables.values():
         if table.name in incoming_tables:
             continue
         operations = []
-        for node in graph["nodes"]:
-            if node["properties"].get("table") != table.name:
-                continue
-            incident = [e for e in graph["edges"] if node["id"] in (e["source"], e["target"])]
+        for node in checked(nodes_by_table.get(table.name, ())):
+            incident = incident_by_node.get(node["id"], ())
             if len(incident) == 2 and all(e["properties"].get("foreign_key", {}).get("table") == table.name for e in incident):
                 operations.append({"op": "collapse_node", "node_id": node["id"], "edge_type": table.name + "Relation"})
             if len(operations) >= 10:
@@ -257,11 +266,11 @@ def _candidate_examples(source, graph, queries):
             examples.append({"tool": "optimize_graph", "arguments": {"operations": operations},
                              "note": "Turn these bridge rows into current edge entities, retaining their row data and FK endpoint roles."})
             break
-    for node in graph["nodes"]:
+    for node in checked(graph["nodes"]):
         table = source.tables.get(node["properties"].get("table"))
         if table is None:
             continue
-        key_columns = set(table.primary_key) | {c for f in table.foreign_keys for c in f.columns}
+        key_columns = key_columns_by_table[table.name]
         column = next((c for c in node["properties"].get("data", {}) if c not in key_columns), None)
         if column is not None:
             examples.append({"tool": "optimize_graph", "arguments": {"operations": [{
@@ -269,7 +278,23 @@ def _candidate_examples(source, graph, queries):
                 "node_type": table.name + "_" + column, "edge_type": "has_" + column, "remove_from_node": True}]},
                 "note": "Test a business attribute entity; graph execution will read its current value via the new edge."})
             break
+    check_deadline()
     return examples
+
+
+class CandidateCache:
+    """A task-local, detached proposal snapshot for the accepted graph version."""
+    def __init__(self):
+        self.version = None
+        self.value = None
+
+    def get(self, version, factory):
+        check_deadline()
+        if self.version != version:
+            value = factory()
+            check_deadline()
+            self.value, self.version = copy.deepcopy(value), version
+        return copy.deepcopy(self.value)
 
 
 class TabularConstructionSubAgent:
@@ -322,12 +347,19 @@ class TabularConstructionSubAgent:
                   "papers": ["AutoG (ICLR 2025), sections 4.1-4.4", "GalaxyWeaver (PVLDB 2025), sections 3-5"],
                   "source_sha256": ""}
         source = None
+        budget_token = None
         run_id = uuid.uuid4().hex
         memory = experience_store if experience_store is not None else self._experience_store
         learned, observations = [], []
+        saved_at, saved_stage = started, "starting"
 
         def save():
-            report["elapsed_seconds"] = round(time.monotonic() - started, 3)
+            nonlocal saved_at, saved_stage
+            now = time.monotonic()
+            timings = report.setdefault("phase_seconds", {})
+            timings[saved_stage] = round(timings.get(saved_stage, 0) + now - saved_at, 6)
+            saved_at, saved_stage = now, report.get("stage", "starting")
+            report["elapsed_seconds"] = round(now - started, 3)
             if report_path is not None:
                 _atomic_json(Path(report_path), report)
 
@@ -340,6 +372,8 @@ class TabularConstructionSubAgent:
             config = EvolutionConfig.from_options(options)
             report["config"] = asdict(config)
             deadline = started + config.max_seconds
+            budget_token = set_deadline(deadline)
+            deadline = current_deadline()
 
             def evaluate(candidate, queries, repeats):
                 if self._evaluator is evaluate_workload:
@@ -347,8 +381,7 @@ class TabularConstructionSubAgent:
                 return self._evaluator(source, candidate, queries, repeats=repeats)
 
             def budget():
-                if time.monotonic() >= deadline:
-                    fail("construction_time_budget_exhausted")
+                check_deadline(deadline)
 
             source = load_source(Path(source_path), options)
             profile = domain_profile(source, config.domain_category)
@@ -389,7 +422,8 @@ class TabularConstructionSubAgent:
 
             def complete(messages, stage):
                 budget()
-                message = llm.complete(copy.deepcopy(messages), tool_specs(stage), timeout=max(1.0, deadline - time.monotonic()))
+                message = llm.complete(copy.deepcopy(messages), tool_specs(stage), timeout=min(config.llm_timeout_seconds, deadline - time.monotonic()))
+                budget()
                 if not isinstance(message, dict):
                     raise ConstructionLLMError("construction_llm_invalid_response")
                 message = {k: message[k] for k in ("role", "content", "tool_calls") if k in message}
@@ -485,8 +519,11 @@ class TabularConstructionSubAgent:
                     report["experience"].update(status="unavailable", error_type=type(exc).__name__)
                     memory = None
 
+            graph_version, candidate_cache = 0, CandidateCache()
+
             def examples():
-                return rank_candidates(_candidate_examples(source, graph, queries), profile, learned, source, graph, queries)
+                return candidate_cache.get(graph_version, lambda: rank_candidates(
+                    _candidate_examples(source, graph, queries), profile, learned, source, graph, queries))
 
             report["experience"]["candidate_priorities"] = [
                 {k: copy.deepcopy(v) for k, v in item.items() if k not in {"arguments", "note", "query_id"}}
@@ -495,7 +532,7 @@ class TabularConstructionSubAgent:
             attempted = set()
 
             def evaluate_candidate(name, args):
-                nonlocal graph, evaluation
+                nonlocal graph, evaluation, graph_version
                 budget()
                 if _json(queries) != frozen:
                     fail("frozen_workload_changed")
@@ -534,6 +571,7 @@ class TabularConstructionSubAgent:
                         faster = new_cost < old_cost * (1.0 - config.min_speedup)
                         if improved_accuracy or (result["correct"] == result["total"] == evaluation["correct"] and faster):
                             graph, evaluation = candidate, result
+                            graph_version += 1
                             event.update(accepted=True, reason="correctness_improved" if improved_accuracy else "query_cost_improved")
                         else:
                             event["reason"] = "query_regression" if result["correct"] < evaluation["correct"] else "no_measured_improvement"
@@ -664,11 +702,19 @@ class TabularConstructionSubAgent:
             return ConstructionResult(validate_graph(graph), copy.deepcopy(report))
         except ConstructionFailed:
             raise
+        except ConstructionBudgetExceeded:
+            fail("construction_time_budget_exhausted")
         except Exception as exc:
             # Internal sidecar has bounded diagnostic text; external build API
             # continues to return ConstructionStore's sanitized failure state.
+            try:
+                check_deadline()
+            except ConstructionBudgetExceeded:
+                fail("construction_time_budget_exhausted")
             report.update(error_type=type(exc).__name__, error=str(exc)[:2000])
             fail("construction_failed")
         finally:
+            if budget_token is not None:
+                reset_deadline(budget_token)
             if source is not None:
                 source.close()

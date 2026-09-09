@@ -19,6 +19,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from .budget import checked, check_deadline, current_deadline
 
 
 class SourceError(ValueError):
@@ -153,7 +154,7 @@ def _validate_source(source: RelationalSource, max_rows: int, *, csv_mode: bool 
             if key not in table.columns:
                 raise SourceError(f"Unknown primary key column {table.name}.{key}.")
         keys = set()
-        for row in table.rows:
+        for row in checked(table.rows):
             if not isinstance(row, dict) or set(row) != set(table.columns):
                 raise SourceError(f"Rows in {table.name!r} must have exactly its declared columns.")
             if not all(_valid_json_cell(value) for value in row.values()):
@@ -188,7 +189,7 @@ def _infer_primary_key(table: Table) -> list[str]:
             continue
         if any(column not in row for row in table.rows):
             return []  # Full row-shape validation below reports the missing cell.
-        values = [row[column] for row in table.rows]
+        values = [row[column] for row in checked(table.rows)]
         if not all(_valid_json_cell(value) for value in values):
             return []
         if all(value is not None and value != "" for value in values) and len({_encode(v) for v in values}) == len(values):
@@ -211,7 +212,7 @@ def _load_csv(data: bytes, path: Path, options: dict, max_rows: int) -> Relation
             raise SourceError("CSV is empty and has no header.")
         _names(columns, "CSV headers")
         rows = []
-        for line, cells in enumerate(reader, 2):
+        for line, cells in enumerate(checked(reader), 2):
             if len(cells) != len(columns):
                 raise SourceError(f"CSV row {line} has {len(cells)} cells; expected {len(columns)}.")
             rows.append(dict(zip(columns, cells)))
@@ -262,7 +263,7 @@ def _quote(identifier: str) -> str:
 def _statements(script: str):
     """Use SQLite's statement completeness parser, including quoted semicolons."""
     start = 0
-    for index, char in enumerate(script):
+    for index, char in enumerate(checked(script)):
         if char == ";" and sqlite3.complete_statement(script[start:index + 1]):
             yield script[start:index + 1]
             start = index + 1
@@ -283,7 +284,7 @@ def _sql_keywords(statement: str) -> set[str]:
     # Multirow VALUES emits SQLITE_SELECT internally, so that authorizer opcode
     # cannot distinguish ordinary dump inserts from a user-supplied SELECT.
     tokens = re.finditer(r"'(?:(?:'')|[^'])*'|\"(?:(?:\"\")|[^\"])*\"|`(?:(?:``)|[^`])*`|\[[^\]]*\]|--[^\n]*(?:\n|$)|/\*[\s\S]*?\*/|([A-Za-z_][A-Za-z_0-9]*)", statement)
-    return {match.group(1).upper() for match in tokens if match.group(1)}
+    return {match.group(1).upper() for match in checked(tokens) if match.group(1)}
 
 
 def _import_sql(connection: sqlite3.Connection, data: bytes, deadline: float) -> None:
@@ -443,6 +444,8 @@ def _load_sql(data: bytes, options: dict, max_rows: int) -> RelationalSource:
     source = RelationalSource({}, options.get("domain", ""), _connection=connection)
     timeout = _limit(options, "source_timeout_seconds", 10, 60)
     deadline = time.monotonic() + timeout
+    if current_deadline() is not None:
+        deadline = min(deadline, current_deadline())
     connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
     try:
         connection.enable_load_extension(False)
@@ -479,7 +482,7 @@ def _load_sql(data: bytes, options: dict, max_rows: int) -> RelationalSource:
                 raise SourceError(f"The source exceeds the {max_rows}-row limit.")
             remaining -= len(rows)
             primary_key = [row[1] for row in sorted(info, key=lambda row: row[5]) if row[5]]
-            source.tables[name] = Table(name, columns, [dict(zip(columns, row)) for row in rows], primary_key,
+            source.tables[name] = Table(name, columns, [dict(zip(columns, row)) for row in checked(rows)], primary_key,
                                         column_types={row[1]: row[2] for row in info},
                                         column_collations=_column_collations(create_sql[name], columns),
                                         create_sql=create_sql[name])
@@ -504,9 +507,11 @@ def _load_sql(data: bytes, options: dict, max_rows: int) -> RelationalSource:
         return source
     except sqlite3.Error as exc:
         source.close()
+        check_deadline()
         raise SourceError(f"SQLite source cannot be imported completely: {exc}") from exc
     except BaseException:
         source.close()
+        check_deadline()
         raise
 
 
@@ -516,6 +521,7 @@ def load_source(path: Path, options: dict | None = None) -> RelationalSource:
     Resource controls: max_source_bytes (default 32 MiB, cap 64 MiB),
     max_source_rows (default/cap 200000), source_timeout_seconds (10, cap 60).
     """
+    check_deadline()
     path = Path(path)
     options = {} if options is None else options
     if not isinstance(options, dict):
@@ -553,7 +559,7 @@ def foreign_key_pairs(source: RelationalSource, table: Table, fk: ForeignKey) ->
         return source._fk_pairs[relation].copy()
     parent = source.tables[fk.ref_table]
     parent_index = {}
-    for index, row in enumerate(parent.rows):
+    for index, row in enumerate(checked(parent.rows)):
         values = [row[column] for column in fk.ref_columns]
         if any(value is None for value in values):
             continue
@@ -562,7 +568,7 @@ def foreign_key_pairs(source: RelationalSource, table: Table, fk: ForeignKey) ->
             raise SourceError(f"Foreign key target {parent.name!r} is not unique.")
         parent_index[key] = index
     pairs = []
-    for index, row in enumerate(table.rows):
+    for index, row in enumerate(checked(table.rows)):
         values = [row[column] for column in fk.columns]
         if any(value is None or value == "" for value in values):
             continue
@@ -587,7 +593,7 @@ def source_integrity_errors(source: RelationalSource, graph: dict, limit: int = 
     except (ValueError, KeyError, TypeError) as exc:
         return [f"Invalid current row representation: {exc}"]
     errors, found, endpoints, schemas = [], {}, {}, {}
-    for item in current_rows:
+    for item in checked(current_rows):
         properties = item["properties"]
         if "table" not in properties or "data" not in properties:
             continue
@@ -613,7 +619,7 @@ def source_integrity_errors(source: RelationalSource, graph: dict, limit: int = 
             errors.append(f"Source column semantics lost: {table.name}.")
             if len(errors) >= limit:
                 return errors
-        for index, expected in enumerate(table.rows):
+        for index, expected in enumerate(checked(table.rows)):
             if (table.name, index) not in found or _encode(found[table.name, index]) != _encode(expected):
                 errors.append(f"Source values changed or lost: {table.name}[{index}].")
                 if len(errors) >= limit:
@@ -626,13 +632,13 @@ def source_integrity_errors(source: RelationalSource, graph: dict, limit: int = 
                              for child, parent in foreign_key_pairs(source, table, fk)}
             actual[key] = set()
     relationships = []
-    for edge in graph["edges"]:
+    for edge in checked(graph["edges"]):
         if edge["properties"].get("foreign_key") is not None:
             relationships.append((edge["properties"]["foreign_key"], edge["source"], edge["target"]))
-    for row in current_rows:
+    for row in checked(current_rows):
         for endpoint in row["properties"].get("row_endpoints", []):
             relationships.append((endpoint["foreign_key"], row["id"], endpoint["node_id"]))
-    for fk, child_id, parent_id in relationships:
+    for fk, child_id, parent_id in checked(relationships):
         key = _encode(fk)
         start, end = endpoints.get(child_id), endpoints.get(parent_id)
         if key not in declared or start is None or end is None:
@@ -661,8 +667,8 @@ def initial_graph(source: RelationalSource) -> dict:
     graph = {"directed": True, "nodes": [], "edges": []}
     identities = {}
     for table in source.tables.values():
-        identities[table.name] = [row_id(table, row, index) for index, row in enumerate(table.rows)]
-        for index, row in enumerate(table.rows):
+        identities[table.name] = [row_id(table, row, index) for index, row in enumerate(checked(table.rows))]
+        for index, row in enumerate(checked(table.rows)):
             properties = {"table": table.name, "row_index": index, "data": copy.deepcopy(row)}
             if index == 0:
                 properties["relational_schema"] = {"column_types": table.column_types.copy(),
@@ -682,7 +688,7 @@ def initial_graph(source: RelationalSource) -> dict:
                 warning = f"{dangling} dangling foreign key(s) in {table.name!r} {fk.columns!r} -> {parent.name!r}; source rows are retained."
                 if warning not in source.warnings:
                     source.warnings.append(warning)
-            for child_index, parent_index in pairs:
+            for child_index, parent_index in checked(pairs):
                 start = identities[table.name][child_index]
                 end = identities[parent.name][parent_index]
                 graph["edges"].append({"id": _hash("edge_", relation, start, end),

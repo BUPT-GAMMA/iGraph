@@ -85,8 +85,11 @@ time.sleep(120)
             # the owner. Other tests cover the pre-registration/EOF boundary.
             await asyncio.sleep(.12)
             atomic_json(root / 'ready.json', {**value, 'job_id': jid, 'owner': host.instance_id})
+        loop = asyncio.get_running_loop()
         def progress(value):
-            asyncio.create_task(ready(value))
+            # WorkerProcess journals progress in a synchronous worker thread.
+            # Schedule the async fixture callback on its owning event loop.
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(ready(value)))
         asyncio.create_task(worker.run({}, progress, command=command, lease_root=host.worker_root, job_id=jid))
     await asyncio.Event().wait()
 

@@ -78,6 +78,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
   const postPending = useRef(false);
   const buildAttempt = useRef(0);
   const buildResolved = useRef(false);
+  const currentBuildId = useRef<string | null>(null);
   const notifiedRevision = useRef<number | null>(null);
   const callbacks = useRef({ dataset, onSaved });
   callbacks.current = { dataset, onSaved };
@@ -105,6 +106,14 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
       if (signal?.aborted || !alive.current || version !== lifecycle.current || attempt !== buildAttempt.current) return null;
       // A later status response must not replace a completed graph or its edits.
       if (quiet && publish && buildResolved.current) return nextState;
+      if (quiet && publish) {
+        if (currentBuildId.current && nextState.build_id && currentBuildId.current !== nextState.build_id) return null;
+        // Until the POST or a building snapshot identifies this attempt, an
+        // earlier failure cannot resolve it or discard its eventual success.
+        if (postPending.current && nextState.status !== 'building' && nextState.status !== 'ready' &&
+            (!currentBuildId.current || nextState.build_id !== currentBuildId.current)) return null;
+        if (nextState.status === 'building' && nextState.build_id) currentBuildId.current = nextState.build_id;
+      }
       setState(snapshot ? { ...nextState, revision: snapshot.revision } : nextState);
       const waiting = nextState.status === 'building' || nextState.status === 'not_built' && postPending.current;
       setMonitoringBuild(waiting);
@@ -142,6 +151,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
     alive.current = true;
     lifecycle.current += 1;
     postPending.current = false; buildResolved.current = false; notifiedRevision.current = null;
+    currentBuildId.current = null;
     buildAttempt.current += 1;
     setState(null); setSavedGraph(null); setMonitoringBuild(false); setNotice(''); setQueryCount('15'); setDomain('');
     setDomainCategory('auto'); setExperienceEnabled(true);
@@ -184,6 +194,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
     const version = lifecycle.current;
     const attempt = ++buildAttempt.current;
     postPending.current = true; buildResolved.current = false; notifiedRevision.current = null;
+    currentBuildId.current = null;
     setMonitoringBuild(true);
     setBusy('build'); setError(''); setNotice('');
     try {
@@ -193,6 +204,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
       });
       if (!alive.current || version !== lifecycle.current || attempt !== buildAttempt.current || buildResolved.current) return;
       postPending.current = false;
+      currentBuildId.current = result.build_id || null;
       if (result.status === 'ready') {
         const snapshot = await getConstructionGraph(dataset);
         if (!alive.current || version !== lifecycle.current || attempt !== buildAttempt.current || buildResolved.current) return;
@@ -211,7 +223,11 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
     } catch (cause) {
       if (!alive.current || version !== lifecycle.current || attempt !== buildAttempt.current || buildResolved.current) return;
       postPending.current = false;
-      if (cause instanceof ApiError && (cause.status === 501 || cause.code === 'algorithm_unavailable')) {
+      if (cause instanceof ApiError && ['construction_capacity_exhausted', 'construction_build_conflict', 'construction_busy'].includes(cause.code || '')) {
+        buildResolved.current = true;
+        setMonitoringBuild(false); setNotice('');
+        handleFailure(cause);
+      } else if (cause instanceof ApiError && (cause.status === 501 || cause.code === 'algorithm_unavailable')) {
         setMonitoringBuild(false);
         handleFailure(cause);
         setState(previous => previous ? { ...previous, status: 'algorithm_unavailable', algorithm_available: false } : previous);

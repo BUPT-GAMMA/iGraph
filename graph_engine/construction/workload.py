@@ -20,6 +20,7 @@ from collections import defaultdict
 from typing import Any
 
 from graph_engine.construction.representation import resolve_rows
+from .budget import checked, check_deadline, deadline_scope, ConstructionBudgetExceeded
 
 _ALIAS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _OPS = {"eq", "ne", "lt", "le", "gt", "ge", "in", "contains", "is_null", "not_null"}
@@ -34,8 +35,7 @@ class QueryLimitError(ValueError):
 
 
 def _check_overall_deadline(deadline: float | None) -> None:
-    if deadline is not None and time.monotonic() >= deadline:
-        raise TimeoutError("Graph construction exceeded its overall deadline")
+    check_deadline(deadline)
 
 
 def _query_deadline(deadline: float | None) -> float:
@@ -449,7 +449,7 @@ def _matches(env: dict, item: dict, affinity: str = "BLOB", collation: str = "BI
 class GraphExecutor:
     """Index and execute the current graph only; does not accept a source object."""
 
-    def __init__(self, graph: dict):
+    def __init__(self, graph: dict, *, deadline=None):
         # Schema is read from the current graph's row metadata. No source
         # object, connection or oracle answers enter this executor.
         self.schema = {}
@@ -458,9 +458,14 @@ class GraphExecutor:
         self.shortcuts = {}
         self.materialized_hits = 0
         self.deadline = float("inf")
-        self.overall_deadline = None
-        current_rows = resolve_rows(graph)
-        for node in current_rows:
+        self.overall_deadline = deadline
+        _check_overall_deadline(deadline)
+        if deadline is None:
+            current_rows = resolve_rows(graph)
+        else:
+            with deadline_scope(deadline):
+                current_rows = resolve_rows(graph)
+        for node in checked(current_rows, deadline=deadline):
             props = node.get("properties", {})
             if isinstance(props.get("relational_schema"), dict) and isinstance(props.get("table"), str):
                 metadata = dict(props["relational_schema"], name=props["table"])
@@ -468,7 +473,7 @@ class GraphExecutor:
                 if existing is not None and existing != metadata:
                     raise ValueError(f"Conflicting graph schema metadata for table {props['table']!r}")
                 self.schema[props["table"]] = metadata
-        for node in current_rows:
+        for node in checked(current_rows, deadline=deadline):
             props = node.get("properties", {})
             if not isinstance(props.get("data"), dict) or not isinstance(props.get("table"), str):
                 continue
@@ -480,7 +485,7 @@ class GraphExecutor:
             self.tables[props["table"]].append(node)
         materialized = []
         relationships = []
-        for edge in graph.get("edges", []):
+        for edge in checked(graph.get("edges", []), deadline=deadline):
             props = edge.get("properties", {})
             if "materialized_join" in props:
                 materialized.append(edge)
@@ -489,14 +494,14 @@ class GraphExecutor:
             if not isinstance(f, dict):
                 continue
             relationships.append((edge["source"], edge["target"], f))
-        for row in current_rows:
+        for row in checked(current_rows, deadline=deadline):
             if "source" not in row or "target" not in row:
                 continue
             # A current bridge edge is itself the row entity. Its actual
             # endpoints express its FK roles; no historical node is recreated.
             for endpoint in row["properties"].get("row_endpoints", []):
                 relationships.append((row["id"], endpoint["node_id"], endpoint["foreign_key"]))
-        for source_id, target_id, f in relationships:
+        for source_id, target_id, f in checked(relationships, deadline=deadline):
             try:
                 key = _fk_key(f)
                 left, right = self.nodes.get(source_id), self.nodes.get(target_id)
@@ -531,7 +536,7 @@ class GraphExecutor:
             except (KeyError, TypeError, ValueError):
                 continue
         candidates = defaultdict(lambda: defaultdict(set))
-        for edge in materialized:
+        for edge in checked(materialized, deadline=deadline):
             m = edge["properties"]["materialized_join"]
             try:
                 path, ids = m["path"], m["node_ids"]
@@ -551,6 +556,7 @@ class GraphExecutor:
             memo = {}
 
             def path_count(node_id: Any, depth: int) -> int:
+                _check_overall_deadline(deadline)
                 if depth == len(key):
                     return 1
                 token = (node_id, depth)
@@ -757,7 +763,9 @@ def evaluate_workload(source: Any, graph: dict, queries: list[dict], repeats: in
     started = time.perf_counter()
     executor_error = None
     try:
-        executor = GraphExecutor(graph)
+        executor = GraphExecutor(graph, deadline=deadline)
+    except ConstructionBudgetExceeded:
+        raise
     except Exception as exc:
         executor, executor_error = None, f"{type(exc).__name__}: {exc}"
     preparation_ms = (time.perf_counter() - started) * 1000

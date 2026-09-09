@@ -148,6 +148,42 @@ def test_parallel_relationships_retain_their_properties_in_networkx():
     assert network.edges["alice", "bob", 1]["properties"]["key"] == "business-key"
 
 
+def test_http_reads_and_duplicate_posts_finish_while_construction_is_blocked(construction_http):
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    client, _service, store, source, headers = construction_http
+    store.register_algorithm("csv", lambda *_: GRAPH)
+    store.build("alice", "ds-analysis", source, "people.csv")
+    started, release = threading.Event(), threading.Event()
+    def slow(*_args):
+        started.set()
+        assert release.wait(10)
+        return GRAPH
+    store.register_algorithm("csv", slow)
+    async def small_pool():
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
+    client.portal.call(small_pool)
+    def build():
+        return client.post("/construction/ds-people/build", headers=headers,
+                           json={"source_path": str(source), "source_filename": "people.csv"})
+    with ThreadPoolExecutor(max_workers=8) as requests:
+        first = requests.submit(build)
+        try:
+            assert started.wait(2)
+            duplicates = [requests.submit(build) for _ in range(16)]
+            states = [item.result(timeout=1).json() for item in duplicates]
+            assert len({state["build_id"] for state in states}) == 1
+            assert all(state["status"] == "building" for state in states)
+            for path in ("/construction/ds-people", "/construction/ds-analysis/graph", "/datasets"):
+                response = requests.submit(client.get, path, headers=headers).result(timeout=1)
+                assert response.status_code == 200, response.text
+            assert not first.done()
+        finally:
+            release.set()
+        assert first.result(timeout=2).json()["revision"] == 1
+
+
 @pytest.mark.parametrize("directed", [True, False])
 @pytest.mark.parametrize("endpoint, arguments", [
     ("graph/load_text", {"edge_text": "B C 1"}),

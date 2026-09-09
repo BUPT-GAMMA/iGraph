@@ -16,6 +16,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,6 +77,8 @@ def _json_keys(value):
 
 def validate_graph(graph: dict) -> dict:
     """Copy and validate a complete property graph; never coerce identifiers."""
+    from graph_engine.construction.budget import checked, check_deadline
+    check_deadline()
     if not isinstance(graph, dict) or set(graph) != {"directed", "nodes", "edges"}:
         _fail("Graph requires exactly directed, nodes and edges.", "invalid_graph")
     if not isinstance(graph["directed"], bool):
@@ -88,7 +91,7 @@ def validate_graph(graph: dict) -> dict:
     result = copy.deepcopy(graph)
     for target, identities, fields in (("nodes", node_ids, {"id", "type", "properties"}),
                                         ("edges", edge_ids, {"id", "type", "properties", "source", "target"})):
-        for row in result[target]:
+        for row in checked(result[target]):
             if not isinstance(row, dict) or set(row) != fields:
                 _fail(f"Each {target} entry requires exactly {', '.join(sorted(fields))}.", "invalid_graph")
             identity = _text(row["id"], "id")
@@ -310,11 +313,13 @@ class ConstructionStore:
     def __init__(self, root: Path | str | None = None):
         self.root = Path(root).resolve() if root else paths.data_root()
         self._algorithms: dict[str, Callable[[Path, dict], dict]] = {}
+        self._process_algorithms: set[str] = set()
 
     def register_algorithm(self, source_type: str, algorithm: Callable[[Path, dict], dict]):
         if source_type not in FORMATS or not callable(algorithm):
             raise ValueError("Register a callable for sql, csv or txt.")
         self._algorithms[source_type] = algorithm
+        self._process_algorithms.discard(source_type)
 
     def capabilities(self):
         return {"formats": [{"source_type": kind, "algorithm_available": kind in self._algorithms,
@@ -328,7 +333,7 @@ class ConstructionStore:
         return result
 
     @contextmanager
-    def _lock(self, user_id, dataset_id, *, blocking=True):
+    def _lock(self, user_id, dataset_id, *, blocking=True, lease_fds=None):
         directory = self._directory(user_id, dataset_id)
         key = str(directory)
         with _LOCKS_GUARD:
@@ -360,6 +365,8 @@ class ConstructionStore:
                         return
                     raise
                 try:
+                    if lease_fds is not None:
+                        lease_fds.append(handle.fileno())
                     yield directory
                 finally:
                     if os.name == "posix":
@@ -369,6 +376,20 @@ class ConstructionStore:
                         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         finally:
             lock.release()
+
+    @contextmanager
+    def _write_lock(self, user_id, dataset_id, *, recovering=False):
+        while True:
+            with self._lock(user_id, dataset_id, blocking=False) as directory:
+                record = self._read(directory or self._directory(user_id, dataset_id), dataset_id)
+                if record["status"] == "building" and (directory is None or not recovering and record.get("executor_instance")):
+                    _fail("构图任务仍在运行或确认退出，请稍后重试。", "construction_busy", 409, retryable=True)
+                if directory is not None:
+                    yield directory
+                    return
+            # Keep ordinary optimistic edits serialized (one winner, then a
+            # revision conflict), but never wait behind a construction worker.
+            time.sleep(.005)
 
     def _read(self, directory, dataset_id):
         path = directory / "record.json"
@@ -391,6 +412,7 @@ class ConstructionStore:
             "algorithm_available": record.get("source_type") in self._algorithms,
             "message": record.get("message", ""), "updated_at": record.get("updated_at"),
             "last_build_status": record.get("last_build_status"),
+            "build_id": record.get("build_id"), "failure_code": record.get("failure_code"),
         }.items()}
 
     def status(self, user_id: str, dataset_id: str):
@@ -399,7 +421,7 @@ class ConstructionStore:
         # is also a main-agent operation and must remain responsive.
         directory = self._directory(user_id, dataset_id)
         record = self._read(directory, dataset_id)
-        if record["status"] == "building":
+        if record["status"] == "building" and not record.get("executor_instance"):
             # Every live builder holds this complete thread + process lock. Only
             # acquiring it, never elapsed time or a PID guess, proves the prior
             # worker is gone. A contended lock leaves the snapshot read immediate.
@@ -459,18 +481,46 @@ class ConstructionStore:
         return record
 
     def register_source(self, user_id, dataset_id, source_path, source_filename):
-        with self._lock(user_id, dataset_id) as directory:
+        with self._write_lock(user_id, dataset_id) as directory:
             record = self._register(directory, self._read(directory, dataset_id), source_path, source_filename)
             return self._status(record)
 
-    def build(self, user_id, dataset_id, source_path=None, source_filename=None, options=None):
+    def reuse_ready(self, user_id, dataset_id, source_path=None, source_filename=None):
+        """Fast reuse cannot claim compute capacity or change a running source."""
+        if self._read(self._directory(user_id, dataset_id), dataset_id).get("graph") is None:
+            return None
+        with self._write_lock(user_id, dataset_id) as directory:
+            record = self._read(directory, dataset_id)
+            if record.get("graph") is None:
+                return None
+            if source_path is not None:
+                record = self._register(directory, record, source_path, source_filename)
+            return {"success": True, **self._status(record), "reused": True}
+
+    def finish_interrupted(self, user_id, dataset_id, build_id):
+        """Only the coordinator calls this after proving the old worker exited."""
+        with self._write_lock(user_id, dataset_id, recovering=True) as directory:
+            record = self._read(directory, dataset_id)
+            if record.get("build_id") == build_id and record["status"] == "building":
+                record.update(status="ready" if record.get("graph") is not None else "failed",
+                              last_build_status="interrupted", failure_code="construction_interrupted",
+                              message="上次构图已中断；源文件和已有图数据已保留，可重新开始构图。",
+                              updated_at=datetime.now(timezone.utc).isoformat())
+                _atomic_json(directory / "record.json", record)
+
+    def build(self, user_id, dataset_id, source_path=None, source_filename=None, options=None, *, _execution=None):
         options = {} if options is None else options
         if not isinstance(options, dict):
             _fail("options must be a JSON object.")
         _json_keys(options)
         _json(options)
-        with self._lock(user_id, dataset_id) as directory:
+        lease_fds = []
+        with self._lock(user_id, dataset_id, blocking=_execution is None, lease_fds=lease_fds) as directory:
+            if directory is None:
+                _fail("数据集正在构图或写入，请稍后重试。", "construction_busy", 409, retryable=True)
             record = self._read(directory, dataset_id)
+            if _execution is not None and record["status"] == "building" and record.get("executor_instance"):
+                _fail("上次构图仍在确认退出状态，请稍后重试。", "construction_busy", 409, retryable=True)
             if source_path is not None:
                 record = self._register(directory, record, source_path, source_filename)
             if "retained_source" not in record:
@@ -486,13 +536,25 @@ class ConstructionStore:
                 _atomic_json(directory / "record.json", record)
                 return {"success": False, **self._status(record)}
             record.update(status="building", last_build_status="building",
+                          failure_code=None,
                           message="构图子代理正在生成并验证图，请稍后查询状态。",
                           updated_at=datetime.now(timezone.utc).isoformat())
+            if _execution is not None:
+                record.update(build_id=_execution.build_id, executor_instance=_execution.instance_id,
+                              request_fingerprint=_execution.fingerprint)
             _atomic_json(directory / "record.json", record)
             try:
-                graph = validate_graph(algorithm(directory / record["retained_source"], copy.deepcopy(options)))
-            except Exception:
-                record.update(status="failed", last_build_status="failed", message="构图失败；源文件已保留，请检查构图算法后重试。")
+                source = directory / record["retained_source"]
+                result = (algorithm(source, copy.deepcopy(options)) if _execution is None else
+                          _execution.invoke(algorithm, source, copy.deepcopy(options), lease_fds,
+                                            isolated=record["source_type"] in self._process_algorithms))
+                graph = validate_graph(result)
+            except Exception as exc:
+                code = getattr(exc, "code", "construction_failed")
+                record.update(status="failed", last_build_status="failed", failure_code=code,
+                              message="构图超过时间预算；源文件已保留，可调整预算后重试。" if code == "construction_time_budget_exhausted" else
+                                      "构图失败；源文件已保留，请检查构图算法后重试。",
+                              updated_at=datetime.now(timezone.utc).isoformat())
                 _atomic_json(directory / "record.json", record)
                 return {"success": False, **self._status(record)}
             record.update(graph=graph, revision=record["revision"] + 1, status="ready", last_build_status="ready",
@@ -510,7 +572,7 @@ class ConstructionStore:
     def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None):
         if type(base_revision) is not int or base_revision < 1:
             _fail("base_revision must be a positive integer.")
-        with self._lock(user_id, dataset_id) as directory:
+        with self._write_lock(user_id, dataset_id) as directory:
             record = self._read(directory, dataset_id)
             if record["revision"] != base_revision:
                 _fail("The dataset has changed. Reload it and preview your edits again.", "revision_conflict", 409,
@@ -528,7 +590,7 @@ class ConstructionStore:
             return result
 
     def delete(self, user_id, dataset_id):
-        with self._lock(user_id, dataset_id) as directory:
+        with self._write_lock(user_id, dataset_id) as directory:
             existed = directory.exists()
             if existed:
                 shutil.rmtree(directory)

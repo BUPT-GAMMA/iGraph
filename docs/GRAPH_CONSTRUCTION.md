@@ -4,7 +4,7 @@
 
 通用加载工具 `load_graph`、`load_graph_from_text`、`load_graph_from_triples` 和 `load_graph_from_upload` 的追加模式仅支持普通图合并。当前图或待合并图包含构图属性图时，返回 `success=false`、`code=UNSUPPORTED_PROPERTY_GRAPH_APPEND`，保留当前会话图、版本及构图数据集。检查覆盖工具执行、底层合并与上传解析，属性图关系编号、类型、属性和平行边不会进入有损转换。空会话直接加载属性图文件仍受支持；普通图追加及显式覆盖保持既有行为。Agent 遇到该错误应说明限制，覆盖或清空图需用户明确要求。完整属性图追加需要另行定义关系身份和属性冲突规则。
 
-**目前 SQL、CSV、TXT 三种构图算法均未实现，也未注册生产算法。** 当前交付的是数据源保存、算法扩展接口、图结果持久化、可视化、六类优化，以及会话和 Agent 调用链路。未接入算法时，页面显示“构图算法待接入”；API 明确返回 `algorithm_unavailable`，不会用旧 CSV 边表解析、TXT 文本抽取或演示数据代替构图结果。
+Graph Engine 默认注册 SQL/CSV 构图子代理，生成保留源数据的属性图，并以独立 SQL 查询结果验收候选转换。默认 `llm` 模式需要模型配置，`rules` 是显式离线模式。TXT 尚无内置算法，继续返回 `algorithm_unavailable`。自定义 `Path/options -> graph` 算法注册接口保留。
 
 ## 1. 数据源与已有数据的兼容
 
@@ -34,10 +34,25 @@
 | --- | --- | --- |
 | `not_built` | 新文件为 `source_ready` | 尚无保存的构图结果，`revision=0` |
 | `algorithm_unavailable` | `source_ready` | 源文件已保留，对应算法尚未注册 |
+| `building` | `source_ready` | 服务已接收任务，正在构图或确认工作进程退出 |
 | `failed` | `source_ready` | 算法执行或输出校验失败；原文件保留，失败信息放在构图状态中 |
 | `ready` | `ready` | 已保存可复用图，`revision>=1`，`dataset_kind=single_graph` |
 
 Graph Engine 是构图状态和图数据的权威来源；BFF 的 `metadata.construction` 是数据集目录中的同步信息。查询或使用数据集时会核对 Engine 状态，防止目录信息落后于实际版本。
+
+### 构图并发、预算与恢复
+
+`GRAPH_CONSTRUCTION_CONCURRENCY` 是每个 Graph Engine 服务进程的构图并发上限，默认 `1`，必须为正整数；每个用户最多同时运行一个构图任务。当前标准入口使用单个服务进程。该值不代表跨主机或多实例的共享容量，扩容前需按实例总数评估 CPU 和内存。
+
+准入在提交工作线程之前完成。已完成的数据集通过来源一致性检查后复用结果，不占计算名额；相同用户、数据集、来源和参数的活动请求返回同一个 `build_id` 的 `building` 状态。不同参数的重复请求返回 `409 construction_build_conflict`；新任务满载返回 `429 construction_capacity_exhausted`，不会改变数据集状态、进入队列或自动重试。构图期间的源替换、编辑和删除返回可重试的 `409 construction_busy`。普通编辑之间仍按修订号串行提交。
+
+构图事务使用专用线程；内置 SQL/CSV 算法使用固定入口的独立子进程。候选生成按表和节点关联边建立索引，扫描成本为 `O(V+E)`；同一任务的已接受图版本复用候选，接受转换后才失效。自环计一次，平行边及遍历顺序保留。
+
+`max_seconds`（默认 `900`，范围 `1..3600`）限制算法执行，子进程启动、源解析、建图、候选生成、模型调用和完整性验证共用截止时间。批量扫描每 1,024 项检查预算；局部 SQL 和模型超时不能延长整体预算。监督器在超时后请求退出，必要时终止进程组，并等待退出确认；最多 5 秒的正常回收宽限及最终持久化属于收尾阶段，期间仍占用名额。无法确认退出时保留占用并记录 `construction_exit_unconfirmed`，不能仅凭等待超时放行新任务。
+
+关闭浏览器或 BFF 等待超时不会取消已接收任务。服务关闭会停止准入并回收工作进程；异常重启通过服务租约、工作进程租约和进程创建时间恢复。只有确认旧执行者退出后才标记中断、清理该次临时结果并允许重试；已原子提交的 `ready` 结果保留。
+
+状态 API 增加可选 `build_id`、`failure_code`；旧记录仍可读取。预算耗尽的失败原因是 `construction_time_budget_exhausted`，中断为 `construction_interrupted`。图只在工作进程退出、结果身份与校验通过后原子提交；失败不增加修订号。日志记录任务去重、容量拒绝、超时、总耗时及退出确认，私有 `evolution-report.json` 保存 `phase_seconds` 阶段耗时。自定义进程内算法保留调用协议和执行资源隔离，其自行启动的外部任务不属于内置算法的进程监督范围。
 
 ## 2. 前端入口与编辑流程
 
@@ -233,9 +248,16 @@ Engine 构图存储布局：
 ```text
 IGRAPH_DATA_ROOT/
   .construction_locks/<owner-and-dataset-hash>.lock
+  .construction_runtime/
+    services/<instance-id>.lock
+    workers/<build-id>.lock
+    workers/<build-id>.identity.json
+    attempts/<build-id>.json
   users/<user_id>/datasets/<dataset_id>/construction/
     record.json
     source-<sha256>.csv
+    evolution-report.json
+    .builds/<build-id>/  # 本次私有请求与图文件；收尾后清理
   users/<user_id>/graph_sessions/<session_id>/
     graph_versions.json
     dataset_binding.json
@@ -338,6 +360,9 @@ Runtime 等待后台作业期间，将进度作为原生 Agno `CustomEvent` 发�
 
 ```bash
 python -m pytest \
+  tests/test_construction_coordinator.py \
+  tests/servers/test_construction_budget.py \
+  tests/test_worker_process.py \
   tests/servers/test_graph_construction.py \
   tests/servers/test_graph_construction_http.py \
   tests/servers/test_property_graph_analysis.py \

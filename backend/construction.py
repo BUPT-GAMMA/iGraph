@@ -58,7 +58,7 @@ def _sync_record_locked(directory, dataset, state):
         return latest
     construction = {key: state[key] for key in (
         "status", "revision", "node_count", "edge_count", "source_type",
-        "source_filename", "algorithm_available", "message", "directed"
+        "source_filename", "algorithm_available", "message", "directed", "build_id", "failure_code"
     ) if key in state}
     ready = state["status"] == "ready"
     metadata = {**latest.metadata, "construction": construction,

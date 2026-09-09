@@ -11,4 +11,5 @@ def register_builtin_algorithms(store):
     # The callable creates all mutable state per invocation, including its LLM.
     for kind in ("csv", "sql"):
         store.register_algorithm(kind, TabularConstructionSubAgent(data_root=store.root))
+        store._process_algorithms.add(kind)
     return store
