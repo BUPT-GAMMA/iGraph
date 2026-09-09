@@ -4,6 +4,8 @@ iGraph 采用四个一级业务模块：Frontend、Backend、Agent Runtime 和 G
 Agent Runtime 使用开源 Agno AgentOS；Session、Run、Memory、Learning、Skills、Approval
 和 Trace 不再由 Backend 的进程内对象维护。
 
+表格数据的 PK/FK 构图、独立 LLM 子代理、跨任务领域策略记忆与查询验收使用方法见[表格构图子代理文档](docs/TABULAR_CONSTRUCTION_SUBAGENT.md)。
+
 ## 架构
 
 ```text

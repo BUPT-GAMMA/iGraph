@@ -1,8 +1,11 @@
 """Public, dataset-authorized adapter to Graph Engine construction storage."""
 from __future__ import annotations
 
+import math
+import os
 from typing import Any
 
+import httpx
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -19,6 +22,24 @@ class BuildRequest(BaseModel):
 class EditRequest(BaseModel):
     base_revision: int = Field(ge=1)
     operations: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+
+
+def construction_request_timeout(options: dict[str, Any]) -> float:
+    """Allow a bounded construction run to finish without extending ordinary RPCs."""
+    if "max_seconds" in options:
+        duration = options["max_seconds"]
+        if type(duration) not in (int, float) or not 1 <= duration <= 3600 or not math.isfinite(duration):
+            raise HTTPException(422, {"code": "invalid_construction_options",
+                                      "message": "max_seconds 必须是 1 到 3600 之间的有限数值。"})
+    else:
+        try:
+            duration = float(os.getenv("GRAPH_CONSTRUCTION_MAX_SECONDS", "900"))
+            if not math.isfinite(duration) or not 1 <= duration <= 3600:
+                raise ValueError("out of bounds")
+        except ValueError:
+            raise HTTPException(500, {"code": "construction_configuration_invalid",
+                                      "message": "服务器的构图时间预算配置无效。"}) from None
+    return min(float(duration) + 30.0, 3630.0)
 
 
 def sync_record(directory, dataset, state):
@@ -89,9 +110,17 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
     async def build(dataset_id: str, req: BuildRequest, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
         # Browser input never chooses a server-side path or another owner.
-        result = await graph.request("POST", f"/construction/{dataset_id}/build",
-            headers=headers(request, user.user_id, project_id), json_body={"source_path": dataset.storage_path,
-                "source_filename": dataset.original_filename, "options": req.options})
+        try:
+            result = await graph.request("POST", f"/construction/{dataset_id}/build",
+                headers=headers(request, user.user_id, project_id), json_body={"source_path": dataset.storage_path,
+                    "source_filename": dataset.original_filename, "options": req.options},
+                timeout=construction_request_timeout(req.options))
+        except httpx.TimeoutException:
+            # Disconnecting this HTTP request does not cancel the engine-owned
+            # build. Never write a failed dataset projection for an unknown result.
+            raise HTTPException(504, {"code": "construction_running_unconfirmed",
+                "message": "等待构图响应超时，服务端任务可能仍在运行。请重新查询构图状态后再决定是否重试。",
+                "dataset_id": dataset_id, "retryable": True}) from None
         sync_record(directory, dataset, result)
         return result
 

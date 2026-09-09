@@ -1,6 +1,6 @@
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
-import type { ActiveRun, AttachmentRef, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionState, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionState, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
@@ -206,9 +206,9 @@ function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
 export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionState>(constructionUrl(dataset), { signal });
 }
-export function buildDatasetGraph(dataset: Dataset) {
+export function buildDatasetGraph(dataset: Dataset, options: ConstructionBuildOptions = {}) {
   return json<ConstructionState>(`${constructionUrl(dataset)}/build`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ options }),
   });
 }
 export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {

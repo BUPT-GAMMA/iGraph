@@ -1,13 +1,14 @@
 """Durable property graphs and explicit, transactional graph optimizations.
 
-SQL, CSV and TXT intentionally have no built-in construction algorithm. Integrators
-register a callable with ``register_algorithm(format, builder)``. The callable
+This store remains algorithm-agnostic. Graph Engine installs private SQL/CSV
+construction workers through ``register_algorithm(format, builder)``. The callable
 receives the retained source Path and JSON options and returns the graph document
 specified below. Its output passes the same validation as every optimization.
 """
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -327,27 +328,37 @@ class ConstructionStore:
         return result
 
     @contextmanager
-    def _lock(self, user_id, dataset_id):
+    def _lock(self, user_id, dataset_id, *, blocking=True):
         directory = self._directory(user_id, dataset_id)
         key = str(directory)
         with _LOCKS_GUARD:
             lock = _LOCKS.setdefault(key, threading.RLock())
-        with lock:
+        if not lock.acquire(blocking=blocking):
+            yield None
+            return
+        try:
             lock_dir = self.root / ".construction_locks"
             lock_dir.mkdir(parents=True, exist_ok=True)
             lock_path = lock_dir / (hashlib.sha256(key.encode()).hexdigest() + ".lock")
             with lock_path.open("a+b") as handle:
-                if os.name == "posix":
-                    import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                else:
-                    import msvcrt
-                    handle.seek(0)
-                    if not handle.read(1):
-                        handle.write(b"0")
-                        handle.flush()
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    if os.name == "posix":
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                    else:
+                        import msvcrt
+                        # Reading byte zero can itself fail when another process
+                        # holds the Windows byte-range lock. fstat does not read it.
+                        if os.fstat(handle.fileno()).st_size == 0:
+                            handle.write(b"0")
+                            handle.flush()
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+                except OSError as exc:
+                    if not blocking and exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        yield None
+                        return
+                    raise
                 try:
                     yield directory
                 finally:
@@ -356,12 +367,16 @@ class ConstructionStore:
                     else:
                         handle.seek(0)
                         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            lock.release()
 
     def _read(self, directory, dataset_id):
         path = directory / "record.json"
-        if not path.exists():
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
             return {"dataset_id": dataset_id, "status": "not_built", "revision": 0}
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(contents)
         if record.get("dataset_id") != dataset_id:
             _fail("Dataset construction ownership mismatch.", "invalid_identity", 403)
         return record
@@ -379,8 +394,25 @@ class ConstructionStore:
         }.items()}
 
     def status(self, user_id: str, dataset_id: str):
-        with self._lock(user_id, dataset_id) as directory:
-            return self._status(self._read(directory, dataset_id))
+        # Writers publish complete JSON snapshots with os.replace. Readers must
+        # not wait on a minutes-long private construction worker: listing datasets
+        # is also a main-agent operation and must remain responsive.
+        directory = self._directory(user_id, dataset_id)
+        record = self._read(directory, dataset_id)
+        if record["status"] == "building":
+            # Every live builder holds this complete thread + process lock. Only
+            # acquiring it, never elapsed time or a PID guess, proves the prior
+            # worker is gone. A contended lock leaves the snapshot read immediate.
+            with self._lock(user_id, dataset_id, blocking=False) as claimed:
+                if claimed is not None:
+                    record = self._read(claimed, dataset_id)
+                    if record["status"] == "building":
+                        previous_graph = record.get("graph") is not None
+                        record.update(status="ready" if previous_graph else "failed", last_build_status="interrupted",
+                                      message="上次构图已中断；已有图数据仍可使用。" if previous_graph else "上次构图已中断；源文件已保留，可重新开始构图。",
+                                      updated_at=datetime.now(timezone.utc).isoformat())
+                        _atomic_json(claimed / "record.json", record)
+        return self._status(record)
 
     def list_ready(self, user_id: str):
         directory = self.root / "users" / _identity(user_id) / "datasets"
@@ -453,6 +485,10 @@ class ConstructionStore:
                               message="构图算法尚未接入。源文件已保留，接入算法后可再次构图。")
                 _atomic_json(directory / "record.json", record)
                 return {"success": False, **self._status(record)}
+            record.update(status="building", last_build_status="building",
+                          message="构图子代理正在生成并验证图，请稍后查询状态。",
+                          updated_at=datetime.now(timezone.utc).isoformat())
+            _atomic_json(directory / "record.json", record)
             try:
                 graph = validate_graph(algorithm(directory / record["retained_source"], copy.deepcopy(options)))
             except Exception:
@@ -465,11 +501,11 @@ class ConstructionStore:
             return {"success": True, **self._status(record)}
 
     def graph(self, user_id, dataset_id):
-        with self._lock(user_id, dataset_id) as directory:
-            record = self._read(directory, dataset_id)
-            if record.get("graph") is None:
-                _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
-            return {"dataset_id": dataset_id, "revision": record["revision"], "graph": copy.deepcopy(record["graph"])}
+        directory = self._directory(user_id, dataset_id)
+        record = self._read(directory, dataset_id)
+        if record.get("graph") is None:
+            _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
+        return {"dataset_id": dataset_id, "revision": record["revision"], "graph": copy.deepcopy(record["graph"])}
 
     def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None):
         if type(base_revision) is not int or base_revision < 1:

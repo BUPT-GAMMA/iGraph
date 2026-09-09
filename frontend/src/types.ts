@@ -164,7 +164,7 @@ export type Dataset = {
 
 export type ConstructionState = {
   dataset_id: string;
-  status: 'not_built' | 'algorithm_unavailable' | 'ready' | 'failed';
+  status: 'not_built' | 'algorithm_unavailable' | 'building' | 'ready' | 'failed';
   revision: number;
   node_count?: number;
   edge_count?: number;
@@ -173,6 +173,13 @@ export type ConstructionState = {
   source_type?: string;
   algorithm_available?: boolean;
   message?: string;
+};
+export type ConstructionDomainCategory = 'auto' | 'finance' | 'academic' | 'commerce' | 'healthcare' | 'social' | 'general';
+export type ConstructionBuildOptions = {
+  query_count?: number;
+  domain?: string;
+  domain_category?: ConstructionDomainCategory;
+  experience_enabled?: boolean;
 };
 export type ConstructionOperation =
   | { op: 'collapse_node'; node_id: string; edge_type: string }

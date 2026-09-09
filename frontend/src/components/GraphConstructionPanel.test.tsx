@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api';
 import type { ConstructionOperation, Dataset } from '../types';
@@ -132,5 +132,186 @@ describe('graph construction workflow', () => {
     await screen.findByText('已保存 · 版本 7');
     expect(screen.queryByText('1 项修改待保存')).toBeNull();
     expect(mocks.commit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('long-running graph construction', () => {
+  const sourceDataset: Dataset = { ...dataset, status: 'source_ready' };
+  const notBuilt = { dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true };
+  const building = { ...notBuilt, status: 'building' };
+  const ready = { ...notBuilt, status: 'ready', revision: 3 };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.state.mockResolvedValue(notBuilt);
+    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 3, graph });
+  });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  async function show(onSaved = vi.fn(), onClose = vi.fn()) {
+    let view!: ReturnType<typeof render>;
+    await act(async () => { view = render(<GraphConstructionPanel dataset={sourceDataset} onClose={onClose} onSaved={onSaved} />); });
+    return view;
+  }
+  async function tick(milliseconds = 3000) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(milliseconds); });
+  }
+
+  it.each([15, 23])('sends the configured query count (%s) and domain with exactly one build request', async count => {
+    mocks.build.mockResolvedValue(ready);
+    const saved = vi.fn();
+    await show(saved);
+    expect((screen.getByLabelText('验证查询数量') as HTMLInputElement).value).toBe('15');
+    const category = screen.getByLabelText('领域类别') as HTMLSelectElement;
+    expect(category.value).toBe('auto');
+    expect(Array.from(category.options, option => [option.value, option.label])).toEqual([
+      ['auto', '自动识别'], ['finance', '金融'], ['academic', '学术'], ['commerce', '电商'],
+      ['healthcare', '医疗'], ['social', '社区'], ['general', '通用'],
+    ]);
+    expect((screen.getByLabelText('复用领域经验') as HTMLInputElement).checked).toBe(true);
+    if (count !== 15) fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: String(count) } });
+    fireEvent.change(screen.getByLabelText('领域描述（选填）'), { target: { value: '  电商订单履约  ' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+    expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
+      query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
+    });
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(saved).toHaveBeenCalledWith(sourceDataset, graph, 3);
+    await tick(9000);
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('submits the selected domain and explicit experience opt-out without losing the business description', async () => {
+    mocks.build.mockResolvedValue(ready);
+    await show();
+    fireEvent.change(screen.getByLabelText('领域类别'), { target: { value: 'finance' } });
+    fireEvent.change(screen.getByLabelText('领域描述（选填）'), { target: { value: '  贷款与担保关系  ' } });
+    fireEvent.click(screen.getByLabelText('复用领域经验'));
+    expect((screen.getByLabelText('复用领域经验') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText(/关闭后，本次构图不读取或写入经验/).textContent).toContain('新图仍需验收');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
+      query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
+    });
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets domain and experience controls when switching to another dataset', async () => {
+    const view = await show();
+    fireEvent.change(screen.getByLabelText('领域类别'), { target: { value: 'healthcare' } });
+    fireEvent.change(screen.getByLabelText('领域描述（选填）'), { target: { value: '门诊业务' } });
+    fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: '23' } });
+    fireEvent.click(screen.getByLabelText('复用领域经验'));
+    const nextDataset = { ...sourceDataset, dataset_id: 'd2', name: '另一份数据' };
+    mocks.state.mockResolvedValue({ ...notBuilt, dataset_id: 'd2' });
+    mocks.build.mockResolvedValue({ ...ready, dataset_id: 'd2' });
+    mocks.graph.mockResolvedValue({ dataset_id: 'd2', revision: 3, graph });
+    await act(async () => { view.rerender(<GraphConstructionPanel dataset={nextDataset} onClose={vi.fn()} onSaved={vi.fn()} />); });
+    expect((screen.getByLabelText('领域类别') as HTMLSelectElement).value).toBe('auto');
+    expect((screen.getByLabelText('复用领域经验') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('领域描述（选填）') as HTMLTextAreaElement).value).toBe('');
+    expect((screen.getByLabelText('验证查询数量') as HTMLInputElement).value).toBe('15');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(nextDataset, {
+      query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true,
+    });
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects invalid query counts without sending a build request', async () => {
+    await show();
+    for (const value of ['0', '101', '1.5', '']) {
+      fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value } });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+      expect(screen.getByRole('alert').textContent).toContain('1 到 100');
+    }
+    expect(mocks.build).not.toHaveBeenCalled();
+  });
+
+  it('allows closing during a pending build and never cancels or repeats its POST', async () => {
+    let finishBuild!: (value: unknown) => void;
+    mocks.build.mockReturnValue(new Promise(resolve => { finishBuild = resolve; }));
+    const close = vi.fn(), saved = vi.fn();
+    const view = await show(saved, close);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect((screen.getByRole('button', { name: '正在构图…' }) as HTMLButtonElement).disabled).toBe(true);
+    for (const label of ['验证查询数量', '领域类别', '领域描述（选填）', '复用领域经验']) {
+      expect(screen.getByLabelText(label).matches(':disabled')).toBe(true);
+    }
+    expect((screen.getByRole('button', { name: '关闭构图工作台' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '关闭构图工作台' }));
+    expect(close).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await tick(6000);
+    await act(async () => { finishBuild(ready); });
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+    expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
+      query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true,
+    });
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(mocks.graph).not.toHaveBeenCalled();
+    expect(saved).not.toHaveBeenCalled();
+  });
+
+  it('reopens an existing build, polls GET every three seconds, and loads the saved graph once', async () => {
+    mocks.state.mockResolvedValueOnce(building).mockResolvedValue(ready);
+    const saved = vi.fn();
+    await show(saved);
+    expect(screen.getByText('构图进行中')).toBeTruthy();
+    for (const label of ['领域类别', '复用领域经验']) {
+      expect(screen.getByLabelText(label).matches(':disabled')).toBe(true);
+    }
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    await tick(2999);
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    await tick(1);
+    expect(screen.getByText('已保存 · 版本 3')).toBeTruthy();
+    expect(mocks.state).toHaveBeenCalledTimes(2);
+    expect(mocks.graph).toHaveBeenCalledTimes(1);
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(saved).toHaveBeenCalledWith(sourceDataset, graph, 3);
+    await tick(9000);
+    expect(mocks.state).toHaveBeenCalledTimes(2);
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(mocks.build).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new ApiError(504, '构图仍可能运行', null, null, null, 'construction_running_unconfirmed'),
+    new TypeError('Failed to fetch'),
+  ])('recovers interrupted POST %# by reading the existing task without resubmitting', async cause => {
+    mocks.state.mockResolvedValueOnce(notBuilt).mockResolvedValueOnce(building).mockResolvedValue(ready);
+    mocks.build.mockRejectedValue(cause);
+    const saved = vi.fn();
+    await show(saved);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(screen.getByText('构图进行中')).toBeTruthy();
+    expect(mocks.state).toHaveBeenCalledTimes(2);
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+    await tick();
+    expect(screen.getByText('已保存 · 版本 3')).toBeTruthy();
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(saved).toHaveBeenCalledWith(sourceDataset, graph, 3);
+    await tick(9000);
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+    expect(saved).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not notify twice when polling completes before the original POST response', async () => {
+    let finishBuild!: (value: unknown) => void;
+    mocks.build.mockReturnValue(new Promise(resolve => { finishBuild = resolve; }));
+    mocks.state.mockResolvedValueOnce(notBuilt).mockResolvedValue(ready);
+    const saved = vi.fn();
+    await show(saved);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    await tick();
+    expect(saved).toHaveBeenCalledTimes(1);
+    await act(async () => { finishBuild(ready); });
+    await tick(6000);
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(mocks.graph).toHaveBeenCalledTimes(1);
+    expect(mocks.build).toHaveBeenCalledTimes(1);
   });
 });
