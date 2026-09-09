@@ -43,8 +43,9 @@ class ServiceClient:
         json_body: Any = None,
         data: Any = None,
         files: Any = None,
+        timeout: float | None = None,
     ) -> Any:
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout, trust_env=False) as client:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout if timeout is None else timeout, trust_env=False) as client:
             response = await client.request(
                 method,
                 path,

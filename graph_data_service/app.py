@@ -298,7 +298,11 @@ class GraphDataService:
         construction_access: ConstructionAccessClient | None = None,
     ) -> None:
         self._sessions: Dict[str, GraphSession] = {}
-        self._construction = construction_store or ConstructionStore()
+        if construction_store is None:
+            from graph_engine.construction import register_builtin_algorithms
+            self._construction = register_builtin_algorithms(ConstructionStore())
+        else:
+            self._construction = construction_store
         self._construction_access = construction_access or ConstructionAccessClient()
         self._deleted_sessions: set[str] = set()
         self._session_lifecycle_lock = threading.RLock()

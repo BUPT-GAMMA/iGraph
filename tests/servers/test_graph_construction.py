@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 import copy
+import multiprocessing
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
-from graph_data_service.construction import ConstructionError, ConstructionStore, optimize_graph, validate_graph
+from graph_data_service.construction import ConstructionError, ConstructionStore, _atomic_json, optimize_graph, validate_graph
+
+
+def _process_build(root, started, release):
+    """Separate process with its own Python RLocks and the real shared file lock."""
+    store = ConstructionStore(root)
+
+    def algorithm(_source, _options):
+        started.set()
+        if not release.wait(15):
+            raise RuntimeError("Test did not release its worker")
+        return sample_graph()
+
+    store.register_algorithm("csv", algorithm)
+    store.build("user-a", "dataset-1")
 
 
 def sample_graph():
@@ -254,6 +271,102 @@ class ConstructionStoreTest(unittest.TestCase):
             self.store.graph("user-a", "dataset-1")
         self.store.register_algorithm("csv", lambda _source, _options: sample_graph())
         self.assertTrue(self.store.build("user-a", "dataset-1")["success"])
+
+    def test_status_does_not_wait_for_a_live_worker_thread(self):
+        started, release = threading.Event(), threading.Event()
+
+        def algorithm(_source, _options):
+            started.set()
+            if not release.wait(10):
+                raise RuntimeError("Test did not release its worker")
+            return sample_graph()
+
+        self.store.register_algorithm("csv", algorithm)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            build = pool.submit(self.store.build, "user-a", "dataset-1", self.source, "example.csv")
+            try:
+                self.assertTrue(started.wait(5))
+                status = pool.submit(self.store.status, "user-a", "dataset-1").result(timeout=2)
+                self.assertEqual(status["status"], "building")
+                self.assertEqual(status["last_build_status"], "building")
+            finally:
+                release.set()
+            self.assertTrue(build.result(timeout=5)["success"])
+        self.assertEqual(self.store.status("user-a", "dataset-1")["status"], "ready")
+
+    def test_status_inside_the_builder_is_not_mistaken_for_an_abandoned_reentrant_lock(self):
+        observed = []
+
+        def algorithm(_source, _options):
+            observed.append(self.store.status("user-a", "dataset-1"))
+            return sample_graph()
+
+        self.store.register_algorithm("csv", algorithm)
+        result = self.store.build("user-a", "dataset-1", self.source, "example.csv")
+        self.assertTrue(result["success"])
+        self.assertEqual(observed[0]["status"], "building")
+        self.assertEqual(observed[0]["last_build_status"], "building")
+
+    def test_live_process_lock_prevents_recovery_and_termination_allows_retry(self):
+        self.store.register_source("user-a", "dataset-1", self.source, "example.csv")
+        context = multiprocessing.get_context("spawn")
+        started, release = context.Event(), context.Event()
+        process = context.Process(target=_process_build, args=(str(self.root), started, release))
+        process.start()
+        try:
+            self.assertTrue(started.wait(8), "Separate worker did not start")
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                try:
+                    status = pool.submit(self.store.status, "user-a", "dataset-1").result(timeout=2)
+                    self.assertEqual(status["status"], "building")
+                    self.assertEqual(status["last_build_status"], "building")
+                finally:
+                    # Abrupt death releases the OS lock without publishing ready/failed.
+                    process.terminate()
+                    process.join(5)
+            self.assertFalse(process.is_alive())
+            restarted = ConstructionStore(self.root)
+            status = restarted.status("user-a", "dataset-1")
+            self.assertEqual((status["status"], status["last_build_status"], status["revision"]),
+                             ("failed", "interrupted", 0))
+            self.assertIn("中断", status["message"])
+            persisted = ConstructionStore(self.root).status("user-a", "dataset-1")
+            self.assertEqual(persisted, status)
+            restarted.register_algorithm("csv", lambda _source, _options: sample_graph())
+            self.assertTrue(restarted.build("user-a", "dataset-1")["success"])
+            self.assertEqual(restarted.graph("user-a", "dataset-1")["graph"], sample_graph())
+        finally:
+            # A terminated process may leave a multiprocessing synchronization
+            # primitive locked. Do not touch its Events after abrupt termination.
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+            process.close()
+
+    def test_interrupted_build_preserves_an_already_saved_graph_and_revision(self):
+        original = self.build_ready()
+        with self.store._lock("user-a", "dataset-1") as directory:
+            record = self.store._read(directory, "dataset-1")
+            record.update(status="building", last_build_status="building")
+            _atomic_json(directory / "record.json", record)
+        restarted = ConstructionStore(self.root)
+        status = restarted.status("user-a", "dataset-1")
+        self.assertEqual(status["status"], "ready")
+        self.assertEqual(status["last_build_status"], "interrupted")
+        self.assertEqual(status["revision"], original["revision"])
+        self.assertEqual(restarted.graph("user-a", "dataset-1"), original)
+        self.assertEqual(restarted.list_ready("user-a")[0]["dataset_id"], "dataset-1")
+
+    def test_recovery_rereads_after_taking_the_lock_and_keeps_a_newer_completed_record(self):
+        self.build_ready()
+        record = self.store._read(self.store._directory("user-a", "dataset-1"), "dataset-1")
+        stale_snapshot = {**copy.deepcopy(record), "status": "building", "last_build_status": "building"}
+        with patch.object(self.store, "_read", side_effect=[stale_snapshot, record]), \
+                patch("graph_data_service.construction._atomic_json") as write:
+            status = self.store.status("user-a", "dataset-1")
+        self.assertEqual(status["status"], "ready")
+        self.assertEqual(status["last_build_status"], "ready")
+        write.assert_not_called()
 
 
 if __name__ == "__main__":

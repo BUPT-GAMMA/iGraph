@@ -18,6 +18,14 @@
 .construction-source p, .construction-form p { font-size: 12px; line-height: 1.7; color: var(--construction-muted); margin: 10px 0; }
 .construction-source .primary-command { width: 100%; margin: 3px 0 9px; }
 .construction-source small, .construction-form small { display: block; font-size: 11px; line-height: 1.65; color: var(--construction-muted); overflow-wrap: anywhere; }
+.construction-build-options { min-width: 0; padding: 0; margin: 0 0 10px; border: 0; }
+.construction-build-options label { display: grid; gap: 6px; margin: 12px 0; font-size: 12px; }
+.construction-build-options input:not([type="checkbox"]), .construction-build-options select, .construction-build-options textarea { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px 10px; border: 1px solid var(--construction-line); border-radius: 6px; background: var(--construction-bg); color: var(--construction-text); font: inherit; }
+.construction-build-options textarea { resize: vertical; min-height: 78px; max-height: 200px; }
+.construction-build-options input:focus, .construction-build-options select:focus, .construction-build-options textarea:focus { outline: 2px solid var(--accent-border, #bfdbfe); outline-offset: 1px; }
+.construction-build-options .construction-check { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; line-height: 1.5; }
+.construction-build-options .construction-check input { margin: 0; }
+.construction-build-options:disabled { opacity: .6; }
 .construction-rule-heading { margin: 25px 0 12px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
 .construction-rule-heading span { font-size: 11px; color: var(--construction-muted); }
 .construction-rule-list { display: grid; gap: 4px; }
