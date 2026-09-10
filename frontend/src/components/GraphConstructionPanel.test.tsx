@@ -87,6 +87,29 @@ describe('graph construction workflow', () => {
     expect(screen.getByText('29')).toBeTruthy();
   });
 
+  it.each(['phone', 'data', 'table', 'a.b'])('edits the literal business column %s in an automatic row through preview and commit', async column => {
+    const nested = { ...graph, nodes: [{ ...graph.nodes[0], properties: {
+      table: 'customers', row_index: 0, relational_schema: {},
+      data: { phone: '123', data: { note: 'nested' }, table: 'business value', 'a.b': null },
+    } }, ...graph.nodes.slice(1)] };
+    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph: nested });
+    const saved = vi.fn();
+    await openPanel(saved);
+    fireEvent.click(screen.getByRole('button', { name: /节点属性提取为独立节点/ }));
+    selectMany('选择节点', ['a']);
+    const options = Array.from((screen.getByLabelText('选择属性') as HTMLSelectElement).options, option => option.value);
+    expect(options).toContain(column);
+    expect(options).not.toContain('row_index');
+    expect(options).not.toContain('relational_schema');
+    choose('选择属性', column); choose('新节点类型', 'BusinessValue'); choose('新关系类型', 'has_value');
+    fireEvent.click(screen.getByRole('button', { name: '应用并预览' }));
+    await screen.findByText('1 项修改待保存');
+    const operation = { op: 'extract_property_node', node_ids: ['a'], property: column, node_type: 'BusinessValue', edge_type: 'has_value', remove_from_node: true };
+    expect(mocks.preview).toHaveBeenCalledWith(dataset, 2, [operation]);
+    fireEvent.click(screen.getByRole('button', { name: '保存到数据集' }));
+    await waitFor(() => expect(mocks.commit).toHaveBeenCalledWith(dataset, 2, [operation]));
+  });
+
   it('shows selected edge properties alongside its direction before editing', async () => {
     await openPanel();
     fireEvent.click(screen.getByRole('button', { name: /调整边方向/ }));
@@ -168,8 +191,8 @@ describe('long-running graph construction', () => {
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });
 
-  it('does not let an old failure discard the success of a pending retry', async () => {
-    const failed = { ...notBuilt, status: 'failed', build_id: 'previous', message: '上次失败' };
+  it.each(['previous', undefined])('does not let old failure %s discard the success of a pending retry', async oldId => {
+    const failed = { ...notBuilt, status: 'failed', build_id: oldId, message: '上次失败' };
     mocks.state.mockResolvedValue(failed);
     let finish!: (value: unknown) => void;
     mocks.build.mockReturnValue(new Promise(resolve => { finish = resolve; }));
@@ -197,6 +220,76 @@ describe('long-running graph construction', () => {
     await tick();
     expect(saved).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['previous', undefined])('keeps a retry alive after a lost POST response and stale failure %s', async oldId => {
+    const failed = { ...notBuilt, status: 'failed', build_id: oldId, message: '上次失败' };
+    mocks.state.mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+      .mockResolvedValue({ ...ready, build_id: 'current' });
+    mocks.build.mockRejectedValue(new ApiError(504, '构图仍可能运行', null, null, null, 'construction_running_unconfirmed'));
+    const saved = vi.fn();
+    await show(saved);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
+    expect(saved).not.toHaveBeenCalled();
+    await tick();
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('已保存 · 版本 3')).toBeTruthy();
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let an older building poll reopen a task explicitly failed by POST', async () => {
+    let finishPost!: (value: unknown) => void, finishPoll!: (value: unknown) => void;
+    mocks.state.mockResolvedValueOnce(notBuilt).mockReturnValueOnce(new Promise(resolve => { finishPoll = resolve; }));
+    mocks.build.mockReturnValue(new Promise(resolve => { finishPost = resolve; }));
+    await show();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    await tick();
+    await act(async () => { finishPost({ ...notBuilt, status: 'failed', build_id: 'current', message: '本次验证失败' }); });
+    await act(async () => { finishPoll({ ...building, build_id: 'current' }); });
+    expect(screen.getByRole('alert').textContent).toContain('本次验证失败');
+    expect(screen.getByRole('button', { name: '重新构图' }).matches(':disabled')).toBe(false);
+    await tick(6000);
+    expect(mocks.state).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts a new failure identity after an uncertain retry without polling forever', async () => {
+    mocks.state.mockResolvedValueOnce({ ...notBuilt, status: 'failed', build_id: 'previous' })
+      .mockResolvedValue({ ...notBuilt, status: 'failed', build_id: 'current', message: '本次验证失败' });
+    mocks.build.mockRejectedValue(new TypeError('Failed to fetch'));
+    await show();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
+    expect(screen.getByRole('alert').textContent).toContain('本次验证失败');
+    expect(screen.getByRole('button', { name: '重新构图' }).matches(':disabled')).toBe(false);
+    await tick(9000);
+    expect(mocks.state).toHaveBeenCalledTimes(2);
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores retry controls when a new request is explicitly rejected as invalid', async () => {
+    mocks.state.mockResolvedValue({ ...notBuilt, status: 'failed', build_id: 'previous' });
+    mocks.build.mockRejectedValue(new ApiError(422, '参数无效', null, null, null, 'invalid_construction_options'));
+    await show();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
+    expect(screen.getByRole('alert').textContent).toContain('参数无效');
+    expect(screen.getByRole('button', { name: '重新构图' }).matches(':disabled')).toBe(false);
+    await tick(9000);
+    expect(mocks.state).toHaveBeenCalledTimes(2);
+    expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a legacy failure after observing new building progress', async () => {
+    const failed = { ...notBuilt, status: 'failed', message: '构图失败' };
+    mocks.state.mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
+      .mockResolvedValueOnce(building).mockResolvedValue(failed);
+    mocks.build.mockRejectedValue(new TypeError('Failed to fetch'));
+    await show();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
+    await tick();
+    expect(screen.getByText('构图进行中')).toBeTruthy();
+    await tick();
+    expect(screen.getByRole('button', { name: '重新构图' }).matches(':disabled')).toBe(false);
+    await tick(9000);
+    expect(mocks.state).toHaveBeenCalledTimes(4);
   });
 
   it.each([15, 23])('sends the configured query count (%s) and domain with exactly one build request', async count => {

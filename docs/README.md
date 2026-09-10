@@ -14,6 +14,7 @@
 - [TOOL_DAG_VERIFICATION.md](TOOL_DAG_VERIFICATION.md)：真实模型问答、算法并行正确性和构图/前端回归验收记录。
 - [GRAPH_CONSTRUCTION.md](GRAPH_CONSTRUCTION.md)：构图接口、数据集复用、优化预览与提交。
 - [CONSTRUCTION_P1_VERIFICATION.md](CONSTRUCTION_P1_VERIFICATION.md)：构图资源隔离、候选扫描与超时修复的回归及性能验证。
+- [CONSTRUCTION_P2_VERIFICATION.md](CONSTRUCTION_P2_VERIFICATION.md)：业务属性编辑、重试状态与 SQLite 外键修复的回归及基线差异。
 - [STREAM_RECOVERY.md](STREAM_RECOVERY.md)：断流续传、完整快照、审批安全、依赖契约、故障测试与排障。
 - [RUN_CANCELLATION.md](RUN_CANCELLATION.md)：当前任务终止、作业隔离、持久控制、故障验收及剩余发布门禁。
 - [RUN_CANCELLATION_REVIEW_FIXES.md](RUN_CANCELLATION_REVIEW_FIXES.md)：终止功能审查问题的修复、故障回归与性能复测记录。

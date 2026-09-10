@@ -17,6 +17,39 @@ def sql_source(tmp_path, sql, **options):
     return load_source(path, options)
 
 
+@pytest.mark.parametrize("action", ["CASCADE", "RESTRICT", "NO ACTION", "SET NULL", "SET DEFAULT"])
+@pytest.mark.parametrize("inline", [False, True])
+def test_sql_dump_accepts_foreign_key_update_actions(tmp_path, action, inline):
+    declaration = (f"pid INTEGER REFERENCES parent(id) ON /* action */ UPDATE {action}" if inline else
+                   f"pid INTEGER, FOREIGN KEY(pid) REFERENCES parent(id) ON UPDATE {action} ON DELETE CASCADE")
+    sql = f"""CREATE TABLE parent(id INTEGER PRIMARY KEY);
+              CREATE TABLE child(id INTEGER PRIMARY KEY, {declaration});
+              INSERT INTO parent VALUES(1); INSERT INTO child VALUES(10,1);"""
+    with closing(sqlite3.connect(":memory:")) as native:
+        native.executescript(sql)
+        expected = native.execute("PRAGMA foreign_key_list(child)").fetchall()
+    with closing(sql_source(tmp_path, sql)) as source:
+        assert source.tables["child"].rows == [{"id": 10, "pid": 1}]
+        graph = initial_graph(source)
+        assert len(graph["edges"]) == 1
+        assert source_integrity_errors(source, graph) == []
+        assert expected[0][5] == action
+
+
+@pytest.mark.parametrize("statement", [
+    "UPDATE parent SET id=2;", "DELETE FROM parent;", "REPLACE INTO parent VALUES(2);",
+    "INSERT INTO parent SELECT 2;", "INSERT INTO parent VALUES(2) RETURNING id;",
+    "INSERT INTO parent VALUES(1) ON CONFLICT(id) DO UPDATE SET id=2;",
+    "CREATE TABLE copied AS SELECT * FROM parent;", "WITH x AS (SELECT 2) INSERT INTO parent SELECT * FROM x;",
+    "CREATE VIEW copied AS SELECT * FROM parent;", "ATTACH DATABASE 'outside.db' AS outside;",
+    "CREATE TRIGGER changed AFTER INSERT ON parent BEGIN UPDATE parent SET id=2; END;",
+])
+def test_foreign_key_support_does_not_allow_data_updates_or_executable_imports(tmp_path, statement):
+    with pytest.raises(SourceError):
+        sql_source(tmp_path, "CREATE TABLE parent(id INTEGER PRIMARY KEY); INSERT INTO parent VALUES(1);" + statement)
+    assert not (tmp_path / "outside.db").exists()
+
+
 def test_composite_pk_fk_retains_null_and_dangling_rows(tmp_path):
     source = sql_source(tmp_path, """
         CREATE TABLE tenants (region TEXT, id INTEGER, name TEXT,

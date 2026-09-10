@@ -299,9 +299,14 @@ def _import_sql(connection: sqlite3.Connection, data: bytes, deadline: float) ->
               sqlite3.SQLITE_DROP_INDEX, sqlite3.SQLITE_DROP_TRIGGER,
               sqlite3.SQLITE_DROP_VIEW, sqlite3.SQLITE_DROP_VTABLE,
               sqlite3.SQLITE_FUNCTION}
+    importing_values = False
 
     def authorize(action, arg1, arg2, database, trigger):
         if action in denied or trigger is not None or database not in (None, "main"):
+            return sqlite3.SQLITE_DENY
+        # SQLite also reports SELECT while compiling multi-row literal VALUES.
+        # INSERT's lexical guard below rules out explicit SELECT/CTE expressions.
+        if action == sqlite3.SQLITE_SELECT and not importing_values:
             return sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_PRAGMA and (arg1.lower() != "foreign_keys" or str(arg2).lower() not in ("off", "0")):
             return sqlite3.SQLITE_DENY
@@ -313,7 +318,12 @@ def _import_sql(connection: sqlite3.Connection, data: bytes, deadline: float) ->
             if time.monotonic() > deadline:
                 raise SourceError("SQLite import exceeded source_timeout_seconds.")
             prefix = _strip_comments(statement)
-            if _sql_keywords(statement) & {"SELECT", "WITH", "RETURNING", "REPLACE", "UPDATE"}:
+            importing_values = bool(re.match(r"(?is)\AINSERT\s+INTO\b", prefix))
+            # INSERTs must contain literal dump data. DDL has its own grammar:
+            # ON UPDATE CASCADE and ON CONFLICT REPLACE are declarations, not
+            # executable UPDATE/REPLACE statements. SQLite's authorizer still
+            # rejects SELECT (including CREATE TABLE AS SELECT) and functions.
+            if importing_values and _sql_keywords(statement) & {"SELECT", "WITH", "RETURNING", "REPLACE", "UPDATE"}:
                 raise SourceError(f"Unsupported SQL expression in statement {number}; dump INSERT values must be literal data.")
             if not re.match(r"(?is)\A(?:CREATE\s+(?:TABLE|(?:UNIQUE\s+)?INDEX)\b|INSERT\s+INTO\b|BEGIN(?:\s+TRANSACTION)?\s*;|COMMIT(?:\s+TRANSACTION)?\s*;|END(?:\s+TRANSACTION)?\s*;|PRAGMA\s+foreign_keys\s*=\s*(?:OFF|0)\s*;|DELETE\s+FROM\s+[\"`\[]?sqlite_sequence[\"`\]]?\s*;)", prefix):
                 raise SourceError(f"Unsupported or unsafe SQL statement {number}; only SQLite table/index DDL, INSERT and dump transaction markers are accepted.")

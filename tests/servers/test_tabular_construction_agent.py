@@ -77,6 +77,17 @@ class TabularConstructionAgentTest(unittest.TestCase):
         self.assertEqual(validate_graph(result.graph), result.graph)
         self.assertTrue(result.report["history"])
 
+    def test_sql_foreign_key_actions_complete_the_full_verified_build(self):
+        self.path.write_text(SQL.replace("REFERENCES regions(id)", "REFERENCES regions(id) ON UPDATE CASCADE")
+                            .replace("REFERENCES customers(id)", "REFERENCES customers(id) ON UPDATE SET NULL ON DELETE CASCADE"), encoding="utf-8")
+        result = TabularConstructionSubAgent().run(self.path, {"mode": "rules", "query_count": 7, "experience_enabled": False})
+        self.assertEqual((result.report["final"]["correct"], result.report["final"]["total"]), (7, 7))
+        source = self.source()
+        try:
+            self.assertEqual(fidelity_errors(source, result.graph), [])
+        finally:
+            source.close()
+
     def test_llm_tool_loop_freezes_queries_rejects_loss_and_returns_only_graph(self):
         llm = self.script()
         result = TabularConstructionSubAgent(llm_factory=lambda _: llm).run(self.path, {"domain": "retail"})
