@@ -98,6 +98,12 @@ Graph Engine 是构图状态和图数据的权威来源；BFF 的 `metadata.cons
 
 内层 `graph` 只允许 `directed`、`nodes`、`edges` 三个字段。节点只允许 `id`、`type`、`properties`；边另外包含 `source`、`target`。名称、标签等业务信息应放在 `properties`，不要添加未约定的顶层字段。
 
+SQL/CSV 自动生成的源记录以 `properties.table`、非负整数 `properties.row_index` 和对象 `properties.data` 标识，业务字段位于 `data` 内。工作台和公共 preview/commit 接口按业务字段名访问这些记录；字段名 `data`、`table` 或包含点号时仍按完整列名处理，不解释为路径。旧图的普通 `properties` 字段和嵌套 JSON 保持原有语义。源记录的表名、行号和关系元数据不作为业务字段编辑。
+
+从源记录提取字段时，字段值存入当前属性节点，以 `extracted_attribute` 关系连接源记录；转移到边时使用现有 `relocated_attributes` 结构，工作台按其中的 `name`（缺失时使用 `column`）展示和选择字段。读取和验证使用这些当前值，不复制一份隐藏的原始值作为答案。目标字段冲突会拒绝整个操作批次；明确删除业务字段仍是允许的数据修改。
+
+SQL 文本导入按语句类型检查：建表语句允许合法 `ON UPDATE` / `ON DELETE` 外键动作，INSERT 仍限制为导出数据，不接受显式 SELECT、CTE、RETURNING 或 UPSERT 更新。SQLite 授权回调继续限制附加数据库、触发器、函数和建表查询等操作。
+
 - `directed` 必须为布尔值。
 - 节点和边的 `id`、`type` 必须是非空字符串；ID 在各自集合中唯一，不接受自动转成字符串的数字 ID。
 - 边两端必须引用存在的节点 ID。

@@ -3,6 +3,7 @@ import { ApiError, buildDatasetGraph, commitConstruction, getConstructionGraph, 
 import type { ConstructionDomainCategory, ConstructionOperation, ConstructionResult, ConstructionState, Dataset, GraphData } from '../types';
 import { GraphWorkspace } from './GraphWorkspace';
 import { Icon } from './Icon';
+import { constructionProperties as properties } from '../constructionProperties';
 import './GraphConstructionPanel.css';
 
 type Rule = ConstructionOperation['op'];
@@ -24,10 +25,6 @@ const RULES: Array<{ id: Rule; label: string; description: string }> = [
   { id: 'rename_type', label: '重命名节点、边类型', description: '统一替换选中类型的名称，让图数据符合业务语义。' },
 ];
 
-function properties(item: Record<string, unknown> | undefined) {
-  const value = item?.properties;
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
 function display(value: unknown) { return typeof value === 'object' ? JSON.stringify(value) : String(value ?? ''); }
 function failure(cause: unknown) { return cause instanceof Error ? cause.message : '操作失败，请重试'; }
 function operationLabel(operation: ConstructionOperation) { return RULES.find(rule => rule.id === operation.op)?.label || operation.op; }
@@ -79,6 +76,8 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
   const buildAttempt = useRef(0);
   const buildResolved = useRef(false);
   const currentBuildId = useRef<string | null>(null);
+  // undefined: no stale failure; null: an older server's failure without an id.
+  const previousFailureId = useRef<string | null | undefined>(undefined);
   const notifiedRevision = useRef<number | null>(null);
   const callbacks = useRef({ dataset, onSaved });
   callbacks.current = { dataset, onSaved };
@@ -108,11 +107,18 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
       if (quiet && publish && buildResolved.current) return nextState;
       if (quiet && publish) {
         if (currentBuildId.current && nextState.build_id && currentBuildId.current !== nextState.build_id) return null;
+        // A lost POST response does not make the previous attempt's failure
+        // authoritative. Keep watching until new progress or a new result.
+        if (!currentBuildId.current && nextState.status === 'failed' && previousFailureId.current !== undefined &&
+            (nextState.build_id ?? null) === previousFailureId.current) return null;
         // Until the POST or a building snapshot identifies this attempt, an
         // earlier failure cannot resolve it or discard its eventual success.
         if (postPending.current && nextState.status !== 'building' && nextState.status !== 'ready' &&
             (!currentBuildId.current || nextState.build_id !== currentBuildId.current)) return null;
-        if (nextState.status === 'building' && nextState.build_id) currentBuildId.current = nextState.build_id;
+        if (nextState.status === 'building') {
+          previousFailureId.current = undefined;
+          if (nextState.build_id) currentBuildId.current = nextState.build_id;
+        }
       }
       setState(snapshot ? { ...nextState, revision: snapshot.revision } : nextState);
       const waiting = nextState.status === 'building' || nextState.status === 'not_built' && postPending.current;
@@ -152,6 +158,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
     lifecycle.current += 1;
     postPending.current = false; buildResolved.current = false; notifiedRevision.current = null;
     currentBuildId.current = null;
+    previousFailureId.current = undefined;
     buildAttempt.current += 1;
     setState(null); setSavedGraph(null); setMonitoringBuild(false); setNotice(''); setQueryCount('15'); setDomain('');
     setDomainCategory('auto'); setExperienceEnabled(true);
@@ -193,6 +200,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
     }
     const version = lifecycle.current;
     const attempt = ++buildAttempt.current;
+    previousFailureId.current = state.status === 'failed' ? state.build_id ?? null : undefined;
     postPending.current = true; buildResolved.current = false; notifiedRevision.current = null;
     currentBuildId.current = null;
     setMonitoringBuild(true);
@@ -233,6 +241,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
         setState(previous => previous ? { ...previous, status: 'algorithm_unavailable', algorithm_available: false } : previous);
       } else {
         const uncertain = !(cause instanceof ApiError) || cause.status >= 500 || cause.code === 'construction_running_unconfirmed';
+        if (!uncertain) previousFailureId.current = undefined;
         setMonitoringBuild(true);
         setNotice(uncertain ? '请求连接已中断，服务器可能仍在构图。正在查询已有任务状态。' : '正在确认服务器上的构图结果。');
         const latest = await load(undefined, true, true);

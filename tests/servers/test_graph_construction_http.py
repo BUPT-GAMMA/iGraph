@@ -116,6 +116,36 @@ def test_construction_http_preview_commit_reload_properties_and_session_snapshot
     assert service.do_load_constructed_graph("session-two", "ds-people", user_id="alice")["construction_revision"] == 2
 
 
+def test_automatic_csv_business_edit_round_trips_through_http_and_session(construction_http):
+    from graph_engine.construction.agent import TabularConstructionSubAgent
+    from graph_engine.construction.sources import load_source, source_integrity_errors
+    client, service, store, source, headers = construction_http
+    store.register_algorithm("csv", TabularConstructionSubAgent(data_root=store.root))
+    built = client.post("/construction/ds-people/build", headers=headers, json={
+        "source_path": str(source), "source_filename": source.name,
+        "options": {"mode": "rules", "query_count": 3, "experience_enabled": False},
+    })
+    assert built.status_code == 200 and built.json()["status"] == "ready", built.text
+    graph = store.graph("alice", "ds-people")["graph"]
+    request = {"base_revision": 1, "operations": [{"op": "extract_property_node",
+        "node_ids": [graph["nodes"][0]["id"]], "property": "phone", "node_type": "Phone", "edge_type": "has_phone"}]}
+    preview = client.post("/construction/ds-people/preview", headers=headers, json=request)
+    assert preview.status_code == 200, preview.text
+    assert store.graph("alice", "ds-people")["graph"] == graph
+    saved = client.post("/construction/ds-people/commit", headers=headers, json=request)
+    assert saved.status_code == 200 and saved.json()["revision"] == 2, saved.text
+    assert saved.json()["graph"] == preview.json()["graph"]
+    loaded = client.post("/sessions/session-one/graph/load_construction", headers=headers, json={"dataset_id": "ds-people"})
+    assert loaded.status_code == 200, loaded.text
+    current = service.get_required("session-one", "alice").get_graph().graph_metadata["construction_graph"]
+    assert current == saved.json()["graph"]
+    parsed = load_source(source)
+    try:
+        assert source_integrity_errors(parsed, current) == []
+    finally:
+        parsed.close()
+
+
 def test_construction_http_invalid_batch_is_atomic_and_cross_user_isolated(construction_http, monkeypatch):
     client, service, store, source, headers = construction_http
     build_ready(client, store, source, headers)

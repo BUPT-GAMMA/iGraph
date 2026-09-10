@@ -143,6 +143,75 @@ def _get(rows: dict, identity: str, target: str) -> dict:
     return rows[identity]
 
 
+def _row_data(row: dict) -> dict | None:
+    """Recognize source rows; a legacy property merely named data stays literal."""
+    props = row["properties"]
+    if (isinstance(props.get("table"), str) and props["table"] and
+            type(props.get("row_index")) is int and props["row_index"] >= 0 and
+            isinstance(props.get("data"), dict)):
+        return props["data"]
+    return None
+
+
+def _relocated_attributes(row: dict) -> list:
+    records = row["properties"].get("relocated_attributes")
+    if ("source" in row and isinstance(records, list) and records and all(
+            isinstance(record, dict) and {"row_id", "column", "value"} <= record.keys() and
+            not record.keys() - {"row_id", "column", "value", "name"} and
+            all(isinstance(record.get(key), str) and record[key] for key in ("row_id", "column")) and
+            ("name" not in record or isinstance(record["name"], str) and record["name"])
+            for record in records)):
+        return records
+    return []
+
+
+def _property_locations(row: dict, name: str) -> list[tuple[dict, str]]:
+    data = _row_data(row)
+    container = row["properties"] if data is None else data
+    relocated = _relocated_attributes(row)
+    locations = [(container, name)] if name in container and not (data is None and relocated and name == "relocated_attributes") else []
+    locations.extend((record, "value") for record in relocated if record.get("name", record["column"]) == name)
+    return locations
+
+
+def _property_value(row: dict, name: str):
+    locations = _property_locations(row, name)
+    if not locations:
+        _fail(f"Element {row['id']} has no business property {name}.")
+    value = locations[0][0][locations[0][1]]
+    if any(_json(container[key]) != _json(value) for container, key in locations[1:]):
+        _fail(f"Element {row['id']} has conflicting values for {name}.", "property_conflict")
+    return value
+
+
+def _remove_property(row: dict, name: str):
+    _property_value(row, name)
+    records = _relocated_attributes(row)
+    had_records = bool(records)
+    for container, key in _property_locations(row, name):
+        if any(container is record for record in records):
+            records[:] = [record for record in records if record is not container]
+        else:
+            del container[key]
+    if had_records and not records:
+        del row["properties"]["relocated_attributes"]
+
+
+def _relocate_property(node: dict, edge: dict, prop: str, destination: str, value):
+    records = _relocated_attributes(edge)
+    if "relocated_attributes" in edge["properties"] and not records:
+        _fail("The edge contains an invalid or conflicting relocated_attributes property.", "property_conflict")
+    matching = [record for record in records if record["row_id"] == node["id"] and record["column"] == prop]
+    expected = {"row_id": node["id"], "column": prop, "name": destination, "value": copy.deepcopy(value)}
+    if matching:
+        if len(matching) != 1 or matching[0] != expected:
+            _fail(f"Edge {edge['id']} already has a different value or name for {destination}.", "property_conflict")
+        return
+    if _property_locations(edge, destination):
+        _fail(f"Edge {edge['id']} already has a property named {destination}.", "property_conflict")
+    edge["properties"].setdefault("relocated_attributes", []).append(expected)
+
+
 def optimize_graph(graph: dict, operations: list[dict]) -> tuple[dict, dict]:
     if not isinstance(operations, list) or not 1 <= len(operations) <= 100:
         _fail("Provide between 1 and 100 operations.")
@@ -194,44 +263,50 @@ def optimize_graph(graph: dict, operations: list[dict]) -> tuple[dict, dict]:
                 node = _get(nodes, operation.get("node_id"), "node")
                 prop = _text(operation.get("property"), "property")
                 destination = _text(operation.get("target_property", prop), "target_property")
-                if prop not in node["properties"]:
-                    _fail(f"Node {node['id']} has no property {prop}.")
+                value = _property_value(node, prop)
                 selected = [_get(edges, identity, "edge") for identity in _ids(operation.get("edge_ids"), "edge_ids")]
                 for edge in selected:
                     if node["id"] not in (edge["source"], edge["target"]):
                         _fail("The selected edges must be incident to the selected node.")
-                    if destination in edge["properties"] and _json(edge["properties"][destination]) != _json(node["properties"][prop]):
-                        _fail(f"Edge {edge['id']} already has a different value for {destination}.", "property_conflict")
-                    edge["properties"][destination] = copy.deepcopy(node["properties"][prop])
+                    if _row_data(node) is not None:
+                        _relocate_property(node, edge, prop, destination, value)
+                    else:
+                        if destination == "relocated_attributes" and _relocated_attributes(edge) and _row_data(edge) is None:
+                            _fail("Cannot overwrite current attribute storage.", "property_conflict")
+                        if _property_locations(edge, destination) and _json(_property_value(edge, destination)) != _json(value):
+                            _fail(f"Edge {edge['id']} already has a different value for {destination}.", "property_conflict")
+                        data = _row_data(edge)
+                        (edge["properties"] if data is None else data)[destination] = copy.deepcopy(value)
                 if _boolean(operation, "remove_from_node", True):
-                    del node["properties"][prop]
+                    _remove_property(node, prop)
             elif kind == "extract_property_node":
                 selected = [_get(nodes, identity, "node") for identity in _ids(operation.get("node_ids"), "node_ids")]
                 prop = _text(operation.get("property"), "property")
                 node_type, edge_type = _text(operation.get("node_type"), "node_type"), _text(operation.get("edge_type"), "edge_type")
                 remove = _boolean(operation, "remove_from_node", True)
                 for node in selected:
-                    if prop not in node["properties"]:
-                        _fail(f"Node {node['id']} has no property {prop}.")
-                    value = node["properties"][prop]
-                    new_id = _generated_id("property_", node_type, prop, value)
+                    value = _property_value(node, prop)
+                    source_row = _row_data(node) is not None
+                    new_id = _generated_id("attribute_" if source_row else "property_", node_type, prop, value)
                     if new_id == node["id"]:
                         _fail("A property node cannot be extracted into itself.")
-                    new_node = {"id": new_id, "type": node_type, "properties": {prop: copy.deepcopy(value)}}
+                    new_node = {"id": new_id, "type": node_type, "properties": {"value" if source_row else prop: copy.deepcopy(value)}}
                     if new_id in nodes and nodes[new_id] != new_node:
                         _fail("Generated property node conflicts with an existing node.", "property_conflict")
                     if new_id not in nodes:
                         candidate["nodes"].append(new_node)
                         nodes[new_id] = new_node
-                    edge_id = _generated_id("property_edge_", node["id"], new_id, edge_type)
-                    new_edge = {"id": edge_id, "source": node["id"], "target": new_id, "type": edge_type, "properties": {}}
+                    edge_id = (_generated_id("attribute_link_", node["id"], prop, new_id) if source_row else
+                               _generated_id("property_edge_", node["id"], new_id, edge_type))
+                    metadata = {"extracted_attribute": {"table": node["properties"]["table"], "column": prop}} if source_row else {}
+                    new_edge = {"id": edge_id, "source": node["id"], "target": new_id, "type": edge_type, "properties": metadata}
                     if edge_id in edges and edges[edge_id] != new_edge:
                         _fail("Generated property edge conflicts with an existing edge.")
                     if edge_id not in edges:
                         candidate["edges"].append(new_edge)
                         edges[edge_id] = new_edge
                     if remove:
-                        del node["properties"][prop]
+                        _remove_property(node, prop)
             elif kind == "delete":
                 target = operation.get("target")
                 if not isinstance(target, str) or target not in {"node", "edge"}:
@@ -244,9 +319,7 @@ def optimize_graph(graph: dict, operations: list[dict]) -> tuple[dict, dict]:
                     if cascade:
                         _fail("cascade does not apply to property deletion.")
                     for row in selected:
-                        if prop not in row["properties"]:
-                            _fail(f"{target} {row['id']} has no property {prop}.")
-                        del row["properties"][prop]
+                        _remove_property(row, prop)
                 elif target == "edge":
                     if cascade:
                         _fail("cascade applies only to node deletion.")
