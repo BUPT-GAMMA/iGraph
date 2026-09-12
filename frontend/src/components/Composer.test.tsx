@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatPane } from './ChatPane';
 import { Composer } from './Composer';
@@ -46,6 +46,47 @@ describe('ConversationInputArea', () => {
     expect(screen.queryByRole('heading', { name: '开始图分析' })).toBeNull();
   });
 
+  it('renders streaming run tools once above the assistant content', () => {
+    const { container } = render(<ChatPane
+      {...baseChatProps}
+      loading
+      messages={[
+        { id: 'user-1', role: 'user', content: '分析这个图' },
+        { id: 'assistant-1', role: 'assistant', content: '正在生成回答', streaming: true, tools: [{ tool: 'stale_tool', done: true }] },
+      ]}
+      runTools={[
+        { tool: 'degree_analysis', call_id: 'tool-1', done: true },
+        { tool: 'community_detection', call_id: 'tool-2', done: false },
+      ]}
+    />);
+
+    const assistantBody = container.querySelector('.message-row.assistant .message-body')!;
+    const toolLists = container.querySelectorAll('.tool-list');
+    const toolList = toolLists[0];
+    const messageContent = assistantBody.querySelector('.message-content')!;
+
+    expect(toolLists).toHaveLength(1);
+    expect(container.querySelector('.live-analysis-card')).toBeNull();
+    expect(toolList.querySelectorAll('.tool-row')).toHaveLength(2);
+    expect(toolList.textContent).toContain('degree_analysis');
+    expect(toolList.textContent).toContain('community_detection');
+    expect(toolList.textContent).not.toContain('stale_tool');
+    expect(Array.from(assistantBody.children).indexOf(toolList)).toBeLessThan(Array.from(assistantBody.children).indexOf(messageContent));
+  });
+
+  it('omits the user initial avatar while keeping the assistant mark', () => {
+    const { container } = render(<ChatPane
+      {...baseChatProps}
+      messages={[
+        { id: 'user-1', role: 'user', content: '分析这个图' },
+        { id: 'assistant-1', role: 'assistant', content: '分析完成' },
+      ]}
+    />);
+
+    expect(container.querySelector('.message-row.user .message-avatar')).toBeNull();
+    expect(container.querySelector('.message-row.assistant .message-avatar')).not.toBeNull();
+  });
+
   it('keeps normal Composer behavior outside feedback states', () => {
     const onChange = vi.fn();
     const onSend = vi.fn();
@@ -71,7 +112,7 @@ describe('ConversationInputArea', () => {
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(onSend).toHaveBeenCalledOnce();
     expect((screen.getByLabelText('发送') as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByLabelText('选择模型') as HTMLSelectElement).disabled).toBe(false);
+    expect((screen.getByLabelText('选择模型') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText('上传图文件') as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByText(/支持上传 \.txt/)).toBeNull();
     expect(screen.queryByText('Shift + Enter 换行')).toBeNull();
@@ -99,7 +140,7 @@ describe('ConversationInputArea', () => {
     fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
     fireEvent.click(screen.getByRole('button', { name: '配置自定义模型' }));
 
-    expect(screen.queryByRole('listbox', { name: '可用模型' })).toBeNull();
+    expect(screen.queryByRole('group', { name: '可用模型' })).toBeNull();
     expect(screen.getByRole('dialog', { name: '配置自定义模型' })).toBeTruthy();
     fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'llama-3.1-8b' } });
     fireEvent.change(screen.getByLabelText('接口地址'), { target: { value: 'https://api.example.com/v1' } });
@@ -113,6 +154,54 @@ describe('ConversationInputArea', () => {
       api_key: 'test-key',
     }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '配置自定义模型' })).toBeNull());
+  });
+
+  it('shows one branded representative per built-in model company', () => {
+    render(<Composer
+      value=""
+      model="qwen3.6-plus"
+      models={[
+        'qwen3.6-plus',
+        'claude-opus-4-6',
+        'claude-sonnet-4-6',
+        'deepseek-v4-flash',
+        'deepseek-v4-lite',
+        'deepseek-v4-pro',
+        'doubao-seed-2-0-pro-260215',
+        'gpt-5-2',
+        'gpt-5-4',
+        'qwen3.7-max',
+      ]}
+      onChange={noop}
+      onModelChange={noop}
+      onDataset={noop}
+      onSend={noop}
+      onUpload={noop}
+      onRemoveAttachment={noop}
+      attachments={[]}
+      loading={false}
+      uploading={false}
+      disabled={false}
+    />);
+
+    const trigger = screen.getByRole('button', { name: '选择模型' });
+    expect(trigger.querySelector('[data-model-provider="qwen"]')).toBeTruthy();
+    fireEvent.click(trigger);
+
+    expect(screen.getByText('模型')).toBeTruthy();
+    expect(screen.queryByText(/每家精选一款/)).toBeNull();
+    const modelGroup = screen.getByRole('group', { name: '可用模型' });
+    expect(within(modelGroup).getAllByRole('button')).toHaveLength(5);
+    expect(within(modelGroup).getByRole('button', { name: 'qwen3.6-plus' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(modelGroup).queryByRole('button', { name: 'qwen3.7-max' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'claude-opus-4-6' }).querySelector('[data-model-provider="anthropic"]')).toBeTruthy();
+    expect(within(modelGroup).queryByRole('button', { name: 'claude-sonnet-4-6' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'deepseek-v4-pro' }).querySelector('[data-model-provider="deepseek"]')).toBeTruthy();
+    expect(within(modelGroup).queryByRole('button', { name: 'deepseek-v4-flash' })).toBeNull();
+    expect(within(modelGroup).queryByRole('button', { name: 'deepseek-v4-lite' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'doubao-seed-2-0-pro-260215' }).querySelector('[data-model-provider="doubao"]')).toBeTruthy();
+    expect(within(modelGroup).getByRole('button', { name: 'gpt-5-4' }).querySelector('[data-model-provider="openai"]')).toBeTruthy();
+    expect(within(modelGroup).queryByRole('button', { name: 'gpt-5-2' })).toBeNull();
   });
 
   it('terminates despite upload and draft gates, and allows idempotent retry when unconfirmed', () => {
@@ -161,8 +250,8 @@ describe('ConversationInputArea', () => {
     expect(screen.getByRole('button', { name: '选择模型' }).textContent).toContain('Deepseek-v4-pro');
     expect(screen.getByRole('button', { name: '选择模型' }).textContent).not.toContain('iGraph');
     fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
-    expect(screen.getByRole('option', { name: 'Deepseek-v4-pro' })).toBeTruthy();
-    expect(screen.queryByRole('option', { name: 'iGraph' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Deepseek-v4-pro' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'iGraph' })).toBeNull();
   });
 
   it('replaces Composer with approval controls and preserves a hidden draft and attachments', () => {

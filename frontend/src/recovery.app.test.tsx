@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => {} }) }));
 vi.mock('./components/GraphWorkspace', () => ({ GraphWorkspace: () => null }));
@@ -7,13 +7,16 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   validateUser: vi.fn().mockResolvedValue({ valid: true, default_model: 'model' }),
   listSessions: vi.fn().mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] }),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }), listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
+  listProjectConversations: vi.fn().mockResolvedValue({ conversations: [] }),
+  listProjectDatasets: vi.fn().mockResolvedValue({ project_id: null, datasets: [], default_dataset_id: null }),
   activateSession: vi.fn(), resumeRun: vi.fn(), getRunSnapshot: vi.fn(), streamChat: vi.fn(),
   getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true }),
   cancelRun: vi.fn(), getRunControl: vi.fn(), deleteSession: vi.fn(),
+  updateSessionModel: vi.fn(),
   visualizeGraph: vi.fn().mockRejectedValue(new Error('no graph')),
 }));
 import App from './main';
-import { activateSession, cancelRun, deleteSession, getCapabilities, getRunControl, getRunSnapshot, resumeRun, streamChat, visualizeGraph } from './api';
+import { activateSession, cancelRun, deleteSession, getCapabilities, getRunControl, getRunSnapshot, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, resumeRun, streamChat, updateSessionModel, validateUser, visualizeGraph } from './api';
 
 const active = (content = 'A') => ({ model: 'model', has_graph: false,
   messages: [{ id: 'assistant:r', role: 'assistant' as const, content }],
@@ -25,12 +28,19 @@ function navigate(id: string) {
 let restoreStorage = () => {};
 beforeEach(() => {
   sessionStorage.clear(); localStorage.clear(); window.history.replaceState({}, '', '/?session=A');
+  vi.mocked(validateUser).mockReset().mockResolvedValue({ valid: true, default_model: 'model' });
+  vi.mocked(listProjects).mockReset().mockResolvedValue({ projects: [] });
+  vi.mocked(listSessions).mockReset().mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] });
+  vi.mocked(listCustomModels).mockReset().mockResolvedValue({ models: [] });
+  vi.mocked(listProjectConversations).mockReset().mockResolvedValue({ conversations: [] });
+  vi.mocked(listProjectDatasets).mockReset().mockResolvedValue({ project_id: null, datasets: [], default_dataset_id: null });
   vi.mocked(activateSession).mockReset(); vi.mocked(resumeRun).mockReset(); vi.mocked(getRunSnapshot).mockReset();
   vi.mocked(getCapabilities).mockReset().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true });
   vi.mocked(getRunControl).mockReset().mockResolvedValue({ run_id: 'r', start_request_id: null, registration_status: 'registered', run_status: 'completed',
     cancel_status: 'none', execution_stopped: true, terminal_persisted: true, can_send: true, active_run: null, revision: 3 });
   vi.mocked(visualizeGraph).mockClear();
   vi.mocked(deleteSession).mockReset().mockResolvedValue({ success: true, delete_status: 'requested' });
+  vi.mocked(updateSessionModel).mockReset().mockResolvedValue({ session_id: 'A', model: 'model', available_models: ['model'] });
   vi.mocked(streamChat).mockReset().mockImplementation(async (_s, _m, _a, _h, signal) => new Promise((_resolve, reject) => {
     signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
   }));
@@ -179,5 +189,130 @@ describe('actual App recovery', () => {
     expect(resumeRun).toHaveBeenCalledTimes(1);
     expect(cancelRun).not.toHaveBeenCalled();
     expect(sessionStorage.getItem('igraph-run-watch-paused:v1:recovery-user:A')).toBeNull();
+  });
+  it('ignores previous-account loads that finish after switching identities', async () => {
+    let resolveOldProjects!: (value: { projects: Array<{ project_id: string; user_id: string; name: string }> }) => void;
+    let resolveOldModels!: (value: { models: Array<{ model_id: string; display_name: string; base_url: string }> }) => void;
+    const oldProjects = new Promise<{ projects: Array<{ project_id: string; user_id: string; name: string }> }>(resolve => { resolveOldProjects = resolve; });
+    const oldModels = new Promise<{ models: Array<{ model_id: string; display_name: string; base_url: string }> }>(resolve => { resolveOldModels = resolve; });
+    vi.mocked(listProjects)
+      .mockReset()
+      .mockImplementationOnce(() => oldProjects)
+      .mockResolvedValue({ projects: [] });
+    vi.mocked(listSessions)
+      .mockReset()
+      .mockResolvedValue({ sessions: [{ session_id: 'next-session', title: 'Next Account Session' }] });
+    vi.mocked(listCustomModels)
+      .mockReset()
+      .mockImplementationOnce(() => oldModels)
+      .mockResolvedValue({ models: [{ model_id: 'next-custom', display_name: 'Next custom', base_url: 'https://next.invalid/v1' }] });
+    window.history.replaceState({}, '', '/');
+    const { container } = render(<App />);
+    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listCustomModels).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
+    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
+    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'next-user' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(container.textContent).toContain('Next Account Session'));
+    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listCustomModels).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      resolveOldProjects({ projects: [{ project_id: 'old-project', user_id: 'recovery-user', name: 'Old Account Project' }] });
+      resolveOldModels({ models: [{ model_id: 'old-custom', display_name: 'Old custom', base_url: 'https://old.invalid/v1' }] });
+      await Promise.resolve();
+    });
+
+    expect(listSessions).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain('Old Account Project');
+    fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
+    expect(screen.getByRole('button', { name: 'next-custom' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'old-custom' })).toBeNull();
+  });
+  it('releases the global busy state when an account changes during project loading', async () => {
+    let resolveOldConversations!: (value: { conversations: [] }) => void;
+    const oldConversations = new Promise<{ conversations: [] }>(resolve => { resolveOldConversations = resolve; });
+    vi.mocked(listProjects)
+      .mockReset()
+      .mockResolvedValueOnce({ projects: [{ project_id: 'old-project', user_id: 'recovery-user', name: 'Old Account Project' }] })
+      .mockResolvedValue({ projects: [] });
+    vi.mocked(listSessions).mockReset().mockResolvedValue({ sessions: [] });
+    vi.mocked(listProjectConversations).mockReset().mockImplementationOnce(() => oldConversations);
+    window.history.replaceState({}, '', '/');
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Old Account Project' }));
+    await waitFor(() => expect(listProjectConversations).toHaveBeenCalledOnce());
+
+    fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
+    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
+    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'next-user' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '账户：next-user' })).toBeTruthy());
+    await waitFor(() => expect(container.querySelector('.workspace-home-action')).not.toBeNull());
+    const homeAction = container.querySelector('.workspace-home-action') as HTMLButtonElement;
+    expect(homeAction.disabled).toBe(false);
+    await act(async () => {
+      resolveOldConversations({ conversations: [] });
+      await Promise.resolve();
+    });
+    expect(homeAction.disabled).toBe(false);
+  });
+  it('ignores an old model update after switching away from and back to the same account', async () => {
+    let resolveOldUpdate!: (value: { session_id: string; model: string; available_models: string[] }) => void;
+    const oldUpdate = new Promise<{ session_id: string; model: string; available_models: string[] }>(resolve => { resolveOldUpdate = resolve; });
+    let recoveryValidationCount = 0;
+    vi.mocked(validateUser).mockReset().mockImplementation(async identity => {
+      if (identity === 'next-user') return { valid: true, default_model: 'next-model', available_models: ['next-model'] };
+      recoveryValidationCount += 1;
+      return recoveryValidationCount === 1
+        ? { valid: true, default_model: 'model', available_models: ['model', 'old-choice'] }
+        : { valid: true, default_model: 'fresh-a-model', available_models: ['fresh-a-model'] };
+    });
+    vi.mocked(listSessions)
+      .mockReset()
+      .mockResolvedValueOnce({ sessions: [{ session_id: 'A', title: 'Session A', model: 'model' }] })
+      .mockResolvedValue({ sessions: [] });
+    vi.mocked(activateSession).mockResolvedValue({ ...complete(), available_models: ['model', 'old-choice'] });
+    vi.mocked(updateSessionModel).mockReturnValue(oldUpdate);
+
+    render(<App />);
+    const modelTrigger = await screen.findByRole('button', { name: '选择模型' });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(within(screen.getByRole('group', { name: '可用模型' })).getByRole('button', { name: 'old-choice' }));
+    await waitFor(() => expect(updateSessionModel).toHaveBeenCalledWith('A', 'old-choice'));
+
+    act(() => window.history.replaceState({}, '', '/'));
+    fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
+    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
+    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'next-user' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await screen.findByRole('button', { name: '账户：next-user' });
+    fireEvent.click(screen.getByRole('button', { name: '账户：next-user' }));
+    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
+    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'recovery-user' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await screen.findByRole('button', { name: '账户：recovery-user' });
+    fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
+    const nextTrigger = await screen.findByRole('button', { name: '选择模型' });
+    expect(nextTrigger.textContent).toContain('fresh-a-model');
+
+    await act(async () => {
+      resolveOldUpdate({ session_id: 'A', model: 'old-choice', available_models: ['old-choice', 'leaked-model'] });
+      await oldUpdate;
+    });
+
+    expect(nextTrigger.textContent).toContain('fresh-a-model');
+    expect((nextTrigger as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(nextTrigger);
+    const modelGroup = screen.getByRole('group', { name: '可用模型' });
+    expect(within(modelGroup).queryByRole('button', { name: 'old-choice' })).toBeNull();
+    expect(within(modelGroup).queryByRole('button', { name: 'leaked-model' })).toBeNull();
   });
 });

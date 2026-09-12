@@ -291,7 +291,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
   async function useDataset() {
     if (!graph || !state || !onUse) return;
     setBusy('use'); setError('');
-    try { await onUse({ ...dataset, status: 'ready' }); onClose(); }
+    try { await onUse({ ...dataset, status: 'ready' }); if (alive.current) onClose(); }
     catch (cause) { if (alive.current) handleFailure(cause); }
     finally { if (alive.current) setBusy(''); }
   }

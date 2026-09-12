@@ -22,7 +22,7 @@ export function setUserId(value: string) { localStorage.setItem(USER_KEY, value)
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   const userId = getUserId();
-  if (userId) headers.set('X-User-ID', userId);
+  if (userId && !headers.has('X-User-ID')) headers.set('X-User-ID', userId);
   return fetch(`${API_BASE}${path}`, { ...options, headers });
 }
 

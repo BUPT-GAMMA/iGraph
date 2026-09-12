@@ -17,11 +17,11 @@ function toolList(tools?: ToolCall[]) {
     const epochs = Number(progress.epochs);
     const hasEpoch = Number.isFinite(epoch) && Number.isFinite(epochs) && epochs > 0;
     const progressLabel = hasEpoch ? `轮次 ${epoch}/${epochs}` : progress.message;
-    return <div className="tool-row" key={`${tool.tool}-${index}`}>
+    const statusLabel = tool.done ? '已完成' : progressLabel ? String(progressLabel) : '运行中';
+    return <div className={`tool-row ${tool.done ? 'done' : 'running'}`} key={`${tool.tool}-${index}`} role="status" aria-label={`${tool.tool || 'graph_tool'}：${statusLabel}`} title={`${tool.tool || 'graph_tool'} · ${statusLabel}`}>
       <span className={tool.done ? 'tool-state done' : 'tool-state'}>{tool.done ? <Icon name="check" size={12} /> : <span className="loader" />}</span>
       <span>{tool.tool || 'graph_tool'}</span>
       {progressLabel ? <span className="tool-progress-label">{String(progressLabel)}</span> : null}
-      <span className="tool-time">{tool.done ? '完成' : '运行中'}</span>
     </div>;
   })}</div>;
 }
@@ -153,6 +153,12 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
   const previousLatestUserRef = useRef<string | undefined>(undefined);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const latestUserId = [...messages].reverse().find(message => message.role === 'user')?.id;
+  let liveAssistantIndex = -1;
+  if (inputProps.loading) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === 'assistant') { liveAssistantIndex = index; break; }
+    }
+  }
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const element = scrollRef.current;
@@ -193,8 +199,14 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
 
   return <main className="chat-pane">
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>开始在 <span className="empty-project-name">{emptyProjectName}</span> 中图分析</> : '开始图分析'}</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange('请检查当前图的结构和基本属性')}>检查图结构</button><button onClick={() => inputProps.onChange('请计算节点的度数并找出最大度节点')}>计算图节点度数</button><button onClick={() => inputProps.onChange('请帮我进行社区检测')}>进行社区检测</button></div> : null}</div> : messages.map((message, index) => <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}><div className={`message-avatar ${message.role}`}>{message.role === 'assistant' ? <Icon name="spark" size={15} /> : 'A'}</div><div className="message-body"><div className="message-label">{message.role === 'assistant' ? 'iGraph 助手' : '你'}</div><div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{planCard(message.plan)}{toolList(message.tools)}{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>)}
-      {inputProps.loading && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{planCard(plan)}{toolList(runTools)}</div> : null}
+      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>开始在 <span className="empty-project-name">{emptyProjectName}</span> 中图分析</> : '开始图分析'}</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange('请检查当前图的结构和基本属性')}>检查图结构</button><button onClick={() => inputProps.onChange('请计算节点的度数并找出最大度节点')}>计算图节点度数</button><button onClick={() => inputProps.onChange('请帮我进行社区检测')}>进行社区检测</button></div> : null}</div> : messages.map((message, index) => {
+        const isAssistant = message.role === 'assistant';
+        const isLiveAssistant = isAssistant && index === liveAssistantIndex;
+        const visibleTools = isLiveAssistant && runTools?.length ? runTools : message.tools;
+        const visiblePlan = isLiveAssistant && plan ? plan : message.plan;
+        return <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}>{isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}<div className="message-body"><div className="message-label">{isAssistant ? 'iGraph 助手' : '你'}</div>{isAssistant ? toolList(visibleTools) : null}{isAssistant ? planCard(visiblePlan) : null}<div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>;
+      })}
+      {inputProps.loading && liveAssistantIndex < 0 && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{toolList(runTools)}{planCard(plan)}</div> : null}
       {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图已加载 · 在右侧工作台查看</button> : null}
     </div>
     {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label="滚动到最新消息" title="滚动到最新消息"><Icon name="chevron" size={18} /></button></div> : null}

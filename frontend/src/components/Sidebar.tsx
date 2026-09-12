@@ -4,6 +4,8 @@ import type { Project, Session } from '../types';
 import { Icon } from './Icon';
 
 function sessionTitle(session: Session) { return session.title || session.preview || session.last_message || '未命名分析'; }
+function noopLoginValueChange(_value: string) { /* Optional account controls are omitted in isolated component tests. */ }
+function noopLogin() { /* Optional account controls are omitted in isolated component tests. */ }
 
 type Props = {
   projects: Project[];
@@ -12,6 +14,11 @@ type Props = {
   activeId?: string;
   activeProjectId?: string;
   userId: string;
+  loginValue?: string;
+  loginError?: string;
+  loginPending?: boolean;
+  onLoginValueChange?: (value: string) => void;
+  onLogin?: () => void | Promise<void>;
   dark: boolean;
   onTheme: () => void;
   onMemory: () => void;
@@ -41,12 +48,16 @@ function runStatusLabel(status?: string) {
   return '';
 }
 
-export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, dark, onTheme, onMemory, onSkills, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [switchingAccount, setSwitchingAccount] = useState(false);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
   const projectMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const accountTriggerRef = useRef<HTMLButtonElement | null>(null);
   const independentSessions = sessions.filter(session => !session.project_id);
   const activeSessionProjectId = sessions.find(session => session.session_id === activeId)?.project_id;
 
@@ -89,6 +100,34 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
     };
   }, [menuProjectId]);
 
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    function closeOnOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (accountMenuRef.current?.contains(target) || accountTriggerRef.current?.contains(target)) return;
+      setAccountMenuOpen(false);
+      setSwitchingAccount(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      setAccountMenuOpen(false);
+      setSwitchingAccount(false);
+      accountTriggerRef.current?.focus();
+    }
+    document.addEventListener('mousedown', closeOnOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [accountMenuOpen]);
+
+  useEffect(() => {
+    if (!userId) return;
+    setAccountMenuOpen(false);
+    setSwitchingAccount(false);
+  }, [userId]);
+
   function toggleProjectMenu(project: Project, trigger: HTMLButtonElement) {
     if (menuProjectId === project.project_id) {
       setMenuProjectId(null);
@@ -128,6 +167,10 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
   }
 
   function createTaskFromContext() {
+    if (!userId) {
+      setAccountMenuOpen(true);
+      return;
+    }
     const projectId = activeProjectId || activeSessionProjectId;
     if (projectId) onNewInProject(projectId);
     else onNew();
@@ -135,6 +178,12 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
   }
 
   const effectivelyCollapsed = collapsed && !mobileOpen;
+  const accountFormVisible = !userId || switchingAccount;
+
+  function requireAccount(action: () => void) {
+    if (userId) action();
+    else setAccountMenuOpen(true);
+  }
 
   return <>
   <aside className={`sidebar ${effectivelyCollapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
@@ -142,12 +191,12 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
     <div className="sidebar-content" aria-hidden={effectivelyCollapsed}>
     <button className="new-task" onClick={createTaskFromContext}><Icon name="plus" size={18} /> 新建任务</button>
     <nav className="sidebar-utilities" aria-label="知识与能力管理">
-      <button onClick={() => { onMemory(); onCloseMobile(); }}><Icon name="spark" size={16} /><span>记忆</span></button>
-      <button onClick={() => { onSkills(); onCloseMobile(); }}><Icon name="cube" size={16} /><span>技能</span></button>
+      <button onClick={() => requireAccount(() => { onMemory(); onCloseMobile(); })}><Icon name="spark" size={16} /><span>记忆</span></button>
+      <button onClick={() => requireAccount(() => { onSkills(); onCloseMobile(); })}><Icon name="cube" size={16} /><span>技能</span></button>
     </nav>
     <div className="sidebar-scroll">
       <section className="sidebar-projects">
-        <div className="sidebar-section-head"><span>项目</span><button onClick={() => { onNewProject(); onCloseMobile(); }} title="创建项目" aria-label="创建项目"><Icon name="plus" size={15} /></button></div>
+        <div className="sidebar-section-head"><span>项目</span><button onClick={() => requireAccount(() => { onNewProject(); onCloseMobile(); })} title="创建项目" aria-label="创建项目"><Icon name="plus" size={15} /></button></div>
         <div className="project-list">
           {projects.length === 0 ? null : projects.map(project => {
             const expanded = expandedProjects.has(project.project_id);
@@ -170,7 +219,7 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
         </div>
       </section>
       <section className="sidebar-recents">
-        <div className="sidebar-section-head"><span>最近任务</span><button onClick={() => { onNew(); onCloseMobile(); }} title="新建独立会话" aria-label="新建独立会话"><Icon name="plus" size={15} /></button></div>
+        <div className="sidebar-section-head"><span>最近任务</span><button onClick={() => requireAccount(() => { onNew(); onCloseMobile(); })} title="新建独立会话" aria-label="新建独立会话"><Icon name="plus" size={15} /></button></div>
         <div className="session-list">
           {independentSessions.length === 0 ? <div className="sidebar-empty">暂无任务</div> : independentSessions.map(session => <div className={`session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id} title={sessionTitle(session)} onClick={() => { onSelect(session.session_id); onCloseMobile(); }}>
             <Icon name="file" size={15} /><div className="session-copy"><strong><span className="recent-session-name">{sessionTitle(session)}</span></strong><span>{runStatusLabel(runStatuses[session.session_id]) || (session.has_graph ? '已加载图' : '待开始分析')}</span></div>{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title="删除任务" aria-label="删除任务"><Icon name="trash" size={14} /></button>
@@ -178,7 +227,25 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
         </div>
       </section>
     </div>
-    <div className="sidebar-footer"><div className="avatar">{(userId || 'A').slice(0, 1).toUpperCase()}</div><div><strong>{userId}</strong><span>个人工作区</span></div><button className="sidebar-theme" onClick={onTheme} aria-label={dark ? '切换到浅色主题' : '切换到深色主题'} title={dark ? '切换到浅色主题' : '切换到深色主题'}><Icon name={dark ? 'sun' : 'moon'} size={17} /></button></div>
+    <div className="sidebar-footer">
+      <div className="account-area">
+        <button ref={accountTriggerRef} className="account-trigger" onClick={() => { setAccountMenuOpen(current => !current); setSwitchingAccount(false); }} aria-label={userId ? `账户：${userId}` : '打开登录'} aria-haspopup="dialog" aria-expanded={accountMenuOpen}>
+          <span className={`avatar ${userId ? '' : 'guest'}`}>{(userId || '访').slice(0, 1).toUpperCase()}</span>
+          <span className="account-copy"><strong>{userId || '未登录'}</strong><span>{userId ? '个人工作区' : '点击头像登录'}</span></span>
+          <Icon name="chevron" size={14} />
+        </button>
+        {accountMenuOpen ? <div ref={accountMenuRef} className="account-popover" role="dialog" aria-label="账户">
+          <div className="account-popover-head"><span>{userId ? '当前账户' : '欢迎使用 iGraph'}</span><strong>{userId || '登录后同步你的项目与会话'}</strong></div>
+          {accountFormVisible ? <form className="account-login-form" onSubmit={event => { event.preventDefault(); void onLogin(); }}>
+            <label htmlFor="sidebar-user-id">用户 ID</label>
+            <input id="sidebar-user-id" autoFocus value={loginValue} onChange={event => onLoginValueChange(event.target.value)} placeholder="请输入用户 ID" autoComplete="username" disabled={loginPending} />
+            {loginError ? <span className="account-login-error" role="alert">{loginError}</span> : null}
+            <div className="account-login-actions">{userId ? <button type="button" className="account-cancel" onClick={() => setSwitchingAccount(false)}>取消</button> : null}<button type="submit" className="account-login-submit" disabled={loginPending || !loginValue.trim()}>{loginPending ? '正在验证…' : '登录'}</button></div>
+          </form> : <button className="account-switch" type="button" onClick={() => setSwitchingAccount(true)}><Icon name="move" size={15} /> 使用其他用户登录</button>}
+        </div> : null}
+      </div>
+      <button className="sidebar-theme" onClick={onTheme} aria-label={dark ? '切换到浅色主题' : '切换到深色主题'} title={dark ? '切换到浅色主题' : '切换到深色主题'}><Icon name={dark ? 'sun' : 'moon'} size={17} /></button>
+    </div>
     </div>
   </aside>
   {menuProject && menuPosition ? createPortal(<div ref={projectMenuRef} className="project-action-menu project-action-popover" role="menu" aria-label={`${menuProject.name} 项目操作`} style={menuPosition}>
