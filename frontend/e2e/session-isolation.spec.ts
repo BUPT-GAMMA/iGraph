@@ -37,13 +37,15 @@ test('composer automatically fits two to six lines, reflows and resets after sen
     await expect.poll(visibleRows).toBe(2);
     await expect(composer).toHaveCSS('overflow-y', 'hidden');
 
-    const wrapped = '自动换行'.repeat(30);
+    const wrapped = '自动换行'.repeat(40);
     await composer.fill(wrapped);
     await expect.poll(visibleRows).toBeGreaterThan(2);
     await expect.poll(visibleRows).toBeLessThan(6);
     const desktopRows = await visibleRows();
+    const desktopWidth = await composer.evaluate(element => element.clientWidth);
     await page.getByRole('button', { name: '收起左侧栏' }).click();
-    await expect.poll(visibleRows).toBeLessThan(desktopRows);
+    await expect.poll(() => composer.evaluate(element => element.clientWidth)).toBeGreaterThan(desktopWidth);
+    await expect.poll(visibleRows).toBeLessThanOrEqual(desktopRows);
     await page.setViewportSize({ width: 390, height: 844 });
     await expect.poll(visibleRows).toBe(6);
     await expect(composer).toHaveCSS('overflow-y', 'auto');
@@ -53,6 +55,25 @@ test('composer automatically fits two to six lines, reflows and resets after sen
   } finally {
     await request.delete(`${api}/${sid}`);
   }
+});
+
+test('the model picker stays inside a compact mobile viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto('/?session=session-a');
+  const main = await page.locator('.main-column').boundingBox();
+  expect(main).not.toBeNull();
+  expect(main!.x).toBe(0);
+  expect(main!.width).toBe(320);
+  await expect(page.getByRole('button', { name: '发送' })).toBeInViewport();
+  await page.getByRole('button', { name: '选择模型' }).click();
+
+  const menu = page.getByRole('group', { name: '可用模型' });
+  await expect(menu).toBeVisible();
+  const box = await menu.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
 test('both docked panel toggles remain reachable in the same screen position', async ({ page }) => {
@@ -102,7 +123,10 @@ await expect(page.getByLabel('关闭图工作台')).toHaveCount(0);
 
 test('global new task follows project context while the recent-task action stays independent', async ({ page }) => {
   await page.goto('/?session=project-session');
-  await page.getByRole('button', { name: '新建任务', exact: true }).click();
+  await page
+    .getByRole('complementary')
+    .getByRole('button', { name: '新建任务', exact: true })
+    .click();
   await expect(page).toHaveURL('/?project=project-1&new=1');
   await expect(page.getByRole('heading', { name: '开始在 E2E Project 中图分析', exact: true })).toBeVisible();
   await expect(page.locator('.project-row').filter({ hasText: 'E2E Project' })).toHaveClass(/selected/);

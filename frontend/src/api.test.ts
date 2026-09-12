@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
-import { ApiError, consumeSseResponse, parseGraphDataResponse } from './api';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser } from './api';
+
+afterEach(() => {
+  localStorage.clear();
+  vi.unstubAllGlobals();
+});
 
 function responseFromChunks(chunks: string[]) {
   const encoder = new TextEncoder();
@@ -10,6 +15,23 @@ function responseFromChunks(chunks: string[]) {
     },
   }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
+
+describe('authentication headers', () => {
+  it('preserves the explicit user being validated when another user is cached', async () => {
+    localStorage.setItem(USER_KEY, 'cached-user');
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ valid: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetcher);
+
+    await validateUser('next-user');
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    const headers = new Headers(fetcher.mock.calls[0][1]?.headers);
+    expect(headers.get('X-User-ID')).toBe('next-user');
+  });
+});
 
 describe('SSE parser', () => {
   it('handles UTF-8 byte splits, CRLF across chunks, comments and multiline data', async () => {

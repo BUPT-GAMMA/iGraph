@@ -76,6 +76,7 @@ export type ConversationState = {
 };
 
 export type ConversationAction =
+  | { type: 'RESET' }
   | { type: 'ENSURE_SESSION'; sessionId: string; model?: string; accessedAt?: number }
   | { type: 'SET_ACTIVE_SESSION'; sessionId: string | null; model?: string; accessedAt?: number }
   | { type: 'OPEN_DRAFT'; draft: NewConversationDraft }
@@ -605,6 +606,7 @@ function graphStateAfterHydration(
 }
 
 export function conversationReducer(state: ConversationState, action: ConversationAction): ConversationState {
+  if (action.type === 'RESET') return initialConversationState;
   if (action.type === 'OPEN_DRAFT') {
     const current = state.draftsByScope[draftScopeKey(action.draft.projectId)];
     const draft = current || action.draft;

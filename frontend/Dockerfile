@@ -12,6 +12,7 @@ COPY frontend/tsconfig.json frontend/tsconfig.node.json frontend/vite.config.ts 
 COPY frontend/index.html ./index.html
 COPY frontend/src ./src
 COPY frontend/public/figures ./public/figures
+COPY frontend/public/model-providers ./public/model-providers
 RUN pnpm build
 
 FROM ${NGINX_IMAGE}

@@ -74,9 +74,25 @@ function streamRun(response, sessionId) {
     'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
   });
-  send(0, [{ type: 'model_turn_start', run_id: runId }]);
-  setTimeout(() => { run.content = `${prefix}-response-`; send(1, [{ type: 'token', message_id: `assistant:${runId}`, content: run.content }]); }, 50);
-  setTimeout(() => { run.content += 'complete'; send(2, [{ type: 'token', message_id: `assistant:${runId}`, content: 'complete' }]); }, sessionId === 'session-a' ? 650 : 180);
+  send(0, [
+    { type: 'model_turn_start', run_id: runId },
+    { type: 'tool_call', tool: 'degree_analysis', call_id: `${runId}-degree`, args: {} },
+    { type: 'tool_call', tool: 'community_detection', call_id: `${runId}-community`, args: {} },
+  ]);
+  setTimeout(() => {
+    run.content = `${prefix}-response-`;
+    send(1, [
+      { type: 'tool_result', tool: 'degree_analysis', call_id: `${runId}-degree`, result: { success: true }, done: true },
+      { type: 'token', message_id: `assistant:${runId}`, content: run.content },
+    ]);
+  }, 50);
+  setTimeout(() => {
+    run.content += 'complete';
+    send(2, [
+      { type: 'tool_result', tool: 'community_detection', call_id: `${runId}-community`, result: { success: true }, done: true },
+      { type: 'token', message_id: `assistant:${runId}`, content: 'complete' },
+    ]);
+  }, sessionId === 'session-a' ? 650 : 180);
   setTimeout(() => {
     run.status = 'completed';
     send(3, [{ type: 'done', message_id: `assistant:${runId}` }]);
@@ -204,6 +220,6 @@ const server = http.createServer(async (request, response) => {
   return json(response, 404, { detail: `Unhandled fake route: ${request.method} ${url.pathname}` });
 });
 
-server.listen(11109, '127.0.0.1');
+server.listen(11109, process.env.FAKE_BACKEND_HOST || '127.0.0.1');
 
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close(() => process.exit(0)));

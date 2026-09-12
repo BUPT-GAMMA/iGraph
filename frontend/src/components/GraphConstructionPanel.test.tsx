@@ -42,6 +42,22 @@ describe('graph construction workflow', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭构图工作台' }));
     expect(close).toHaveBeenCalledOnce();
   });
+  it('does not close a replacement panel when an old use request finishes after unmount', async () => {
+    let resolveUse!: () => void;
+    const pendingUse = new Promise<void>(resolve => { resolveUse = resolve; });
+    const close = vi.fn();
+    const use = vi.fn(() => pendingUse);
+    const view = render(<GraphConstructionPanel dataset={dataset} onClose={close} onSaved={vi.fn()} onUse={use} />);
+    await screen.findByLabelText('测试图画布');
+    fireEvent.click(screen.getByRole('button', { name: '在当前会话使用' }));
+    expect(use).toHaveBeenCalledOnce();
+    view.unmount();
+    await act(async () => {
+      resolveUse();
+      await pendingUse;
+    });
+    expect(close).not.toHaveBeenCalled();
+  });
   it('preserves the source-only state while construction algorithms are unavailable', async () => {
     mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: false });
     render(<GraphConstructionPanel dataset={{ ...dataset, status: 'source_ready' }} onClose={vi.fn()} onSaved={vi.fn()} />);
