@@ -68,6 +68,8 @@ export type ComposerProps = {
 export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
@@ -100,6 +102,39 @@ export function Composer({ value, model, models, customModels = [], activeDatase
     return () => { observer?.disconnect(); window.removeEventListener('resize', resize); };
   }, []);
   useEffect(() => { if (!disabled) textareaRef.current?.focus(); }, [focusRequest, disabled]);
+  useLayoutEffect(() => {
+    if (!modelOpen) return;
+    const composer = composerRef.current;
+    const picker = modelPickerRef.current;
+    const menu = modelMenuRef.current;
+    if (!composer || !picker || !menu) return;
+    const mainColumn = composer.closest<HTMLElement>('.main-column');
+    const positionMenu = () => {
+      const bounds = composer.getBoundingClientRect();
+      if (bounds.width <= 0) return;
+      // Short model names shrink the trigger. Keep its menu inside the composer
+      // instead of letting right alignment extend into the clipped sidebar.
+      menu.style.maxWidth = `${Math.max(0, bounds.width - 16)}px`;
+      menu.style.maxHeight = '';
+      menu.style.transform = 'none';
+      // Keep the upward-opening list below the chat's clipped top edge in short windows.
+      const top = Math.max(0, mainColumn?.getBoundingClientRect().top ?? 0);
+      const availableHeight = Math.max(0, menu.getBoundingClientRect().bottom - top - 8);
+      const cssMaxHeight = getComputedStyle(menu).maxHeight;
+      menu.style.maxHeight = cssMaxHeight && cssMaxHeight !== 'none'
+        ? `min(${cssMaxHeight}, ${availableHeight}px)` : `${availableHeight}px`;
+      const menuBounds = menu.getBoundingClientRect();
+      const left = Math.max(bounds.left + 8, Math.min(menuBounds.left, bounds.right - 8 - menuBounds.width));
+      menu.style.transform = `translateX(${left - menuBounds.left}px)`;
+    };
+    positionMenu();
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(positionMenu);
+    observer?.observe(composer);
+    observer?.observe(picker);
+    if (mainColumn) observer?.observe(mainColumn);
+    window.addEventListener('resize', positionMenu);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', positionMenu); };
+  }, [modelOpen]);
   useEffect(() => {
     if (!modelOpen) return;
     function closeOnOutside(event: MouseEvent) {
@@ -146,7 +181,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
   }
   function chooseModel(next: string) { setModelOpen(false); if (next !== model) onModelChange(next); }
   return <div className="composer-wrap">
-    <div className="composer">
+    <div ref={composerRef} className="composer">
       {attachments.length ? <div className="attachment-list">{attachments.map(attachment => {
         const status = attachmentStatus(attachment);
         const id = attachmentId(attachment);
@@ -163,7 +198,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
             <span className="composer-model-value">{model}</span>
             <span className="composer-model-chevron"><Icon name="chevron" size={10} /></span>
           </button>
-          {modelOpen ? <div className="composer-model-menu" role="group" aria-label="可用模型">
+          {modelOpen ? <div ref={modelMenuRef} className="composer-model-menu" role="group" aria-label="可用模型">
             <div className="composer-model-section">模型</div>
             {builtInOptions.map(option => <button type="button" aria-pressed={option === model} className={`composer-model-option ${option === model ? 'is-selected' : ''}`} key={option} onClick={() => chooseModel(option)}><span className="composer-option-mark"><ModelProviderIcon modelId={option} size={15} /></span><span>{option}</span>{option === model ? <Icon name="check" size={14} /> : null}</button>)}
             {customModels.length ? <div className="composer-model-section">自定义模型</div> : null}
