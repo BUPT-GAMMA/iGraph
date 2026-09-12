@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { activateSession, ApiError, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, renameProjectDataset, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
+import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, renameProjectDataset, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
@@ -686,6 +686,29 @@ function App() {
     } else showWorkspaceHome(false);
   }
 
+  useLayoutEffect(() => bindRequestAccount(userId), [userId]);
+  useEffect(() => {
+    if (demoMode) return;
+    const synchronizeAccount = () => {
+      const nextUserId = getUserId();
+      if (nextUserId !== identityRef.current) resetAccount(nextUserId);
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && (event.key === USER_KEY || event.key === null)) synchronizeAccount();
+    };
+    const handleVisibility = () => { if (document.visibilityState === 'visible') synchronizeAccount(); };
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('focus', synchronizeAccount);
+    document.addEventListener('visibilitychange', handleVisibility);
+    // Read the current value, not event.newValue: queued events may already be old.
+    synchronizeAccount();
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('focus', synchronizeAccount);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [userId]);
+
   useEffect(() => {
     if (!userId || demoMode) return;
     const identity = userId;
@@ -880,52 +903,68 @@ function App() {
     setRecoveredDrafts(remaining);
   }
 
+  function resetAccount(nextUserId: string) {
+    const previousUserId = identityRef.current;
+    if (nextUserId === previousUserId) return;
+    accountEpochRef.current += 1;
+    identityRef.current = nextUserId;
+    for (const controller of preparationControllersRef.current.values()) controller.abort();
+    preparationControllersRef.current.clear();
+    for (const controller of draftCreationControllersRef.current.values()) controller.abort();
+    draftCreationControllersRef.current.clear();
+    for (const controller of hydrationControllersRef.current.values()) controller.abort();
+    hydrationControllersRef.current.clear();
+    hydrationVersionsRef.current.clear();
+    recoveryRef.current?.reset();
+    cancellationRef.current?.reset();
+    conversationRef.current = initialConversationState;
+    dispatchConversation({ type: 'RESET' });
+    setBusy(false);
+    setSessions([]);
+    setProjects([]);
+    setRecoveredDrafts([]);
+    setDatasetsByProject({});
+    setCustomModels([]);
+    setActiveProject(null);
+    setDatasetOpen(false);
+    setConstructionDataset(null);
+    setManagementOpen(false);
+    setProjectEditor(null);
+    setProjectEditorTarget(null);
+    setDeleteProjectTarget(null);
+    setMobileSidebarOpen(false);
+    setWorkspaceError('');
+    setDefaultModel(DEFAULT_MODEL);
+    setAvailableModels([DEFAULT_MODEL]);
+    setLoginPending(false);
+    setLoginError('');
+    setLoginValue(nextUserId);
+    setUser(nextUserId);
+    // Preserve a signed-out deep link, but never reopen another account's route.
+    if (previousUserId) writeWorkspaceRoute({ kind: 'home' }, true);
+  }
+
   async function login() {
     const value = loginValue.trim(); if (!value) return setLoginError('请输入用户 ID');
+    const accountEpoch = accountEpochRef.current;
+    const storedUserId = getUserId();
+    const stale = () => accountEpochRef.current !== accountEpoch || getUserId() !== storedUserId;
     setLoginPending(true);
     try {
       const response = await validateUser(value);
+      if (stale()) return;
       if (response.valid === false) throw new Error('用户 ID 无效');
       const selectedModel = response.default_model || DEFAULT_MODEL;
-      if (value !== userId) {
-        accountEpochRef.current += 1;
-        identityRef.current = value;
-        for (const controller of preparationControllersRef.current.values()) controller.abort();
-        preparationControllersRef.current.clear();
-        for (const controller of draftCreationControllersRef.current.values()) controller.abort();
-        draftCreationControllersRef.current.clear();
-        for (const controller of hydrationControllersRef.current.values()) controller.abort();
-        hydrationControllersRef.current.clear();
-        hydrationVersionsRef.current.clear();
-        recoveryRef.current?.reset();
-        cancellationRef.current?.reset();
-        setBusy(false);
-        setSessions([]);
-        setProjects([]);
-        setRecoveredDrafts([]);
-        setDatasetsByProject({});
-        setCustomModels([]);
-        setActiveProject(null);
-        setDatasetOpen(false);
-        setConstructionDataset(null);
-        setManagementOpen(false);
-        setProjectEditor(null);
-        setProjectEditorTarget(null);
-        setDeleteProjectTarget(null);
-        setMobileSidebarOpen(false);
-        setWorkspaceError('');
-        dispatchConversation({ type: 'RESET' });
-      }
+      setUserId(value);
+      resetAccount(value);
       setDefaultModel(selectedModel);
       setAvailableModels(normalizedModels(response.available_models, selectedModel));
-      setUserId(value);
-      setUser(value);
       setLoginValue(value);
       setLoginError('');
     } catch (cause: any) {
-      setLoginError(cause.message || '登录失败');
+      if (!stale()) setLoginError(cause.message || '登录失败');
     } finally {
-      setLoginPending(false);
+      if (accountEpochRef.current === accountEpoch) setLoginPending(false);
     }
   }
   function newTask(targetProjectId: string | null = null, sourceProjects = projects, updateUrl = true) {
