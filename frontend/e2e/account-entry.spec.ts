@@ -5,7 +5,7 @@ test('shows the workspace before login and authenticates from the avatar menu', 
 
   await expect(page.locator('.login-screen')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: '探索图数据，从一个问题开始' })).toBeVisible();
-  await expect(page.getByText('无需再经过单独的登录开始页')).toBeVisible();
+  await expect(page.getByText('无需再经过单独的登录开始页')).toHaveCount(0);
 
   await page.getByRole('button', { name: '打开登录' }).click();
   await expect(page.getByRole('dialog', { name: '账户' })).toBeVisible();
