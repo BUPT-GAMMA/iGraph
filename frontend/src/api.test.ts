@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser } from './api';
+import { ApiError, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser } from './api';
+
+let unbindAccount = () => {};
 
 afterEach(() => {
+  unbindAccount();
   localStorage.clear();
   vi.unstubAllGlobals();
 });
@@ -17,8 +20,41 @@ function responseFromChunks(chunks: string[]) {
 }
 
 describe('authentication headers', () => {
+  it.each([
+    ['session creation', () => createSession({ initialMessagePreview: 'private draft' })],
+    ['chat', () => streamChat('A', 'private draft', [], {}, new AbortController().signal)],
+    ['session upload', () => uploadFile('A', new File(['private'], 'private.csv'))],
+    ['dataset upload', () => uploadProjectDataset(null, new File(['private'], 'private.csv'))],
+  ])('blocks %s before storage synchronization can run', async (_name, send) => {
+    unbindAccount = bindRequestAccount('account-a');
+    localStorage.setItem(USER_KEY, 'account-b');
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+
+    await expect(send()).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('blocks requests when another tab clears the account', async () => {
+    unbindAccount = bindRequestAccount('account-a');
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    await expect(createSession()).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('uses the rendered account after synchronization', async () => {
+    localStorage.setItem(USER_KEY, 'account-b');
+    unbindAccount = bindRequestAccount('account-b');
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ session_id: 'B' })));
+    vi.stubGlobal('fetch', fetcher);
+    await createSession({ initialMessagePreview: 'B draft' });
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('account-b');
+  });
+
   it('preserves the explicit user being validated when another user is cached', async () => {
     localStorage.setItem(USER_KEY, 'cached-user');
+    unbindAccount = bindRequestAccount('rendered-user');
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ valid: true }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

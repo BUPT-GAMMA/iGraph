@@ -19,10 +19,27 @@ export type CustomModel = {
 export function getUserId() { return localStorage.getItem(USER_KEY) || ''; }
 export function setUserId(value: string) { localStorage.setItem(USER_KEY, value); }
 
+let requestAccount: { userId: string } | undefined;
+
+/** Bind requests to the account rendered by the mounted workspace. */
+export function bindRequestAccount(userId: string) {
+  const account = { userId };
+  requestAccount = account;
+  return () => { if (requestAccount === account) requestAccount = undefined; };
+}
+
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
-  const userId = getUserId();
-  if (userId && !headers.has('X-User-ID')) headers.set('X-User-ID', userId);
+  if (!headers.has('X-User-ID')) {
+    const storedUserId = getUserId();
+    const userId = requestAccount?.userId ?? storedUserId;
+    // A storage event can arrive after a click. Never send the old workspace's
+    // content with an identity read from another tab; keep the header pinned.
+    if (userId !== storedUserId) {
+      throw new ApiError(409, '账户已在其他标签页切换，请等待同步后重试', null, null, null, 'ACCOUNT_CHANGED');
+    }
+    if (userId) headers.set('X-User-ID', userId);
+  }
   return fetch(`${API_BASE}${path}`, { ...options, headers });
 }
 

@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => {} }) }));
 vi.mock('./components/GraphWorkspace', () => ({ GraphWorkspace: () => null }));
 vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
-  getUserId: () => 'recovery-user',
   validateUser: vi.fn().mockResolvedValue({ valid: true, default_model: 'model' }),
   listSessions: vi.fn().mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] }),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }), listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
@@ -16,7 +15,7 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   visualizeGraph: vi.fn().mockRejectedValue(new Error('no graph')),
 }));
 import App from './main';
-import { activateSession, cancelRun, deleteSession, getCapabilities, getRunControl, getRunSnapshot, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, resumeRun, streamChat, updateSessionModel, validateUser, visualizeGraph } from './api';
+import { USER_KEY, activateSession, cancelRun, deleteSession, getCapabilities, getRunControl, getRunSnapshot, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, resumeRun, streamChat, updateSessionModel, validateUser, visualizeGraph } from './api';
 
 const active = (content = 'A') => ({ model: 'model', has_graph: false,
   messages: [{ id: 'assistant:r', role: 'assistant' as const, content }],
@@ -27,7 +26,7 @@ function navigate(id: string) {
 }
 let restoreStorage = () => {};
 beforeEach(() => {
-  sessionStorage.clear(); localStorage.clear(); window.history.replaceState({}, '', '/?session=A');
+  sessionStorage.clear(); localStorage.clear(); localStorage.setItem(USER_KEY, 'recovery-user'); window.history.replaceState({}, '', '/?session=A');
   vi.mocked(validateUser).mockReset().mockResolvedValue({ valid: true, default_model: 'model' });
   vi.mocked(listProjects).mockReset().mockResolvedValue({ projects: [] });
   vi.mocked(listSessions).mockReset().mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] });
@@ -55,6 +54,66 @@ beforeEach(() => {
 afterEach(() => { cleanup(); restoreStorage(); restoreStorage = () => {}; });
 
 describe('actual App recovery', () => {
+  it.each(['storage', 'focus', 'visibility'])('synchronizes accounts on %s and discards the old stream', async trigger => {
+    vi.mocked(activateSession).mockResolvedValue(active('old account response'));
+    const { container } = render(<App />);
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
+    const call = vi.mocked(resumeRun).mock.calls[0];
+    vi.mocked(listSessions).mockResolvedValue({ sessions: [{ session_id: 'next', title: 'Next Account Session' }] });
+    act(() => {
+      localStorage.setItem(USER_KEY, 'next-user');
+      if (trigger === 'storage') window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, newValue: 'next-user', storageArea: localStorage }));
+      else if (trigger === 'focus') window.dispatchEvent(new Event('focus'));
+      else document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await screen.findByRole('button', { name: '账户：next-user' });
+    await screen.findByText('Next Account Session');
+    expect(call[4].aborted).toBe(true);
+    expect(window.location.search).toBe('');
+    act(() => call[3].onBatch?.({ protocol_version: 2, session_id: 'A', run_id: 'r', event_index: 101,
+      events: [{ type: 'token', content: 'late private output' }] }));
+    expect(container.textContent).not.toContain('old account response');
+    expect(container.textContent).not.toContain('late private output');
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it.each([USER_KEY, null])('clears the workspace when another tab removes the account (%s)', async key => {
+    vi.mocked(activateSession).mockResolvedValue(active());
+    render(<App />);
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
+    const signal = vi.mocked(resumeRun).mock.calls[0][4];
+    act(() => {
+      if (key === null) localStorage.clear(); else localStorage.removeItem(USER_KEY);
+      window.dispatchEvent(new StorageEvent('storage', { key, newValue: null, storageArea: localStorage }));
+    });
+    await screen.findByRole('button', { name: '打开登录' });
+    expect(signal.aborted).toBe(true);
+    expect(screen.queryByText('Session A')).toBeNull();
+    expect(screen.queryByRole('button', { name: '发送' })).toBeNull();
+  });
+
+  it('does not overwrite a synchronized identity with an old login response', async () => {
+    window.history.replaceState({}, '', '/');
+    let finishLogin!: (value: { valid: boolean }) => void;
+    const pending = new Promise<{ valid: boolean }>(resolve => { finishLogin = resolve; });
+    render(<App />);
+    await waitFor(() => expect(listSessions).toHaveBeenCalled());
+    vi.mocked(validateUser).mockImplementation(identity => identity === 'stale-login' ? pending : Promise.resolve({ valid: true, default_model: 'model' }));
+    fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
+    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
+    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'stale-login' } });
+    fireEvent.click(screen.getByRole('button', { name: '登录' }));
+    await waitFor(() => expect(validateUser).toHaveBeenCalledWith('stale-login'));
+    act(() => {
+      localStorage.setItem(USER_KEY, 'next-user');
+      window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, newValue: 'next-user', storageArea: localStorage }));
+    });
+    await screen.findByRole('button', { name: '账户：next-user' });
+    await act(async () => { finishLogin({ valid: true }); await pending; });
+    expect(localStorage.getItem(USER_KEY)).toBe('next-user');
+    expect(screen.queryByRole('button', { name: '账户：stale-login' })).toBeNull();
+  });
+
   it.each(['streaming', 'before response'])('removes an accepted deletion during %s and ignores late output', async phase => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     vi.mocked(activateSession).mockResolvedValue(phase === 'streaming' ? active() : { ...complete(), messages: [] });
