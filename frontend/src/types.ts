@@ -26,13 +26,16 @@ export type Project = {
 
 export type ToolCall = {
   tool?: string;
+  job_id?: string;
   call_id?: string;
   args?: unknown;
   done?: boolean;
   progress?: Record<string, unknown>;
   result?: unknown;
   history?: Array<Record<string, unknown>>;
+  status?: 'running' | 'completed' | 'failed' | 'cancelled';
 };
+export type ProcessItem = { id: string; kind: 'reasoning' | 'text' | 'tool'; sequence: number; content?: string; tool?: ToolCall };
 export type ProjectTrainingRun = ToolCall & {
   training_run_id: string;
   session_id: string;
@@ -62,6 +65,7 @@ export type GraphSnapshot = {
 };
 
 export type Message = {
+  regenerate_of?: string | null;
   run_id?: string;
   id?: string;
   role: 'user' | 'assistant' | 'system';
@@ -70,7 +74,11 @@ export type Message = {
   plan?: Plan | null;
   graphs?: GraphSnapshot[];
   reports?: Array<Record<string, unknown>>;
+  attachments?: AttachmentRef[];
   streaming?: boolean;
+  thinking?: Array<{ phase?: string; text?: string; streaming?: boolean }>;
+  processItems?: ProcessItem[];
+  variants?: Array<{ content: string; tools?: ToolCall[]; graphs?: GraphSnapshot[]; reports?: Array<Record<string, unknown>> }>;
 };
 
 export type GraphCommunity = {
@@ -210,6 +218,7 @@ export type DraftAttachment = {
   file?: File;
   fileToken?: string;
   status: 'staged' | 'uploading' | 'uploaded' | 'failed' | 'needs_reselect';
+  progress?: number;
   error?: string;
 };
 export type NewConversationDraft = {

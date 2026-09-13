@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../api';
 import { DrawerShell } from './DrawerShell';
 import { Icon } from './Icon';
 import { SlidingTabs } from './SlidingTabs';
+import { SkillDetails } from './SkillDetails';
 
 type MemoryItem = { memory_id?: string; key?: string; value?: string; category?: string; scope?: string };
 type SkillItem = { name?: string; description?: string; source?: string; risk_level?: string; status?: string };
@@ -44,7 +45,8 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<SkillItem | null>(null);
-  const skillDetailRef = useRef<HTMLDivElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [skillBusy, setSkillBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -54,9 +56,7 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
     request.then(data => { if (tab === 'memory') setMemories(Array.isArray(data.items) ? data.items : []); else setSkills(Array.isArray(data.skills) ? data.skills : []); }).catch(cause => setError(cause.message || '管理数据读取失败')).finally(() => setLoading(false));
   }, [tab]);
 
-  useEffect(() => {
-    if (selectedSkill) skillDetailRef.current?.scrollIntoView?.({ block: 'nearest' });
-  }, [selectedSkill]);
+
 
   const filteredMemories = useMemo(() => { const text = query.trim().toLowerCase(); return memories.filter(item => !text || `${item.key || ''} ${item.value || ''} ${item.category || ''}`.toLowerCase().includes(text)); }, [memories, query]);
   const filteredSkills = useMemo(() => { const text = query.trim().toLowerCase(); return skills.filter(item => !text || `${item.name || ''} ${item.description || ''} ${item.source || ''}`.toLowerCase().includes(text)); }, [skills, query]);
@@ -72,5 +72,31 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
     if (nextTab === 'memory') setSelectedSkill(null);
   }
 
-  return <DrawerShell ariaLabel="记忆与技能" className="management" onClose={onClose}>{requestClose => <><div className="drawer-head"><strong>记忆与技能</strong><button className="plain-icon" onClick={requestClose} aria-label="关闭管理面板"><Icon name="close" size={17} /></button></div><SlidingTabs ariaLabel="管理内容" className="management-tabs" indicatorClassName="management-tab-indicator" options={[{ value: 'memory', label: <>记忆 <span>{memories.length || ''}</span></> }, { value: 'skills', label: <>技能 <span>{skills.length || ''}</span></> }]} value={tab} onChange={changeTab} /><div className="management-search"><Icon name="search" size={14} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tab === 'memory' ? '搜索记忆内容' : '搜索技能'} /></div>{error ? <div className="management-error">{error}</div> : loading ? <div className="drawer-empty">正在读取...</div> : tab === 'memory' ? <div className="management-list">{filteredMemories.length ? filteredMemories.map((item, index) => <div className="memory-row" key={item.memory_id || index}><div className="management-icon"><Icon name="spark" size={15} /></div><div><strong>{item.key || '未命名记忆'}</strong><span>{item.value || '暂无内容'}</span><small>{metadataLabel(item.category || item.scope, '事实')}</small></div><button className="plain-icon danger-icon" onClick={() => deleteMemory(item)} aria-label="删除记忆"><Icon name="trash" size={14} /></button></div>) : <div className="drawer-empty">暂无匹配的记忆</div>}</div> : <div className="management-list">{filteredSkills.length ? filteredSkills.map((item, index) => <button className="skill-row" key={`${item.name || 'skill'}-${index}`} onClick={() => setSelectedSkill(item)}><div className="management-icon"><Icon name="cube" size={15} /></div><div><strong>{item.name || '未命名技能'}</strong><span>{item.description || '暂无描述'}</span><small>{metadataLabel(item.source, '未知来源')}{item.risk_level ? ` · ${metadataLabel(item.risk_level, '')}` : ''}</small></div><Icon name="chevron" size={14} /></button>) : <div className="drawer-empty">暂无匹配的技能</div>}</div>}{selectedSkill ? <div ref={skillDetailRef} className="skill-detail"><div className="inspector-title"><strong>{selectedSkill.name || '技能'}</strong><button className="plain-icon" onClick={() => setSelectedSkill(null)} aria-label="关闭技能详情"><Icon name="close" size={14} /></button></div><p>{selectedSkill.description || '暂无描述'}</p><span>{metadataLabel(selectedSkill.source, '未知来源')}{selectedSkill.status ? ` · ${metadataLabel(selectedSkill.status, '')}` : ''}</span></div> : null}</>}</DrawerShell>;
+  async function uploadSkill(file: File) {
+    setUploading(true); setError('');
+    try {
+      const body = new FormData(); body.append('file', file);
+      const response = await apiFetch('/api/skills/upload', { method: 'POST', body });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '技能上传失败');
+      const data = await readJson('/api/skills?source=all');
+      setSkills(Array.isArray(data.skills) ? data.skills : []);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '技能上传失败'); }
+    finally { setUploading(false); }
+  }
+
+  async function skillAction(name: string, action: 'approve' | 'reject') {
+    if (skillBusy) return;
+    setSkillBusy(true); setError('');
+    try {
+      const response = await apiFetch('/api/skills/' + encodeURIComponent(name) + '/' + action,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (!response.ok) throw new Error('技能审核失败');
+      const data = await readJson('/api/skills?source=all');
+      setSkills(Array.isArray(data.skills) ? data.skills : []); setSelectedSkill(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '技能审核失败'); }
+    finally { setSkillBusy(false); }
+  }
+
+  return <DrawerShell ariaLabel="记忆与技能" className="management" onClose={onClose}>{requestClose => <><div className="drawer-head"><strong>记忆与技能</strong><button className="plain-icon" onClick={requestClose} aria-label="关闭管理面板"><Icon name="close" size={17} /></button></div><SlidingTabs ariaLabel="管理内容" className="management-tabs" indicatorClassName="management-tab-indicator" options={[{ value: 'memory', label: <>记忆 <span>{memories.length || ''}</span></> }, { value: 'skills', label: <>技能 <span>{skills.length || ''}</span></> }]} value={tab} onChange={changeTab} /><div className="management-search">{tab === 'skills' && <label className="skill-upload">{uploading ? '上传中…' : '上传技能 ZIP'}<input aria-label="上传技能 ZIP" type="file" accept=".zip" hidden disabled={uploading} onChange={event => { const file = event.target.files?.[0]; if (file) void uploadSkill(file); event.currentTarget.value = ''; }} /></label>}<Icon name="search" size={14} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tab === 'memory' ? '搜索记忆内容' : '搜索技能'} /></div>{error ? <div className="management-error">{error}</div> : loading ? <div className="drawer-empty">正在读取...</div> : tab === 'memory' ? <div className="management-list">{filteredMemories.length ? filteredMemories.map((item, index) => <div className="memory-row" key={item.memory_id || index}><div className="management-icon"><Icon name="spark" size={15} /></div><div><strong>{item.key || '未命名记忆'}</strong><span>{item.value || '暂无内容'}</span><small>{metadataLabel(item.category || item.scope, '事实')}</small></div><button className="plain-icon danger-icon" onClick={() => deleteMemory(item)} aria-label="删除记忆"><Icon name="trash" size={14} /></button></div>) : <div className="drawer-empty">暂无匹配的记忆</div>}</div> : <div className="management-list">{filteredSkills.length ? filteredSkills.map((item, index) => <button className="skill-row" key={`${item.name || 'skill'}-${index}`} onClick={() => setSelectedSkill(item)}><div className="management-icon"><Icon name="cube" size={15} /></div><div><strong>{item.name || '未命名技能'}</strong><span>{item.description || '暂无描述'}</span><small>{metadataLabel(item.source, '未知来源')}{item.risk_level ? ` · ${metadataLabel(item.risk_level, '')}` : ''}</small></div><Icon name="chevron" size={14} /></button>) : <div className="drawer-empty">暂无匹配的技能</div>}</div>}{selectedSkill ? <SkillDetails closeLabel="关闭技能详情" summary={metadataLabel(selectedSkill.source, '未知来源') + (selectedSkill.status ? ' · ' + metadataLabel(selectedSkill.status, '') : '')} skill={selectedSkill} onClose={() => setSelectedSkill(null)}>{selectedSkill.source === 'review_queue' ? <><button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'approve')}>批准</button><button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'reject')}>拒绝</button></> : null}</SkillDetails> : null}</>}</DrawerShell>;
 }

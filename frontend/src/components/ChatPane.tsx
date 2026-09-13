@@ -2,6 +2,7 @@ import { Fragment, type ReactNode, useCallback, useLayoutEffect, useRef, useStat
 import type { Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { BrandLogo, Icon } from './Icon';
+import { ProcessTimeline } from './ProcessTimeline';
 
 function planCard(plan?: Plan | null) {
   if (!plan?.steps?.length) return null;
@@ -136,6 +137,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   onOpenGraph: () => void;
   runTools?: ToolCall[];
   plan?: Plan | null;
+  onRegenerate?: (message: Message, runId: string) => void;
 };
 
 const BOTTOM_THRESHOLD = 48;
@@ -144,7 +146,12 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onRegenerate, ...inputProps }: ChatPaneProps) {
+  const [copyStatus, setCopyStatus] = useState('');
+  async function copyMessage(content: string) {
+    try { await navigator.clipboard.writeText(content); setCopyStatus('已复制'); }
+    catch { setCopyStatus('复制失败，请手动选择内容'); }
+  }
   const composerAvailable = inputProps.interaction.kind === 'composer';
   const scrollRef = useRef<HTMLDivElement>(null);
   const sticksToBottomRef = useRef(true);
@@ -203,13 +210,15 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
         const visibleTools = isLiveAssistant && runTools?.length ? runTools : message.tools;
+        const previousUser = messages.slice(0, index).reverse().find(item => item.role === 'user');
         const visiblePlan = isLiveAssistant && plan ? plan : message.plan;
-        return <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}>{isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}<div className="message-body"><div className="message-label">{isAssistant ? 'iGraph 助手' : '你'}</div>{isAssistant ? toolList(visibleTools) : null}{isAssistant ? planCard(visiblePlan) : null}<div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>;
+        return <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}>{isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}<div className="message-body"><div className="message-label">{isAssistant ? (message.regenerate_of ? 'iGraph 助手 · 重新生成' : 'iGraph 助手') : '你'}</div>{isAssistant ? (message.processItems?.length ? <ProcessTimeline items={message.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools)) : null}{isAssistant ? planCard(visiblePlan) : null}<div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map(file => <span key={file.file_token}><Icon name="file" size={13} /> {file.filename || '附件'}</span>)}</div> : null}<div className="message-actions">{isAssistant && index === messages.length - 1 && previousUser && message.run_id && onRegenerate && <button type="button" disabled={inputProps.disabled || inputProps.sendBlocked || inputProps.uploading || inputProps.loading || Boolean(inputProps.value.trim()) || Boolean(inputProps.attachments?.length)} title="保留已有回复和上下文；请先发送或清空当前草稿" onClick={() => onRegenerate(previousUser, message.run_id!)}>重新生成</button>}{message.content && <button type="button" onClick={() => void copyMessage(message.content)}>复制</button>}{message.role === 'user' && composerAvailable && <button type="button" disabled={inputProps.disabled || inputProps.sendBlocked} onClick={() => inputProps.onChange(message.content)}>编辑并重发</button>}</div>{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>;
       })}
       {inputProps.loading && liveAssistantIndex < 0 && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{toolList(runTools)}{planCard(plan)}</div> : null}
       {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图已加载 · 在右侧工作台查看</button> : null}
     </div>
     {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label="滚动到最新消息" title="滚动到最新消息"><Icon name="chevron" size={18} /></button></div> : null}
+    {copyStatus && <span role="status" className="message-copy-status">{copyStatus}</span>}
     <ConversationInputArea {...inputProps} />
   </main>;
 }

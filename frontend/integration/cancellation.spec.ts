@@ -125,7 +125,8 @@ test('stopping before session creation completes keeps the draft and blocks a la
 test('a historical training card stops its worker while the new run keeps streaming', async ({ page, request }) => {
   const created = await request.post(`${api}/api/sessions`, { headers: { 'X-User-ID': 'admin' }, data: { model: 'qwen3.6-plus' } });
   const { session_id: sid } = await created.json();
-  expect((await request.post(`${api}/test-seed/${sid}`)).ok()).toBeTruthy();
+  // Current dev waits for tool jobs. Seed the old asynchronous producer explicitly.
+  expect((await request.post(`${api}/test-seed/${sid}?legacy_async=true`)).ok()).toBeTruthy();
   const question = `background-training-card-${Date.now()}`;
   await page.goto(`/?session=${sid}`);
   const composer = page.getByPlaceholder(placeholder);
@@ -138,7 +139,7 @@ test('a historical training card stops its worker while the new run keeps stream
       job.session_id === sid && job.tool_name === 'train' && job.status === 'running' && job.progress > 0)?.job_id || '';
     return jid;
   }, { timeout: 20_000 }).not.toBe('');
-  await page.getByRole('tab', { name: 'ML', exact: true }).click();
+  await page.getByRole('tab', { name: '机器学习', exact: true }).click();
   const stopJob = page.getByRole('button', { name: '终止作业', exact: true }).first();
   await expect(stopJob).toBeVisible();
   const next = `stream-while-old-training-${Date.now()}`;

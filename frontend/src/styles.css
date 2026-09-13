@@ -1553,3 +1553,140 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 @media (max-width: 720px) {
   .composer-model-menu { width: min(286px, calc(100vw - 108px)); }
 }
+
+/* Orchestration process and skill reader. */
+
+.process-panel { margin: 12px auto 16px; max-width: 850px; border: 1px solid rgba(130,150,146,.25); border-radius: 12px; background: rgba(245,249,248,.72); overflow: hidden; }
+
+.process-panel > summary { display:flex; align-items:center; gap:8px; padding:10px 13px; color:#55716c; font-size:12px; cursor:pointer; list-style:none; }
+
+.process-panel > summary::-webkit-details-marker { display:none; }
+
+.process-panel > summary span { margin-left:auto; color:#8b9b98; font-size:11px; }
+
+.process-items { padding: 0 10px 10px; display:grid; gap:7px; }
+
+[data-theme="dark"] .process-panel { background:rgba(45,45,45,.82); border-color:#454545; }
+
+[data-theme="dark"] .process-panel > summary, [data-theme="dark"] .process-reasoning { color:#d0d0d0; }
+
+.plan-card, .tool-list, .process-panel { margin-top: 13px; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; background: var(--surface-subtle); box-shadow: var(--shadow-sm); }
+
+.process-panel > summary { min-height: 42px; padding: 0 13px; display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text-strong); font-size: 12px; font-weight: 700; list-style: none; }
+.process-panel > summary::-webkit-details-marker { display: none; }
+.process-panel > summary::after { content: '⌄'; margin-left: auto; color: var(--text-faint); }
+.process-panel[open] > summary::after { transform: rotate(180deg); }
+
+.process-timeline { border-top: 1px solid var(--border-subtle); }
+.process-item { border-bottom: 1px solid var(--border-subtle); }
+.process-item:last-child { border-bottom: 0; }
+.process-item summary { min-height: 38px; padding: 0 13px; display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+.process-item summary::-webkit-details-marker { display: none; }
+.process-kind { color: var(--text); font-size: 12px; font-weight: 650; }
+.process-summary { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+
+.plan-card, .tool-list, .process-panel, .graph-canvas, .node-inspector, .workspace-list { border-color: transparent; box-shadow: 0 8px 24px rgba(25,40,36,.045); }
+
+.process-timeline, .process-item, .card-heading, .plan-step, .tool-row { border-color: transparent; }
+.process-panel,.plan-card,.tool-list{border:0;border-radius:10px;background:#f6f7f5}
+.process-panel{margin-top:16px}
+.process-panel summary{min-height:38px;padding:0 12px;color:#5f6965}
+.process-timeline{padding:0 12px 8px}
+.process-item{border-top:1px solid #e8ebe8}
+[data-theme="dark"] .process-panel,[data-theme="dark"] .plan-card,[data-theme="dark"] .tool-list{background:#303330}
+.tool-state.done,.step-dot.running,.process-item.is-running .process-marker{color:#167f6d;background:#e2f1ed}
+.process-kind,.card-heading,.plan-step,.tool-row{font-size:13px}
+.process-summary,.tool-time,.process-detail{font-size:12px}
+
+.skill-upload { order: 2; flex: 0 0 auto; padding: 8px 12px; border-radius: 9px; color: #fff; background: #148f82; font-size: 11px; font-weight: 700; cursor: pointer; }
+
+.skill-upload:hover { background: #0b776c; }
+
+
+/* Full Skill document reader, outside the paginated card scroll area. */
+.skill-reader { width: min(860px, calc(100vw - 32px)); height: min(780px, calc(100dvh - 48px)); max-width: none; max-height: none; padding: 0; border: 1px solid #dce5e2; border-radius: 18px; color: #283e39; background: #fff; box-shadow: 0 24px 80px #152e3933; }
+
+.skill-reader[open] { display: flex; flex-direction: column; }
+
+.skill-reader::backdrop { background: #142b365c; backdrop-filter: blur(3px); }
+
+.skill-reader-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 28px; border-bottom: 1px solid #e5ece9; }
+
+.skill-reader-head > div { min-width: 0; }
+
+.skill-reader-head small { color: #71847d; font: 11px ui-monospace, monospace; letter-spacing: .08em; }
+
+.skill-reader-head h2 { margin: 6px 0 0; font-size: 20px; overflow-wrap: anywhere; }
+
+.skill-reader-head button { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 9px; }
+
+.skill-reader-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px 28px; }
+
+.skill-reader-body pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; font: 13px/1.85 ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+.skill-reader-body button, .skill-reader-actions button { padding: 9px 16px; border-radius: 8px; background: #148f82; color: #fff; }
+
+.skill-reader-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 28px; border-top: 1px solid #e5ece9; }
+
+.skill-reader-actions button:last-child { background: #fff0f0; color: #a34d4d; }
+
+.skill-reader button:focus-visible { outline: 2px solid #148f82; outline-offset: 3px; }
+
+[data-theme="dark"] .skill-reader { color: #dbe7e3; background: #242c29; border-color: #42534c; }
+
+[data-theme="dark"] .skill-reader-head, [data-theme="dark"] .skill-reader-actions { border-color: #42534c; }
+ .skill-reader-head, .skill-reader-body, .skill-reader-actions { padding: 18px; }
+
+[data-theme="dark"] .process-panel > summary { color: #9da8a4; }
+
+[data-theme="dark"] .process-panel > summary .process-count,
+[data-theme="dark"] .process-summary,
+[data-theme="dark"] .process-detail { color: #7f8985; }
+
+
+/* Agent process: one quiet disclosure row, with detail available on demand. */
+.process-panel { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+
+.process-panel > summary { min-height: 28px; padding: 0; gap: 5px; color: #89918e; font-size: 11px; font-weight: 500; }
+
+.process-panel > summary > svg { transition: transform 160ms ease; }
+
+.process-panel[open] > summary > svg { transform: rotate(90deg); }
+
+.process-panel > summary .process-count { margin-left: 2px; color: #a5adaa; font-size: 10px; }
+
+.process-timeline { margin-top: 4px; padding: 2px 0 2px 18px; border-top: 0; border-left: 1px solid #e4e9e7; }
+
+.process-item { border: 0; }
+
+.process-item summary { min-height: 24px; padding: 0 0 0 8px; gap: 6px; color: #8b9491; }
+
+.process-kind { color: #7b8581; font-size: 11px; font-weight: 500; }
+
+.process-summary { overflow: hidden; max-width: 70%; text-overflow: ellipsis; white-space: nowrap; color: #a2aaa7; font-size: 10px; }
+
+
+/* Keep the process disclosure aligned with the Agent message body. */
+.message-row.assistant .process-panel,
+.live-process-panel .process-panel { width: 100%; max-width: none; margin: 12px 0 18px; }
+
+.process-panel > summary { min-height: 32px; font-size: 13px; line-height: 1.45; }
+
+.process-panel > summary .process-count { font-size: 11px; }
+
+.process-timeline { margin-top: 6px; padding: 4px 0 4px 20px; }
+
+.process-item { min-height: 28px; display: flex; align-items: baseline; gap: 9px; }
+
+.process-kind { flex: 0 0 auto; font-size: 12px; }
+
+.process-summary { max-width: none; font-size: 12px; line-height: 1.55; }
+.workspace-files { padding: 16px; border-bottom: 1px solid var(--border); }
+.workspace-files header, .workspace-files li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.workspace-files ul { list-style: none; padding: 0; }
+.workspace-files li { padding: 10px 0; }
+.workspace-files li div { min-width: 0; overflow-wrap: anywhere; }
+.workspace-files small { display: block; opacity: .7; margin-top: 4px; }
+.workspace-files button, .message-actions button { padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; }
+.workspace-files [role=alert] { color: #b33; }
+.message-actions { display: flex; gap: 6px; margin-top: 8px; }

@@ -77,6 +77,8 @@ describe('ManagementPanel', () => {
           { name: 'Train Model', description: '训练模型', source: 'custom' },
         ],
       }))
+      .mockResolvedValueOnce(jsonResponse({ skill: { content: '# Graph Audit' } }))
+      .mockResolvedValueOnce(jsonResponse({ skill: { content: '# Graph Audit' } }))
       .mockResolvedValueOnce(jsonResponse({ items: [] }));
 
     render(<ManagementPanel onClose={vi.fn()} />);

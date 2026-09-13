@@ -214,7 +214,9 @@ export async function setSessionDataset(sessionId: string, datasetId: string | n
 }
 export async function uploadFile(sessionId: string, file: File, signal?: AbortSignal) {
   const body = new FormData(); body.append('file', file);
-  return json<{ success: boolean; filename: string; file_token: string; dataset?: Dataset; construction_required?: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/upload`, { method: 'POST', body, signal });
+  const result = await json<{ success: boolean; filename: string; file_token: string; dataset?: Dataset; construction_required?: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/upload`, { method: 'POST', body, signal });
+  window.dispatchEvent(new CustomEvent('igraph:workspace-changed', { detail: { sessionId } }));
+  return result;
 }
 
 function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
@@ -375,12 +377,12 @@ export function getRunSnapshot(sessionId: string, runId: string, signal?: AbortS
   return json<RunSnapshot>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/snapshot`, { signal });
 }
 
-export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string) {
+export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string, regenerateOf?: string) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
   const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
     method: 'POST', signal, headers,
-    body: JSON.stringify({ message, start_request_id: startRequestId, attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
+    body: JSON.stringify({ message, start_request_id: startRequestId, ...(regenerateOf ? { regenerate: true, regenerate_of: regenerateOf } : {}), attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
   });
   await consumeSseResponse(response, sessionId, handlers);
 }

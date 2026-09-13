@@ -50,7 +50,7 @@ export class RunRecovery {
   }
 
   async consume(connection: RunConnection, operation: 'start' | 'resume' | 'feedback',
-    start?: { message: string; attachments: AttachmentRef[] }, feedback?: FeedbackRequest | null,
+    start?: { message: string; attachments: AttachmentRef[]; regenerateOf?: string }, feedback?: FeedbackRequest | null,
     decision?: 'approve' | 'reject', decisionId?: string) {
     const o = this.options;
     const { sessionId, generation } = connection;
@@ -121,7 +121,10 @@ export class RunRecovery {
       },
     };
     try {
-      if (operation === 'start' && start) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation);
+      if (operation === 'start' && start) {
+        if (start.regenerateOf) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation, start.regenerateOf);
+        else await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation);
+      }
       else if (operation === 'feedback' && feedback && decision && decisionId) await streamFeedback(sessionId, feedback, decision, decisionId, handlers, connection.controller.signal);
       else if (runId) await resumeRun(sessionId, runId, cursor, handlers, connection.controller.signal);
     } catch (cause) { error = cause; }
