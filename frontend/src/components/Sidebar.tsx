@@ -233,8 +233,8 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
               <div className={`project-row ${activeProjectId === project.project_id ? 'selected' : ''}`}>
                 <button className="project-disclosure" onClick={() => toggleProject(project.project_id)} aria-label={`${expanded ? '收起' : '展开'} ${project.name}`} aria-expanded={expanded}><Icon name="chevron" size={13} /></button>
                 <button className="project-row-main" onClick={() => openProject(project.project_id)} title={project.name}><span className="project-row-icon"><Icon name={expanded ? 'folder-open' : 'folder'} size={17} /></span><strong>{project.name}</strong></button>
-                <button className="project-inline-action" onClick={event => toggleProjectMenu(project, event.currentTarget)} title="项目操作" aria-label={`${project.name} 项目操作`} aria-haspopup="menu" aria-expanded={menuProjectId === project.project_id}><Icon name="more" size={15} /></button>
-                <button className="project-inline-action" onClick={() => { onNewInProject(project.project_id); onCloseMobile(); }} title={`在 ${project.name} 中新建会话`} aria-label={`在 ${project.name} 中新建会话`}><Icon name="plus" size={14} /></button>
+                <button className="project-inline-action" onClick={event => toggleProjectMenu(project, event.currentTarget)} title="项目操作" aria-label={`${project.name} 项目操作`} aria-haspopup="menu" aria-expanded={menuProjectId === project.project_id}><Icon name="more" size={20} /></button>
+                <button className="project-inline-action" onClick={() => { onNewInProject(project.project_id); onCloseMobile(); }} title={`在 ${project.name} 中新建会话`} aria-label={`在 ${project.name} 中新建会话`}><Icon name="plus" size={15} /></button>
               </div>
               {expanded && <div className="project-session-list">
                 {projectSessions.length === 0 ? <div className="project-tree-empty">暂无会话</div> : projectSessions.map(session => <div className={`project-session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id}>
