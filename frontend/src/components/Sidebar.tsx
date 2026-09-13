@@ -2,6 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Project, Session } from '../types';
 import { Icon } from './Icon';
+import { getUserId } from '../api';
+
+const pinKey = (userId: string) => 'igraph-pinned-sessions:v1:' + encodeURIComponent(userId);
+function readPins(userId: string): Set<string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(pinKey(userId)) || '[]');
+    return new Set(Array.isArray(value) ? value.filter(item => typeof item === 'string') : []);
+  } catch { return new Set(); }
+}
 
 function sessionTitle(session: Session) { return session.title || session.preview || session.last_message || '未命名分析'; }
 function noopLoginValueChange(_value: string) { /* Optional account controls are omitted in isolated component tests. */ }
@@ -49,6 +58,25 @@ function runStatusLabel(status?: string) {
 }
 
 export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+  const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
+  const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
+  useEffect(() => {
+    const refresh = () => setPinState({ userId, ids: readPins(userId) });
+    const changed = (event: StorageEvent) => { if (event.key === null || event.key === pinKey(userId)) refresh(); };
+    refresh(); window.addEventListener('storage', changed);
+    return () => window.removeEventListener('storage', changed);
+  }, [userId]);
+  function togglePin(id: string) {
+    if (!userId || getUserId() !== userId) return;
+    const next = new Set(pinned);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setPinState({ userId, ids: next });
+    try { localStorage.setItem(pinKey(userId), JSON.stringify([...next])); } catch { /* Keep in-memory ordering. */ }
+  }
+  const orderSessions = (items: Session[]) => [...items].sort((a, b) => Number(pinned.has(b.session_id)) - Number(pinned.has(a.session_id)));
+  const pinButton = (session: Session) => <button type="button" className={`session-pin ${pinned.has(session.session_id) ? 'is-pinned' : ''}`}
+    aria-label={`${pinned.has(session.session_id) ? '取消置顶' : '置顶'} ${sessionTitle(session)}`} title={pinned.has(session.session_id) ? '取消置顶' : '置顶'}
+    aria-pressed={pinned.has(session.session_id)} onClick={event => { event.stopPropagation(); togglePin(session.session_id); }}><Icon name="pin" size={13} /></button>;
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
@@ -58,7 +86,7 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
   const projectMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const accountTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const independentSessions = sessions.filter(session => !session.project_id);
+  const independentSessions = orderSessions(sessions.filter(session => !session.project_id));
   const activeSessionProjectId = sessions.find(session => session.session_id === activeId)?.project_id;
 
   const menuProject = projects.find(project => project.project_id === menuProjectId);
@@ -200,7 +228,7 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
         <div className="project-list">
           {projects.length === 0 ? null : projects.map(project => {
             const expanded = expandedProjects.has(project.project_id);
-            const projectSessions = sessions.filter(session => session.project_id === project.project_id);
+            const projectSessions = orderSessions(sessions.filter(session => session.project_id === project.project_id));
             return <div className={`project-tree-node ${expanded ? 'expanded' : ''}`} key={project.project_id}>
               <div className={`project-row ${activeProjectId === project.project_id ? 'selected' : ''}`}>
                 <button className="project-disclosure" onClick={() => toggleProject(project.project_id)} aria-label={`${expanded ? '收起' : '展开'} ${project.name}`} aria-expanded={expanded}><Icon name="chevron" size={13} /></button>
@@ -211,7 +239,7 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
               {expanded && <div className="project-session-list">
                 {projectSessions.length === 0 ? <div className="project-tree-empty">暂无会话</div> : projectSessions.map(session => <div className={`project-session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id}>
                   <button className="project-session-main" onClick={() => { onSelect(session.session_id); onCloseMobile(); }} title={sessionTitle(session)}><Icon name="file" size={13} />{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<span>{sessionTitle(session)}</span></button>
-                  <button className="project-session-delete" onClick={() => onDelete(session.session_id)} title="删除会话" aria-label="删除会话"><Icon name="trash" size={12} /></button>
+                  {pinButton(session)}<button className="project-session-delete" onClick={() => onDelete(session.session_id)} title="删除会话" aria-label="删除会话"><Icon name="trash" size={12} /></button>
                 </div>)}
               </div>}
             </div>;
@@ -222,7 +250,7 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
         <div className="sidebar-section-head"><span>最近任务</span><button onClick={() => requireAccount(() => { onNew(); onCloseMobile(); })} title="新建独立会话" aria-label="新建独立会话"><Icon name="plus" size={15} /></button></div>
         <div className="session-list">
           {independentSessions.length === 0 ? <div className="sidebar-empty">暂无任务</div> : independentSessions.map(session => <div className={`session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id} title={sessionTitle(session)} onClick={() => { onSelect(session.session_id); onCloseMobile(); }}>
-            <Icon name="file" size={15} /><div className="session-copy"><strong><span className="recent-session-name">{sessionTitle(session)}</span></strong><span>{runStatusLabel(runStatuses[session.session_id]) || (session.has_graph ? '已加载图' : '待开始分析')}</span></div>{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title="删除任务" aria-label="删除任务"><Icon name="trash" size={14} /></button>
+            <Icon name="file" size={15} /><div className="session-copy"><strong><span className="recent-session-name">{sessionTitle(session)}</span></strong><span>{runStatusLabel(runStatuses[session.session_id]) || (session.has_graph ? '已加载图' : '待开始分析')}</span></div>{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}{pinButton(session)}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title="删除任务" aria-label="删除任务"><Icon name="trash" size={14} /></button>
           </div>)}
         </div>
       </section>

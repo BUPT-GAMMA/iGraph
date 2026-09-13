@@ -1690,3 +1690,35 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .workspace-files button, .message-actions button { padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; }
 .workspace-files [role=alert] { color: #b33; }
 .message-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+/* Orchestration branch interactions adapted to the dev workspace. */
+.composer-wrap > .attachment-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+.attachment-chip { max-width: 100%; min-width: 0; }
+.attachment-chip > span[title] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-file-icon { display: inline-flex; align-items: center; flex-shrink: 0; gap: 3px; color: var(--text-secondary, #777); }
+.attachment-file-icon small { font-size: 9px; font-weight: 600; }
+.file-kind-table { color: #33876b; }.file-kind-code { color: #6873b5; }.file-kind-graph { color: #b67c30; }
+.attachment-progress { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; }
+.attachment-progress svg, .attachment-progress small { grid-area: 1 / 1; }
+.attachment-progress svg { width: 34px; height: 34px; transform: rotate(-90deg); fill: none; stroke-width: 2; }
+.attachment-progress-track { stroke: currentColor; opacity: .15; }
+.attachment-progress-value { stroke: #648c6b; transition: stroke-dasharray .15s linear; }
+.attachment-progress small { font-size: 9px; font-variant-numeric: tabular-nums; }
+.message-attachments { margin: 4px 0 10px; flex-wrap: wrap; }
+.message-attachments > span { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; overflow-wrap: anywhere; }
+.session-pin { border: 0; background: transparent; color: inherit; opacity: 0; padding: 4px; flex-shrink: 0; border-radius: 4px; cursor: pointer; }
+.session-row:hover .session-pin, .project-session-row:hover .session-pin, .session-pin:focus-visible, .session-pin.is-pinned { opacity: .7; }
+.session-pin:hover, .session-pin.is-pinned { color: var(--accent, #63836a); }
+.skill-pagination, .answer-versions { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 12px 0; font-size: 12px; }
+.skill-pagination button, .answer-versions button { border: 1px solid var(--border, #d8d8d5); border-radius: 6px; background: transparent; color: inherit; padding: 4px 9px; cursor: pointer; }
+.skill-pagination button:disabled, .answer-versions button:disabled { opacity: .35; cursor: default; }
+.answer-versions { justify-content: flex-start; }
+.management-list.skill-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 8px; }
+.skill-grid .skill-row { min-width: 0; height: auto; align-items: flex-start; padding: 12px 9px; border-radius: 8px; }
+.skill-grid .skill-row > div:not(.management-icon) { min-width: 0; }
+.skill-grid .skill-row strong { overflow-wrap: anywhere; }
+.skill-grid .skill-row span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.skill-grid .skill-row > svg { display: none; }
+@media (hover: none) { .session-pin { opacity: .6; } }
+@media (max-width: 480px) { .management-list.skill-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .attachment-progress-value { transition: none; } }

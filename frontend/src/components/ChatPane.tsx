@@ -1,6 +1,8 @@
 import { Fragment, type ReactNode, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
+import { answerVersions } from '../answerVersions';
+import { FileTypeIcon } from './FileTypeIcon';
 import { BrandLogo, Icon } from './Icon';
 import { ProcessTimeline } from './ProcessTimeline';
 
@@ -138,6 +140,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   runTools?: ToolCall[];
   plan?: Plan | null;
   onRegenerate?: (message: Message, runId: string) => void;
+  onEditMessage?: (message: Message) => void;
 };
 
 const BOTTOM_THRESHOLD = 48;
@@ -146,7 +149,8 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onRegenerate, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onRegenerate, onEditMessage, ...inputProps }: ChatPaneProps) {
+  const [versionSelection, setVersionSelection] = useState<Record<string, string>>({});
   const [copyStatus, setCopyStatus] = useState('');
   async function copyMessage(content: string) {
     try { await navigator.clipboard.writeText(content); setCopyStatus('已复制'); }
@@ -209,10 +213,20 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
       {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>开始在 <span className="empty-project-name">{emptyProjectName}</span> 中图分析</> : '开始图分析'}</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange('请检查当前图的结构和基本属性')}>检查图结构</button><button onClick={() => inputProps.onChange('请计算节点的度数并找出最大度节点')}>计算图节点度数</button><button onClick={() => inputProps.onChange('请帮我进行社区检测')}>进行社区检测</button></div> : null}</div> : messages.map((message, index) => {
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
-        const visibleTools = isLiveAssistant && runTools?.length ? runTools : message.tools;
+        const versions = isAssistant ? answerVersions(message, messages) : [message];
+        const versionKey = conversationKey + ':' + (message.id || index);
+        const selectedVersion = !isLiveAssistant ? versions.find(item => item.run_id === versionSelection[versionKey]) : undefined;
+        const displayed = selectedVersion || message;
+        const versionIndex = versions.indexOf(displayed);
+        const visibleTools = isLiveAssistant && runTools?.length ? runTools : displayed.tools;
         const previousUser = messages.slice(0, index).reverse().find(item => item.role === 'user');
-        const visiblePlan = isLiveAssistant && plan ? plan : message.plan;
-        return <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}>{isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}<div className="message-body"><div className="message-label">{isAssistant ? (message.regenerate_of ? 'iGraph 助手 · 重新生成' : 'iGraph 助手') : '你'}</div>{isAssistant ? (message.processItems?.length ? <ProcessTimeline items={message.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools)) : null}{isAssistant ? planCard(visiblePlan) : null}<div className="message-content">{renderContent(message.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map(file => <span key={file.file_token}><Icon name="file" size={13} /> {file.filename || '附件'}</span>)}</div> : null}<div className="message-actions">{isAssistant && index === messages.length - 1 && previousUser && message.run_id && onRegenerate && <button type="button" disabled={inputProps.disabled || inputProps.sendBlocked || inputProps.uploading || inputProps.loading || Boolean(inputProps.value.trim()) || Boolean(inputProps.attachments?.length)} title="保留已有回复和上下文；请先发送或清空当前草稿" onClick={() => onRegenerate(previousUser, message.run_id!)}>重新生成</button>}{message.content && <button type="button" onClick={() => void copyMessage(message.content)}>复制</button>}{message.role === 'user' && composerAvailable && <button type="button" disabled={inputProps.disabled || inputProps.sendBlocked} onClick={() => inputProps.onChange(message.content)}>编辑并重发</button>}</div>{message.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>;
+        const visiblePlan = isLiveAssistant && plan ? plan : displayed.plan;
+        return <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}>{isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}<div className="message-body"><div className="message-label">{isAssistant ? (message.regenerate_of ? 'iGraph 助手 · 重新生成' : 'iGraph 助手') : '你'}</div>{isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools)) : null}{isAssistant ? planCard(visiblePlan) : null}{displayed.attachments?.length ? <div className="message-attachments">{displayed.attachments.map(file => <span key={file.file_token}><FileTypeIcon filename={file.filename} /> {file.filename || '附件'}</span>)}</div> : null}<div className="message-content">{renderContent(displayed.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>
+          {versions.length > 1 && !message.streaming && !isLiveAssistant ? <nav className="answer-versions" aria-label="回答版本">
+            <button type="button" aria-label="上一个回答版本" disabled={versionIndex <= 0} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex - 1].run_id! }))}>‹</button>
+            <span>版本 {versionIndex + 1} / {versions.length}</span>
+            <button type="button" aria-label="下一个回答版本" disabled={versionIndex >= versions.length - 1} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex + 1].run_id! }))}>›</button>
+          </nav> : null}<div className="message-actions">{isAssistant && index === messages.length - 1 && previousUser && message.run_id && onRegenerate && <button type="button" disabled={inputProps.disabled || inputProps.sendBlocked || inputProps.uploading || inputProps.loading || Boolean(inputProps.value.trim()) || Boolean(inputProps.attachments?.length)} title="保留已有回复和上下文；请先发送或清空当前草稿" onClick={() => onRegenerate(previousUser, message.run_id!)}>重新生成</button>}{displayed.content && <button type="button" onClick={() => void copyMessage(displayed.content)}>复制</button>}{message.role === 'user' && composerAvailable && <button type="button" disabled={inputProps.disabled || inputProps.sendBlocked || inputProps.uploading || inputProps.loading} onClick={() => onEditMessage ? onEditMessage(message) : inputProps.onChange(message.content)}>编辑并重发</button>}</div>{displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>;
       })}
       {inputProps.loading && liveAssistantIndex < 0 && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{toolList(runTools)}{planCard(plan)}</div> : null}
       {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图已加载 · 在右侧工作台查看</button> : null}

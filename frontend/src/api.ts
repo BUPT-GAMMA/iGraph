@@ -212,9 +212,51 @@ export async function setSessionDataset(sessionId: string, datasetId: string | n
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active_dataset_id: datasetId }),
   });
 }
-export async function uploadFile(sessionId: string, file: File, signal?: AbortSignal) {
+export type UploadResult = { success: boolean; filename: string; file_token: string; dataset?: Dataset; construction_required?: boolean };
+
+export async function uploadFile(sessionId: string, file: File, signal?: AbortSignal, onProgress?: (percent: number) => void): Promise<UploadResult> {
   const body = new FormData(); body.append('file', file);
-  const result = await json<{ success: boolean; filename: string; file_token: string; dataset?: Dataset; construction_required?: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/upload`, { method: 'POST', body, signal });
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/upload`;
+  const account = requestAccount;
+  const identity = account?.userId ?? getUserId();
+  const accountChanged = () => identity !== getUserId() || (account !== undefined && account !== requestAccount);
+  const accountError = () => new ApiError(409, '账户已切换，请重新选择文件', null, null, null, 'ACCOUNT_CHANGED');
+  if (accountChanged()) throw accountError();
+  const result = onProgress
+    ? await new Promise<UploadResult>((resolve, reject) => {
+      if (signal?.aborted) { reject(new DOMException('上传已取消', 'AbortError')); return; }
+      const xhr = new XMLHttpRequest();
+      let settled = false;
+      const abort = () => { xhr.abort(); finish(new DOMException('上传已取消', 'AbortError')); };
+      function finish(error?: Error, data?: UploadResult) {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', abort);
+        if (error) reject(error); else resolve(data!);
+      }
+      xhr.open('POST', `${API_BASE}${path}`);
+      if (identity) xhr.setRequestHeader('X-User-ID', identity);
+      xhr.upload.onprogress = event => {
+        if (accountChanged()) { finish(accountError()); xhr.abort(); return; }
+        if (!settled && event.lengthComputable && event.total > 0) onProgress(Math.min(100, Math.round(event.loaded / event.total * 100)));
+      };
+      xhr.onload = () => {
+        if (accountChanged()) { finish(accountError()); return; }
+        let data: UploadResult;
+        try { data = JSON.parse(xhr.responseText); }
+        catch { finish(new ApiError(xhr.status, '上传响应无效，请重试')); return; }
+        if (xhr.status < 200 || xhr.status >= 300) { finish(ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'))); return; }
+        if (data?.success !== true || typeof data.file_token !== 'string' || !data.file_token) { finish(new ApiError(xhr.status, '上传未成功，请重试')); return; }
+        finish(undefined, data);
+      };
+      xhr.onerror = () => finish(new Error('上传失败，请检查网络后重试'));
+      xhr.ontimeout = () => finish(new Error('上传超时，请重试'));
+      xhr.onabort = () => finish(new DOMException('上传已取消', 'AbortError'));
+      signal?.addEventListener('abort', abort, { once: true });
+      try { xhr.send(body); } catch (cause) { finish(cause instanceof Error ? cause : new Error('上传失败')); }
+    })
+    : await json<UploadResult>(path, { method: 'POST', body, signal });
+  if (accountChanged()) throw accountError();
   window.dispatchEvent(new CustomEvent('igraph:workspace-changed', { detail: { sessionId } }));
   return result;
 }
