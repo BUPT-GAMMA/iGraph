@@ -239,3 +239,25 @@ def test_checkpoint_never_overwrites_approval_pause():
         assert any(event.event == "RunPaused" for event in events)
         assert not any(event.event == "RunCompleted" for event in events)
     asyncio.run(scenario())
+
+
+def test_progressing_calls_complete_native_run_and_persist_success():
+    async def scenario():
+        executed = []
+        async def repeat_tool(value: str):
+            executed.append(value)
+            return {"success": True, "revision": len(executed)}
+        async def sentinel_tool():
+            return {"success": True}
+        db = InMemoryDb()
+        agent = Agent(model=GuardDAGModel(), db=db, tools=[repeat_tool, sentinel_tool],
+            tool_hooks=[loop_guard_tool_hook], post_hooks=[loop_guard_post_hook],
+            checkpoint="tool-batch", store_events=True, events_to_skip=[])
+        events = [event async for event in agent.arun("progress", session_id="s",
+            user_id="u", stream=True, stream_events=True)]
+        saved = db.get_session(session_id="s", user_id="u").runs[-1]
+        assert executed == ["same"] * 4
+        assert saved.status == RunStatus.completed
+        assert events[-1].event == "RunCompleted"
+        assert not any(event.event == "RunError" for event in events)
+    asyncio.run(scenario())

@@ -16,6 +16,8 @@ from typing import Any
 from agno.exceptions import RunCancelledException, StopAgentRun
 from pydantic import BaseModel
 
+from graph_engine.tool_execution import resources_overlap, tool_execution_policy
+
 _LOG = logging.getLogger("igraph.agent_loop")
 
 
@@ -176,6 +178,8 @@ class ToolLoopGuard:
     failures: int = 0
     _fingerprint_counts: dict[str, int] = field(default_factory=dict)
     _progress_results: dict[str, object] = field(default_factory=dict)
+    _fingerprint_results: dict[str, object] = field(default_factory=dict)
+    _read_calls: dict[str, tuple[str, frozenset[str]]] = field(default_factory=dict)
     _stagnant_counts: dict[str, int] = field(default_factory=dict)
     _job_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     _last_block_reason: str | None = None
@@ -235,6 +239,9 @@ class ToolLoopGuard:
         if normalized_name != _JOB_STATUS_TOOL and self._stagnant_counts.get(normalized_name, 0) >= self.max_same_call:
             return self._block("no_real_progress", "工具返回内容没有带来新的可观察进展，已停止本轮以避免无效循环。")
 
+        policy = tool_execution_policy(normalized_name, arguments)
+        if policy.read_only and normalized_name != _JOB_STATUS_TOOL:
+            self._read_calls[fingerprint] = (normalized_name, policy.reads)
         self.calls += 1
         _LOG.info("agent.tool.started tool=%s call_count=%s fingerprint=%s", normalized_name, self.calls, fingerprint)
         return None
@@ -247,6 +254,9 @@ class ToolLoopGuard:
         arguments: object = None,
         result: object = None,
     ) -> str | None:
+        # A result from an already running parallel tool cannot undo a stop.
+        if self.stopped:
+            return None
         self._last_block_reason = None
         if success:
             self.failures = 0
@@ -268,6 +278,28 @@ class ToolLoopGuard:
                 self._stagnant_counts[normalized_name] = self._stagnant_counts.get(normalized_name, 0) + 1
             if success:
                 self._progress_results[progress_key] = result
+                fingerprint = tool_call_fingerprint(normalized_name, arguments)
+                # Compare the same call, not a different query's result. Count
+                # the fresh observation as one, preserving the duplicate limit.
+                if normalized_name != _JOB_STATUS_TOOL:
+                    if fingerprint in self._fingerprint_results and has_real_progress(
+                        normalized_name, arguments, result, self._fingerprint_results[fingerprint]
+                    ):
+                        self._fingerprint_counts[fingerprint] = 1
+                    self._fingerprint_results[fingerprint] = result
+
+                # Invalidate only observations of resources actually written by
+                # a successful, progressing tool. Reads and unrelated writes
+                # must not reset each other's loop counters. A queued job is
+                # not evidence that its resource mutation has completed.
+                writes = tool_execution_policy(normalized_name, arguments).writes
+                if progressed and writes and _job_status(result) not in _ACTIVE_JOB_STATUSES:
+                    for read_fingerprint, (reader, reads) in self._read_calls.items():
+                        if any(resources_overlap(write, read) for write in writes for read in reads):
+                            self._fingerprint_counts.pop(read_fingerprint, None)
+                            self._fingerprint_results.pop(read_fingerprint, None)
+                            self._stagnant_counts.pop(reader, None)
+                            self._progress_results.pop(reader, None)
             _LOG.info("agent.tool.completed tool=%s success=%s progressed=%s calls=%s failures=%s", normalized_name, success, progressed, self.calls, self.failures)
 
             if normalized_name == _JOB_STATUS_TOOL:

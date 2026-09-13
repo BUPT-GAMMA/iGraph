@@ -229,3 +229,111 @@ def test_bash_progress_ignores_transport_metadata_but_tracks_artifacts():
     assert not loop_guard.has_real_progress("workspace_bash", {"command": "true"}, after, before)
     after["artifacts"] = [{"path": "Ephemeral/result.csv", "checksum": "new"}]
     assert loop_guard.has_real_progress("workspace_bash", {"command": "true"}, after, before)
+
+
+def _complete(guard, name, args, result, success=True):
+    assert guard.before_call(name, args) is None
+    assert guard.after_result(success, tool_name=name, arguments=args, result=result) is None
+
+
+def test_changed_results_allow_repeated_query_until_total_budget():
+    guard = ToolLoopGuard(max_calls=8)
+    for version in range(8):
+        _complete(guard, "get_graph_info", {}, {"graph_version": version})
+    assert "上限" in guard.before_call("get_graph_info", {})
+
+
+def test_successful_graph_changes_allow_unchanged_summary_to_be_checked_again():
+    guard = ToolLoopGuard()
+    for version in range(8):
+        _complete(guard, "load_graph", {"edge_text": str(version)}, {"success": True, "graph_version": version})
+        _complete(guard, "get_graph_info", {}, {"success": True, "nodes": 2, "edges": 1})
+    assert guard.calls == 16
+    assert not guard.stopped
+
+
+@pytest.mark.parametrize("writer,success,result", [
+    ("load_graph", False, {"success": False, "graph_version": 99}),
+    ("workspace_bash", True, {"success": True, "output": "different"}),
+])
+def test_failed_or_unrelated_changes_do_not_reset_query_limit(writer, success, result):
+    guard = ToolLoopGuard()
+    for _ in range(3):
+        _complete(guard, "get_graph_info", {}, {"nodes": 2})
+    _complete(guard, writer, {}, result, success)
+    assert "重复" in guard.before_call("get_graph_info", {})
+
+
+def test_noop_graph_writes_do_not_allow_endless_queries():
+    guard = ToolLoopGuard()
+    for i in range(3):
+        _complete(guard, "load_graph", {"edge_text": str(i)}, {"success": True, "graph_version": 1})
+        _complete(guard, "get_graph_info", {}, {"nodes": 2})
+    _complete(guard, "load_graph", {"edge_text": "next"}, {"success": True, "graph_version": 1})
+    assert "重复" in guard.before_call("get_graph_info", {})
+
+
+def test_alternating_queries_do_not_reset_each_others_fingerprint():
+    guard = ToolLoopGuard()
+    for _ in range(3):
+        for node in ("a", "b"):
+            _complete(guard, "get_node_info", {"node": node}, {"node": node})
+    assert "重复" in guard.before_call("get_node_info", {"node": "a"})
+
+
+def test_progress_then_stagnation_still_stops():
+    guard = ToolLoopGuard()
+    for version in range(5):
+        _complete(guard, "get_graph_info", {}, {"graph_version": version})
+    for _ in range(2):
+        _complete(guard, "get_graph_info", {}, {"graph_version": 4})
+    assert "重复" in guard.before_call("get_graph_info", {})
+
+
+def test_resource_invalidation_does_not_reset_writer_or_total_budget():
+    guard = ToolLoopGuard(max_calls=6)
+    for i in range(3):
+        _complete(guard, "load_graph", {}, {"graph_version": i})
+        _complete(guard, "get_graph_info", {}, {"nodes": 2})
+    assert guard.calls == 6
+    assert "上限" in guard.before_call("load_graph", {})
+
+
+def test_progress_in_late_result_cannot_revive_stopped_guard():
+    guard = ToolLoopGuard(max_same_call=1)
+    _complete(guard, "get_graph_info", {}, {"graph_version": 1})
+    assert guard.before_call("get_graph_info", {}) is not None
+    guard.after_result(True, tool_name="load_graph", arguments={}, result={"graph_version": 2})
+    assert guard._last_block_reason == "duplicate_call"
+    assert guard.before_call("get_graph_info", {}) is not None
+
+
+def test_native_hook_allows_graph_change_and_recheck_sequence():
+    async def scenario():
+        context = RunContext(run_id="progress", session_id="session")
+        for version in range(6):
+            for name, args in (("load_graph", {"edge_text": str(version)}), ("get_graph_info", {})):
+                async def tool(**_):
+                    return {"success": True, "graph_version": version}
+                result = await progress_guard_hook(run_context=context, name=name, args=args, func=tool)
+                assert result["graph_version"] == version
+        assert loop_guard._guard_for_run(context).calls == 12
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("dataset,allowed", [("a", True), ("b", False)])
+def test_only_matching_dataset_resource_invalidates_read_counts(dataset, allowed):
+    guard = ToolLoopGuard()
+    args = {"dataset_id": "a"}
+    for _ in range(3):
+        _complete(guard, "get_constructed_graph", args, {"nodes": 2})
+    _complete(guard, "commit_graph_optimization", {"dataset_id": dataset}, {"revision": 2})
+    assert (guard.before_call("get_constructed_graph", args) is None) is allowed
+
+
+def test_queued_mutation_does_not_invalidate_queries_before_completion():
+    guard = ToolLoopGuard()
+    for _ in range(3):
+        _complete(guard, "get_graph_info", {}, {"nodes": 2})
+    _complete(guard, "load_graph", {}, {"success": True, "job": {"status": "queued", "job_id": "j"}})
+    assert "重复" in guard.before_call("get_graph_info", {})
