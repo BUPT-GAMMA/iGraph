@@ -354,3 +354,30 @@ describe('ConversationInputArea', () => {
     expect(screen.queryByRole('button', { name: '滚动到最新消息' })).toBeNull();
   });
 });
+
+
+it('uploads a dropped file through the existing handler and respects the disabled gate', () => {
+  const onUpload = vi.fn();
+  const file = new File(['print(1)'], 'inspect.py', { type: 'text/plain' });
+  const { container, rerender } = render(<Composer {...baseChatProps} onUpload={onUpload} />);
+  fireEvent.drop(container.querySelector('.composer-wrap')!, { dataTransfer: { files: [file], types: ['Files'] } });
+  expect(onUpload).toHaveBeenCalledWith(file);
+  rerender(<Composer {...baseChatProps} onUpload={onUpload} disabled />);
+  fireEvent.drop(container.querySelector('.composer-wrap')!, { dataTransfer: { files: [file], types: ['Files'] } });
+  expect(onUpload).toHaveBeenCalledTimes(1);
+});
+
+it('regenerates only the latest completed response with the preceding user input', () => {
+  const onRegenerate = vi.fn();
+  const user = { id: 'u', role: 'user' as const, content: 'inspect', attachments: [{ filename: 'a.csv', file_token: 'a' }] };
+  const messages = [user, { id: 'a', role: 'assistant' as const, content: 'result', run_id: 'run-a' }];
+  const { rerender } = render(<ChatPane {...baseChatProps} messages={messages} onRegenerate={onRegenerate} />);
+  fireEvent.click(screen.getByRole('button', { name: '重新生成' }));
+  expect(onRegenerate).toHaveBeenCalledWith(user, 'run-a');
+  rerender(<ChatPane {...baseChatProps} messages={messages} onRegenerate={onRegenerate} value="unsent draft" />);
+  expect((screen.getByRole('button', { name: '重新生成' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: '重新生成' }));
+  expect(onRegenerate).toHaveBeenCalledTimes(1);
+  rerender(<ChatPane {...baseChatProps} messages={messages} onRegenerate={onRegenerate} sendBlocked />);
+  expect((screen.getByRole('button', { name: '重新生成' }) as HTMLButtonElement).disabled).toBe(true);
+});

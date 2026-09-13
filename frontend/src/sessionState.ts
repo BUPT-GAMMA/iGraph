@@ -1,5 +1,5 @@
 import { isGraphData } from './types';
-import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
+import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
 import type { RunSnapshot, RunControl } from './api';
 
 export const PERSONAL_DRAFT_KEY = 'personal';
@@ -37,6 +37,8 @@ export type SessionRunState = {
   submittedInput?: string;
   toolsById: Record<string, ToolCall>;
   toolOrder: string[];
+  processItems?: ProcessItem[];
+  pendingProcessText?: { content: string; sequence: number };
   plan: Plan | null;
   feedback: FeedbackRequest | null;
   feedbackSubmission?: {
@@ -372,6 +374,20 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     run = { ...run, status: 'streaming' };
   }
 
+  if (eventType === 'token') {
+    const pending = run.pendingProcessText;
+    run = { ...run, pendingProcessText: { content: (pending?.content || '') + String(event.content || ''),
+      sequence: pending?.sequence ?? Number(event.event_index ?? (run.processItems || []).length) } };
+  }
+  if (eventType === 'thinking' && event.content) {
+    const items = run.processItems || [];
+    const last = items[items.length - 1];
+    const content = String(event.content);
+    run = { ...run, processItems: last?.kind === 'reasoning'
+      ? [...items.slice(0, -1), { ...last, content: (last.content || '') + content }]
+      : [...items, { id: 'reasoning:' + String(event.event_index ?? items.length), kind: 'reasoning', sequence: Number(event.event_index ?? items.length), content }] };
+  }
+
   if (eventType === 'tool_call') {
     const callId = String(event.call_id || `tool:${event.tool || event.name || 'unknown'}:${run.toolOrder.length}`);
     const exists = Boolean(run.toolsById[callId]);
@@ -516,6 +532,33 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     run = { ...run, status: cancelled ? 'cancelled' : 'failed', feedback: null, error: cancelled ? undefined : error };
   }
 
+  let processItems = run.processItems || [];
+  if (eventType === 'tool_call') {
+    const callId = String(event.call_id || run.toolOrder[run.toolOrder.length - 1] || '');
+    if (!processItems.some(item => item.id === 'tool:' + callId)) {
+      if (run.pendingProcessText?.content) processItems = [...processItems, {
+        id: 'text:' + run.pendingProcessText.sequence, kind: 'text', ...run.pendingProcessText }];
+      processItems = [...processItems, { id: 'tool:' + callId, kind: 'tool',
+        sequence: Number(event.event_index ?? processItems.length), tool: run.toolsById[callId] }];
+      run = { ...run, pendingProcessText: undefined };
+    }
+  }
+  processItems = processItems.map(item => {
+    if (item.kind !== 'tool') return item;
+    const tool = run.toolsById[item.tool?.call_id || ''] || item.tool || {};
+    const result = tool.result as Record<string, unknown> | undefined;
+    const terminal = ['completed', 'failed', 'cancelled'].includes(run.status);
+    const failed = result?.success === false || result?.status === 'failed';
+    const cancelled = result?.status === 'cancelled' || (terminal && !tool.done && run.status === 'cancelled');
+    const status: ToolCall['status'] = cancelled ? 'cancelled' : failed ? 'failed' : tool.done ? 'completed' : terminal ? 'failed' : 'running';
+    return { ...item, tool: { ...tool, status, done: Boolean(tool.done || terminal) } };
+  });
+  run = { ...run, processItems };
+  const processMessageId = run.assistantMessageId;
+  if (processMessageId && view.messagesById[processMessageId] && processItems.length) {
+    view = { ...view, messagesById: { ...view.messagesById,
+      [processMessageId]: { ...view.messagesById[processMessageId], processItems } } };
+  }
   return { view, run };
 }
 

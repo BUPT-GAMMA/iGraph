@@ -1,6 +1,8 @@
-"""Disposable full HTTP stack; only the model provider is deterministic.
+"""Disposable full HTTP stack with a deterministic model provider.
 
 Shared by pytest and browser E2E. All mutable files and databases are test-owned.
+Explicit legacy_async seed requests also emulate the old tool-result contract;
+the MCP transport, worker, ledger and cancellation paths remain real.
 """
 from __future__ import annotations
 
@@ -45,6 +47,18 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         from sse_starlette.sse import AppStatus
         stack.enter_context(patch.object(AppStatus, 'should_exit', False))
         from agent_runtime import os_app, agno_factory
+        from agent_runtime import graph_jobs
+        from agent_runtime.execution_scope import current_scope
+        legacy_async_sessions = set()
+        complete_graph_result = graph_jobs.completed_graph_result
+        async def fixture_graph_result(result, poll, *, interval=1.0, tool_name=""):
+            scope = current_scope.get()
+            # Only explicitly seeded legacy sessions return a live training job.
+            # All other tools/sessions retain dev's wait-for-completion contract.
+            if tool_name == "train" and scope is not None and scope.session_id in legacy_async_sessions:
+                return result
+            return await complete_graph_result(result, poll, interval=interval, tool_name=tool_name)
+        stack.enter_context(patch.object(graph_jobs, "completed_graph_result", fixture_graph_result))
         from backend.app import create_app as backend_app
         from mcp_service import server as mcp_server
         db_url = os.getenv('IGRAPH_CONTROL_TEST_DATABASE_URL')
@@ -149,10 +163,12 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         async def inspect_metrics():
             return {**metrics, 'jobs': [job.to_dict() for job in graph._job_manager._jobs.values()]}
         @app.post('/test-seed/{sid}')
-        async def seed_graph(sid: str):
+        async def seed_graph(sid: str, legacy_async: bool = False):
             # Test-only deterministic data; this application is never deployed.
             from tests.servers.test_graph_ml_legacy_regression import _legacy_graph
             graph.get_required(sid, user_id='admin').set_graph(_legacy_graph())
+            if legacy_async:
+                legacy_async_sessions.add(sid)
             return {'success': True}
         app.mount('/bff', bff)
         app.mount('/', bff)
