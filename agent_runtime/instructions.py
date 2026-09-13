@@ -51,7 +51,13 @@ Memory 与 Learning 由 Agno LearningMachine 管理；只有稳定的用户偏�
 
 
 def instructions_for(*, reasoning_mode: str, planning_mode: str) -> list[str]:
-    instructions = [BASE_INSTRUCTIONS]
+    instructions = [BASE_INSTRUCTIONS, (
+        "会话文件工作区分为 Uploaded（只读上传）、Ephemeral（中间文件）和 Derived（已发布产物）。"
+        "workspace_list 查看文件；workspace_bash 使用相对路径执行受限命令，代码和中间输出写入 Ephemeral；"
+        "workspace_publish 将中间文件发布为可下载的版本化产物。工作区工具不替代图引擎和构图审批。"
+        "沙箱不可用时说明限制并继续使用图工具，不绕过沙箱。避免反复执行相同参数或连续重试失败工具。"
+        "需要记录工作进度时使用 update_agent_notes，仅更新工作笔记；项目、数据集和执行状态由服务管理。"
+    )]
     if reasoning_mode == "staged":
         instructions.append("在内部先分解问题、检查证据和工具前提，再给出简洁的可验证结论。")
     if planning_mode == "always":

@@ -482,3 +482,80 @@ async def translate_sse(
             continue
         for event in derived_events:
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+def project_run(run: dict[str, Any]) -> dict[str, Any]:
+    """Project persisted AgentOS events into the ordered visible workbench Items."""
+    events = run.get("events") or []
+    if not isinstance(events, list):
+        events = []
+    pending: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    final_parts: list[str] = []
+    def event_index(raw: dict, fallback: int) -> int:
+        try:
+            return int(raw.get("event_index"))
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+    def flush_text() -> None:
+        if not pending:
+            return
+        items.append({"id": f"text:{pending[0]['sequence']}", "kind": "text", "sequence": pending[0]["sequence"], "content": "".join(entry["content"] for entry in pending)})
+        pending.clear()
+    def add_reasoning(content: str, sequence: int) -> None:
+        if items and items[-1]["kind"] == "reasoning":
+            items[-1]["content"] += content
+            return
+        items.append({"id": f"reasoning:{sequence}", "kind": "reasoning", "sequence": sequence, "content": content})
+    for index, raw in enumerate(events):
+        if not isinstance(raw, dict):
+            continue
+        payload = {**raw, "event_index": event_index(raw, index), "run_id": raw.get("run_id", run.get("run_id", ""))}
+        event = str(payload.get("event") or payload.get("type") or "")
+        if event in {"RunContent", "TeamRunContent"}:
+            content = payload.get("content")
+            if content not in (None, ""):
+                pending.append({"content": str(content), "sequence": int(payload["event_index"])})
+            reasoning = payload.get("reasoning_content")
+            if reasoning:
+                add_reasoning(str(reasoning), int(payload["event_index"]))
+            continue
+        if event in {"ReasoningContent", "RunReasoningContent", "ReasoningStep", "TeamReasoningStep"}:
+            reasoning = str(payload.get("reasoning_content") or payload.get("content") or "")
+            if reasoning:
+                add_reasoning(reasoning, int(payload["event_index"]))
+            continue
+        if "ToolCallStarted" in event:
+            flush_text()
+            tool = _tool(payload)
+            name = str(tool.get("tool_name") or tool.get("name") or "")
+            call_id = str(tool.get("tool_call_id") or "")
+            items.append({"id": f"tool:{call_id or payload['event_index']}", "kind": "tool", "sequence": int(payload["event_index"]), "tool": {"tool": name, "call_id": call_id, "args": tool.get("tool_args") or tool.get("arguments") or {}, "done": False, "status": "running"}})
+            continue
+        if "ToolCallCompleted" in event:
+            tool = _tool(payload)
+            call_id = str(tool.get("tool_call_id") or "")
+            for item in items:
+                if item["kind"] == "tool" and item["tool"].get("call_id") == call_id:
+                    result = _decoded_tool_result(payload)
+                    failed = bool(tool.get("tool_call_error")) or isinstance(result, dict) and result.get("success") is False
+                    item["tool"].update({"done": True, "status": "failed" if failed else "completed", "result": result})
+            continue
+        if event == "RunContentCompleted":
+            continue
+        if event == "RunCompleted":
+            if pending:
+                final_parts.append("".join(entry["content"] for entry in pending))
+                pending.clear()
+            elif payload.get("content"):
+                final_parts.append(str(payload["content"]))
+    status = str(run.get("status") or "").lower()
+    if status in {"completed", "error", "failed", "cancelled", "canceled"}:
+        for item in items:
+            if item.get("kind") == "tool" and not item["tool"].get("done"):
+                item["tool"].update(done=True, status="cancelled" if status in {"cancelled", "canceled"} else "failed")
+    if not final_parts and pending:
+        final_parts.extend(entry["content"] for entry in pending)
+    if not final_parts:
+        value = run.get("content")
+        if isinstance(value, str): final_parts.append(value)
+    return {"processItems": sorted(items, key=lambda item: item["sequence"]), "content": "".join(final_parts), "last_event_index": max((event_index(item, index) for index, item in enumerate(events) if isinstance(item, dict)), default=-1)}

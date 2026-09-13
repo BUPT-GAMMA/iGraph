@@ -62,6 +62,26 @@ def _outcome(fc, messages, paused):
 
 
 class DAGModelMixin:
+    def _safe_checkpoint(self, callback):
+        if callback is None:
+            return None
+        async def checkpoint(response):
+            # Agno 2.9 unconditionally changes the run status to running in
+            # acheckpoint_run. A paused batch must be saved by the native pause
+            # path, otherwise its confirmation state becomes completed.
+            if not getattr(self, "_igraph_batch_paused", False):
+                await callback(response)
+        return checkpoint
+
+    async def aresponse(self, *args, after_tool_results=None, **kwargs):
+        return await super().aresponse(*args, after_tool_results=self._safe_checkpoint(after_tool_results), **kwargs)
+
+    async def aresponse_stream(self, *args, after_tool_results=None, **kwargs):
+        iterator = super().aresponse_stream(*args, after_tool_results=self._safe_checkpoint(after_tool_results), **kwargs)
+        async with aclosing(iterator):
+            async for event in iterator:
+                yield event
+
     async def arun_function_call(self, function_call):
         outcome = await super().arun_function_call(function_call)
         payload = _result_payload(function_call.result)
@@ -94,6 +114,7 @@ class DAGModelMixin:
         self, function_calls, function_call_results, additional_input=None,
         current_function_call_count=0, function_call_limit=None, skip_pause_check=False,
     ):
+        self._igraph_batch_paused = False
         calls = list(function_calls)
         dependencies = build_dependencies(calls)
         states = ["waiting"] * len(calls)
@@ -113,6 +134,8 @@ class DAGModelMixin:
             fc.function = copy.copy(fc.function)
             context = getattr(fc.function, "_run_context", None)
             if context is not None:
+                from agent_runtime.loop_guard import _guard_for_run
+                _guard_for_run(context)
                 fc.function._run_context = copy.copy(context)
                 if context.messages is not None:
                     fc.function._run_context.messages = list(context.messages)
@@ -130,6 +153,8 @@ class DAGModelMixin:
                 async with aclosing(iterator):
                     async for event in iterator:
                         paused |= getattr(event, "event", None) == ModelResponseEvent.tool_call_paused.value
+                        if paused:
+                            self._igraph_batch_paused = True
                         await queue.put(("event", index, event))
                 await queue.put(("done", index, _outcome(fc, results[index], paused)))
             except BaseException as exc:
