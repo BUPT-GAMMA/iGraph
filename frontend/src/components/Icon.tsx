@@ -1,4 +1,4 @@
-type IconName = 'plus' | 'search' | 'project' | 'folder' | 'folder-open' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
+type IconName = 'pin' | 'plus' | 'search' | 'project' | 'folder' | 'folder-open' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
 
 export function BrandLogo() {
   return <><img className="brand-logo brand-logo-light" src="/figures/igraph_light.png" alt="" aria-hidden="true" /><img className="brand-logo brand-logo-dark" src="/figures/igraph_dark.png" alt="" aria-hidden="true" /></>;
@@ -27,6 +27,7 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     graph: <><circle cx="5" cy="12" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="18" cy="18" r="2" /><path d="m7 11 9-4M7 13l9 4" /></>,
     table: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 10h18M9 4v16M15 4v16" /></>,
     cube: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4 7.5 8 4.5 8-4.5M12 12v9" /></>,
+    pin: <><path d="m16 3 5 5-3 1-4 4 1 4-2 2-3-5-5-3 2-2 4 1 4-4 1-3ZM9 15l-6 6" /></>,
     file: <><path d="M6 3h8l4 4v14H6z" /><path d="M14 3v5h5M9 13h6m-6 4h6" /></>,
     trash: <><path d="M4 7h16m-10 4v6m4-6v6M9 7V4h6v3m-9 0 1 14h10l1-14" /></>,
     close: <><path d="m6 6 12 12M18 6 6 18" /></>,

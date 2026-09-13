@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import type { CustomModel } from '../api';
 import type { AttachmentRef, DraftAttachment } from '../types';
 import { Icon } from './Icon';
+import { FileTypeIcon } from './FileTypeIcon';
 import { ModelProviderIcon } from './ModelProviderIcon';
 import { selectRepresentativeModels } from './modelProviders';
 
@@ -32,7 +33,8 @@ function attachmentId(attachment: ComposerAttachment) {
 
 function attachmentStatus(attachment: ComposerAttachment) {
   if (!('status' in attachment)) return '';
-  if (attachment.status === 'uploading') return '上传中';
+  if (attachment.status === 'staged') return '等待上传';
+  if (attachment.status === 'uploading') return attachment.progress === 100 ? '正在确认' : '上传中';
   if (attachment.status === 'failed') return '上传失败';
   if (attachment.status === 'needs_reselect') return '需重新选择';
   return '';
@@ -50,6 +52,7 @@ export type ComposerProps = {
   onSend: () => void;
   onUpload: (file: File) => void;
   onRemoveAttachment: (fileToken: string) => void;
+  onRetryAttachment?: (localId: string) => void;
   attachments: ComposerAttachment[];
   loading: boolean;
   uploading: boolean;
@@ -65,8 +68,10 @@ export type ComposerProps = {
   onDeleteCustomModel?: (modelId: string) => Promise<void>;
 };
 
-export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
+export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const composingRef = useRef(false);
+  const cannotSend = disabled || uploading || sendBlocked || attachments.some(item => 'status' in item && ['uploading', 'failed', 'needs_reselect'].includes(item.status));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -185,18 +190,31 @@ export function Composer({ value, model, models, customModels = [], activeDatase
   }} onDrop={event => {
     if (!event.dataTransfer.files.length) return;
     event.preventDefault();
-    if (!disabled && !uploading) onUpload(event.dataTransfer.files[0]);
+    if (!disabled && !runtimeControlsDisabled) onUpload(event.dataTransfer.files[0]);
   }}>
-    <div ref={composerRef} className="composer">
       {attachments.length ? <div className="attachment-list">{attachments.map(attachment => {
         const status = attachmentStatus(attachment);
         const id = attachmentId(attachment);
-        return <div className={`attachment-chip ${status ? 'has-status' : ''}`} key={id}><Icon name="file" size={14} /><span title={attachment.filename}>{attachment.filename}</span>{status && <em>{status}</em>}<button type="button" onClick={() => onRemoveAttachment(id)} aria-label={`移除 ${attachment.filename}`} title="移除附件" disabled={loading || uploading}><Icon name="close" size={13} /></button></div>;
+        const progress = 'progress' in attachment ? attachment.progress : undefined;
+        return <div className={`attachment-chip ${status ? 'has-status' : ''}`} key={id}>
+          {'status' in attachment && attachment.status === 'uploading' ? <span className="attachment-progress" role="progressbar" aria-label={`${attachment.filename} 上传进度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+            <svg viewBox="0 0 36 36" aria-hidden="true"><circle className="attachment-progress-track" cx="18" cy="18" r="15" /><circle className="attachment-progress-value" cx="18" cy="18" r="15" pathLength="100" strokeDasharray={`${progress ?? 0} 100`} /></svg><small>{progress === undefined ? '…' : `${progress}%`}</small>
+          </span> : <FileTypeIcon filename={attachment.filename} />}
+          <span title={attachment.filename}>{attachment.filename}</span>{status && <em title={'error' in attachment ? attachment.error : undefined}>{status}</em>}
+          {'status' in attachment && attachment.status === 'failed' && attachment.file && onRetryAttachment ? <button type="button" onClick={() => onRetryAttachment(id)} aria-label={`重试 ${attachment.filename}`} disabled={disabled || loading || runtimeControlsDisabled}>重试</button> : null}
+          <button type="button" onClick={() => onRemoveAttachment(id)} aria-label={`移除 ${attachment.filename}`} title="移除附件" disabled={disabled || loading || runtimeControlsDisabled}><Icon name="close" size={13} /></button>
+        </div>;
       })}</div> : null}
-      <textarea ref={textareaRef} value={value} disabled={disabled} rows={2} placeholder="今天帮你分析什么？粘贴边列表，或直接用自然语言提问" onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (!sendBlocked) onSend(); } }} />
+    <div ref={composerRef} className="composer">
+      <textarea ref={textareaRef} value={value} disabled={disabled} rows={2} placeholder="今天帮你分析什么？粘贴边列表，或直接用自然语言提问" onChange={event => onChange(event.target.value)}
+        onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }}
+        onKeyDown={event => {
+          if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+          if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (!cannotSend && !runControl) onSend(); }
+        }} />
       <div className="composer-toolbar">
         <input ref={inputRef} type="file" hidden accept=".sql,.txt,.csv,.edgelist,.dat,.json,.xlsx,.pdf,.pt,.npz,.py,.md,.zip,.yaml,.yml,.js,.tsv" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
-        <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title="上传图文件" aria-label="上传图文件" disabled={disabled || uploading}>{uploading ? <span className="loader" /> : <Icon name="plus" size={20} />}</button>
+        <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title="上传图文件" aria-label="上传图文件" disabled={disabled || runtimeControlsDisabled}><Icon name="plus" size={20} /></button>
         <button className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={onDataset} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? `当前数据集：${activeDatasetName}` : '选择项目数据集'}><Icon name="database" size={12} /><span>{activeDatasetName || '数据集'}</span></button>
         <div ref={modelPickerRef} className={`composer-model ${modelOpen ? 'is-open' : ''}`}>
           <button type="button" className="composer-model-trigger" onClick={() => setModelOpen(current => !current)} disabled={disabled || loading || runtimeControlsDisabled || modelOptions.length === 0} aria-label="选择模型" aria-expanded={modelOpen}>
@@ -217,7 +235,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
         <button
           className={`send-button ${runControl ? 'stop' : ''}`}
           onClick={runControl ? onCancel : onSend}
-          disabled={runControl ? stopping : disabled || uploading || sendBlocked}
+          disabled={runControl ? stopping : cannotSend}
           title={runControl ? runControlLabel : sendBlocked ? sendBlockedReason : '发送'}
           aria-label={runControl ? runControlLabel : sendBlocked ? sendBlockedReason || '当前不可发送' : '发送'}
         >{runControl ? <span className="stop-square" /> : <Icon name="send" size={18} />}</button>

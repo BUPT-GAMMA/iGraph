@@ -84,7 +84,7 @@ export type ConversationAction =
   | { type: 'OPEN_DRAFT'; draft: NewConversationDraft }
   | { type: 'PATCH_DRAFT'; projectId: string | null; draftId: string; patch: Partial<Pick<NewConversationDraft, 'phase' | 'text' | 'model' | 'activeDatasetId' | 'attachments' | 'error'>> }
   | { type: 'REMOVE_DRAFT'; projectId: string | null; draftId?: string }
-  | { type: 'MATERIALIZE_DRAFT'; projectId: string | null; draftId: string; sessionId: string; generation: string; model: string; activeDatasetId?: string | null; datasetView?: DatasetView | null; accessedAt?: number }
+  | { type: 'MATERIALIZE_DRAFT'; prepareRun?: boolean; projectId: string | null; draftId: string; sessionId: string; generation: string; model: string; activeDatasetId?: string | null; datasetView?: DatasetView | null; accessedAt?: number }
   | { type: 'HYDRATE_START'; sessionId: string; requestVersion: number }
   | {
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
@@ -99,7 +99,7 @@ export type ConversationAction =
   | { type: 'BEGIN_RUN_PREPARATION'; sessionId: string; generation: string }
   | { type: 'START_PREPARED_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
   | { type: 'PREPARE_RUN_FAILED'; sessionId: string; generation: string; error: string }
-  | { type: 'SET_PENDING_ATTACHMENT'; sessionId: string; localId: string; status: DraftAttachment['status']; error?: string }
+  | { type: 'SET_PENDING_ATTACHMENT'; sessionId: string; localId: string; status: DraftAttachment['status']; error?: string; progress?: number }
   | { type: 'RESOLVE_PENDING_ATTACHMENT'; sessionId: string; localId: string; attachment: AttachmentRef }
   | { type: 'REMOVE_PENDING_ATTACHMENT'; sessionId: string; localId: string }
   | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
@@ -698,7 +698,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       pendingAttachments,
       activeDatasetId: action.activeDatasetId,
       graph: graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, false),
-      activeRun: {
+      activeRun: action.prepareRun === false ? null : {
         generation: action.generation,
         startRequestId: action.generation,
         status: 'preparing',
@@ -843,7 +843,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       view = {
         ...view,
         pendingAttachments: view.pendingAttachments.map(item => item.localId === action.localId
-          ? { ...item, status: action.status, error: action.error }
+          ? { ...item, status: action.status, error: action.error, progress: action.progress }
           : item),
       };
       break;

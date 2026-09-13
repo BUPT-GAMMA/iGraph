@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
+import { readComposerDraft, writeComposerDraft, clearComposerDraft } from './composerDrafts';
 import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, renameProjectDataset, saveCustomModel, setDefaultProjectDataset, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
@@ -77,7 +78,17 @@ function ColumnDivider({ side, value, minimum, maximum, onPointerDown, onNudge, 
 
 function normalizeMessages(input: unknown): Message[] {
   if (!Array.isArray(input)) return [];
-  return input.map((item, index) => ({ id: item?.id || item?.message_id || `history:${index}`, run_id: item?.run_id, role: item?.role === 'user' ? 'user' : 'assistant', content: String(item?.content || ''), tools: item?.tools || [], plan: item?.plan || null, graphs: item?.graphs || [], reports: item?.reports || [] }));
+  return input.map((item, index) => ({
+    id: item?.id || item?.message_id || `history:${index}`,
+    run_id: item?.run_id, role: item?.role === 'user' ? 'user' : 'assistant',
+    content: String(item?.content || ''), tools: item?.tools || [], plan: item?.plan || null,
+    graphs: item?.graphs || [], reports: item?.reports || [],
+    attachments: Array.isArray(item?.attachments) ? item.attachments.filter((file: any) =>
+      typeof file?.filename === 'string' && typeof file?.file_token === 'string') : [],
+    processItems: Array.isArray(item?.processItems) ? item.processItems : [],
+    thinking: Array.isArray(item?.thinking) ? item.thinking : [],
+    regenerate_of: typeof item?.regenerate_of === 'string' ? item.regenerate_of : null,
+  }));
 }
 
 function mergeSessionLists(current: Session[], incoming: Session[]) {
@@ -244,6 +255,8 @@ function App() {
   const hydrationControllersRef = useRef(new Map<string, AbortController>());
   const draftCreationControllersRef = useRef(new Map<string, AbortController>());
   const preparationControllersRef = useRef(new Map<string, AbortController>());
+  const uploadControllersRef = useRef(new Map<string, { sessionId: string; controller: AbortController }>());
+  const composerSnapshotsRef = useRef(new Map<string, string>());
   const deletionRequestsRef = useRef(new Set<string>());
   const deletedProjectsRef = useRef(new Set<string>());
   const graphVersionsRef = useRef(new Map<string, number>());
@@ -496,6 +509,7 @@ function App() {
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
     const listedSession = source.find(item => item.session_id === id);
+    const restoreComposer = !conversationRef.current.viewsBySessionId[id];
     if (!listedSession && !allowUnlisted) {
       showWorkspaceHome(true, true, '该会话不存在或已被删除');
       return;
@@ -553,6 +567,11 @@ function App() {
         datasetView: response.dataset_view,
         hasGraph: response.has_graph,
       });
+      const savedComposer = restoreComposer ? readComposerDraft(identity, id) : null;
+      if (savedComposer && !previousView?.draft && !previousView?.attachments.length && !previousView?.pendingAttachments.length) {
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId: id, patch: effectiveActiveRun
+          ? { draft: savedComposer.draft } : savedComposer });
+      }
       const pendingFirstTurn = readPendingFirstTurn(userId, id);
       if (pendingFirstTurn) {
         const alreadyStarted = Boolean(effectiveActiveRun)
@@ -742,6 +761,7 @@ function App() {
     return () => window.removeEventListener('popstate', handleHistoryNavigation);
   }, [userId, sessions, projects, busy]);
   useEffect(() => () => {
+    cancelSessionUploads();
     recoveryRef.current?.reset();
     cancellationRef.current?.reset();
     for (const controller of preparationControllersRef.current.values()) controller.abort();
@@ -851,6 +871,24 @@ function App() {
     }
   }, [conversation.draftsByScope, userId]);
   useEffect(() => {
+    if (!userId || identityRef.current !== userId || getUserId() !== userId) return;
+    for (const view of Object.values(conversation.viewsBySessionId)) {
+      if (view.hydration !== 'ready') continue;
+      const protectedRun = selectRunGate(view).blocksSessionMutation;
+      const key = JSON.stringify([userId, view.sessionId]);
+      const snapshot = JSON.stringify([view.draft, view.attachments, view.pendingAttachments.map(item =>
+        [item.localId, item.filename, item.status]), protectedRun, view.activeRun?.status === 'preparing', view.model, view.activeDatasetId]);
+      if (composerSnapshotsRef.current.get(key) === snapshot) continue;
+      composerSnapshotsRef.current.set(key, snapshot);
+      writeComposerDraft(userId, view.sessionId, protectedRun
+        ? { draft: view.activeRun?.status === 'preparing' ? '' : view.draft, attachments: [], pendingAttachments: [] }
+        : view);
+      const pendingFirstTurn = readPendingFirstTurn(userId, view.sessionId);
+      if (pendingFirstTurn && !protectedRun) persistPendingFirstTurn(view.sessionId,
+        pendingFirstTurnSnapshot(view.draft, view.attachments, view.pendingAttachments, view.model, pendingFirstTurn.projectId, view.activeDatasetId ?? null));
+    }
+  }, [conversation.viewsBySessionId, userId]);
+  useEffect(() => {
     function warnBeforeLeaving(event: BeforeUnloadEvent) {
       const hasVolatileFile = Object.values(conversationRef.current.draftsByScope)
         .some(draft => draft.attachments.some(attachment => Boolean(attachment.file)))
@@ -915,6 +953,7 @@ function App() {
     for (const controller of hydrationControllersRef.current.values()) controller.abort();
     hydrationControllersRef.current.clear();
     hydrationVersionsRef.current.clear();
+    cancelSessionUploads();
     recoveryRef.current?.reset();
     cancellationRef.current?.reset();
     conversationRef.current = initialConversationState;
@@ -1015,6 +1054,7 @@ function App() {
       hydrationControllersRef.current.delete(id);
       clearPersistedRun(id);
       clearPendingFirstTurn(id);
+      clearComposerDraft(identity, id); cancelSessionUploads(id);
       dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
       setSessions(current => current.filter(item => item.session_id !== id));
       if (deleted?.project_id) setProjects(current => current.map(project => project.project_id === deleted.project_id ? { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) } : project));
@@ -1070,6 +1110,7 @@ function App() {
       preparationControllersRef.current.get(id)?.abort(); preparationControllersRef.current.delete(id);
       hydrationControllersRef.current.get(id)?.abort(); hydrationControllersRef.current.delete(id);
       clearPersistedRun(id); clearPendingFirstTurn(id);
+      clearComposerDraft(identity, id); cancelSessionUploads(id);
       dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
     }
     setSessions(current => current.filter(item => item.project_id !== targetId));
@@ -1142,7 +1183,9 @@ function App() {
       }
       dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'uploading' });
       try {
-        const uploaded = await uploadFile(sessionId, pending.file, preparationController.signal);
+        const uploaded = await uploadFile(sessionId, pending.file, preparationController.signal, progress => {
+          if (!stale()) dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'uploading', progress });
+        });
         if (stale() || conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.generation !== generation) return;
         if (uploaded.dataset) {
           const sourceDataset = uploaded.dataset;
@@ -1186,7 +1229,7 @@ function App() {
       type: 'START_PREPARED_RUN',
       sessionId,
       generation,
-      userMessage: { id: `user:${generation}`, role: 'user', content: message },
+      userMessage: { id: `user:${generation}`, role: 'user', content: message, attachments },
       assistantMessage: { id: `assistant:${generation}`, role: 'assistant', content: '', streaming: true, tools: [] },
     });
     setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, preview: message, last_message: message } : session));
@@ -1195,13 +1238,13 @@ function App() {
     void consumeRunConnection(sessionId, generation, connection, 'start', { message, attachments }, undefined, undefined, undefined, undefined, true);
   }
 
-  async function sendDraft() {
+  async function sendDraft(uploadOnly = false, draftOverride?: NewConversationDraft) {
     const selectedProjectId = conversationRef.current.activeDraftKey;
-    const draft = selectedProjectId ? conversationRef.current.draftsByScope[selectedProjectId] : null;
+    const draft = draftOverride || (selectedProjectId ? conversationRef.current.draftsByScope[selectedProjectId] : null);
     if (!draft || !['editing', 'failed'].includes(draft.phase)) return;
     const projectId = draft.projectId;
     const message = draft.text.trim();
-    if (!message) return;
+    if (!message && !uploadOnly) return;
     if (draftCreationControllersRef.current.has(draftScopeKey(projectId))) return;
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
@@ -1227,7 +1270,7 @@ function App() {
         session_id: response.session_id,
         project_id: resolvedProjectId,
         active_dataset_id: response.active_dataset_id,
-        title: response.title || message.slice(0, 36),
+        title: response.title || message.slice(0, 36) || '新对话',
         preview: message,
         last_message: message,
         model: selectedModel,
@@ -1244,6 +1287,7 @@ function App() {
       }
       dispatchConversation({
         type: 'MATERIALIZE_DRAFT',
+        prepareRun: !uploadOnly,
         projectId,
         draftId: draft.draftId,
         sessionId: response.session_id,
@@ -1258,6 +1302,10 @@ function App() {
         setActiveProject(null);
         setGraphOpen(window.innerWidth > 900);
         writeWorkspaceRoute({ kind: 'session', id: response.session_id }, true);
+      }
+      if (uploadOnly) {
+        for (const attachment of draft.attachments.filter(item => !item.fileToken && item.file)) void uploadAttachment(response.session_id, attachment);
+        return;
       }
       void prepareAndStartFirstTurn(
         response.session_id,
@@ -1313,6 +1361,7 @@ function App() {
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: blockedMessage } });
       return;
     }
+    if (targetView?.uploading || [...uploadControllersRef.current.values()].some(item => item.sessionId === sessionId)) return;
     const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
     if (!override && (targetView?.pendingAttachments.length || pendingFirstTurn)) {
       const generation = crypto.randomUUID();
@@ -1383,75 +1432,89 @@ function App() {
     dispatchConversation({ type: 'BEGIN_FEEDBACK_SUBMISSION', sessionId, generation, runId: run.runId, callId, decisionId, decision });
     void consumeRunConnection(sessionId, generation, connection, 'feedback', undefined, pending, decision, undefined, decisionId);
   }
-  async function upload(file: File) {
-    const draftProjectId = conversationRef.current.activeDraftKey;
-    const currentDraft = draftProjectId ? conversationRef.current.draftsByScope[draftProjectId] : null;
-    if (currentDraft) {
-      if (!['editing', 'failed'].includes(currentDraft.phase)) return;
-      const replacement = currentDraft.attachments.find(attachment => attachment.filename === file.name && attachment.status === 'needs_reselect');
-      const attachment: DraftAttachment = replacement
-        ? { ...replacement, file, status: 'staged', error: undefined }
-        : { localId: crypto.randomUUID(), filename: file.name, file, status: 'staged' };
-      dispatchConversation({
-        type: 'PATCH_DRAFT',
-        projectId: currentDraft.projectId,
-        draftId: currentDraft.draftId,
-        patch: {
-          phase: 'editing',
-          error: undefined,
-          attachments: replacement
-            ? currentDraft.attachments.map(item => item.localId === replacement.localId ? attachment : item)
-            : [...currentDraft.attachments, attachment],
-        },
-      });
-      return;
+  function cancelSessionUploads(sessionId?: string) {
+    for (const [id, pending] of uploadControllersRef.current) {
+      if (!sessionId || pending.sessionId === sessionId) {
+        pending.controller.abort();
+        uploadControllersRef.current.delete(id);
+      }
     }
-    if (!activeSession || uploading) return;
-    const sessionId = activeSession.session_id;
-    const currentView = conversationRef.current.viewsBySessionId[sessionId];
-    const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
-    if (currentView?.pendingAttachments.length || pendingFirstTurn) {
-      const replacement = currentView.pendingAttachments.find(attachment => attachment.filename === file.name && ['needs_reselect', 'failed'].includes(attachment.status));
-      const attachment: DraftAttachment = replacement
-        ? { ...replacement, file, status: 'staged', error: undefined }
-        : { localId: crypto.randomUUID(), filename: file.name, file, status: 'staged' };
-      const nextPendingAttachments = replacement
-        ? currentView.pendingAttachments.map(item => item.localId === replacement.localId ? attachment : item)
-        : [...(currentView?.pendingAttachments || []), attachment];
-      dispatchConversation({
-        type: 'PATCH_VIEW',
-        sessionId,
-        patch: {
-          pendingAttachments: nextPendingAttachments,
-          error: undefined,
-        },
-      });
-      if (pendingFirstTurn) persistPendingFirstTurn(sessionId, { ...pendingFirstTurn, pendingAttachments: nextPendingAttachments.map(item => ({ localId: item.localId, filename: item.filename, status: 'needs_reselect', error: '刷新后需要重新选择文件' })) });
-      return;
-    }
-    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
+  }
+
+  async function uploadAttachment(sessionId: string, attachment: DraftAttachment) {
+    if (!attachment.file || uploadControllersRef.current.has(attachment.localId)) return;
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
+    const entry = { sessionId, controller: new AbortController() };
+    const stale = () => entry.controller.signal.aborted || accountIsStale(identity, accountEpoch)
+      || uploadControllersRef.current.get(attachment.localId) !== entry;
+    uploadControllersRef.current.set(attachment.localId, entry);
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
+    dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: attachment.localId, status: 'uploading', progress: 0 });
     try {
-      const uploaded = await uploadFile(sessionId, file);
-      if (accountIsStale(identity, accountEpoch)) return;
+      const uploaded = await uploadFile(sessionId, attachment.file, entry.controller.signal, progress => {
+        if (!stale()) dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: attachment.localId, status: 'uploading', progress });
+      });
+      if (stale()) return;
       if (uploaded.dataset) {
         const sourceDataset = uploaded.dataset;
         updateProjectDatasets(sourceDataset.project_id, current => [...current.filter(item => item.dataset_id !== sourceDataset.dataset_id), sourceDataset]);
         if (uploaded.construction_required && conversationRef.current.activeSessionId === sessionId) openConstruction(sourceDataset);
       }
-      const attachment = { file_token: uploaded.file_token, filename: uploaded.filename || file.name };
-      const currentAttachments = conversationRef.current.viewsBySessionId[sessionId]?.attachments || [];
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { attachments: [...currentAttachments.filter(item => item.file_token !== attachment.file_token), attachment] } });
-      if (!selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
-        dispatchConversation({ type: 'APPEND_MESSAGES', sessionId, messages: [{ role: 'user', content: `上传文件 ${attachment.filename}` }, { role: 'assistant', content: uploaded.construction_required ? `文件「${attachment.filename}」已保存到数据集。可从数据集列表的“构图”入口继续；构图算法接入后即可生成并复用图数据。` : `文件「${attachment.filename}」已上传。请发送加载或分析指令。` }] });
-      }
-    } catch (cause: any) {
-      if (accountIsStale(identity, accountEpoch)) return;
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: cause.message || '上传失败' } });
+      dispatchConversation({ type: 'RESOLVE_PENDING_ATTACHMENT', sessionId, localId: attachment.localId,
+        attachment: { file_token: uploaded.file_token, filename: uploaded.filename || attachment.filename } });
+    } catch (cause) {
+      if (stale()) return;
+      const error = cause instanceof Error ? cause.message : '上传失败，请重试';
+      dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: attachment.localId, status: 'failed', error });
     } finally {
-      if (!accountIsStale(identity, accountEpoch)) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } });
+      if (uploadControllersRef.current.get(attachment.localId) === entry) {
+        uploadControllersRef.current.delete(attachment.localId);
+        if (!accountIsStale(identity, accountEpoch)) dispatchConversation({ type: 'PATCH_VIEW', sessionId,
+          patch: { uploading: [...uploadControllersRef.current.values()].some(item => item.sessionId === sessionId) } });
+      }
     }
+  }
+
+  async function upload(file: File) {
+    const state = conversationRef.current;
+    const draft = state.activeDraftKey ? state.draftsByScope[state.activeDraftKey] : null;
+    const sessionId = state.activeSessionId;
+    const view = sessionId ? state.viewsBySessionId[sessionId] : null;
+    if (draft && (!['editing', 'failed'].includes(draft.phase) || draftCreationControllersRef.current.has(draftScopeKey(draft.projectId)))) return;
+    if (!draft && (!sessionId || !view || selectRunGate(view).blocksSessionMutation)) return;
+    const pending = draft?.attachments || view?.pendingAttachments || [];
+    const replacement = pending.find(item => item.filename === file.name && ['failed', 'needs_reselect'].includes(item.status));
+    const attachment: DraftAttachment = { localId: replacement?.localId || crypto.randomUUID(), filename: file.name, file, status: 'staged' };
+    const nextPending = [...pending.filter(item => item.localId !== attachment.localId), attachment];
+    if (draft) {
+      const nextDraft = { ...draft, attachments: nextPending };
+      dispatchConversation({ type: 'PATCH_DRAFT', projectId: draft.projectId, draftId: draft.draftId, patch: { attachments: nextPending, error: undefined } });
+      await sendDraft(true, nextDraft);
+    } else if (sessionId) {
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { pendingAttachments: nextPending, error: undefined } });
+      void uploadAttachment(sessionId, attachment);
+    }
+  }
+
+  function retryAttachment(localId: string) {
+    const sessionId = conversationRef.current.activeSessionId;
+    if (!sessionId) return;
+    const view = conversationRef.current.viewsBySessionId[sessionId];
+    if (selectRunGate(view).blocksSessionMutation) return;
+    const attachment = view?.pendingAttachments.find(item => item.localId === localId);
+    if (attachment?.status === 'failed' && attachment.file) void uploadAttachment(sessionId, attachment);
+  }
+
+  function editMessage(message: Message) {
+    const sessionId = conversationRef.current.activeSessionId;
+    if (!sessionId) return;
+    const view = conversationRef.current.viewsBySessionId[sessionId];
+    if (!view || selectRunGate(view).blocksSessionMutation || view.uploading) return;
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: {
+      draft: message.content, attachments: message.attachments || [], pendingAttachments: [], error: undefined,
+    } });
+    setComposerFocusRequest(current => current + 1);
   }
   function removeAttachment(attachmentId: string) {
     const draftProjectId = conversationRef.current.activeDraftKey;
@@ -1463,6 +1526,14 @@ function App() {
     if (!activeSession) return;
     const sessionId = activeSession.session_id;
     const currentView = conversationRef.current.viewsBySessionId[sessionId];
+    if (selectRunGate(currentView).blocksSessionMutation) return;
+    const pendingUpload = uploadControllersRef.current.get(attachmentId);
+    if (pendingUpload?.sessionId === sessionId) {
+      pendingUpload.controller.abort(); uploadControllersRef.current.delete(attachmentId);
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: {
+        uploading: [...uploadControllersRef.current.values()].some(item => item.sessionId === sessionId),
+      } });
+    }
     if (currentView?.pendingAttachments.some(item => item.localId === attachmentId)) {
       const nextPendingAttachments = currentView.pendingAttachments.filter(item => item.localId !== attachmentId);
       dispatchConversation({ type: 'REMOVE_PENDING_ATTACHMENT', sessionId, localId: attachmentId });
@@ -1759,9 +1830,9 @@ function App() {
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
           {activeDraft
-            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onRegenerate={(message: Message, runId: string) => void send({ message: message.content, attachments: message.attachments || [], regenerateOf: runId })} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onRegenerate={(message: Message, runId: string) => void send({ message: message.content, attachments: message.attachments || [], regenerateOf: runId })} onUpload={upload} onRetryAttachment={retryAttachment} onEditMessage={editMessage} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
-            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onRegenerate={(message: Message, runId: string) => void send({ message: message.content, attachments: message.attachments || [], regenerateOf: runId })} onUpload={upload} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onRegenerate={(message: Message, runId: string) => void send({ message: message.content, attachments: message.attachments || [], regenerateOf: runId })} onUpload={upload} onRetryAttachment={retryAttachment} onEditMessage={editMessage} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
             : <div className={`workspace-home ${userId ? '' : 'signed-out'}`}><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{userId ? '开始新的图分析' : '探索图数据，从一个问题开始'}</h1><p>{userId ? '选择左侧已有会话，或创建一个新任务。' : '点击左下角头像登录，你的项目、会话与分析结果会在这里保持同步。'}</p>{userId ? <button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button> : null}</div></div>}
         </>}
       </div>

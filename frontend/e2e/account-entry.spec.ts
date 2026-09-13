@@ -50,7 +50,10 @@ test('two tabs synchronize accounts without sending or copying the previous acco
     const userId = request.headers()['x-user-id'];
     await route.fulfill({ json: { sessions: [{ session_id: `${userId}-session`, title: `${userId} private session` }] } });
   });
-  await context.route('**/api/sessions/*/upload', route => route.fulfill({ json: { success: true, filename: 'b.csv', file_token: 'b-file-token' } }));
+  await context.route('**/api/sessions/*/upload', route => {
+    const accountA = route.request().headers()['x-user-id'] === 'account-a';
+    return route.fulfill({ json: { success: true, filename: accountA ? 'a-private.csv' : 'b.csv', file_token: accountA ? 'a-file-token' : 'b-file-token' } });
+  });
   const writes: Request[] = [];
   context.on('request', request => {
     if (request.method() === 'POST' && /\/api\/sessions(?:$|\/[^/]+\/(?:upload|chat\/stream)$)/.test(new URL(request.url()).pathname)) writes.push(request);
@@ -62,6 +65,13 @@ test('two tabs synchronize accounts without sending or copying the previous acco
   await composer(peer).fill('A private draft');
   await peer.locator('input[type="file"]').setInputFiles({ name: 'a-private.csv', mimeType: 'text/csv', buffer: Buffer.from('A-private-data') });
   await expect(peer.getByText('a-private.csv', { exact: true })).toBeVisible();
+  // Selecting a file now creates its session and uploads under the current account.
+  await expect.poll(() => writes.length).toBe(2);
+  await expect(peer).toHaveURL(/\?session=/);
+  await expect(peer.getByRole('button', { name: '发送', exact: true })).toBeEnabled();
+  const accountARoute = peer.url();
+  expect(writes.every(request => request.headers()['x-user-id'] === 'account-a')).toBe(true);
+  expect(writes[1].postData()).toContain('A-private-data');
 
   await switchTo(page, 'account-a', 'account-b');
   await expect(peer.getByRole('button', { name: '账户：account-b' })).toBeVisible();
@@ -69,7 +79,7 @@ test('two tabs synchronize accounts without sending or copying the previous acco
   await expect(peer.getByText('account-b private session', { exact: true })).toBeVisible();
   await expect(peer.getByText('account-a private session', { exact: true })).toHaveCount(0);
   await expect(peer.getByRole('button', { name: '发送', exact: true })).toHaveCount(0);
-  expect(writes).toHaveLength(0);
+  expect(writes).toHaveLength(2);
 
   await peer.getByRole('complementary').getByRole('button', { name: '新建任务', exact: true }).click();
   await expect(composer(peer)).toHaveValue('');
@@ -77,16 +87,17 @@ test('two tabs synchronize accounts without sending or copying the previous acco
   await composer(peer).fill('B public draft');
   await peer.locator('input[type="file"]').setInputFiles({ name: 'b.csv', mimeType: 'text/csv', buffer: Buffer.from('B-public-data') });
   await peer.getByRole('button', { name: '发送', exact: true }).click();
-  await expect.poll(() => writes.length).toBe(3);
-  expect(writes.every(request => request.headers()['x-user-id'] === 'account-b')).toBe(true);
-  expect(writes[0].postDataJSON().initial_message_preview).toBe('B public draft');
-  expect(writes[1].postData()).toContain('B-public-data');
-  expect(writes[2].postDataJSON()).toMatchObject({ message: 'B public draft', attachments: [{ file_token: 'b-file-token', filename: 'b.csv' }] });
-  expect(writes.some(request => /A private draft|A-private-data|a-private.csv/.test(request.postData() || ''))).toBe(false);
+  await expect.poll(() => writes.length).toBe(5);
+  const accountBWrites = writes.slice(2);
+  expect(accountBWrites.every(request => request.headers()['x-user-id'] === 'account-b')).toBe(true);
+  expect(accountBWrites[0].postDataJSON().initial_message_preview).toBe('B public draft');
+  expect(accountBWrites[1].postData()).toContain('B-public-data');
+  expect(accountBWrites[2].postDataJSON()).toMatchObject({ message: 'B public draft', attachments: [{ file_token: 'b-file-token', filename: 'b.csv' }] });
+  expect(accountBWrites.some(request => /A private draft|A-private-data|a-private.csv/.test(request.postData() || ''))).toBe(false);
 
   await switchTo(page, 'account-b', 'account-a');
   await expect(peer.getByRole('button', { name: '账户：account-a' })).toBeVisible();
-  await peer.getByRole('complementary').getByRole('button', { name: '新建任务', exact: true }).click();
+  await peer.goto(accountARoute);
   await expect(composer(peer)).toHaveValue('A private draft');
   await expect(peer.getByText('a-private.csv', { exact: true })).toBeVisible();
 });
