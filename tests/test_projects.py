@@ -790,3 +790,78 @@ def test_reused_creation_identity_cannot_change_project_scope(client):
     conflict = client.post('/api/sessions', headers=headers(), json={**body, 'project_id': project['project_id']})
     assert conflict.status_code == 409
     assert FakeServiceClient.runtime_sessions[sid]['session_state']['project_id'] is None
+
+
+def test_workspace_upload_preserves_dataset_registration_and_download_ownership(client, tmp_path, monkeypatch):
+    from workspace_storage import workspace_root_for
+    monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    first = client.post(f"/api/sessions/{sid}/upload", headers=headers(), files={"file": ("edges.csv", b"a,b\n1,2\n")})
+    second = client.post(f"/api/sessions/{sid}/upload", headers=headers(), files={"file": ("edges.txt", b"a,b\n1,2\n")})
+    assert first.status_code == second.status_code == 200
+    a, b = first.json(), second.json()
+    assert a["file_token"] != b["file_token"]
+    assert a["dataset"]["dataset_id"] != b["dataset"]["dataset_id"]
+    assert a["construction_required"] and b["construction_required"]
+    root = workspace_root_for("admin", sid)
+    assert (root / a["workspace_path"]).read_bytes() == b"a,b\n1,2\n"
+    (root / "Derived/report.txt").write_text("public report")
+    (root / "Ephemeral/private.txt").write_text("private intermediate")
+    listed = client.get(f"/api/sessions/{sid}/workspace/files", headers=headers())
+    assert len(listed.json()["files"]) == 3
+    assert client.get(f"/api/sessions/{sid}/workspace/files", headers=headers("alice")).status_code == 404
+    assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt").status_code == 401
+    assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt", headers=headers()).content == b"public report"
+    assert client.get(f"/api/sessions/{sid}/workspace/derived/%2E%2E%2FEphemeral%2Fprivate.txt", headers=headers()).status_code == 404
+
+def test_workspace_upload_size_limit_rejects_before_ingest(client, monkeypatch):
+    monkeypatch.setenv("IGRAPH_MAX_UPLOAD_BYTES", "3")
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    assert client.post(f"/api/sessions/{sid}/upload", headers=headers(), files={"file": ("x.txt", b"1234")}).status_code == 413
+    assert client.post(f"/api/sessions/{sid}/upload", headers=headers(), files={"file": ("x.txt", b"")}).status_code == 400
+
+def test_regeneration_has_explicit_validated_provenance_and_preserves_repeat_turns(client):
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    FakeServiceClient.runtime_runs[sid] = [{"run_id": "old-run", "status": "completed", "run_input": "same", "content": "answer"}]
+    stale = client.post(f"/api/sessions/{sid}/chat/stream", headers=headers(), json={"message": "same", "regenerate": True, "regenerate_of": "wrong"})
+    assert stale.status_code == 409
+    response = client.post(f"/api/sessions/{sid}/chat/stream", headers=headers(), json={"message": "same", "regenerate": True, "regenerate_of": "old-run"})
+    assert response.status_code == 200
+    metadata = json.loads(FakeServiceClient.runtime_stream_calls[-1]["data"]["metadata"])
+    assert metadata["igraph_turn"]["regenerate_of"] == "old-run"
+    runs = [dict(FakeServiceClient.runtime_runs[sid][0]), {"run_id": "new-run", "status": "completed", "run_input": "same", "content": "new answer"}]
+    messages = backend_app._messages_from_runs(runs)
+    assert [message["content"] for message in messages if message["role"] == "user"] == ["same", "same"]
+
+
+def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata():
+    from backend.event_mapper import project_run
+    run = {"run_id": "legacy", "status": "completed", "run_input": "question",
+        "content": "answer", "metadata": "legacy metadata",
+        "events": [
+            {"event": "RunContent", "event_index": None, "content": "checking"},
+            {"event": "ToolCallStarted", "event_index": "invalid", "tool": {"tool_name": "get_graph_info", "tool_call_id": "call"}},
+            {"event": "ToolCallCompleted", "tool": {"tool_name": "get_graph_info", "tool_call_id": "call", "result": {"success": True}}},
+        ]}
+    projected = project_run(run)
+    assert projected["last_event_index"] == 2
+    assert [item["kind"] for item in projected["processItems"]] == ["text", "tool"]
+    assert projected["processItems"][-1]["tool"]["done"]
+    messages = backend_app._messages_from_runs([run])
+    assert [message["content"] for message in messages] == ["question", "answer"]
+    assert messages[-1]["regenerate_of"] is None
+
+
+def test_event_only_history_retains_background_training_controls():
+    arguments = {"model": "GCN", "train_config": {"epochs": 100000}}
+    run = {"run_id": "old", "status": "completed", "run_input": "train", "content": "queued", "tools": [],
+        "events": [
+            {"event": "ToolCallStarted", "tool": {"tool_name": "train", "tool_call_id": "call", "tool_args": arguments}},
+            {"event": "ToolCallCompleted", "tool": {"tool_name": "train", "tool_call_id": "call", "tool_args": arguments,
+                "result": json.dumps({"success": True, "async": True, "job_id": "running-job", "status": "queued"})}},
+        ]}
+    messages = backend_app._messages_from_runs([run, {"run_id": "new", "status": "running", "run_input": "next", "content": "A"}])
+    card = messages[1]["tools"][0]
+    assert card["tool"] == "train" and card["call_id"] == "call"
+    assert card["args"] == arguments
+    assert card["job_id"] == "running-job" and card["done"] is False

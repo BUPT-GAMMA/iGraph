@@ -1,0 +1,472 @@
+import asyncio
+import os
+import subprocess
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from agent_runtime.workspace_tools import create_workspace_tools, workspace_sandbox_startup_check
+
+
+@pytest.fixture(autouse=True)
+def local_workspace_environment(monkeypatch):
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+    original = os.environ.get("IGRAPH_WORKSPACE_ROOT")
+    yield
+    if original is None:
+        os.environ.pop("IGRAPH_WORKSPACE_ROOT", None)
+    else:
+        os.environ["IGRAPH_WORKSPACE_ROOT"] = original
+
+def ctx(tmp_path, sid="s1", uid="u1"):
+    os.environ["IGRAPH_WORKSPACE_ROOT"] = str(tmp_path)
+    return SimpleNamespace(user_id=uid, session_id=sid)
+
+
+def toolset():
+    return {tool.__name__: tool for tool in create_workspace_tools()}
+
+
+def test_workspace_bash_and_read_are_session_scoped(tmp_path):
+    c = ctx(tmp_path)
+    tools = toolset()
+    assert set(tools) == {"workspace_list", "workspace_bash", "workspace_publish"}
+    result = asyncio.run(tools["workspace_bash"]("printf hello > Ephemeral/result.txt", c))
+    assert result["success"]
+    read = asyncio.run(tools["workspace_bash"]("cat Ephemeral/result.txt", c))
+    assert read["output"] == "hello"
+    assert asyncio.run(tools["workspace_list"](c))["files"] == []
+    other = ctx(tmp_path, "s2")
+    assert not asyncio.run(tools["workspace_bash"]("cat Ephemeral/result.txt", other))["success"]
+
+
+def test_workspace_creates_isolated_lifecycle_zones(tmp_path):
+    first = ctx(tmp_path, "s1")
+    second = ctx(tmp_path, "s2", "u2")
+    tools = toolset()
+
+    asyncio.run(tools["workspace_bash"]("printf one > Ephemeral/a.txt", first))
+    uploaded = tmp_path / "u2" / "s2" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    (uploaded / "input.txt").write_text("input", encoding="utf-8")
+
+    assert (tmp_path / "u1" / "s1" / "Ephemeral" / "a.txt").read_text() == "one"
+    assert (tmp_path / "u2" / "s2" / "Uploaded" / "input.txt").read_text() == "input"
+    assert asyncio.run(tools["workspace_bash"]("cat ../s2/Uploaded/input.txt", first))["success"] is False
+
+
+def test_uploaded_files_are_immutable_to_write_exec_delete_and_rename(tmp_path):
+    current = ctx(tmp_path)
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    source = uploaded / "input.txt"
+    source.write_text("original", encoding="utf-8")
+    tools = toolset()
+
+    assert asyncio.run(tools["workspace_bash"]("printf changed > Uploaded/input.txt", current))["success"] is False
+    assert asyncio.run(tools["workspace_bash"]("printf changed > Uploaded/input.txt || true", current))["success"] is False
+    assert asyncio.run(tools["workspace_bash"]("rm Uploaded/input.txt", current))["success"] is False
+    assert asyncio.run(tools["workspace_bash"]("mv Uploaded/input.txt renamed.txt", current))["success"] is False
+    assert source.read_text(encoding="utf-8") == "original"
+    assert not (uploaded / "renamed.txt").exists()
+
+
+def test_workspace_bash_runs_uploaded_python_and_classifies_generated_file_ephemeral(tmp_path):
+    current = ctx(tmp_path)
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    (uploaded / "make_file.py").write_text(
+        "from pathlib import Path\nPath('generated.txt').write_text('generated')\n",
+        encoding="utf-8",
+    )
+    result = asyncio.run(toolset()["workspace_bash"]("python3 Uploaded/make_file.py", current))
+
+    assert result["success"] is True
+    assert (tmp_path / "u1" / "s1" / "Ephemeral" / "generated.txt").read_text() == "generated"
+    assert any(item["path"] == "Ephemeral/generated.txt" and item["zone"] == "Ephemeral" for item in result["created_artifacts"])
+
+
+def test_workspace_bash_returns_exit_code_and_truncated_output(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_OUTPUT_LIMIT", "100")
+    result = asyncio.run(toolset()["workspace_bash"]("printf '%0120d' 0; exit 7", current))
+
+    assert result["success"] is False
+    assert result["status"] == "completed"
+    assert result["exit_code"] == 7
+    assert result["output_truncated"] is True
+    assert len(result["output"]) <= 100
+
+
+def test_workspace_bash_timeout_is_structured(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_EXEC_TIMEOUT_SECONDS", "0.5")
+    result = asyncio.run(toolset()["workspace_bash"]("printf partial; python3 -c 'import time; time.sleep(1)'", current))
+
+    assert result["success"] is False
+    assert result["status"] == "timeout"
+    assert result["exit_code"] is None
+    assert result["output_truncated"] is False
+
+
+def test_workspace_list_hides_ephemeral_and_shows_uploaded_and_derived(tmp_path):
+    current = ctx(tmp_path)
+    tools = toolset()
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    (uploaded / "input.txt").write_text("input", encoding="utf-8")
+    asyncio.run(tools["workspace_bash"]("printf report > Ephemeral/report.txt", current))
+    published = asyncio.run(tools["workspace_publish"]("Ephemeral/report.txt", current))
+    listing = asyncio.run(tools["workspace_list"](current))
+    paths = {item["path"] for item in listing["files"]}
+
+    assert "Uploaded/input.txt" in paths
+    assert published["artifact"]["relative_name"] in paths
+    assert "Ephemeral/report.txt" not in paths
+
+
+def test_workspace_publish_only_ephemeral_and_never_overwrites_derived(tmp_path):
+    current = ctx(tmp_path)
+    tools = toolset()
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    (uploaded / "input.txt").write_text("input")
+    assert asyncio.run(tools["workspace_publish"]("Uploaded/input.txt", current))["success"] is False
+    asyncio.run(tools["workspace_bash"]("printf one > Ephemeral/report.txt", current))
+    first = asyncio.run(tools["workspace_publish"]("Ephemeral/report.txt", current))
+    asyncio.run(tools["workspace_bash"]("printf two > Ephemeral/report.txt", current))
+    second = asyncio.run(tools["workspace_publish"]("Ephemeral/report.txt", current))
+
+    assert first["success"] and second["success"]
+    assert first["artifact_id"] == first["artifact"]["artifact_id"]
+    assert first["relative_name"] == first["artifact"]["relative_name"]
+    assert first["artifact"]["relative_name"] != second["artifact"]["relative_name"]
+    assert first["artifact"]["artifact_id"] != second["artifact"]["artifact_id"]
+    for artifact in (first["artifact"], second["artifact"]):
+        assert set(("artifact_id", "relative_name", "mime_type", "size", "checksum", "zone", "visibility")) <= artifact.keys()
+        assert artifact["zone"] == "Derived"
+        assert artifact["visibility"] == "user"
+        assert len(artifact["checksum"]) == 64
+    assert (tmp_path / "u1" / "s1" / "Derived" / "report.txt").read_text() == "one"
+
+
+def test_workspace_rejects_symlink_and_workspace_escape(tmp_path):
+    current = ctx(tmp_path)
+    root = tmp_path / "u1" / "s1"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    (root / "link.txt").symlink_to(outside)
+    tools = toolset()
+
+    assert asyncio.run(tools["workspace_publish"]("link.txt", current))["success"] is False
+    assert asyncio.run(tools["workspace_publish"]("../../outside.txt", current))["success"] is False
+    escaped = asyncio.run(tools["workspace_bash"]("cat /etc/passwd", current))
+    assert escaped["success"] is False
+
+
+def test_fallback_exec_restores_uploaded_file_after_symlink_replacement(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    source = uploaded / "input.txt"
+    source.write_text("original", encoding="utf-8")
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+
+    result = asyncio.run(
+        toolset()["workspace_bash"](
+            "python3 -c 'from pathlib import Path; p=Path(\"Uploaded/input.txt\"); p.unlink(); p.symlink_to(\"other.txt\")'",
+            current,
+        )
+    )
+
+    assert result["success"] is False
+    assert source.is_file()
+    assert not source.is_symlink()
+    assert source.read_text(encoding="utf-8") == "original"
+
+
+def test_workspace_bash_hides_fallback_server_path(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+
+    result = asyncio.run(toolset()["workspace_bash"]("pwd", current))
+
+    assert result["success"] is True
+    assert str(tmp_path) not in result["output"]
+    assert "/workspace" in result["output"]
+
+
+def test_production_without_bwrap_never_executes_command(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_ENV", "production")
+    marker = tmp_path / "u1" / "s1" / "marker.txt"
+
+    result = asyncio.run(toolset()["workspace_bash"]("printf ran > marker.txt", current))
+
+    assert result["success"] is False
+    assert result["sandbox_mode"] == "unavailable"
+    assert result["status"] == "sandbox_unavailable"
+    assert result["sandbox_unavailable"] is True
+    assert result["error"]["code"] == "sandbox_unavailable"
+    assert not marker.exists()
+
+
+def test_auto_mode_without_bwrap_does_not_enable_fallback(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_ENV", "development")
+    monkeypatch.delenv("IGRAPH_WORKSPACE_SANDBOX_MODE", raising=False)
+
+    result = asyncio.run(toolset()["workspace_bash"]("printf must-not-run > marker.txt", current))
+
+    assert result["status"] == "sandbox_unavailable"
+    assert result["sandbox_mode"] == "unavailable"
+    assert not (tmp_path / "u1" / "s1" / "marker.txt").exists()
+
+
+@pytest.mark.parametrize("environment", ["staging", "test", "ci", "qa"])
+def test_required_environments_without_bwrap_are_unavailable_even_with_fallback_setting(
+    tmp_path, monkeypatch, environment
+):
+    current = ctx(tmp_path)
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_ENV", environment)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+
+    result = asyncio.run(toolset()["workspace_bash"]("printf must-not-run > marker.txt", current))
+
+    assert result["status"] == "sandbox_unavailable"
+    assert not (tmp_path / "u1" / "s1" / "marker.txt").exists()
+
+
+def test_runtime_startup_check_reports_missing_bwrap(monkeypatch):
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_ENV", "staging")
+
+    with pytest.raises(RuntimeError, match="bubblewrap executable was not found"):
+        workspace_sandbox_startup_check()
+
+
+def test_runtime_startup_check_reports_rootless_probe_failure(monkeypatch):
+    monkeypatch.setenv("IGRAPH_ENV", "production")
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(
+        "agent_runtime.workspace_tools.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["bwrap"], 1, stdout="", stderr="Operation not permitted"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="rootless bubblewrap probe failed"):
+        workspace_sandbox_startup_check()
+
+
+def test_development_fallback_reports_security_level_and_log_fields(tmp_path, monkeypatch, caplog):
+    current = ctx(tmp_path)
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+
+    with caplog.at_level("WARNING", logger="igraph"):
+        result = asyncio.run(toolset()["workspace_bash"]("printf fallback", current))
+
+    assert result["success"] is True
+    assert result["sandbox_mode"] == "fallback"
+    assert result["sandbox_security_level"] == "development-compatibility"
+    assert result["sandbox_warning"]
+    assert "sandbox_mode=fallback" in caplog.text
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="Linux bubblewrap sandbox integration")
+def test_uploaded_python_cannot_access_external_path_in_bwrap(tmp_path, monkeypatch):
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "bwrap")
+    current = ctx(tmp_path)
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    (uploaded / "escape.py").write_text(
+        "from pathlib import Path\nPath('/tmp/igraph-workspace-escape').write_text('escaped')\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(toolset()["workspace_bash"]("python3 Uploaded/escape.py", current))
+
+    assert result["sandbox_mode"] == "bwrap"
+    assert result["success"] is False
+    assert not Path("/tmp/igraph-workspace-escape").exists()
+
+
+def test_fallback_exception_restores_uploaded_and_derived(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    root = tmp_path / "u1" / "s1"
+    uploaded = root / "Uploaded"
+    uploaded.mkdir(parents=True)
+    source = uploaded / "input.txt"
+    source.write_text("original", encoding="utf-8")
+    (root / "Derived").mkdir(parents=True)
+    derived = root / "Derived" / "result.txt"
+    derived.write_text("published", encoding="utf-8")
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+
+    result = asyncio.run(
+        toolset()["workspace_bash"](
+            "python3 -c 'from pathlib import Path; Path(\"Uploaded/input.txt\").write_text(\"bad\"); Path(\"Derived/result.txt\").write_text(\"bad\"); raise SystemExit(3)'",
+            current,
+        )
+    )
+
+    assert result["success"] is False
+    assert source.read_text(encoding="utf-8") == "original"
+    assert derived.read_text(encoding="utf-8") == "published"
+
+
+def test_fallback_timeout_restores_uploaded_file(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    source = uploaded / "input.txt"
+    source.write_text("original", encoding="utf-8")
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+    monkeypatch.setenv("IGRAPH_WORKSPACE_EXEC_TIMEOUT_SECONDS", "0.2")
+
+    result = asyncio.run(
+        toolset()["workspace_bash"](
+            "python3 -c 'from pathlib import Path; import time; Path(\"Uploaded/input.txt\").write_text(\"bad\"); time.sleep(2)'",
+            current,
+        )
+    )
+
+    assert result["status"] == "timeout"
+    assert source.read_text(encoding="utf-8") == "original"
+
+
+def test_cancelled_exec_restores_uploaded_file(tmp_path, monkeypatch):
+    current = ctx(tmp_path)
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    source = uploaded / "input.txt"
+    source.write_text("original", encoding="utf-8")
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: None)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+    monkeypatch.setenv("IGRAPH_WORKSPACE_EXEC_TIMEOUT_SECONDS", "5")
+
+    async def run_and_cancel():
+        task = asyncio.create_task(
+            toolset()["workspace_bash"](
+                "python3 -c 'from pathlib import Path; import time; Path(\"Uploaded/input.txt\").write_text(\"bad\"); time.sleep(2)'",
+                current,
+            )
+        )
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        raise AssertionError("workspace_bash cancellation was swallowed")
+
+    asyncio.run(run_and_cancel())
+    assert source.read_text(encoding="utf-8") == "original"
+
+
+def test_workspace_identity_symlink_is_rejected(tmp_path):
+    base = tmp_path / "workspaces"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    base.mkdir()
+    (base / "u1").symlink_to(outside, target_is_directory=True)
+    os.environ["IGRAPH_WORKSPACE_ROOT"] = str(base)
+
+    identity = SimpleNamespace(user_id="u1", session_id="s1")
+    result = asyncio.run(toolset()["workspace_publish"]("Ephemeral/file.txt", identity))["success"]
+    listed = asyncio.run(toolset()["workspace_list"](identity))
+    executed = asyncio.run(toolset()["workspace_bash"]("pwd", identity))
+
+    assert result is False
+    assert listed["success"] is False
+    assert executed["success"] is False
+    assert not (outside / "s1").exists()
+
+
+def test_workspace_zone_symlink_is_rejected(tmp_path):
+    current = ctx(tmp_path)
+    root = tmp_path / "u1" / "s1"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "Ephemeral").symlink_to(outside, target_is_directory=True)
+
+    result = asyncio.run(toolset()["workspace_bash"]("printf x > Ephemeral/out.txt", current))
+
+    assert result["success"] is False
+    assert not (outside / "out.txt").exists()
+    assert not (outside / "Uploaded").exists()
+
+
+def test_workspace_publish_rejects_derived_symlink_destination(tmp_path):
+    current = ctx(tmp_path)
+    root = tmp_path / "u1" / "s1"
+    (root / "Ephemeral").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "Derived").symlink_to(outside, target_is_directory=True)
+    (root / "Ephemeral" / "report.txt").write_text("report", encoding="utf-8")
+
+    result = asyncio.run(toolset()["workspace_publish"]("Ephemeral/report.txt", current))
+
+    assert result["success"] is False
+    assert not (outside / "report.txt").exists()
+
+
+def test_workspace_bash_writes_literal_multiline_content(tmp_path):
+    c = ctx(tmp_path)
+    content = 'name,value\n"quoted",$HOME\n`pwd`,42\n'
+    command = "cat <<'DATA' > Ephemeral/data.csv\n" + content + "DATA"
+    result = asyncio.run(toolset()["workspace_bash"](command, c))
+    assert result["success"]
+    assert (tmp_path / "u1" / "s1" / "Ephemeral" / "data.csv").read_text() == content
+    assert result["created_artifacts"][0]["visibility"] == "hidden"
+
+
+def test_workspace_rejects_path_escape(tmp_path):
+    c = ctx(tmp_path)
+    result = asyncio.run(toolset()["workspace_bash"]("cat ../../secret", c))
+    assert result["success"] is False
+
+
+def test_workspace_identity_is_a_single_safe_directory(tmp_path):
+    c = ctx(tmp_path, "../../session")
+    result = asyncio.run(toolset()["workspace_bash"]("pwd", c))
+    assert result["success"]
+    assert ".." not in result["output"]
+
+
+def test_workspace_bash_read_exposes_output_truncation(tmp_path, monkeypatch):
+    c = ctx(tmp_path)
+    monkeypatch.setenv("IGRAPH_WORKSPACE_OUTPUT_LIMIT", "100")
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    (uploaded / "large.txt").write_text("x" * 200_001)
+    result = asyncio.run(toolset()["workspace_bash"]("cat Uploaded/large.txt", c))
+    assert result["success"] is True
+    assert result["output_truncated"] is True
+    assert len(result["output"]) == 100
+
+
+def test_workspace_bash_reads_progressive_chunks(tmp_path):
+    c = ctx(tmp_path)
+    uploaded = tmp_path / "u1" / "s1" / "Uploaded"
+    uploaded.mkdir(parents=True)
+    (uploaded / "chunks.txt").write_text("abc\ndef\n")
+    bash = toolset()["workspace_bash"]
+    first = asyncio.run(bash("sed -n '1p' Uploaded/chunks.txt", c))
+    second = asyncio.run(bash("sed -n '2p' Uploaded/chunks.txt", c))
+    assert first["output"] == "abc\n"
+    assert second["output"] == "def\n"
+    assert not first["output_truncated"] and not second["output_truncated"]

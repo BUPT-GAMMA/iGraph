@@ -209,3 +209,38 @@ def test_private_delete_removes_both_user_skill_roots(skill_client) -> None:
     assert not user_skills_path(config, "target").exists()
     assert not candidate_skills_path(config, "target").exists()
     assert client.delete("/internal/skills/users/target/all").status_code == 401
+
+
+def test_skill_zip_upload_enters_review_queue_and_keeps_resources(skill_client):
+    import io, zipfile
+    client, config = skill_client
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("graph-reader/SKILL.md", "---\nname: old-name\ndescription: inspect graphs\n---\nRead the graph.")
+        archive.writestr("graph-reader/references/help.txt", "reference")
+    response = client.post("/internal/skills/upload", headers=_headers(), files={"file": ("graph-reader.zip", buffer.getvalue())})
+    assert response.status_code == 200
+    assert response.json()["source"] == "review_queue"
+    root = candidate_skills_path(config, "alice") / "graph-reader"
+    assert (root / "references/help.txt").read_text() == "reference"
+    assert not (user_skills_path(config, "alice") / "graph-reader").exists()
+    assert "name: graph-reader" in (root / "SKILL.md").read_text()
+
+@pytest.mark.parametrize("path", ["../escape", "graph-reader/../../escape", "graph-reader" + chr(92) + ".." + chr(92) + "escape"])
+def test_skill_zip_rejects_traversal(skill_client, path):
+    import io, zipfile
+    client, _ = skill_client
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("graph-reader/SKILL.md", "reader")
+        archive.writestr(path, "escape")
+    assert client.post("/internal/skills/upload", headers=_headers(), files={"file": ("graph-reader.zip", buffer.getvalue())}).status_code == 400
+
+def test_skill_zip_rejects_expansion_bomb(skill_client):
+    import io, zipfile
+    client, _ = skill_client
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("graph-reader/SKILL.md", "reader")
+        archive.writestr("graph-reader/large", b"x" * (10 * 1024 * 1024))
+    assert client.post("/internal/skills/upload", headers=_headers(), files={"file": ("graph-reader.zip", buffer.getvalue())}).status_code == 413

@@ -21,7 +21,9 @@ from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+from workspace_storage import visible_files, derived_file, save_upload
+from runtime_observability import RequestLoggingMiddleware
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
@@ -32,7 +34,7 @@ from backend.construction_access import install_construction_access
 from construction_access import scope_headers
 from backend.construction import install_construction_routes, sync_record as sync_construction_record
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
-from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, translate_sse
+from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, project_run, translate_sse
 from backend.identity import current_user, public_user, require_admin
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
 from backend.projects import ProjectDirectory, ProjectRecord
@@ -93,6 +95,7 @@ class ChatReq(BaseModel):
     planning_mode: Literal["never", "auto", "always"] | None = None
     output_format: Literal["chat", "report", "json"] = "chat"
     regenerate: bool = False
+    regenerate_of: str | None = None
     start_request_id: uuid.UUID | None = None
 
 
@@ -302,6 +305,10 @@ def _stream_event_frame(
 
 
 def _run_input_text(run: dict) -> str:
+    metadata = run.get("metadata")
+    turn = metadata.get("igraph_turn") if isinstance(metadata, dict) else None
+    if isinstance(turn, dict) and isinstance(turn.get("user_message"), str):
+        return turn["user_message"]
     value = run.get("run_input")
     if isinstance(value, str):
         return value
@@ -478,13 +485,26 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
         run_id = str(run.get("run_id") or run.get("id") or "")
         status = str(run.get("status") or "").lower()
         user_text = _run_input_text(run).strip()
+        metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+        turn = metadata.get("igraph_turn") if isinstance(metadata.get("igraph_turn"), dict) else {}
         if user_text:
-            messages.append({"id": f"user:{run_id}", "run_id": run_id, "role": "user", "content": user_text})
+            messages.append({"id": f"user:{run_id}", "run_id": run_id, "role": "user", "content": user_text,
+                             "attachments": turn.get("attachments") or []})
 
         tool_cards: list[dict] = []
         graphs: list[dict] = []
         reports: list[dict] = []
+        projection = project_run(run)
         tools = run.get("tools") or []
+        if not tools:
+            # Some native/checkpoint records retain tool events without a tools
+            # summary. Rebuild the existing dev cards so snapshots do not erase
+            # training controls or artifacts when the next run starts.
+            tools = [{"tool_name": item["tool"].get("tool"),
+                      "tool_call_id": item["tool"].get("call_id"),
+                      "tool_args": item["tool"].get("args") or {},
+                      "result": item["tool"].get("result")}
+                     for item in projection["processItems"] if item.get("kind") == "tool"]
         for tool in tools if isinstance(tools, list) else []:
             if not isinstance(tool, dict):
                 continue
@@ -608,6 +628,8 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
                 "graphs": graphs,
                 "reports": reports,
                 "thinking": ([{"phase": "reasoning", "text": reasoning_text, "streaming": False}] if reasoning_text else []),
+                "processItems": projection["processItems"],
+                "regenerate_of": turn.get("regenerate_of"),
                 "feedbackRequests": feedback_requests,
                 "plan": plan,
             })
@@ -970,6 +992,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user.user_id),
             json_body={"user_id": user.user_id, **payload},
         )
+    app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -2404,6 +2427,16 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def run_form(session_id: str, req: ChatReq, request: Request) -> tuple[dict, dict[str, str], str]:
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
+        regeneration = None
+        if req.regenerate or req.regenerate_of:
+            history = _ordered_runs(await get_session_runs(session_id, request, user.user_id))
+            latest = history[-1] if history else None
+            latest_id = str((latest or {}).get("run_id") or (latest or {}).get("id") or "")
+            if not latest_id or (req.regenerate_of and req.regenerate_of != latest_id):
+                raise HTTPException(409, {"code": "REGENERATE_TARGET_CHANGED", "message": "最新回复已变化，请刷新后重试"})
+            if str(latest.get("status") or "").lower() not in {"completed", "error", "failed", "cancelled", "canceled"}:
+                raise HTTPException(409, {"code": "RUN_ACTIVE", "message": "请等待当前任务结束"})
+            regeneration = latest_id
         await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
         state = _state(session)
         options = {
@@ -2459,6 +2492,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "session_id": session_id,
             "user_id": user.user_id,
             "factory_input": json.dumps(options, ensure_ascii=False),
+            "metadata": json.dumps({"igraph_turn": {"user_message": req.message,
+                "attachments": [item.model_dump() for item in req.attachments or []],
+                "regenerate_of": regeneration}}, ensure_ascii=False),
         }
         return form, forwarded_headers(request, user.user_id), user.user_id
 
@@ -3205,6 +3241,16 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             params=dict(request.query_params), json_body=json.loads(body) if body else None,
         )
 
+    @app.post("/api/skills/upload")
+    async def upload_skill(request: Request, file: UploadFile = File(...)):
+        user = current_user(request, users)
+        content = await file.read(2 * 1024 * 1024 + 1)
+        if len(content) > 2 * 1024 * 1024:
+            raise HTTPException(413, "Skill 压缩包不能超过 2MB")
+        return await runtime.request("POST", "/internal/skills/upload",
+            headers=forwarded_headers(request, user.user_id),
+            files={"file": (file.filename or "skill.zip", content, file.content_type or "application/zip")})
+
     @app.api_route("/api/skills/{name}", methods=["GET", "PUT", "DELETE"])
     async def skill_item(name: str, request: Request):
         user = current_user(request, users)
@@ -3337,12 +3383,34 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             )
         return result
 
+    @app.get("/api/sessions/{session_id}/workspace/files")
+    async def workspace_files(session_id: str, request: Request):
+        user = current_user(request, users)
+        await get_session(session_id, request, user.user_id)
+        return {"success": True, "files": await asyncio.to_thread(visible_files, user.user_id, session_id)}
+
+    @app.get("/api/sessions/{session_id}/workspace/derived/{artifact_path:path}")
+    async def download_derived(session_id: str, artifact_path: str, request: Request):
+        user = current_user(request, users)
+        await get_session(session_id, request, user.user_id)
+        try:
+            target = derived_file(user.user_id, session_id, artifact_path)
+        except ValueError:
+            raise HTTPException(404, {"code": "ARTIFACT_NOT_FOUND", "message": "文件不存在"})
+        return FileResponse(target, filename=target.name, media_type="application/octet-stream",
+                            headers={"X-Content-Type-Options": "nosniff"})
+
     @app.post("/api/sessions/{session_id}/upload")
     async def upload(session_id: str, request: Request, file: UploadFile = File(...)):
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
         file_token = uuid.uuid4().hex
-        content = await file.read()
+        max_bytes = max(1, int(os.getenv("IGRAPH_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))))
+        content = await file.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise HTTPException(413, {"code": "UPLOAD_TOO_LARGE", "max_bytes": max_bytes})
+        if not content:
+            raise HTTPException(400, {"code": "EMPTY_UPLOAD", "message": "上传文件不能为空"})
         filename = file.filename or f"upload-{file_token}.bin"
         payload = await graph.request(
             "POST", f"/sessions/{session_id}/uploads/ingest", headers=forwarded_headers(request, user.user_id),
@@ -3360,7 +3428,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 name=Path(filename).stem, original_filename=filename, content=content)
             dataset = project_datasets.update(dataset.dataset_id, user.user_id, project_id=project_id,
                 metadata={**dataset.metadata, "attachment_file_token": file_token}) or dataset
-        return {"success": True, "filename": filename, "file_token": file_token, "graph_engine": payload,
+        # Identical bytes with different extensions still need independent graph registration.
+        _, workspace_path = save_upload(user.user_id, session_id, file_token, filename, content)
+        return {"success": True, "workspace_path": workspace_path, "filename": filename, "file_token": file_token, "graph_engine": payload,
                 "dataset": _project_dataset_row(dataset) if dataset else None,
                 "construction_required": dataset is not None}
 

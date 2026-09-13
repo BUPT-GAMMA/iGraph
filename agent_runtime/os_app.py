@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import asyncio
 from agno.os import AgentOS
+from runtime_observability import RequestLoggingMiddleware
 from pydantic import BaseModel, Field
 
 from agent_runtime.agno_factory import create_db, create_igraph_factory
@@ -94,6 +95,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         telemetry=settings.telemetry,
     )
     app = agent_os.get_app()
+    app.add_middleware(RequestLoggingMiddleware)
     app.state.execution_controller = controller
     if controller:
         @app.middleware('http')

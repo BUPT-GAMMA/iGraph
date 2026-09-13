@@ -7,6 +7,8 @@ them into the active user directory.
 
 from __future__ import annotations
 
+import io
+import zipfile
 import json
 import re
 import shutil
@@ -14,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from agent_runtime.config import AgentRuntimeConfig
@@ -139,6 +141,61 @@ def _iter_skills(root: Path, source: str):
 
 def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
     router = APIRouter(prefix="/internal/skills", tags=["iGraph Skills"])
+
+    @router.post("/upload")
+    async def upload_skill(request: Request, file: UploadFile = File(...)):
+        uid = _user_id(request)
+        if not (file.filename or "").lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="Skill 上传必须是 .zip 文件")
+        raw = await file.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Skill 压缩包不能超过 2MB")
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(raw))
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(status_code=400, detail="Skill 压缩包无效") from exc
+        members = archive.infolist()
+        if len(members) > 256 or sum(item.file_size for item in members) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Skill 解压后不能超过 10MB 或 256 个文件")
+        if any(chr(92) in item.filename or chr(0) in item.filename or item.flag_bits & 1 for item in members):
+            raise HTTPException(status_code=400, detail="Skill 压缩包包含不支持的条目")
+        if any(
+            Path(item.filename).is_absolute()
+            or ".." in Path(item.filename).parts
+            or ((item.external_attr >> 16) & 0o170000) == 0o120000
+            for item in members
+        ):
+            raise HTTPException(status_code=400, detail="Skill 压缩包包含不安全路径")
+        skill_files = [item for item in members if Path(item.filename).name == "SKILL.md"]
+        if len(skill_files) != 1:
+            raise HTTPException(status_code=400, detail="压缩包必须且只能包含一个 SKILL.md")
+        root = Path(skill_files[0].filename).parent
+        name = _safe_name(root.name or Path(file.filename or "skill").stem)
+        target = candidate_skills_path(config, uid) / name
+        if target.exists():
+            raise HTTPException(status_code=409, detail="Skill 已存在")
+        target.mkdir(parents=True)
+        try:
+            for item in members:
+                rel = Path(item.filename)
+                if rel.parts[:len(root.parts)] != root.parts:
+                    continue
+                if item.is_dir() or item.filename.endswith("/"):
+                    continue
+                destination = target / Path(*rel.parts[len(root.parts):])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(archive.read(item))
+            skill_file = target / "SKILL.md"
+            if not skill_file.is_file():
+                raise HTTPException(status_code=400, detail="Skill 缺少 SKILL.md")
+            skill_file.write_text(_normalize_body_name(skill_file.read_text(encoding="utf-8"), name), encoding="utf-8")
+        except (UnicodeError, zipfile.BadZipFile, RuntimeError, OSError) as exc:
+            shutil.rmtree(target, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="Skill 压缩包内容无效") from exc
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+        return {"success": True, "name": name, "source": "review_queue"}
 
     @router.get("")
     def list_skills(request: Request, source: str = "all"):
