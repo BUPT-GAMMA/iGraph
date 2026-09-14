@@ -1,5 +1,18 @@
+import { useId, useState } from 'react';
 import type { ProcessItem, ToolCall } from '../types';
 import { Icon } from './Icon';
+
+const toolLabels: Record<string, string> = {
+  get_graph_info: '读取图信息',
+  get_graph_construction_status: '查询构图状态',
+  degree_analysis: '分析节点度',
+  graph_connectivity: '分析连通性',
+  train: '训练模型',
+  infer: '运行推理',
+  load_dataset: '加载数据集',
+  load_constructed_graph: '加载构建图',
+  list_datasets: '查看数据集',
+};
 
 function toolStatus(tool?: ToolCall) {
   if (tool?.status === 'failed') return { label: '失败', className: 'is-error' };
@@ -18,6 +31,28 @@ function safeError(tool: ToolCall) {
   const result = tool.result;
   if (result && typeof result === 'object' && 'error' in result) return formatError((result as { error?: unknown }).error);
   return '工具执行失败';
+}
+
+function ProcessText({ item }: { item: ProcessItem }) {
+  const [expanded, setExpanded] = useState(false);
+  const contentId = useId();
+  const reasoning = item.kind === 'reasoning';
+  const label = reasoning ? '思考' : '说明';
+  const content = item.content || (reasoning ? '正在分析上下文…' : '');
+  return <button type="button"
+    className={`process-item process-disclosure ${reasoning ? 'process-reasoning-item' : 'process-text-item'}${expanded ? ' is-expanded' : ''}`}
+    aria-label={`${expanded ? '收起' : '展开'}${label}`}
+    aria-expanded={expanded} aria-controls={contentId}
+    onClick={() => setExpanded(value => !value)}>
+    <span className="process-kind"><Icon name={reasoning ? 'spark' : 'message'} size={13} />{label}</span>
+    <span className="process-copy">
+      <span className="process-preview" aria-hidden="true" data-preview={content} />
+      <span className="process-expanded" id={contentId} aria-hidden={!expanded}>
+        <span className="process-clip"><span className="process-full-text">{content}</span></span>
+      </span>
+    </span>
+    <span className="process-disclosure-icon"><Icon name="chevron" size={13} /></span>
+  </button>;
 }
 
 export function ProcessTimeline({ items = [], tools: liveTools = [], compact = false, streaming = false, thinkingDurationMs }: { items?: ProcessItem[]; tools?: ToolCall[]; compact?: boolean; streaming?: boolean; thinkingDurationMs?: number }) {
@@ -45,21 +80,28 @@ export function ProcessTimeline({ items = [], tools: liveTools = [], compact = f
     <summary><Icon name="chevron" size={13} /><span>{heading}</span><span className="process-count">{label}</span></summary>
     <div className="process-timeline">
     {ordered.map(item => {
-      if (item.kind === 'text') return <div className="process-item process-text-item" key={item.id}>
-        <span className="process-kind">Agent</span><span className="process-summary">{item.content || ''}</span>
-      </div>;
-      if (item.kind === 'reasoning') return <div className="process-item process-reasoning-item" key={item.id}>
-        <span className="process-kind">Reasoning</span><span className="process-summary">{item.content || 'Agent 正在分析上下文…'}</span>
-      </div>;
+      if (item.kind === 'text' || item.kind === 'reasoning') return <ProcessText key={item.id} item={item} />;
       const tool = item.tool;
       const status = toolStatus(tool);
       const epoch = Number(tool?.progress?.epoch);
       const epochs = Number(tool?.progress?.epochs);
       const progress = Number.isFinite(epoch) && Number.isFinite(epochs) && epochs > 0
         ? '轮次 ' + epoch + '/' + epochs : tool?.progress?.message;
-      const summary = safeError(tool || {}) || String(progress || status.label);
+      const detail = safeError(tool || {}) || String(progress || '');
+      const summary = detail || status.label;
+      const name = tool?.tool || 'graph_tool';
+      const displayName = toolLabels[name] || name;
       return <div className={`process-item process-tool-item ${status.className}`} key={item.id} role="status" aria-label={(tool?.tool || "graph_tool") + "：" + summary}>
-        <span className="process-kind">{tool?.tool || 'Graph Tool'}</span><span className="process-summary">{summary}</span>
+        <span className="process-kind"><Icon name="tool" size={13} />工具</span>
+        <div className="process-tool-body">
+          <span className="process-tool-name" title={name}>{displayName}</span>
+          {displayName !== name ? <span className="process-tool-code" title={name}>{name}</span> : null}
+          {detail ? <span className="process-tool-detail">{detail}</span> : null}
+        </div>
+        <span className="process-status">
+          {status.className === 'is-running' ? <span className="loader" aria-hidden="true" /> : <Icon name={status.className === 'is-complete' ? 'check' : 'close'} size={13} />}
+          {status.label}
+        </span>
       </div>;
     })}
     </div>
