@@ -8,7 +8,8 @@ import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from construction_access import AccessGrant, AccessRequest
+from construction_access import (AccessGrant, AccessRequest,
+    CONSTRUCTION_NOT_APPLICABLE, CONSTRUCTION_NOT_APPLICABLE_MESSAGE)
 from execution_protocol import service_headers
 
 
@@ -38,6 +39,14 @@ class ConstructionAccessClient:
                     response = await client.post("/internal/construction/access", headers=service_headers(user_id),
                                                  json=body.model_dump())
             if response.status_code in {401, 403, 404, 409, 422}:
+                # Only this typed applicability result is public, after the
+                # authority has verified live ownership. Never relay its body.
+                if response.status_code == 422:
+                    payload = response.json()
+                    detail = payload.get("detail") if isinstance(payload, dict) else None
+                    if isinstance(detail, dict) and detail.get("code") == CONSTRUCTION_NOT_APPLICABLE:
+                        raise HTTPException(422, {"code": CONSTRUCTION_NOT_APPLICABLE,
+                            "message": CONSTRUCTION_NOT_APPLICABLE_MESSAGE})
                 # Do not relay upstream bodies (paths, session state, diagnostics).
                 code = "PROJECT_DELETING" if response.status_code == 409 else "DATASET_SCOPE_REQUIRED"
                 raise HTTPException(response.status_code, {"code": code})
@@ -51,3 +60,18 @@ class ConstructionAccessClient:
         except (httpx.HTTPError, ValueError, TimeoutError):
             raise HTTPException(503, {"code": "DATASET_AUTHORIZATION_UNAVAILABLE",
                                      "message": "数据集权限服务暂不可用，请稍后重试。"}) from None
+
+    async def authorize_tool(self, user_id: str, tool_name: str, *, dataset_id: str,
+                             session_id: str | None = None, scope: str | None = None) -> dict | None:
+        """Status may report non-applicability; all other operations require a grant."""
+        try:
+            await self.authorize(user_id, session_id=session_id, scope=scope, dataset_id=dataset_id)
+        except HTTPException as exc:
+            if (tool_name != "get_graph_construction_status" or exc.status_code != 422
+                    or not isinstance(exc.detail, dict)
+                    or exc.detail.get("code") != CONSTRUCTION_NOT_APPLICABLE):
+                raise
+            return {"success": True, "dataset_id": dataset_id, "status": "not_applicable",
+                    "construction_applicable": False, "code": CONSTRUCTION_NOT_APPLICABLE,
+                    "message": CONSTRUCTION_NOT_APPLICABLE_MESSAGE}
+        return None

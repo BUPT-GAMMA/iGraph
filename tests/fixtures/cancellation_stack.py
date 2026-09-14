@@ -141,6 +141,21 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
                                       'function': {'name': tool, 'arguments': json.dumps(args)}}]})
                         yield frame({}, 'tool_calls')
                         yield 'data: [DONE]\n\n'
+                    elif key.startswith('reasoning-browser'):
+                        if count == 1:
+                            yield frame({'role': 'assistant', 'reasoning_content': '先检查'})
+                            await asyncio.sleep(2)
+                            yield frame({'reasoning_content': '图结构。'})
+                            await asyncio.sleep(2)
+                            yield frame({'tool_calls': [{'index': 0, 'id': 'reasoning-tool', 'type': 'function',
+                                'function': {'name': 'get_graph_info', 'arguments': '{}'}}]})
+                            yield frame({}, 'tool_calls')
+                        else:
+                            yield frame({'role': 'assistant', 'reasoning_content': '根据工具结果继续分析。'})
+                            await asyncio.sleep(2)
+                            yield frame({'content': '图结构检查完成。'})
+                            yield frame({}, 'stop')
+                        yield 'data: [DONE]\n\n'
                     elif key.startswith('complete') or key.startswith('background'):
                         yield frame({'role': 'assistant', 'content': 'ABC'})
                         yield frame({}, 'stop')

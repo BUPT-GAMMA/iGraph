@@ -2,17 +2,9 @@ import { useId, useState } from 'react';
 import type { ProcessItem, ToolCall } from '../types';
 import { Icon } from './Icon';
 
-const toolLabels: Record<string, string> = {
-  get_graph_info: '读取图信息',
-  get_graph_construction_status: '查询构图状态',
-  degree_analysis: '分析节点度',
-  graph_connectivity: '分析连通性',
-  train: '训练模型',
-  infer: '运行推理',
-  load_dataset: '加载数据集',
-  load_constructed_graph: '加载构建图',
-  list_datasets: '查看数据集',
-};
+import labels from '../toolLabels.json';
+
+const toolLabels: Readonly<Record<string, string>> = labels;
 
 function toolStatus(tool?: ToolCall) {
   if (tool?.status === 'failed') return { label: '失败', className: 'is-error' };
@@ -56,6 +48,7 @@ function ProcessText({ item }: { item: ProcessItem }) {
 }
 
 export function ProcessTimeline({ items = [], tools: liveTools = [], compact = false, streaming = false, thinkingDurationMs }: { items?: ProcessItem[]; tools?: ToolCall[]; compact?: boolean; streaming?: boolean; thinkingDurationMs?: number }) {
+  const [expanded, setExpanded] = useState<boolean | null>(null);
   if (!items.length) return null;
   const ordered = items.map(item => {
     if (item.kind !== 'tool') return item;
@@ -76,7 +69,8 @@ export function ProcessTimeline({ items = [], tools: liveTools = [], compact = f
   const seconds = thinkingDurationMs === undefined ? undefined : Math.max(0, Math.round(thinkingDurationMs / 1000));
   const heading = seconds === undefined ? (streaming ? '正在执行' : '执行过程')
     : streaming ? '思考中 · ' + seconds + 's' : '思考了 ' + seconds + 's';
-  return <details className={`process-panel ${compact ? 'is-compact' : ''}`} open={compact && running > 0}>
+  return <details className={`process-panel ${compact ? 'is-compact' : ''}`} open={expanded ?? (compact && (streaming || running > 0))}
+    onToggle={event => setExpanded(event.currentTarget.open)}>
     <summary><Icon name="chevron" size={13} /><span>{heading}</span><span className="process-count">{label}</span></summary>
     <div className="process-timeline">
     {ordered.map(item => {

@@ -81,7 +81,7 @@ export class ApiError extends Error {
       : '';
     const message = typeof detail === 'string'
       ? detail
-      : validationMessage || ({ EDIT_TARGET_CHANGED: '最新一轮已变化，请刷新后重试', EDIT_TARGET_NOT_FINISHED: '请等待本轮结束后再修改', EDIT_UNAVAILABLE: '当前服务暂不支持修改对话' } as Record<string, string>)[body?.code] || String(body?.message || body?.error || `请求失败 (${status})`);
+      : validationMessage || ({ JOB_IDEMPOTENCY_CONFLICT: '数据加载操作编号冲突，请重试；若持续出现，请联系维护者', EDIT_TARGET_CHANGED: '最新一轮已变化，请刷新后重试', EDIT_TARGET_NOT_FINISHED: '请等待本轮结束后再修改', EDIT_UNAVAILABLE: '当前服务暂不支持修改对话' } as Record<string, string>)[body?.code] || String(body?.message || body?.error || `请求失败 (${status})`);
     const error = new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
     if (retryAfter) {
       const seconds = Number(retryAfter);

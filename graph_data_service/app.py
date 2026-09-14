@@ -3492,8 +3492,10 @@ class GraphDataService:
             return self._construction.capabilities()
         if tool_name in DATASET_TOOLS:
             dataset_id = _required_str(arguments, "dataset_id")
-            await self._construction_access.authorize(user_id, session_id=session_id,
-                scope=construction_scope, dataset_id=dataset_id)
+            applicability = await self._construction_access.authorize_tool(user_id, tool_name,
+                session_id=session_id, scope=construction_scope, dataset_id=dataset_id)
+            if applicability is not None:
+                return applicability
             if tool_name == "get_graph_construction_status":
                 return await run_sync(self.do_get_graph_construction_status, dataset_id, user_id)
             if tool_name == "get_constructed_graph":
@@ -3717,8 +3719,11 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             if tool_name in DATASET_TOOLS:
                 # An idempotent replay can return a completed job without
                 # invoking dispatch. Revalidate before exposing that result.
-                await svc._construction_access.authorize(uid, session_id=session_id,
-                    scope=request.headers.get(SCOPE_HEADER), dataset_id=_required_str(arguments, "dataset_id"))
+                applicability = await svc._construction_access.authorize_tool(uid, tool_name,
+                    session_id=session_id, scope=request.headers.get(SCOPE_HEADER),
+                    dataset_id=_required_str(arguments, "dataset_id"))
+                if applicability is not None:
+                    return applicability
             result = await svc._execution_host.execute(ctx, tool_name, arguments, dispatch)
             if tool_name == "list_datasets" and uid and isinstance(result, dict) and isinstance(result.get("datasets"), list):
                 grant = await svc._construction_access.authorize(uid, session_id=session_id,
@@ -3754,7 +3759,12 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
 
     @app.get("/construction/{dataset_id}")
     async def construction_status(dataset_id: str, request: Request):
-        uid, _ = await construction_grant(request, dataset_id)
+        uid = construction_user(request)
+        applicability = await svc._construction_access.authorize_tool(uid, "get_graph_construction_status",
+            session_id=request.headers.get("X-Session-ID"), scope=request.headers.get(SCOPE_HEADER),
+            dataset_id=dataset_id)
+        if applicability is not None:
+            return applicability
         return await svc._construction_coordinator.status(uid, dataset_id)
 
     @app.post("/construction/{dataset_id}/source")

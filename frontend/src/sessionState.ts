@@ -26,6 +26,7 @@ export type SessionRunState = {
   cancellation?: 'requested' | 'stopping' | 'unconfirmed' | 'saving' | 'confirmed';
   controlRevision?: number;
   serverCanSend?: boolean;
+  nativeRunCreated?: boolean;
   generation: string;
   status: RunStatus;
   lastAppliedEventIndex: number;
@@ -396,7 +397,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     run = { ...run, status: 'streaming' };
   }
 
-  if (eventType === 'token') {
+  if (eventType === 'token' && event.content) {
     const pending = run.pendingProcessText;
     run = { ...run, pendingProcessText: { content: (pending?.content || '') + String(event.content || ''),
       sequence: pending?.sequence ?? Number(event.event_index ?? (run.processItems || []).length) } };
@@ -995,7 +996,12 @@ export function conversationReducer(state: ConversationState, action: Conversati
       if (safe && control.native_run_created === false && run.editBackup) {
         view = restoreEditedTurn(view, run.editBackup);
       }
-      view = { ...view, activeRun: { ...run, runId: control.run_id || run.runId, controlRevision: control.revision,
+      view = { ...view, error: safe && status === 'cancelled' ? undefined : view.error,
+        activeRun: { ...run, runId: control.run_id || run.runId, controlRevision: control.revision,
+        nativeRunCreated: control.native_run_created ?? run.nativeRunCreated,
+        synchronized: safe && control.native_run_created === false ? true : run.synchronized,
+        replay: safe ? undefined : run.replay,
+        error: safe && status === 'cancelled' ? undefined : run.error,
         editBackup: safe && control.native_run_created === false ? undefined : run.editBackup,
         serverCanSend: safe && control.can_send, status: run.status === 'cancelled' ? 'cancelled' : status,
         reception: safe ? 'idle' : run.reception,
@@ -1050,6 +1056,8 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'SET_RECEPTION':
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
+      // A late observer callback cannot restart an already confirmed empty run.
+      if (view.activeRun.nativeRunCreated === false && view.activeRun.cancellation === 'confirmed') return state;
       view = { ...view, error: action.error ?? view.error, activeRun: { ...view.activeRun,
         reception: action.reception, synchronized: action.synchronized ?? view.activeRun.synchronized,
         snapshotOnly: action.snapshotOnly ?? view.activeRun.snapshotOnly } };
@@ -1059,7 +1067,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       if (!run || run.generation !== action.generation || run.snapshotOnly) return state;
       const ids = new Set([run.assistantMessageId, `assistant:${run.runId}`]);
       view = { ...view, activeRun: { ...run, lastAppliedEventIndex: -1, recoveryRequired: false, synchronized: false,
-        toolsById: {}, toolOrder: [], plan: null, feedback: null,
+        toolsById: {}, toolOrder: [], plan: null, feedback: null, processItems: [], pendingProcessText: undefined,
         replay: { messagesById: Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !ids.has(id))),
           messageOrder: view.messageOrder.filter(id => !ids.has(id)), graph: view.graph } } };
       break;

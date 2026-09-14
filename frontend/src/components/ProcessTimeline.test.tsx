@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ProcessTimeline } from './ProcessTimeline';
 
@@ -35,4 +35,36 @@ it('shows structured failure details without counting failed tools as running', 
   ]} />);
   expect(screen.getByText('沙箱不可用')).toBeTruthy();
   expect(screen.queryByText('1 项运行中')).toBeNull();
+});
+
+
+it('shows live reasoning before tools and preserves disclosure choices while deltas arrive', () => {
+  const first = { id: 'reasoning:0', kind: 'reasoning' as const, sequence: 0, content: '先检查' };
+  const { rerender } = render(<ProcessTimeline compact streaming items={[first]} />);
+  const panel = document.querySelector('.process-panel') as HTMLDetailsElement;
+  expect(panel.open).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: '展开思考' }));
+  rerender(<ProcessTimeline compact streaming items={[{ ...first, content: '先检查图结构' }]} />);
+  expect(screen.getByRole('button', { name: '收起思考' }).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByText('先检查图结构')).toBeTruthy();
+  expect(screen.getByRole('button', { name: '收起思考' }).getAttribute('title')).toBeNull();
+  panel.open = false;
+  fireEvent(panel, new Event('toggle'));
+  rerender(<ProcessTimeline compact streaming items={[{ ...first, content: '先检查图结构和连通性' },
+    { id: 't', kind: 'tool', sequence: 1, tool: { tool: 'get_graph_info' } }]} />);
+  expect(panel.open).toBe(false);
+  expect(screen.getByRole('button', { name: '收起思考' }).getAttribute('aria-expanded')).toBe('true');
+});
+
+
+it('displays Chinese labels alongside exact tool identifiers and keeps unknown tools readable', () => {
+  const names = ['global_metrics', 'visualize_subgraph', 'workspace_bash', 'get_skill_instructions', 'custom_external_tool'];
+  const { container } = render(<ProcessTimeline items={names.map((name, sequence) => ({
+    id: name, kind: 'tool', sequence, tool: { tool: name, done: true, status: 'completed' },
+  }))} />);
+  expect([...container.querySelectorAll('.process-tool-name')].map(node => node.textContent)).toEqual([
+    '分析全局指标', '可视化子图', '执行工作区命令', '读取技能指引', 'custom_external_tool',
+  ]);
+  expect([...container.querySelectorAll('.process-tool-code')].map(node => node.textContent)).toEqual(names.slice(0, -1));
+  expect(screen.getAllByText('完成')).toHaveLength(5);
 });
