@@ -1,8 +1,10 @@
 """Bounded relational input and lossless PK/FK graph construction.
 
 SQL input is a SQLite database image or a conservative SQLite DDL/INSERT dump.
-It is always opened in memory. CSV values remain strings; identifiers are never
-case-folded. ``options.tables`` may append inline tables to the uploaded CSV;
+Bounded images and SQL text are opened in memory; explicit full-scale images are
+opened as locked read-only files. CSV and TXT values remain strings; identifiers
+are never case-folded. TXT accepts strict delimited tables or lossless line records.
+``options.tables`` may append inline tables to an uploaded CSV or TXT source;
 external table paths are deliberately unsupported.
 """
 from __future__ import annotations
@@ -24,6 +26,50 @@ from .budget import checked, check_deadline, current_deadline
 
 class SourceError(ValueError):
     """The uploaded source cannot be imported completely and safely."""
+
+
+@dataclass(frozen=True)
+class ResourceLimits:
+    """Explicit resource envelope carried with a relational source."""
+
+    max_source_bytes: int
+    max_source_rows: int
+    source_timeout_seconds: int
+    max_graph_nodes: int
+    max_graph_edges: int
+    max_intermediate_rows: int
+    query_timeout_seconds: int
+
+
+_BOUNDED_LIMITS = ResourceLimits(
+    max_source_bytes=32 * 1024 * 1024,
+    max_source_rows=200_000,
+    source_timeout_seconds=10,
+    max_graph_nodes=200_000,
+    max_graph_edges=1_000_000,
+    max_intermediate_rows=200_000,
+    query_timeout_seconds=10,
+)
+
+_BOUNDED_CEILINGS = ResourceLimits(
+    max_source_bytes=64 * 1024 * 1024,
+    max_source_rows=200_000,
+    source_timeout_seconds=60,
+    max_graph_nodes=200_000,
+    max_graph_edges=1_000_000,
+    max_intermediate_rows=200_000,
+    query_timeout_seconds=10,
+)
+
+_FULL_SCALE_LIMITS = ResourceLimits(
+    max_source_bytes=8 * 1024 * 1024 * 1024,
+    max_source_rows=10_000_000,
+    source_timeout_seconds=7_200,
+    max_graph_nodes=15_000_000,
+    max_graph_edges=30_000_000,
+    max_intermediate_rows=10_000_000,
+    query_timeout_seconds=600,
+)
 
 
 @dataclass
@@ -50,8 +96,14 @@ class RelationalSource:
     tables: dict[str, Table]
     domain: str = ""
     warnings: list[str] = field(default_factory=list)
+    resource_limits: ResourceLimits = field(default_factory=lambda: _BOUNDED_LIMITS)
     _connection: sqlite3.Connection | None = field(default=None, repr=False)
     _fk_pairs: dict[str, list[tuple[int, int]]] = field(default_factory=dict, repr=False)
+    _sql_rowids: dict[str, dict[int, int]] = field(default_factory=dict, repr=False)
+    _sql_rowid_aliases: dict[str, str] = field(default_factory=dict, repr=False)
+    _database_path: Path | None = field(default=None, repr=False)
+    _database_identity: tuple | None = field(default=None, repr=False)
+    _txt_mode: str | None = field(default=None, repr=False)
 
     def schema(self) -> dict:
         return {"domain": self.domain, "tables": [
@@ -72,6 +124,20 @@ class RelationalSource:
         if self._connection is not None:
             self._connection.close()
             self._connection = None
+        self._database_path = None
+        self._database_identity = None
+
+
+def _database_file_identity(path: Path) -> tuple:
+    """Identify the database plus committed rollback/WAL state without reading rows."""
+    def identity(candidate: Path):
+        try:
+            stat = candidate.stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+    return identity(path), identity(Path(str(path) + "-wal")), identity(Path(str(path) + "-journal"))
 
 
 def _encode(value: Any) -> str:
@@ -133,12 +199,26 @@ def _limit(options: dict, name: str, default: int, maximum: int) -> int:
     return value
 
 
+def _resource_limits(options: dict) -> ResourceLimits:
+    profile = options.get("resource_profile", "bounded")
+    if type(profile) is not str or profile not in {"bounded", "full_scale"}:
+        raise SourceError("resource_profile must be bounded or full_scale.")
+    defaults = _FULL_SCALE_LIMITS if profile == "full_scale" else _BOUNDED_LIMITS
+    ceiling = _FULL_SCALE_LIMITS if profile == "full_scale" else _BOUNDED_CEILINGS
+    values = {
+        name: _limit(options, name, getattr(defaults, name), getattr(ceiling, name))
+        for name in ResourceLimits.__dataclass_fields__
+    }
+    return ResourceLimits(**values)
+
+
 def _valid_json_cell(value: Any) -> bool:
     return (value is None or isinstance(value, (str, bool, int)) or
             isinstance(value, float) and math.isfinite(value))
 
 
-def _validate_source(source: RelationalSource, max_rows: int, *, csv_mode: bool = False) -> None:
+def _validate_source(source: RelationalSource, max_rows: int, *, csv_mode: bool = False,
+                     warn_missing_primary_key: bool = True) -> None:
     if not source.tables:
         raise SourceError("The source contains no tables.")
     if len(source.tables) > 128:
@@ -177,7 +257,7 @@ def _validate_source(source: RelationalSource, max_rows: int, *, csv_mode: bool 
                 raise SourceError(f"Unknown foreign key column in {table.name!r}.")
             if any(column not in parent.columns for column in fk.ref_columns):
                 raise SourceError(f"Unknown referenced column in {fk.ref_table!r}.")
-        if not table.primary_key:
+        if warn_missing_primary_key and not table.primary_key:
             source.warnings.append(f"Table {table.name!r} has no reliable primary key; row-position identities are used.")
 
 
@@ -197,36 +277,52 @@ def _infer_primary_key(table: Table) -> list[str]:
     return []
 
 
-def _load_csv(data: bytes, path: Path, options: dict, max_rows: int) -> RelationalSource:
+def _decode_text(data: bytes, label: str) -> str:
     try:
-        content = data.decode("utf-8-sig")
+        return data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise SourceError("CSV must use UTF-8 encoding.") from exc
-    delimiter = options.get("delimiter", ",")
+        raise SourceError(f"{label} must use UTF-8 encoding.") from exc
+
+
+def _delimiter(value: Any, label: str) -> str:
+    delimiter = value
     if not isinstance(delimiter, str) or len(delimiter) != 1 or delimiter in "\r\n\x00":
-        raise SourceError("CSV delimiter must be one character.")
+        raise SourceError(f"{label} delimiter must be one character.")
+    return delimiter
+
+
+def _delimited_rows(content: str, delimiter: str, label: str, max_rows: int) -> tuple[list[str], list[dict]]:
     try:
         reader = csv.reader(io.StringIO(content, newline=""), delimiter=delimiter, strict=True)
         columns = next(reader, None)
         if columns is None:
-            raise SourceError("CSV is empty and has no header.")
-        _names(columns, "CSV headers")
+            raise SourceError(f"{label} is empty and has no header.")
+        _names(columns, f"{label} headers")
         rows = []
         for line, cells in enumerate(checked(reader), 2):
             if len(cells) != len(columns):
-                raise SourceError(f"CSV row {line} has {len(cells)} cells; expected {len(columns)}.")
+                raise SourceError(f"{label} row {line} has {len(cells)} cells; expected {len(columns)}.")
             rows.append(dict(zip(columns, cells)))
             if len(rows) > max_rows:
                 raise SourceError(f"The source exceeds the {max_rows}-row limit.")
     except csv.Error as exc:
-        raise SourceError(f"Invalid CSV: {exc}") from exc
+        raise SourceError(f"Invalid {label}: {exc}") from exc
+    return columns, rows
+
+
+def _string_table_source(path: Path, options: dict, limits: ResourceLimits,
+                         columns: list[str], rows: list[dict], warning: str = "",
+                         *, warn_missing_primary_key: bool = True) -> RelationalSource:
+    max_rows = limits.max_source_rows
     name = _name(options.get("table_name", path.stem), "Table name")
     table = Table(name, columns, rows, column_types={column: "TEXT" for column in columns},
                   column_collations={column: "BINARY" for column in columns})
     table.primary_key = (_names(options["primary_key"], "primary_key", empty=True)
                          if "primary_key" in options else _infer_primary_key(table))
     table.foreign_keys = _foreign_keys(options.get("foreign_keys", []))
-    source = RelationalSource({name: table}, options.get("domain", ""))
+    source = RelationalSource({name: table}, options.get("domain", ""), resource_limits=limits)
+    if warning:
+        source.warnings.append(warning)
     inline = options.get("tables", [])
     if not isinstance(inline, list) or len(inline) > 127:
         raise SourceError("tables must be an array of at most 127 inline table definitions.")
@@ -252,7 +348,77 @@ def _load_csv(data: bytes, path: Path, options: dict, max_rows: int) -> Relation
                              if "primary_key" in definition else _infer_primary_key(table))
         table.foreign_keys = _foreign_keys(definition.get("foreign_keys", []))
         source.tables[name] = table
-    _validate_source(source, max_rows, csv_mode=True)
+    _validate_source(source, max_rows, csv_mode=True,
+                     warn_missing_primary_key=warn_missing_primary_key)
+    return source
+
+
+def _load_csv(data: bytes, path: Path, options: dict, limits: ResourceLimits) -> RelationalSource:
+    content = _decode_text(data, "CSV")
+    delimiter = _delimiter(options.get("delimiter", ","), "CSV")
+    columns, rows = _delimited_rows(content, delimiter, "CSV", limits.max_source_rows)
+    return _string_table_source(path, options, limits, columns, rows)
+
+
+def _infer_txt_delimiter(content: str, max_rows: int) -> str | None:
+    """Conservatively recognize TSV; punctuation-delimited TXT must be explicit."""
+    check_deadline()
+    try:
+        reader = csv.reader(io.StringIO(content, newline=""), delimiter="\t", strict=True)
+        header = next(reader, None)
+        if header is None or len(header) <= 1:
+            return None
+        seen_rows = 0
+        for line, cells in enumerate(checked(reader), 2):
+            if len(cells) != len(header):
+                return None
+            seen_rows += 1
+            if seen_rows > max_rows:
+                raise SourceError(f"The source exceeds the {max_rows}-row limit.")
+    except csv.Error:
+        return None
+    finally:
+        check_deadline()
+    if not seen_rows:
+        return None
+    return "\t"
+
+
+def _load_txt(data: bytes, path: Path, options: dict, limits: ResourceLimits) -> RelationalSource:
+    content = _decode_text(data, "TXT")
+    if not content.strip():
+        raise SourceError("TXT is empty and has no records.")
+    txt_mode = options.get("txt_mode", "auto")
+    if type(txt_mode) is not str or txt_mode not in {"auto", "lines", "entities"}:
+        raise SourceError("TXT txt_mode must be auto, lines or entities.")
+    if txt_mode in {"lines", "entities"} and "delimiter" in options:
+        raise SourceError(f"TXT delimiter cannot be combined with txt_mode={txt_mode}.")
+    if txt_mode == "entities" and any(key in options for key in ("primary_key", "foreign_keys", "tables")):
+        raise SourceError("TXT txt_mode=entities cannot be combined with relational PK/FK or inline-table options.")
+    if "delimiter" in options:
+        delimiter = _delimiter(options["delimiter"], "TXT")
+    elif txt_mode in {"lines", "entities"}:
+        delimiter = None
+    else:
+        delimiter = _infer_txt_delimiter(content, limits.max_source_rows)
+    if delimiter is not None:
+        columns, rows = _delimited_rows(content, delimiter, "TXT", limits.max_source_rows)
+        source = _string_table_source(path, options, limits, columns, rows)
+        source._txt_mode = "table"
+        return source
+    lines = content.splitlines()
+    if len(lines) > limits.max_source_rows:
+        raise SourceError(f"The source exceeds the {limits.max_source_rows}-row limit.")
+    columns = ["text"]
+    rows = [{"text": line} for line in checked(lines)]
+    source = _string_table_source(
+        path, options, limits, columns, rows,
+        ("TXT entity mode retained each line for LLM semantic extraction." if txt_mode == "entities" else
+         "TXT line mode imported each line as one text record." if txt_mode == "lines" else
+         "TXT was not recognized as a tab-delimited table; each line was imported as one text record."),
+        warn_missing_primary_key=txt_mode != "entities",
+    )
+    source._txt_mode = txt_mode if txt_mode in {"lines", "entities"} else "lines"
     return source
 
 
@@ -299,14 +465,9 @@ def _import_sql(connection: sqlite3.Connection, data: bytes, deadline: float) ->
               sqlite3.SQLITE_DROP_INDEX, sqlite3.SQLITE_DROP_TRIGGER,
               sqlite3.SQLITE_DROP_VIEW, sqlite3.SQLITE_DROP_VTABLE,
               sqlite3.SQLITE_FUNCTION}
-    importing_values = False
 
     def authorize(action, arg1, arg2, database, trigger):
         if action in denied or trigger is not None or database not in (None, "main"):
-            return sqlite3.SQLITE_DENY
-        # SQLite also reports SELECT while compiling multi-row literal VALUES.
-        # INSERT's lexical guard below rules out explicit SELECT/CTE expressions.
-        if action == sqlite3.SQLITE_SELECT and not importing_values:
             return sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_PRAGMA and (arg1.lower() != "foreign_keys" or str(arg2).lower() not in ("off", "0")):
             return sqlite3.SQLITE_DENY
@@ -318,12 +479,7 @@ def _import_sql(connection: sqlite3.Connection, data: bytes, deadline: float) ->
             if time.monotonic() > deadline:
                 raise SourceError("SQLite import exceeded source_timeout_seconds.")
             prefix = _strip_comments(statement)
-            importing_values = bool(re.match(r"(?is)\AINSERT\s+INTO\b", prefix))
-            # INSERTs must contain literal dump data. DDL has its own grammar:
-            # ON UPDATE CASCADE and ON CONFLICT REPLACE are declarations, not
-            # executable UPDATE/REPLACE statements. SQLite's authorizer still
-            # rejects SELECT (including CREATE TABLE AS SELECT) and functions.
-            if importing_values and _sql_keywords(statement) & {"SELECT", "WITH", "RETURNING", "REPLACE", "UPDATE"}:
+            if _sql_keywords(statement) & {"SELECT", "WITH", "RETURNING", "REPLACE", "UPDATE"}:
                 raise SourceError(f"Unsupported SQL expression in statement {number}; dump INSERT values must be literal data.")
             if not re.match(r"(?is)\A(?:CREATE\s+(?:TABLE|(?:UNIQUE\s+)?INDEX)\b|INSERT\s+INTO\b|BEGIN(?:\s+TRANSACTION)?\s*;|COMMIT(?:\s+TRANSACTION)?\s*;|END(?:\s+TRANSACTION)?\s*;|PRAGMA\s+foreign_keys\s*=\s*(?:OFF|0)\s*;|DELETE\s+FROM\s+[\"`\[]?sqlite_sequence[\"`\]]?\s*;)", prefix):
                 raise SourceError(f"Unsupported or unsafe SQL statement {number}; only SQLite table/index DDL, INSERT and dump transaction markers are accepted.")
@@ -405,17 +561,37 @@ def _column_collations(ddl: str, columns: list[str]) -> dict[str, str]:
     return result
 
 
-def _sql_fk_pairs(source: RelationalSource, deadline: float, max_edges: int = 1_000_000) -> None:
+def _sqlite_rowid_alias(connection: sqlite3.Connection, table: str, columns: list[str]) -> str | None:
+    """Return an unshadowed SQLite rowid alias, or None for WITHOUT ROWID tables."""
+    folded = {column.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+              for column in columns}
+    for alias in ("_rowid_", "rowid", "oid"):
+        if alias in folded:
+            continue
+        try:
+            connection.execute(f"SELECT t.{alias} FROM {_quote(table)} AS t LIMIT 0")
+            return alias
+        except sqlite3.OperationalError:
+            continue
+    return None
+
+
+def _sql_fk_pairs(source: RelationalSource, deadline: float, limits: ResourceLimits) -> None:
     connection = source._connection
     assert connection is not None
-    row_maps = {}
-    for table in source.tables.values():
+    fallback_maps = {}
+
+    def fallback_map(table: Table) -> dict[str, list[int]]:
+        if table.name in fallback_maps:
+            return fallback_maps[table.name]
         mapping: dict[str, list[int]] = {}
         for index, row in enumerate(table.rows):
             if index % 1024 == 0 and time.monotonic() > deadline:
                 raise SourceError("SQLite import exceeded source_timeout_seconds.")
             mapping.setdefault(_encode(row), []).append(index)
-        row_maps[table.name] = mapping
+        fallback_maps[table.name] = mapping
+        return mapping
+
     total_edges = 0
     for table in source.tables.values():
         for fk in table.foreign_keys:
@@ -425,34 +601,68 @@ def _sql_fk_pairs(source: RelationalSource, deadline: float, max_edges: int = 1_
             duplicate = connection.execute(f"SELECT 1 FROM {_quote(parent.name)} WHERE {present} GROUP BY {names} HAVING count(*) > 1 LIMIT 1").fetchone()
             if duplicate:
                 raise SourceError(f"Foreign key target {parent.name!r} is not unique.")
-            selection = ",".join(f"c.{_quote(c)}" for c in table.columns) + "," + ",".join(f"p.{_quote(c)}" for c in parent.columns)
             # The parent is on the left: SQLite uses its affinity and collation,
             # which is also SQLite's documented foreign-key comparison rule.
             condition = " AND ".join(f"p.{_quote(pc)} = c.{_quote(cc)}" for cc, pc in zip(fk.columns, fk.ref_columns))
-            cursor = connection.execute(f"SELECT {selection} FROM {_quote(table.name)} AS c JOIN {_quote(parent.name)} AS p ON {condition}")
             pairs = set()
-            seen_rows = set()
-            for values in cursor:
-                if time.monotonic() > deadline:
-                    raise SourceError("SQLite import exceeded source_timeout_seconds.")
-                child_key = _encode(dict(zip(table.columns, values[:len(table.columns)])))
-                parent_key = _encode(dict(zip(parent.columns, values[len(table.columns):])))
-                if (child_key, parent_key) in seen_rows:
-                    continue
-                seen_rows.add((child_key, parent_key))
-                for child_index in row_maps[table.name][child_key]:
-                    for parent_index in row_maps[parent.name][parent_key]:
-                        pairs.add((child_index, parent_index))
-                        if len(pairs) + total_edges > max_edges:
-                            raise SourceError("Foreign keys exceed the 1000000-edge construction limit.")
+            child_rowids = source._sql_rowids.get(table.name)
+            parent_rowids = source._sql_rowids.get(parent.name)
+            child_alias = source._sql_rowid_aliases.get(table.name)
+            parent_alias = source._sql_rowid_aliases.get(parent.name)
+            if child_rowids is not None and parent_rowids is not None and child_alias and parent_alias:
+                selection = f"c.{child_alias},p.{parent_alias}"
+                cursor = connection.execute(
+                    f"SELECT {selection} FROM {_quote(table.name)} AS c "
+                    f"JOIN {_quote(parent.name)} AS p ON {condition}"
+                )
+                for number, (child_rowid, parent_rowid) in enumerate(cursor, 1):
+                    if number % 1024 == 0 and time.monotonic() > deadline:
+                        raise SourceError("SQLite import exceeded source_timeout_seconds.")
+                    if child_rowid not in child_rowids or parent_rowid not in parent_rowids:
+                        raise SourceError("SQLite row identity changed while resolving foreign keys.")
+                    pairs.add((child_rowids[child_rowid], parent_rowids[parent_rowid]))
+                    if len(pairs) + total_edges > limits.max_graph_edges:
+                        raise SourceError(f"Foreign keys exceed the {limits.max_graph_edges}-edge construction limit.")
+            else:
+                selection = (",".join(f"c.{_quote(c)}" for c in table.columns) + "," +
+                             ",".join(f"p.{_quote(c)}" for c in parent.columns))
+                cursor = connection.execute(
+                    f"SELECT {selection} FROM {_quote(table.name)} AS c "
+                    f"JOIN {_quote(parent.name)} AS p ON {condition}"
+                )
+                row_maps = (fallback_map(table), fallback_map(parent))
+                seen_rows = set()
+                for number, values in enumerate(cursor, 1):
+                    if number % 1024 == 0 and time.monotonic() > deadline:
+                        raise SourceError("SQLite import exceeded source_timeout_seconds.")
+                    child_key = _encode(dict(zip(table.columns, values[:len(table.columns)])))
+                    parent_key = _encode(dict(zip(parent.columns, values[len(table.columns):])))
+                    if (child_key, parent_key) in seen_rows:
+                        continue
+                    seen_rows.add((child_key, parent_key))
+                    for child_index in row_maps[0][child_key]:
+                        for parent_index in row_maps[1][parent_key]:
+                            pairs.add((child_index, parent_index))
+                            if len(pairs) + total_edges > limits.max_graph_edges:
+                                raise SourceError(f"Foreign keys exceed the {limits.max_graph_edges}-edge construction limit.")
             source._fk_pairs[foreign_key_type(table, fk)] = sorted(pairs)
             total_edges += len(pairs)
 
 
-def _load_sql(data: bytes, options: dict, max_rows: int) -> RelationalSource:
-    connection = sqlite3.connect(":memory:")
-    source = RelationalSource({}, options.get("domain", ""), _connection=connection)
-    timeout = _limit(options, "source_timeout_seconds", 10, 60)
+def _load_sql(data: bytes | None, options: dict, limits: ResourceLimits,
+              *, database_path: Path | None = None) -> RelationalSource:
+    database_identity = _database_file_identity(database_path) if database_path is not None else None
+    if database_path is None:
+        connection = sqlite3.connect(":memory:")
+    else:
+        # A file-backed read avoids sqlite3.deserialize's >2 GiB boundary.
+        # Keep normal read-only locking so committed WAL content is visible.
+        connection = sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True)
+    source = RelationalSource({}, options.get("domain", ""), resource_limits=limits,
+                              _connection=connection, _database_path=database_path,
+                              _database_identity=database_identity)
+    max_rows = limits.max_source_rows
+    timeout = limits.source_timeout_seconds
     deadline = time.monotonic() + timeout
     if current_deadline() is not None:
         deadline = min(deadline, current_deadline())
@@ -467,11 +677,14 @@ def _load_sql(data: bytes, options: dict, max_rows: int) -> RelationalSource:
             connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, 256)
             connection.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 16 * 1024 * 1024)
             connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
-        if data.startswith(b"SQLite format 3\x00"):
+        if database_path is not None:
+            pass
+        elif data is not None and data.startswith(b"SQLite format 3\x00"):
             if not hasattr(connection, "deserialize"):
                 raise SourceError("This Python SQLite runtime cannot import database images in memory.")
             connection.deserialize(data)
         else:
+            assert data is not None
             _import_sql(connection, data, deadline)
         schema = connection.execute("SELECT type,name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY name").fetchall()
         for kind, name, ddl in schema:
@@ -487,7 +700,21 @@ def _load_sql(data: bytes, options: dict, max_rows: int) -> RelationalSource:
             if any(row[6] != 0 for row in info):
                 raise SourceError("Generated/hidden SQLite columns are unsupported; materialize them before import.")
             columns = [row[1] for row in info]
-            rows = connection.execute(f"SELECT {','.join(_quote(c) for c in columns)} FROM {_quote(name)} LIMIT ?", (remaining + 1,)).fetchall()
+            rowid_alias = _sqlite_rowid_alias(connection, name, columns)
+            column_selection = ",".join(f"t.{_quote(c)}" for c in columns)
+            selection = f"t.{rowid_alias},{column_selection}" if rowid_alias else column_selection
+            records = connection.execute(
+                f"SELECT {selection} FROM {_quote(name)} AS t LIMIT ?", (remaining + 1,)
+            ).fetchall()
+            if rowid_alias:
+                rowids = [record[0] for record in records]
+                if len(rowids) != len(set(rowids)):
+                    raise SourceError(f"SQLite row identity is not unique in table {name!r}.")
+                source._sql_rowids[name] = {rowid: index for index, rowid in enumerate(rowids)}
+                source._sql_rowid_aliases[name] = rowid_alias
+                rows = [record[1:] for record in records]
+            else:
+                rows = records
             if len(rows) > remaining:
                 raise SourceError(f"The source exceeds the {max_rows}-row limit.")
             remaining -= len(rows)
@@ -511,9 +738,15 @@ def _load_sql(data: bytes, options: dict, max_rows: int) -> RelationalSource:
                 if fk not in table.foreign_keys:
                     table.foreign_keys.append(fk)
         _validate_source(source, max_rows)
-        _sql_fk_pairs(source, deadline)
+        try:
+            _sql_fk_pairs(source, deadline, limits)
+        finally:
+            source._sql_rowids.clear()
+            source._sql_rowid_aliases.clear()
         connection.set_progress_handler(None, 0)
         connection.execute("PRAGMA query_only=ON")
+        if database_path is not None and _database_file_identity(database_path) != database_identity:
+            raise SourceError("SQLite source changed while it was being loaded.")
         return source
     except sqlite3.Error as exc:
         source.close()
@@ -526,10 +759,11 @@ def _load_sql(data: bytes, options: dict, max_rows: int) -> RelationalSource:
 
 
 def load_source(path: Path, options: dict | None = None) -> RelationalSource:
-    """Read the complete bounded source or fail; never truncate source rows.
+    """Read the complete source within an explicit profile; never truncate rows.
 
-    Resource controls: max_source_bytes (default 32 MiB, cap 64 MiB),
-    max_source_rows (default/cap 200000), source_timeout_seconds (10, cap 60).
+    The default bounded profile preserves the historical limits. Larger limits
+    are available only through the explicit ``resource_profile=full_scale``
+    opt-in, and every individual override remains capped by that profile.
     """
     check_deadline()
     path = Path(path)
@@ -538,28 +772,53 @@ def load_source(path: Path, options: dict | None = None) -> RelationalSource:
         raise SourceError("Source options must be an object.")
     if not isinstance(options.get("domain", ""), str) or len(options.get("domain", "")) > 16000:
         raise SourceError("domain must be a string of at most 16000 characters.")
-    maximum = _limit(options, "max_source_bytes", 32 * 1024 * 1024, 64 * 1024 * 1024)
-    max_rows = _limit(options, "max_source_rows", 200_000, 200_000)
+    limits = _resource_limits(options)
+    maximum = limits.max_source_bytes
     if path.stat().st_size > maximum:
         raise SourceError(f"Source exceeds the {maximum}-byte limit.")
+    # SQLite's in-memory deserialize path can fail above 2 GiB even when the
+    # host has ample RAM. Explicit full-scale runs keep the validated local
+    # image file-backed and read-only instead of copying it through that API.
     with path.open("rb") as handle:
-        data = handle.read(maximum + 1)
-    if len(data) > maximum:
-        raise SourceError(f"Source exceeds the {maximum}-byte limit.")
+        header = handle.read(16)
+    direct_sqlite = (options.get("resource_profile") == "full_scale"
+                     and path.suffix.lower() == ".sql" and header == b"SQLite format 3\x00")
+    data = None
+    if not direct_sqlite:
+        chunks = []
+        remaining = maximum + 1
+        with path.open("rb") as handle:
+            # Avoid asking Python/filesystem implementations to reserve the
+            # full 8 GiB full-scale ceiling for a small CSV/TXT/SQL source.
+            while remaining:
+                chunk = handle.read(min(8 * 1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+                check_deadline()
+        data = b"".join(chunks)
+        if len(data) > maximum:
+            raise SourceError(f"Source exceeds the {maximum}-byte limit.")
     if path.suffix.lower() == ".csv":
-        return _load_csv(data, path, options, max_rows)
+        if "txt_mode" in options:
+            raise SourceError("txt_mode is supported only for TXT sources.")
+        return _load_csv(data, path, options, limits)
+    if path.suffix.lower() == ".txt":
+        return _load_txt(data, path, options, limits)
     if path.suffix.lower() == ".sql":
-        if any(key in options for key in ("tables", "table_name", "primary_key", "foreign_keys", "delimiter")):
-            raise SourceError("CSV table options cannot override SQL schema; declare keys in SQLite DDL.")
-        return _load_sql(data, options, max_rows)
-    raise SourceError("Relational construction accepts .csv or .sql sources (SQLite SQL/database image).")
+        if any(key in options for key in ("tables", "table_name", "primary_key", "foreign_keys", "delimiter", "txt_mode")):
+            raise SourceError("Delimited-text table options cannot override SQL schema; declare keys in SQLite DDL.")
+        return _load_sql(data, options, limits,
+                         database_path=path.resolve(strict=True) if direct_sqlite else None)
+    raise SourceError("Relational construction accepts .csv, .txt or .sql sources (SQLite SQL/database image).")
 
 
 def foreign_key_pairs(source: RelationalSource, table: Table, fk: ForeignKey) -> list[tuple[int, int]]:
     """Return source-authoritative (child row index, parent row index) pairs.
 
-    SQL pairs use the original parent's affinity/collation; CSV pairs use exact
-    scalar JSON values and treat blank CSV references as absent. Callers receive
+    SQL pairs use the original parent's affinity/collation; CSV/TXT pairs use exact
+    scalar JSON values and treat blank text references as absent. Callers receive
     a copy and cannot modify the immutable source comparison cache.
     """
     if table.name not in source.tables or fk not in table.foreign_keys:
@@ -597,6 +856,9 @@ def source_integrity_errors(source: RelationalSource, graph: dict, limit: int = 
     """
     if type(limit) is not int or not 1 <= limit <= 100:
         raise SourceError("Integrity error limit must be between 1 and 100.")
+    if (source._database_path is not None and
+            _database_file_identity(source._database_path) != source._database_identity):
+        return ["SQLite source file changed after loading."]
     from .representation import resolve_rows
     try:
         current_rows = resolve_rows(graph)
@@ -675,6 +937,10 @@ def source_integrity_errors(source: RelationalSource, graph: dict, limit: int = 
 def initial_graph(source: RelationalSource) -> dict:
     """Keep every input row, linking declared foreign keys to primary/unique keys."""
     graph = {"directed": True, "nodes": [], "edges": []}
+    limits = source.resource_limits
+    row_count = sum(len(table.rows) for table in source.tables.values())
+    if row_count > limits.max_graph_nodes:
+        raise SourceError(f"Rows exceed the {limits.max_graph_nodes}-node construction limit.")
     identities = {}
     for table in source.tables.values():
         identities[table.name] = [row_id(table, row, index) for index, row in enumerate(checked(table.rows))]
@@ -704,6 +970,6 @@ def initial_graph(source: RelationalSource) -> dict:
                 graph["edges"].append({"id": _hash("edge_", relation, start, end),
                                        "type": relation, "source": start, "target": end,
                                        "properties": {"foreign_key": {"table": table.name, **asdict(fk)}}})
-                if len(graph["edges"]) > 1_000_000:
-                    raise SourceError("Foreign keys exceed the 1000000-edge construction limit.")
+                if len(graph["edges"]) > limits.max_graph_edges:
+                    raise SourceError(f"Foreign keys exceed the {limits.max_graph_edges}-edge construction limit.")
     return graph

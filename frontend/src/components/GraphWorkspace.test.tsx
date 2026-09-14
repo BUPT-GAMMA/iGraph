@@ -79,6 +79,112 @@ describe('GraphWorkspace visualization layers', () => {
     expect(container.querySelector('.graph-node')).toBe(firstNode);
   });
 
+  it('does not serialize the complete graph just to stabilize its reference', async () => {
+    const data = { nodes: [{ id: 'a' }, { id: 'b' }], edges: [{ src: 'a', dst: 'b' }] };
+    const stringify = vi.spyOn(JSON, 'stringify');
+    const { container } = render(<GraphWorkspace data={data} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(2));
+    expect(stringify.mock.calls.some(([value]) => value === data)).toBe(false);
+    stringify.mockRestore();
+  });
+
+  it('reports the smart overview node cap instead of the complete graph size', () => {
+    const nodes = Array.from({ length: 21951 }, (_, index) => ({ id: `node-${index}` }));
+    render(<GraphWorkspace data={{ nodes, edges: [], num_nodes: nodes.length, num_edges: 0 }} tab="Overview" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+
+    expect(screen.getByText('21,951')).toBeTruthy();
+    expect(screen.getByText('800')).toBeTruthy();
+    expect(screen.getByText(/稳定生成最多 800 个节点的智能概览/)).toBeTruthy();
+  });
+
+  it('distinguishes an upstream partial graph from a locally sampled overview', () => {
+    const nodes = Array.from({ length: 200 }, (_, index) => ({ id: `node-${index}` }));
+    const { container } = render(<GraphWorkspace data={{ nodes, edges: [], total_nodes: 10000, total_edges: 24000, truncated: true }} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed onToggle={vi.fn()} />);
+    const status = container.querySelector('.graph-overview-status');
+
+    expect(status?.textContent).toContain('上游部分图');
+    expect(status?.textContent).toContain('已载入 200 / 10,000 个节点');
+    expect(status?.textContent).not.toContain('本地智能概览');
+  });
+
+  it('renders relationship type and count labels for a complete schema graph', async () => {
+    const { container } = render(<GraphWorkspace
+      data={{
+        visualization_kind: 'schema',
+        nodes: [{ id: 'Post', label: 'Post' }, { id: 'Tag', label: 'Tag' }],
+        edges: [{ source: 'Post', target: 'Tag', type: 'HAS_TAG', properties: { relationship_count: 12000 } }],
+        directed: true,
+      }}
+      tab="Graph"
+      onTab={vi.fn()}
+      selected={null}
+      onSelect={vi.fn()}
+      collapsed={false}
+      onToggle={vi.fn()}
+    />);
+
+    await waitFor(() => expect(container.querySelector('.graph-schema-edge-label')?.textContent).toBe('HAS_TAG · 12,000'));
+    expect(screen.getByRole('status').textContent).toContain('Graph Schema · 2 种节点类型 · 1 种关系');
+    expect(screen.getByLabelText(/Graph Schema 画布/)).toBeTruthy();
+  });
+
+  it('compacts long schema relationship labels while preserving the full accessible label', async () => {
+    const relationshipType = 'fk_0c224b281af28bb360380a3a9fb22c3c694bef04';
+    const { container } = render(<GraphWorkspace
+      data={{
+        visualization_kind: 'schema',
+        nodes: [{ id: 'Post' }, { id: 'Tag' }],
+        edges: [{ source: 'Post', target: 'Tag', type: relationshipType, relationship_count: 8000 }],
+        directed: true,
+      }}
+      tab="Graph"
+      onTab={vi.fn()}
+      selected={null}
+      onSelect={vi.fn()}
+      collapsed={false}
+      onToggle={vi.fn()}
+    />);
+
+    await waitFor(() => expect(container.querySelector('.graph-schema-edge-label')).toBeTruthy());
+    const label = container.querySelector('.graph-schema-edge-label');
+    expect(label?.textContent).toContain('…');
+    expect(label?.textContent).toContain('· 8,000');
+    expect(label?.textContent).not.toContain(relationshipType);
+    expect(label?.getAttribute('aria-label')).toBe(`${relationshipType} · 8,000`);
+    expect(container.querySelector('path.graph-schema-link')?.getAttribute('aria-label')).toBe(`${relationshipType} · 8,000`);
+  });
+
+  it('draws visible schema self-loops and separates parallel relationship curves', async () => {
+    const { container } = render(<GraphWorkspace
+      data={{
+        visualization_kind: 'schema',
+        nodes: [{ id: 'A' }, { id: 'B' }],
+        edges: [
+          { source: 'A', target: 'A', type: 'SELF', relationship_count: 3 },
+          { source: 'A', target: 'B', type: 'FIRST', relationship_count: 4 },
+          { source: 'A', target: 'B', type: 'SECOND', relationship_count: 5 },
+        ],
+        directed: true,
+      }}
+      tab="Graph"
+      onTab={vi.fn()}
+      selected={null}
+      onSelect={vi.fn()}
+      collapsed={false}
+      onToggle={vi.fn()}
+    />);
+
+    await waitFor(() => expect(container.querySelectorAll('path.graph-schema-link')).toHaveLength(3));
+    const paths = [...container.querySelectorAll<SVGPathElement>('path.graph-schema-link')];
+    const selfLoop = paths.find(path => (path as any).__data__?.type === 'SELF');
+    const parallel = paths.filter(path => ['FIRST', 'SECOND'].includes((path as any).__data__?.type));
+    expect(selfLoop?.getAttribute('d')).toContain('A');
+    expect(parallel.every(path => path.getAttribute('d')?.includes('Q'))).toBe(true);
+    expect(new Set(parallel.map(path => path.getAttribute('d'))).size).toBe(2);
+    expect([...container.querySelectorAll('.graph-schema-edge-label')].map(label => label.textContent)).toEqual(expect.arrayContaining(['SELF · 3', 'FIRST · 4', 'SECOND · 5']));
+  });
+
   it('shows project training runs in a new session without local history', async () => {
     listProjectTrainingRunsMock.mockResolvedValue({
       training_runs: [{

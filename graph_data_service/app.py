@@ -1579,6 +1579,9 @@ class GraphDataService:
     def do_get_constructed_graph(self, dataset_id: str, user_id: str = "") -> dict:
         return self._construction.graph(user_id, dataset_id)
 
+    def do_get_constructed_schema(self, dataset_id: str, user_id: str = "") -> dict:
+        return self._construction.schema(user_id, dataset_id)
+
     def do_preview_graph_optimization(self, dataset_id: str, base_revision: int, operations: list, user_id: str = "") -> dict:
         return self._construction.optimize(user_id, dataset_id, base_revision, operations)
 
@@ -3207,21 +3210,33 @@ class GraphDataService:
         """获取图的结构用于可视化；远程图只物化有界子图。"""
         session = self.get_required(session_id, user_id=user_id)
         if session.is_remote:
-            cap = max(1, min(int(max_nodes or 200), 2_000))
+            try:
+                cap = max(1, min(int(max_nodes or 800), 800))
+            except (TypeError, ValueError):
+                cap = 800
             requested_nodes = [str(name) for name in (node_names or []) if str(name)]
-            requested_nodes = list(dict.fromkeys(requested_nodes))
+            requested_nodes = sorted(set(requested_nodes))
             seeds: list[str] = []
             if not requested_nodes and isinstance(highlights, dict):
                 for item in highlights.get("nodes", []):
-                    seeds.extend(str(name) for name in item.get("ids", []) if str(name))
+                    if isinstance(item, dict):
+                        seeds.extend(str(name) for name in item.get("ids", []) if str(name))
                 for item in highlights.get("paths", []):
-                    seeds.extend(str(name) for name in item.get("node_sequence", []) if str(name))
+                    if isinstance(item, dict):
+                        seeds.extend(str(name) for name in item.get("node_sequence", []) if str(name))
                 for item in highlights.get("subgraphs", []):
-                    seeds.extend(str(name) for name in item.get("nodes", []) if str(name))
-            seeds = list(dict.fromkeys(seeds))
+                    if isinstance(item, dict):
+                        seeds.extend(str(name) for name in item.get("nodes", []) if str(name))
+            seeds = sorted(set(seeds))
             summary = session.graph_summary()
             show_full_graph = not requested_nodes and summary.num_nodes <= cap
             expand_to_limit = not requested_nodes and not show_full_graph
+            # Nebula must expose more than the final canvas budget; otherwise
+            # GraphCompute receives exactly ``cap`` nodes and its type/community
+            # smart selector never runs.  Four times the budget keeps I/O
+            # bounded while giving the selector meaningful topology to rank.
+            source_node_count = len(requested_nodes) if requested_nodes else int(summary.num_nodes)
+            candidate_cap = min(max(cap, source_node_count), cap * 4)
             if expand_to_limit and not seeds:
                 try:
                     seed = self._nebula.visualization_seed_name_primary(
@@ -3241,9 +3256,9 @@ class GraphDataService:
                     seed_names=requested_nodes or (seeds if expand_to_limit else None),
                     hops=0,
                     direction="both",
-                    max_nodes=cap,
-                    max_edges=max(int(summary.num_edges), cap * 10, 200),
-                    allow_truncate=expand_to_limit,
+                    max_nodes=candidate_cap,
+                    max_edges=max(int(summary.num_edges), candidate_cap * 10, 200),
+                    allow_truncate=expand_to_limit or len(requested_nodes) > candidate_cap,
                     expand_to_limit=expand_to_limit,
                 )
             except NebulaRepositoryError as exc:
@@ -3256,12 +3271,23 @@ class GraphDataService:
                 highlights,
                 max_nodes=cap,
             )
-            total_nodes = summary.num_nodes
-            if total_nodes > gd.num_nodes:
+            total_nodes = source_node_count
+            if total_nodes > gd.num_nodes or result.get("nodes_truncated"):
                 result["truncated"] = True
                 result["total_nodes"] = total_nodes
-                result["total_edges"] = summary.num_edges
-                result["truncated_to"] = gd.num_nodes
+                if not requested_nodes:
+                    result["total_edges"] = summary.num_edges
+                result["nodes_truncated"] = True
+                # This is the final payload size, not the larger candidate pool.
+                result["truncated_to"] = int(result.get("num_nodes", 0))
+                overview = result.setdefault("overview", {
+                    "mode": "smart",
+                    "algorithm": "topology-types-communities-v1",
+                    "deterministic": True,
+                    "node_limit": cap,
+                })
+                overview["candidate_node_count"] = gd.num_nodes
+                overview["source_partial"] = total_nodes > gd.num_nodes
             result["backend"] = "nebula"
             result["graph_version"] = session.graph_version
             return result
@@ -3786,6 +3812,11 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     async def constructed_graph(dataset_id: str, request: Request):
         uid, _ = await construction_grant(request, dataset_id)
         return await run_sync(svc.do_get_constructed_graph, dataset_id, uid)
+
+    @app.get("/construction/{dataset_id}/schema")
+    async def constructed_schema(dataset_id: str, request: Request):
+        uid, _ = await construction_grant(request, dataset_id)
+        return await run_sync(svc.do_get_constructed_schema, dataset_id, uid)
 
     @app.post("/construction/{dataset_id}/preview")
     async def construction_preview(dataset_id: str, req: ConstructionOptimizeReq, request: Request):

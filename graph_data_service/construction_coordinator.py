@@ -45,8 +45,20 @@ class BuildAttempt:
         return self.coordinator.lease.identity
 
     def snapshot(self):
-        return {**copy.deepcopy(self.state), "status": "building", "build_id": self.build_id,
-                "failure_code": None, "message": "构图正在服务器上运行，请稍后查询状态。"}
+        state = copy.deepcopy(self.state)
+        try:
+            directory = self.coordinator.store._directory(self.user_id, self.dataset_id)
+            record = self.coordinator.store._read(directory, self.dataset_id)
+            if record.get("build_id") == self.build_id:
+                state.update(self.coordinator.store._status(record, directory))
+        except (OSError, ValueError, TypeError):
+            # Status must stay available when an observational sidecar is absent
+            # or temporarily unreadable; the durable construction record wins.
+            pass
+        progress = state.get("progress", {})
+        message = progress.get("current_message") if isinstance(progress, dict) else None
+        return {**state, "status": "building", "build_id": self.build_id,
+                "failure_code": None, "message": message or "构图正在服务器上运行，请稍后查询状态。"}
 
     def invoke(self, algorithm, source, options, lease_fds, *, isolated):
         owner = self.coordinator
@@ -64,6 +76,13 @@ class BuildAttempt:
             atomic_json(staging / "request.json", {"source": str(source), "options": options,
                         "data_root": str(owner.store.root), "build_id": self.build_id})
             atomic_json(report_path, {"status": "running", "build_id": self.build_id, "stage": "starting_worker"})
+            atomic_json(source.parent / "construction-progress.json", {
+                "version": "construction_progress.v1", "build_id": self.build_id,
+                "status": "running", "stage": "starting",
+                "current_message": "构图 Agent 已启动，正在读取数据源。", "elapsed_seconds": 0,
+                "metrics": {}, "events": [{"id": "stage:starting", "kind": "stage", "stage": "starting",
+                    "message": "构图 Agent 已启动，正在读取数据源。"}],
+            })
             # Only this dedicated coordination thread waits for the async
             # supervisor. It retains the dataset lock through publication.
             future = asyncio.run_coroutine_threadsafe(owner.supervise(self, staging, lease_fds, duration), owner.loop)
@@ -313,7 +332,7 @@ class ConstructionCoordinator:
     async def status(self, user_id, dataset_id):
         attempt = self.active.get((user_id, dataset_id))
         if attempt is not None:
-            return attempt.snapshot()
+            return await run_sync(attempt.snapshot)
         return await run_sync(self.store.status, user_id, dataset_id)
 
     async def close(self):

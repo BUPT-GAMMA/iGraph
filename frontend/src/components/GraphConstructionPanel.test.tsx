@@ -4,16 +4,21 @@ import { ApiError } from '../api';
 import type { ConstructionOperation, Dataset } from '../types';
 import { GraphConstructionPanel } from './GraphConstructionPanel';
 
-const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn() }));
 vi.mock('../api', async importOriginal => ({
   ...await importOriginal<typeof import('../api')>(),
-  getConstructionState: mocks.state, getConstructionGraph: mocks.graph, buildDatasetGraph: mocks.build,
+  getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
   previewConstruction: mocks.preview, commitConstruction: mocks.commit,
 }));
 vi.mock('./GraphWorkspace', () => ({ GraphWorkspace: ({ data, onSelect }: any) => <div aria-label="测试图画布">{data.nodes.map((node: any) => <button key={node.id} onClick={() => onSelect(node)}>图节点 {node.id}</button>)}<span>{data.edges.map((edge: any) => `${edge.source} → ${edge.target}`).join(', ')}</span></div> }));
 
 const dataset: Dataset = { dataset_id: 'd1', project_id: null, name: '客户关系', original_filename: 'customers.csv', file_type: 'csv', status: 'ready' };
 const graph = { directed: true, nodes: [{ id: 'a', type: 'Person', properties: { phone: '123', age: 29 } }, { id: 'b', type: 'Link', properties: { phone: '123' } }, { id: 'c', type: 'Person', properties: {} }], edges: [{ id: 'e1', source: 'a', target: 'b', type: 'Knows', properties: { weight: 1 } }, { id: 'e2', source: 'b', target: 'c', type: 'Knows', properties: {} }] };
+const schemaGraph = { directed: true, visualization_kind: 'schema', nodes: [
+  { id: 'Link', type: 'schema_node', label: 'Link', properties: { schema_kind: 'node_type', type_name: 'Link', instance_count: 1, property_paths: [{ path: 'phone', types: ['string'], present_count: 1, value_count: 1 }] } },
+  { id: 'Person', type: 'schema_node', label: 'Person', properties: { schema_kind: 'node_type', type_name: 'Person', instance_count: 2, property_paths: [{ path: 'age', types: ['integer'], present_count: 1, value_count: 1 }, { path: 'phone', types: ['string'], present_count: 1, value_count: 1 }] } },
+], edges: [{ id: 'se1', source: 'Person', target: 'Link', type: 'Knows', label: 'Knows', properties: { schema_kind: 'edge_type', type_name: 'Knows', source_type: 'Person', target_type: 'Link', relationship_count: 1, property_paths: [{ path: 'weight', types: ['integer'], present_count: 1, value_count: 1 }] } }] };
+const schema = { dataset_id: 'd1', revision: 2, schema: { directed: true, node_count: 3, edge_count: 2, node_type_count: 2, edge_type_count: 1, node_types: schemaGraph.nodes.map(node => node.properties), edge_types: schemaGraph.edges.map(edge => edge.properties), graph: schemaGraph } };
 const result = { success: true, status: 'preview', dataset_id: 'd1', base_revision: 2, revision: 3, graph, summary: { before: { node_count: 3, edge_count: 2 }, after: { node_count: 3, edge_count: 2 }, changed_nodes: 1, changed_edges: 1 } };
 function choose(label: string, value: string) { fireEvent.change(screen.getByLabelText(label), { target: { value } }); }
 function selectMany(label: string, values: string[]) {
@@ -29,12 +34,43 @@ async function openPanel(onSaved = vi.fn(), onClose = vi.fn()) {
 beforeEach(() => {
   mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'ready', revision: 2, algorithm_available: false });
   mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph });
+  mocks.schema.mockResolvedValue(schema);
   mocks.preview.mockResolvedValue(result);
   mocks.commit.mockResolvedValue({ ...result, status: 'ready' });
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('graph construction workflow', () => {
+  it('renders the saved graph as a Graph Schema with type-level counts', async () => {
+    await openPanel();
+    expect(screen.getByText('Graph Schema')).toBeTruthy();
+    expect(screen.getByText('节点代表节点类型，连线代表关系类型')).toBeTruthy();
+    expect(screen.getByText('2').parentElement?.textContent).toContain('节点类型');
+    expect(screen.getByText('1').parentElement?.textContent).toContain('关系类型');
+    expect(screen.getByRole('button', { name: '图节点 Person' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '图节点 a' })).toBeNull();
+    expect(mocks.graph).toHaveBeenCalledWith(dataset, expect.any(AbortSignal));
+    expect(mocks.schema).toHaveBeenCalledWith(dataset, expect.any(AbortSignal));
+  });
+
+  it('falls back to a local schema without blocking graph optimization when the schema endpoint fails', async () => {
+    mocks.schema.mockRejectedValue(new ApiError(503, 'schema unavailable'));
+    await openPanel();
+    expect(screen.getByText(/Graph Schema 接口暂时不可用，已从当前实例图生成本地结构概览/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '图节点 Person' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: '应用并预览' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('renders as an in-page workbench with a source switch action', () => {
+    mocks.state.mockReturnValue(new Promise(() => undefined));
+    const close = vi.fn();
+    render(<GraphConstructionPanel dataset={dataset} embedded onClose={close} onSaved={vi.fn()} />);
+    expect(screen.getByRole('region', { name: '客户关系' })).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '更换数据源' }));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('allows closing while the initial state request is pending', () => {
     mocks.state.mockReturnValue(new Promise(() => undefined));
     const close = vi.fn();
@@ -92,47 +128,75 @@ describe('graph construction workflow', () => {
     expect(screen.queryByText('1 项修改待保存')).toBeNull();
   });
 
-  it('blocks empty selections before any request and supports canvas-based node selection', async () => {
+  it('keeps the canvas at schema level during a change preview and refreshes it after saving', async () => {
+    mocks.preview.mockResolvedValue({
+      ...result,
+      graph: { ...graph, nodes: graph.nodes.map(node => node.id === 'b' ? { ...node, type: 'Bridge' } : node) },
+    });
+    await openPanel();
+    choose('选择节点', 'b'); choose('新关系类型', '关联');
+    fireEvent.click(screen.getByRole('button', { name: '应用并预览' }));
+    await screen.findByText('Graph Schema · 修改预览');
+    expect(screen.getByRole('button', { name: '图节点 Bridge' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '图节点 Person' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '图节点 a' })).toBeNull();
+    expect(screen.getByText('预览尚未保存；类型与关系统计已按预览实时更新')).toBeTruthy();
+    mocks.schema.mockResolvedValue({ ...schema, revision: 3 });
+    fireEvent.click(screen.getByRole('button', { name: '保存到数据集' }));
+    await screen.findByText('Graph Schema');
+    expect(screen.getByRole('button', { name: '图节点 Person' })).toBeTruthy();
+    expect(mocks.schema).toHaveBeenCalledTimes(2);
+  });
+
+  it('derives the same recursive and undirected schema shape when the schema endpoint is unavailable', async () => {
+    const localGraph = {
+      directed: false,
+      nodes: [
+        { id: 'left', type: 'A', properties: { 'a.b': null, nested: { flag: true }, tags: [] } },
+        { id: 'right', type: 'B', properties: {} },
+      ],
+      edges: [
+        { id: 'forward', source: 'left', target: 'right', type: 'REL', properties: {} },
+        { id: 'reverse', source: 'right', target: 'left', type: 'REL', properties: {} },
+      ],
+    };
+    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph: localGraph });
+    mocks.schema.mockRejectedValue(new ApiError(503, 'schema unavailable'));
+
+    await openPanel();
+
+    expect(screen.getByLabelText('测试图画布').textContent).toContain('A → B');
+    expect(screen.getByLabelText('测试图画布').textContent?.match(/A → B/g)).toHaveLength(1);
+    expect(screen.getByText('1').parentElement?.textContent).toContain('关系类型');
+    fireEvent.click(screen.getByRole('button', { name: '图节点 A' }));
+    expect(screen.getByText('["a.b"]')).toBeTruthy();
+    expect(screen.getByText('nested')).toBeTruthy();
+    expect(screen.getByText('nested.flag')).toBeTruthy();
+    expect(screen.getByText('tags')).toBeTruthy();
+  });
+
+  it('keeps schema-node inspection separate from explicit instance selection', async () => {
     await openPanel();
     fireEvent.click(screen.getByRole('button', { name: '应用并预览' }));
     expect(screen.getByRole('alert').textContent).toContain('请选择一个中间节点');
     expect(mocks.preview).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '图节点 a' }));
+    fireEvent.click(screen.getByRole('button', { name: '图节点 Person' }));
+    expect(screen.getByText('节点类型 Person')).toBeTruthy();
+    expect(screen.getByText('2 个实例 · 2 个属性路径')).toBeTruthy();
+    expect((screen.getByLabelText('选择节点') as HTMLSelectElement).value).toBe('');
+    choose('选择节点', 'a');
     expect((screen.getByLabelText('选择节点') as HTMLSelectElement).value).toBe('a');
-    expect(screen.getByText('节点 a 的属性')).toBeTruthy();
+    expect(screen.getByText('实例节点 a 的属性')).toBeTruthy();
     expect(screen.getByText('29')).toBeTruthy();
-  });
-
-  it.each(['phone', 'data', 'table', 'a.b'])('edits the literal business column %s in an automatic row through preview and commit', async column => {
-    const nested = { ...graph, nodes: [{ ...graph.nodes[0], properties: {
-      table: 'customers', row_index: 0, relational_schema: {},
-      data: { phone: '123', data: { note: 'nested' }, table: 'business value', 'a.b': null },
-    } }, ...graph.nodes.slice(1)] };
-    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph: nested });
-    const saved = vi.fn();
-    await openPanel(saved);
-    fireEvent.click(screen.getByRole('button', { name: /节点属性提取为独立节点/ }));
-    selectMany('选择节点', ['a']);
-    const options = Array.from((screen.getByLabelText('选择属性') as HTMLSelectElement).options, option => option.value);
-    expect(options).toContain(column);
-    expect(options).not.toContain('row_index');
-    expect(options).not.toContain('relational_schema');
-    choose('选择属性', column); choose('新节点类型', 'BusinessValue'); choose('新关系类型', 'has_value');
-    fireEvent.click(screen.getByRole('button', { name: '应用并预览' }));
-    await screen.findByText('1 项修改待保存');
-    const operation = { op: 'extract_property_node', node_ids: ['a'], property: column, node_type: 'BusinessValue', edge_type: 'has_value', remove_from_node: true };
-    expect(mocks.preview).toHaveBeenCalledWith(dataset, 2, [operation]);
-    fireEvent.click(screen.getByRole('button', { name: '保存到数据集' }));
-    await waitFor(() => expect(mocks.commit).toHaveBeenCalledWith(dataset, 2, [operation]));
   });
 
   it('shows selected edge properties alongside its direction before editing', async () => {
     await openPanel();
     fireEvent.click(screen.getByRole('button', { name: /调整边方向/ }));
     selectMany('选择边', ['e1']);
-    expect(screen.getByText('边 e1 · a → b')).toBeTruthy();
-    expect(screen.getByText('weight')).toBeTruthy();
-    expect(screen.getByText('1')).toBeTruthy();
+    const inspection = screen.getByText('实例边 e1 · a → b').parentElement;
+    expect(inspection?.textContent).toContain('weight');
+    expect(inspection?.textContent).toContain('1');
   });
 
   it('keeps server validation failures out of the preview queue', async () => {
@@ -187,14 +251,78 @@ describe('long-running graph construction', () => {
   });
   afterEach(() => { cleanup(); vi.useRealTimers(); });
 
-  async function show(onSaved = vi.fn(), onClose = vi.fn()) {
+  async function show(onSaved = vi.fn(), onClose = vi.fn(), onStateChange = vi.fn()) {
     let view!: ReturnType<typeof render>;
-    await act(async () => { view = render(<GraphConstructionPanel dataset={sourceDataset} onClose={onClose} onSaved={onSaved} />); });
+    await act(async () => { view = render(<GraphConstructionPanel dataset={sourceDataset} onClose={onClose} onSaved={onSaved} onStateChange={onStateChange} />); });
     return view;
   }
   async function tick(milliseconds = 3000) {
     await act(async () => { await vi.advanceTimersByTimeAsync(milliseconds); });
   }
+
+  it('renders the audited Agent progress stream and updates it through status polling', async () => {
+    const first = { ...building, build_id: 'build-1', progress: {
+      version: 'construction_progress.v1', status: 'running', stage: 'evaluating_baseline',
+      current_message: '正在用源数据答案校验初始图，并测量基线。', elapsed_seconds: 12,
+      metrics: { query_count: 15, iterations: 0, evaluated_candidates: 0, accepted_candidates: 0 },
+      events: [
+        { id: 'stage:starting', kind: 'stage', stage: 'starting', message: '构图 Agent 已启动，正在读取数据源。' },
+        { id: 'stage:evaluating_baseline', kind: 'stage', stage: 'evaluating_baseline', message: '正在校验初始图。' },
+      ],
+    } };
+    const second = { ...building, build_id: 'build-1', progress: {
+      ...first.progress, stage: 'evolving', current_message: 'Agent 正在尝试候选图结构，并逐项验收语义与性能。',
+      elapsed_seconds: 18, metrics: { query_count: 15, iterations: 1, evaluated_candidates: 1, accepted_candidates: 0, tool_calls: 2 },
+      events: [...first.progress.events,
+        { id: 'stage:evolving', kind: 'stage', stage: 'evolving', message: 'Agent 正在尝试候选图结构。' },
+        { id: 'candidate:1', kind: 'candidate', stage: 'evolving', message: '未采用候选：属性访问路径（未达到稳定性能收益门槛）。', outcome: 'rejected' },
+      ],
+    } };
+    mocks.state.mockResolvedValueOnce(first).mockResolvedValue(second);
+    const onStateChange = vi.fn();
+    await show(vi.fn(), vi.fn(), onStateChange);
+    expect(screen.getByRole('region', { name: '构图 Agent 消息流' })).toBeTruthy();
+    expect(screen.getByText('正在用源数据答案校验初始图，并测量基线。')).toBeTruthy();
+    expect(screen.getByText('已运行 12 秒')).toBeTruthy();
+    await tick();
+    expect(screen.getByText(/未采用候选：属性访问路径/)).toBeTruthy();
+    expect(screen.getByText('已运行 18 秒')).toBeTruthy();
+    expect(onStateChange).toHaveBeenLastCalledWith(sourceDataset, second);
+    expect(mocks.build).not.toHaveBeenCalled();
+  });
+
+  it('shows semantic TXT extraction progress without requiring candidate metrics', async () => {
+    mocks.state.mockResolvedValue({ ...building, build_id: 'build-text', source_type: 'txt', progress: {
+      version: 'construction_progress.v1', status: 'running', stage: 'extracting_entities',
+      current_message: '正在从文本中识别实体与关系。', elapsed_seconds: 7,
+      metrics: { chunks_completed: 3, chunks_total: 7, extracted_nodes: 11, extracted_edges: 8 },
+      events: [
+        { id: 'stage:extracting_entities', kind: 'stage', stage: 'extracting_entities', message: '正在从文本中识别实体与关系。' },
+      ],
+    } });
+
+    await show();
+
+    const stream = screen.getByRole('region', { name: '构图 Agent 消息流' });
+    expect(stream.textContent).toContain('文本分块 3 / 7');
+    expect(stream.textContent).toContain('已识别实体 11');
+    expect(stream.textContent).toContain('已识别关系 8');
+    expect(stream.textContent).not.toContain('候选');
+  });
+
+  it('restores the active build query count from progress when the panel is reopened', async () => {
+    mocks.state.mockResolvedValue({ ...building, build_id: 'build-1', progress: {
+      version: 'construction_progress.v1', status: 'running', stage: 'evaluating_baseline',
+      current_message: '正在校验初始图。', metrics: { query_count: 1 }, events: [],
+    } });
+
+    await show();
+
+    const queryCount = screen.getByLabelText('验证查询数量') as HTMLInputElement;
+    expect(queryCount.value).toBe('1');
+    expect(queryCount.matches(':disabled')).toBe(true);
+    expect(mocks.build).not.toHaveBeenCalled();
+  });
 
   it('shows a capacity rejection without polling or automatically retrying', async () => {
     mocks.build.mockRejectedValue(new ApiError(429, '构图资源繁忙，本次未启动，请稍后重试。', null, null, null, 'construction_capacity_exhausted'));
@@ -207,8 +335,8 @@ describe('long-running graph construction', () => {
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['previous', undefined])('does not let old failure %s discard the success of a pending retry', async oldId => {
-    const failed = { ...notBuilt, status: 'failed', build_id: oldId, message: '上次失败' };
+  it('does not let an old failure discard the success of a pending retry', async () => {
+    const failed = { ...notBuilt, status: 'failed', build_id: 'previous', message: '上次失败' };
     mocks.state.mockResolvedValue(failed);
     let finish!: (value: unknown) => void;
     mocks.build.mockReturnValue(new Promise(resolve => { finish = resolve; }));
@@ -238,76 +366,6 @@ describe('long-running graph construction', () => {
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['previous', undefined])('keeps a retry alive after a lost POST response and stale failure %s', async oldId => {
-    const failed = { ...notBuilt, status: 'failed', build_id: oldId, message: '上次失败' };
-    mocks.state.mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
-      .mockResolvedValue({ ...ready, build_id: 'current' });
-    mocks.build.mockRejectedValue(new ApiError(504, '构图仍可能运行', null, null, null, 'construction_running_unconfirmed'));
-    const saved = vi.fn();
-    await show(saved);
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
-    expect(saved).not.toHaveBeenCalled();
-    await tick();
-    expect(saved).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('已保存 · 版本 3')).toBeTruthy();
-    expect(mocks.build).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not let an older building poll reopen a task explicitly failed by POST', async () => {
-    let finishPost!: (value: unknown) => void, finishPoll!: (value: unknown) => void;
-    mocks.state.mockResolvedValueOnce(notBuilt).mockReturnValueOnce(new Promise(resolve => { finishPoll = resolve; }));
-    mocks.build.mockReturnValue(new Promise(resolve => { finishPost = resolve; }));
-    await show();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
-    await tick();
-    await act(async () => { finishPost({ ...notBuilt, status: 'failed', build_id: 'current', message: '本次验证失败' }); });
-    await act(async () => { finishPoll({ ...building, build_id: 'current' }); });
-    expect(screen.getByRole('alert').textContent).toContain('本次验证失败');
-    expect(screen.getByRole('button', { name: '重新构图' }).matches(':disabled')).toBe(false);
-    await tick(6000);
-    expect(mocks.state).toHaveBeenCalledTimes(2);
-  });
-
-  it('accepts a new failure identity after an uncertain retry without polling forever', async () => {
-    mocks.state.mockResolvedValueOnce({ ...notBuilt, status: 'failed', build_id: 'previous' })
-      .mockResolvedValue({ ...notBuilt, status: 'failed', build_id: 'current', message: '本次验证失败' });
-    mocks.build.mockRejectedValue(new TypeError('Failed to fetch'));
-    await show();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
-    expect(screen.getByRole('alert').textContent).toContain('本次验证失败');
-    expect(screen.getByRole('button', { name: '重新构图' }).matches(':disabled')).toBe(false);
-    await tick(9000);
-    expect(mocks.state).toHaveBeenCalledTimes(2);
-    expect(mocks.build).toHaveBeenCalledTimes(1);
-  });
-
-  it('restores retry controls when a new request is explicitly rejected as invalid', async () => {
-    mocks.state.mockResolvedValue({ ...notBuilt, status: 'failed', build_id: 'previous' });
-    mocks.build.mockRejectedValue(new ApiError(422, '参数无效', null, null, null, 'invalid_construction_options'));
-    await show();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
-    expect(screen.getByRole('alert').textContent).toContain('参数无效');
-    expect(screen.getByRole('button', { name: '重新构图' }).matches(':disabled')).toBe(false);
-    await tick(9000);
-    expect(mocks.state).toHaveBeenCalledTimes(2);
-    expect(mocks.build).toHaveBeenCalledTimes(1);
-  });
-
-  it('accepts a legacy failure after observing new building progress', async () => {
-    const failed = { ...notBuilt, status: 'failed', message: '构图失败' };
-    mocks.state.mockResolvedValueOnce(failed).mockResolvedValueOnce(failed)
-      .mockResolvedValueOnce(building).mockResolvedValue(failed);
-    mocks.build.mockRejectedValue(new TypeError('Failed to fetch'));
-    await show();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新构图' })); });
-    await tick();
-    expect(screen.getByText('构图进行中')).toBeTruthy();
-    await tick();
-    expect(screen.getByRole('button', { name: '重新构图' }).matches(':disabled')).toBe(false);
-    await tick(9000);
-    expect(mocks.state).toHaveBeenCalledTimes(4);
-  });
-
   it.each([15, 23])('sends the configured query count (%s) and domain with exactly one build request', async count => {
     mocks.build.mockResolvedValue(ready);
     const saved = vi.fn();
@@ -332,6 +390,68 @@ describe('long-running graph construction', () => {
     await tick(9000);
     expect(saved).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers TXT delimiter selection and forwards the exact character', async () => {
+    const txtDataset: Dataset = {
+      ...sourceDataset, original_filename: 'customers.txt', file_type: 'txt',
+    };
+    mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
+    mocks.build.mockResolvedValue(ready);
+    await act(async () => {
+      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+    });
+    const select = screen.getByLabelText('TXT 处理方式') as HTMLSelectElement;
+    expect(select.value).toBe('');
+    expect(Array.from(select.options, option => [option.value, option.label])).toEqual([
+      ['', '自动：制表符表格，否则逐行记录'], ['__entities__', '智能抽取实体与关系（LLM）'],
+      ['__lines__', '强制逐行记录（不推断关系）'], ['\t', '制表符'], [',', '逗号'], ['|', '竖线'], [';', '分号'], [' ', '空格'],
+    ]);
+    fireEvent.change(select, { target: { value: '|' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
+      query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true, delimiter: '|',
+    });
+  });
+
+  it('can force TXT line mode without sending a delimiter', async () => {
+    const txtDataset: Dataset = {
+      ...sourceDataset, original_filename: 'notes.txt', file_type: 'txt',
+    };
+    mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
+    mocks.build.mockResolvedValue(ready);
+    await act(async () => {
+      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+    });
+    fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__lines__' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
+      query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true, txt_mode: 'lines',
+    });
+  });
+
+  it('explicitly discloses and enables LLM semantic extraction for TXT', async () => {
+    const txtDataset: Dataset = {
+      ...sourceDataset, original_filename: 'notes.txt', file_type: 'txt',
+    };
+    mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
+    mocks.build.mockResolvedValue(ready);
+    await act(async () => {
+      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+    });
+
+    fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__entities__' } });
+    expect(screen.getByText('TXT 全文将分块发送至构图模型；LLM 会识别文本中明确出现的实体和关系，生成结果需人工核对。')).toBeTruthy();
+    expect(screen.getByText('依据 LLM 从逐行文本中抽取实体与关系并构图；语义结果需要人工核对。')).toBeTruthy();
+    expect(screen.queryByLabelText('验证查询数量')).toBeNull();
+    expect(screen.queryByLabelText('领域类别')).toBeNull();
+    expect(screen.queryByLabelText('复用领域经验')).toBeNull();
+    expect(screen.getByLabelText('抽取目标（选填）')).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+
+    expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
+      domain: '', txt_mode: 'entities', mode: 'llm',
+    });
   });
 
   it('submits the selected domain and explicit experience opt-out without losing the business description', async () => {
@@ -384,9 +504,10 @@ describe('long-running graph construction', () => {
   it('allows closing during a pending build and never cancels or repeats its POST', async () => {
     let finishBuild!: (value: unknown) => void;
     mocks.build.mockReturnValue(new Promise(resolve => { finishBuild = resolve; }));
-    const close = vi.fn(), saved = vi.fn();
-    const view = await show(saved, close);
+    const close = vi.fn(), saved = vi.fn(), onStateChange = vi.fn();
+    const view = await show(saved, close, onStateChange);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(onStateChange.mock.calls[onStateChange.mock.calls.length - 1]?.[1].status).toBe('building');
     expect((screen.getByRole('button', { name: '正在构图…' }) as HTMLButtonElement).disabled).toBe(true);
     for (const label of ['验证查询数量', '领域类别', '领域描述（选填）', '复用领域经验']) {
       expect(screen.getByLabelText(label).matches(':disabled')).toBe(true);

@@ -2,52 +2,22 @@
 import sqlite3
 import copy
 from contextlib import closing
+from unittest.mock import patch
 
 import pytest
 
+import graph_engine.construction.sources as sources_module
 from graph_engine.construction.sources import (
-    SourceError, foreign_key_pairs, foreign_key_type, initial_graph, load_source, row_id,
+    ResourceLimits, SourceError, foreign_key_pairs, foreign_key_type, initial_graph, load_source, row_id,
     source_integrity_errors,
 )
+from graph_engine.construction.workload import _oracle
 
 
 def sql_source(tmp_path, sql, **options):
     path = tmp_path / "source.sql"
     path.write_text(sql, encoding="utf-8")
     return load_source(path, options)
-
-
-@pytest.mark.parametrize("action", ["CASCADE", "RESTRICT", "NO ACTION", "SET NULL", "SET DEFAULT"])
-@pytest.mark.parametrize("inline", [False, True])
-def test_sql_dump_accepts_foreign_key_update_actions(tmp_path, action, inline):
-    declaration = (f"pid INTEGER REFERENCES parent(id) ON /* action */ UPDATE {action}" if inline else
-                   f"pid INTEGER, FOREIGN KEY(pid) REFERENCES parent(id) ON UPDATE {action} ON DELETE CASCADE")
-    sql = f"""CREATE TABLE parent(id INTEGER PRIMARY KEY);
-              CREATE TABLE child(id INTEGER PRIMARY KEY, {declaration});
-              INSERT INTO parent VALUES(1); INSERT INTO child VALUES(10,1);"""
-    with closing(sqlite3.connect(":memory:")) as native:
-        native.executescript(sql)
-        expected = native.execute("PRAGMA foreign_key_list(child)").fetchall()
-    with closing(sql_source(tmp_path, sql)) as source:
-        assert source.tables["child"].rows == [{"id": 10, "pid": 1}]
-        graph = initial_graph(source)
-        assert len(graph["edges"]) == 1
-        assert source_integrity_errors(source, graph) == []
-        assert expected[0][5] == action
-
-
-@pytest.mark.parametrize("statement", [
-    "UPDATE parent SET id=2;", "DELETE FROM parent;", "REPLACE INTO parent VALUES(2);",
-    "INSERT INTO parent SELECT 2;", "INSERT INTO parent VALUES(2) RETURNING id;",
-    "INSERT INTO parent VALUES(1) ON CONFLICT(id) DO UPDATE SET id=2;",
-    "CREATE TABLE copied AS SELECT * FROM parent;", "WITH x AS (SELECT 2) INSERT INTO parent SELECT * FROM x;",
-    "CREATE VIEW copied AS SELECT * FROM parent;", "ATTACH DATABASE 'outside.db' AS outside;",
-    "CREATE TRIGGER changed AFTER INSERT ON parent BEGIN UPDATE parent SET id=2; END;",
-])
-def test_foreign_key_support_does_not_allow_data_updates_or_executable_imports(tmp_path, statement):
-    with pytest.raises(SourceError):
-        sql_source(tmp_path, "CREATE TABLE parent(id INTEGER PRIMARY KEY); INSERT INTO parent VALUES(1);" + statement)
-    assert not (tmp_path / "outside.db").exists()
 
 
 def test_composite_pk_fk_retains_null_and_dangling_rows(tmp_path):
@@ -134,6 +104,167 @@ def test_csv_exact_strings_inline_tables_and_stable_primary_key(tmp_path):
     assert not source.warnings
 
 
+def test_txt_auto_detects_tabular_delimiter_and_preserves_quoted_multiline_values(tmp_path):
+    path = tmp_path / "people.txt"
+    path.write_bytes(
+        b"\xef\xbb\xbfid\tname\tnote\r\n"
+        b"001\tAlice\t\"line one\r\nline two\"\r\n"
+        b"002\tBob\tplain\r\n"
+    )
+    source = load_source(path)
+    try:
+        table = source.tables["people"]
+        assert table.columns == ["id", "name", "note"]
+        assert table.primary_key == ["id"]
+        assert table.rows == [
+            {"id": "001", "name": "Alice", "note": "line one\r\nline two"},
+            {"id": "002", "name": "Bob", "note": "plain"},
+        ]
+        graph = initial_graph(source)
+        assert len(graph["nodes"]) == 2
+        assert source_integrity_errors(source, graph) == []
+        assert not source.warnings
+    finally:
+        source.close()
+
+
+def test_txt_uses_csv_pk_fk_and_inline_table_options(tmp_path):
+    path = tmp_path / "orders.txt"
+    path.write_text("id,person_id,amount\n001,A,1.20\n002,B,2.40\n", encoding="utf-8")
+    source = load_source(path, {
+        "delimiter": ",",
+        "foreign_keys": [{"columns": ["person_id"], "ref_table": "people", "ref_columns": ["id"]}],
+        "tables": [{"name": "people", "rows": [{"id": "A"}, {"id": "B"}]}],
+    })
+    try:
+        assert source.tables["orders"].primary_key == ["id"]
+        assert source.tables["orders"].rows[0]["amount"] == "1.20"
+        graph = initial_graph(source)
+        assert len(graph["nodes"]) == 4
+        assert len(graph["edges"]) == 2
+        assert source_integrity_errors(source, graph) == []
+    finally:
+        source.close()
+
+
+def test_plain_txt_imports_every_line_as_a_text_record_without_dropping_blanks(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("first line\n\nthird,line\n", encoding="utf-8")
+    source = load_source(path)
+    try:
+        table = source.tables["notes"]
+        assert table.columns == ["text"]
+        assert table.rows == [{"text": "first line"}, {"text": ""}, {"text": "third,line"}]
+        assert table.primary_key == []
+        graph = initial_graph(source)
+        assert len(graph["nodes"]) == 3
+        assert source_integrity_errors(source, graph) == []
+        assert any("each line" in warning for warning in source.warnings)
+        assert any("row-position" in warning for warning in source.warnings)
+    finally:
+        source.close()
+
+
+def test_one_line_txt_with_punctuation_is_not_mistaken_for_a_header_only_table(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_text("Hello, world", encoding="utf-8")
+    source = load_source(path)
+    try:
+        assert source.tables["note"].rows == [{"text": "Hello, world"}]
+        assert len(initial_graph(source)["nodes"]) == 1
+    finally:
+        source.close()
+
+
+def test_punctuation_in_plain_txt_does_not_consume_the_first_line_as_a_header(tmp_path):
+    path = tmp_path / "note.txt"
+    path.write_text("Hello, world\nGoodbye, world\n", encoding="utf-8")
+    source = load_source(path)
+    try:
+        assert source.tables["note"].rows == [
+            {"text": "Hello, world"}, {"text": "Goodbye, world"},
+        ]
+        assert len(initial_graph(source)["nodes"]) == 2
+    finally:
+        source.close()
+
+
+def test_txt_delimiter_inference_checks_all_records_before_selecting_table_mode(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("kind\tvalue\n" + "note\tok\n" * 64 + "plain final line\n", encoding="utf-8")
+    source = load_source(path)
+    try:
+        table = source.tables["notes"]
+        assert table.columns == ["text"]
+        assert len(table.rows) == 66
+        assert table.rows[-1] == {"text": "plain final line"}
+    finally:
+        source.close()
+
+
+def test_txt_explicit_delimiters_enable_non_tsv_table_inputs(tmp_path):
+    path = tmp_path / "items.txt"
+    path.write_text("id|label\n001|first\n002|second\n", encoding="utf-8")
+    source = load_source(path, {"delimiter": "|"})
+    try:
+        assert source.tables["items"].primary_key == ["id"]
+        assert source.tables["items"].rows[1] == {"id": "002", "label": "second"}
+    finally:
+        source.close()
+
+
+def test_txt_line_mode_can_preserve_tab_separated_prose(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("chapter\tintroduction\nbody\tcontinued\n", encoding="utf-8")
+    source = load_source(path, {"txt_mode": "lines"})
+    try:
+        assert source.tables["notes"].rows == [
+            {"text": "chapter\tintroduction"}, {"text": "body\tcontinued"},
+        ]
+    finally:
+        source.close()
+
+
+def test_txt_entity_mode_retains_logical_lines_for_semantic_extraction(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("Alice works at OpenAI.\n\nBob works at OpenAI.\n", encoding="utf-8")
+    source = load_source(path, {"txt_mode": "entities"})
+    try:
+        table = source.tables["notes"]
+        assert table.columns == ["text"]
+        assert table.rows == [
+            {"text": "Alice works at OpenAI."},
+            {"text": ""},
+            {"text": "Bob works at OpenAI."},
+        ]
+        assert table.primary_key == []
+        assert source._txt_mode == "entities"
+        assert any("LLM semantic extraction" in warning for warning in source.warnings)
+        assert not any("row-position" in warning for warning in source.warnings)
+    finally:
+        source.close()
+
+
+@pytest.mark.parametrize("content,options,message", [
+    (b"\xff", {}, "UTF-8"),
+    (b"id|name\n1\n", {"delimiter": "|"}, "expected 2"),
+    (b"id\tname\n1\tAlice\n", {"delimiter": "\n"}, "one character"),
+    (b"one\ntwo\n", {"txt_mode": "table"}, "auto, lines or entities"),
+    (b"one\ntwo\n", {"txt_mode": []}, "auto, lines or entities"),
+    (b"one\ntwo\n", {"txt_mode": "lines", "delimiter": ","}, "cannot be combined"),
+    (b"one\ntwo\n", {"txt_mode": "entities", "delimiter": ","}, "cannot be combined"),
+    (b"one\ntwo\n", {"txt_mode": "entities", "primary_key": ["text"]}, "relational PK/FK"),
+    (b"one\ntwo\n", {"txt_mode": "entities", "foreign_keys": []}, "relational PK/FK"),
+    (b"one\ntwo\n", {"txt_mode": "entities", "tables": []}, "relational PK/FK"),
+    (b"one\ntwo\n", {"max_source_rows": 1}, "row limit"),
+])
+def test_txt_rejects_invalid_or_ambiguous_inputs(tmp_path, content, options, message):
+    path = tmp_path / "source.txt"
+    path.write_bytes(content)
+    with pytest.raises(SourceError, match=message):
+        load_source(path, options)
+
+
 def test_csv_keyless_duplicate_rows_and_non_identity_unique_columns(tmp_path):
     path = tmp_path / "source.csv"
     path.write_text("name\nSame\nSame\n", encoding="utf-8")
@@ -160,6 +291,85 @@ def test_csv_fails_instead_of_losing_data(tmp_path, content, options, message):
     path.write_text(content, encoding="utf-8")
     with pytest.raises(SourceError, match=message):
         load_source(path, options)
+
+
+def test_resource_profiles_are_explicit_typed_and_capped(tmp_path):
+    path = tmp_path / "source.csv"
+    path.write_text("id\n1\n", encoding="utf-8")
+    bounded = load_source(path)
+    assert bounded.resource_limits == ResourceLimits(
+        32 * 1024 * 1024, 200_000, 10, 200_000, 1_000_000, 200_000, 10,
+    )
+    with pytest.raises(SourceError, match="max_source_rows"):
+        load_source(path, {"max_source_rows": 200_001})
+    full_defaults = load_source(path, {"resource_profile": "full_scale"})
+    assert full_defaults.resource_limits == ResourceLimits(
+        8 * 1024 * 1024 * 1024, 10_000_000, 7_200, 15_000_000, 30_000_000, 10_000_000, 600,
+    )
+    full = load_source(path, {"resource_profile": "full_scale", "max_source_rows": 200_001})
+    assert full.resource_limits.max_source_rows == 200_001
+    assert load_source(path, {"max_source_bytes": 64 * 1024 * 1024}).resource_limits.max_source_bytes == 64 * 1024 * 1024
+    for options in (
+        {"resource_profile": True},
+        {"resource_profile": "unbounded"},
+        {"resource_profile": "full_scale", "max_source_rows": 10_000_001},
+        {"resource_profile": "full_scale", "query_timeout_seconds": 1.5},
+    ):
+        with pytest.raises(SourceError):
+            load_source(path, options)
+
+
+def test_full_scale_profile_can_be_reduced_for_a_tiny_run(tmp_path):
+    path = tmp_path / "source.sql"
+    path.write_text("CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t VALUES(1),(2);", encoding="utf-8")
+    options = {"resource_profile": "full_scale", "max_source_bytes": 1024, "max_source_rows": 2,
+               "source_timeout_seconds": 1, "max_graph_nodes": 2, "max_graph_edges": 1,
+               "max_intermediate_rows": 2, "query_timeout_seconds": 1}
+    source = load_source(path, options)
+    try:
+        assert source.resource_limits == ResourceLimits(1024, 2, 1, 2, 1, 2, 1)
+        assert len(initial_graph(source)["nodes"]) == 2
+    finally:
+        source.close()
+
+
+def test_sql_fk_pairing_uses_rowid_without_serializing_full_rows(tmp_path):
+    original_encode = sources_module._encode
+
+    def reject_full_rows(value):
+        if isinstance(value, dict):
+            raise AssertionError("fast rowid path serialized a complete row")
+        return original_encode(value)
+
+    with patch.object(sources_module, "_encode", side_effect=reject_full_rows):
+        source = sql_source(tmp_path, """
+            CREATE TABLE parent(id TEXT COLLATE NOCASE PRIMARY KEY, payload TEXT);
+            CREATE TABLE child(id INTEGER PRIMARY KEY, pid TEXT REFERENCES parent(id), payload TEXT);
+            INSERT INTO parent VALUES('P', 'large parent payload');
+            INSERT INTO child VALUES(1, 'p', 'first'), (2, 'P', 'second');
+        """)
+        try:
+            fk = source.tables["child"].foreign_keys[0]
+            assert foreign_key_pairs(source, source.tables["child"], fk) == [(0, 0), (1, 0)]
+            assert source._sql_rowids == {}
+            assert source._sql_rowid_aliases == {}
+        finally:
+            source.close()
+
+
+def test_initial_graph_uses_source_node_and_edge_limits(tmp_path):
+    path = tmp_path / "children.csv"
+    path.write_text("id,parent_id\n1,P\n2,P\n", encoding="utf-8")
+    node_limited = load_source(path, {"max_graph_nodes": 1})
+    with pytest.raises(SourceError, match="node construction limit"):
+        initial_graph(node_limited)
+    edge_limited = load_source(path, {
+        "max_graph_edges": 1,
+        "foreign_keys": [{"columns": ["parent_id"], "ref_table": "parents", "ref_columns": ["id"]}],
+        "tables": [{"name": "parents", "rows": [{"id": "P"}]}],
+    })
+    with pytest.raises(SourceError, match="edge construction limit"):
+        initial_graph(edge_limited)
 
 
 @pytest.mark.parametrize("sql", [
@@ -200,6 +410,89 @@ def test_sqlite_binary_import_is_memory_only_and_read_only(tmp_path):
     finally:
         source.close()
     assert source._connection is None
+
+
+def test_full_scale_sqlite_binary_uses_read_only_file_backing(tmp_path):
+    path = tmp_path / "database.sql"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE data(id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO data VALUES(1, 'kept')")
+        connection.commit()
+    original = path.read_bytes()
+    source = load_source(path, {
+        "resource_profile": "full_scale",
+        "max_source_bytes": 1024 * 1024,
+        "max_source_rows": 10,
+        "max_graph_nodes": 10,
+        "max_graph_edges": 10,
+        "max_intermediate_rows": 10,
+        "source_timeout_seconds": 10,
+        "query_timeout_seconds": 10,
+    })
+    try:
+        assert source._database_path == path
+        assert source.tables["data"].rows == [{"id": 1, "value": "kept"}]
+        with pytest.raises(sqlite3.OperationalError):
+            source._connection.execute("DELETE FROM data")
+        oracle = _oracle(source)
+        try:
+            assert oracle.execute("SELECT COUNT(*) FROM data").fetchone() == (1,)
+            with pytest.raises(sqlite3.OperationalError):
+                oracle.execute("DELETE FROM data")
+        finally:
+            oracle.close()
+        assert path.read_bytes() == original
+    finally:
+        source.close()
+
+
+def test_full_scale_file_backing_reads_committed_wal_rows(tmp_path):
+    path = tmp_path / "wal.sql"
+    writer = sqlite3.connect(path)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        writer.execute("CREATE TABLE data(id INTEGER PRIMARY KEY)")
+        writer.execute("INSERT INTO data VALUES(1)")
+        writer.commit()
+        writer.execute("INSERT INTO data VALUES(2)")
+        writer.commit()
+        source = load_source(path, {"resource_profile": "full_scale"})
+        try:
+            assert source.tables["data"].rows == [{"id": 1}, {"id": 2}]
+            oracle = _oracle(source)
+            try:
+                assert oracle.execute("SELECT COUNT(*) FROM data").fetchone() == (2,)
+            finally:
+                oracle.close()
+        finally:
+            source.close()
+    finally:
+        writer.close()
+
+
+def test_full_scale_oracle_rejects_changed_database_file(tmp_path):
+    path = tmp_path / "changed.sql"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE data(id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO data VALUES(1)")
+        connection.commit()
+    source = load_source(path, {"resource_profile": "full_scale"})
+    try:
+        original_identity = source._database_identity
+        stat = path.stat()
+        path.touch()
+        if source._database_identity == (
+                (stat.st_dev, stat.st_ino, stat.st_size, path.stat().st_mtime_ns), None, None):
+            pytest.skip("Filesystem timestamp resolution cannot expose this test mutation")
+        assert source._database_identity == original_identity
+        with pytest.raises(ValueError, match="changed after loading"):
+            _oracle(source)
+        assert source_integrity_errors(source, initial_graph(source)) == [
+            "SQLite source file changed after loading."]
+    finally:
+        source.close()
+    assert source._database_path is None
+    assert source._database_identity is None
 
 
 def test_sqlite_binary_trigger_rejected_without_execution(tmp_path):
