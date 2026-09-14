@@ -8,10 +8,11 @@ GraphML in-process 模块。
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Tuple
 
-from graph_data_service.graph_data import GraphData
-from graph_data_service.session import GraphSession
+if TYPE_CHECKING:
+    from graph_data_service.graph_data import GraphData
+    from graph_data_service.session import GraphSession
 
 from .artifact_store import ArtifactStore
 from .config_catalog import model_architecture_view

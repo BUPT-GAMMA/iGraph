@@ -1,4 +1,0 @@
-python-dotenv==1.2.2
-httpx==0.28.1
-mcp==1.28.1
-fastmcp>=2.13,<4

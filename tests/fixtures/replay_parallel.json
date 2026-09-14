@@ -1,0 +1,56 @@
+{
+  "responses": [
+    {
+      "question_id": "ml/cora/replay_lp_false",
+      "attempt": 1,
+      "response": {
+        "status": "success",
+        "final_answer": {"has_edge": false},
+        "reasoning": ["offline replay", "attempt 1"],
+        "tool_calls": [
+          {"name": "structural_node_embedding_link_prediction_train", "success": true},
+          {"name": "structural_node_embedding_link_prediction_infer", "success": true}
+        ]
+      }
+    },
+    {
+      "question_id": "ml/cora/replay_lp_false",
+      "attempt": 2,
+      "response": {
+        "status": "success",
+        "final_answer": {"has_edge": false},
+        "reasoning": ["offline replay", "attempt 2"],
+        "tool_calls": [
+          {"name": "structural_node_embedding_link_prediction_train", "success": true},
+          {"name": "structural_node_embedding_link_prediction_infer", "success": true}
+        ]
+      }
+    },
+    {
+      "question_id": "ml/cora/replay_lp_true",
+      "attempt": 1,
+      "response": {
+        "status": "success",
+        "final_answer": {"has_edge": true},
+        "reasoning": ["offline replay", "attempt 1"],
+        "tool_calls": [
+          {"name": "structural_node_embedding_link_prediction_train", "success": true},
+          {"name": "structural_node_embedding_link_prediction_infer", "success": true}
+        ]
+      }
+    },
+    {
+      "question_id": "ml/cora/replay_lp_true",
+      "attempt": 2,
+      "response": {
+        "status": "success",
+        "final_answer": {"has_edge": true},
+        "reasoning": ["offline replay", "attempt 2"],
+        "tool_calls": [
+          {"name": "structural_node_embedding_link_prediction_train", "success": true},
+          {"name": "structural_node_embedding_link_prediction_infer", "success": true}
+        ]
+      }
+    }
+  ]
+}

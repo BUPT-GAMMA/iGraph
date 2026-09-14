@@ -1,54 +1,49 @@
 #!/usr/bin/env python3
-"""iGraph CLI client for the four-module deployment.
-
-The CLI no longer constructs an in-process Agent.  Backend remains the public
-identity/policy boundary and Agent Runtime owns the conversation.
-"""
+"""Command-line dispatcher for the standalone iGraph benchmark runners."""
 
 from __future__ import annotations
 
-import os
-
-import httpx
-from dotenv import load_dotenv
+import sys
+from typing import Sequence
 
 
-def main() -> None:
-    load_dotenv(override=False)
-    backend_url = os.getenv("BACKEND_URL", "http://127.0.0.1:21109").rstrip("/")
-    user_id = os.getenv("IGRAPH_CLI_USER_ID", "admin").strip()
-    headers = {"X-User-ID": user_id}
+_TOP_LEVEL_HELP = """usage: main.py COMMAND [options]
 
-    with httpx.Client(base_url=backend_url, headers=headers, timeout=1800, trust_env=False) as client:
-        auth = client.post("/api/auth/validate")
-        auth.raise_for_status()
-        identity = auth.json()
-        if not identity.get("valid"):
-            raise SystemExit(f"用户校验失败: {identity.get('reason', 'unknown')}")
+Headless iGraph benchmark platform.
 
-        created = client.post("/api/sessions", json={"model": identity.get("default_model")})
-        created.raise_for_status()
-        session_id = created.json()["session_id"]
-        print(f"iGraph AgentOS CLI | user={user_id} | session={session_id}")
-        print("输入 quit/exit 退出。")
+commands:
+  questions             parallel question/tool-trajectory benchmark
+  graph-classification  legacy HIV/PCBA training benchmark
 
-        while True:
-            try:
-                message = input("\nYou > ").strip()
-            except (EOFError, KeyboardInterrupt):
-                break
-            if not message:
-                continue
-            if message.lower() in {"quit", "exit", "q"}:
-                break
-            response = client.post(
-                f"/api/sessions/{session_id}/chat",
-                json={"message": message},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            print(f"\nAgent > {payload.get('response') or payload.get('error') or ''}")
+Backward compatibility: `main.py hiv ...` and `main.py pcba ...` are routed
+to the graph-classification benchmark.
+"""
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if not arguments or arguments[0] in {"-h", "--help"}:
+        print(_TOP_LEVEL_HELP)
+        return 0
+
+    command, rest = arguments[0], arguments[1:]
+    if command == "questions":
+        from scripts.benchmark_questions import main as questions_main
+
+        return questions_main(rest)
+    if command == "graph-classification":
+        from scripts.benchmark_graph_classification import main as graph_main
+
+        return graph_main(rest)
+    if command in {"hiv", "pcba"}:
+        from scripts.benchmark_graph_classification import main as graph_main
+
+        return graph_main(arguments)
+
+    print(f"benchmark error: unknown command: {command}", file=sys.stderr)
+    print(_TOP_LEVEL_HELP, file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

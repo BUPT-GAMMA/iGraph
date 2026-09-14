@@ -1,55 +1,45 @@
 # OS metadata
 .DS_Store
-.AppleDouble
-.LSOverride
 Thumbs.db
-ehthumbs.db
 Desktop.ini
 
-# Python cache and test artifacts
+# Python cache, tests and virtual environments
 __pycache__/
 *.py[cod]
-*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 .ipynb_checkpoints/
-
-# Virtual environments
 .venv/
 venv/
 env/
 ENV/
 
-# Local environment and secrets
-.env
-.env.*
-!.env.example
-
-# Runtime outputs
+# Benchmark data, artifacts and results
 /data/
-logs/
-uploads/
-artifacts/
-outputs/
-output/
-datasets/
+/datasets/
+/artifacts/
+/outputs/
+/results/
+/runs/
+/captures/
+/dist/
+*.pt
+*.log
 !graph_data_service/graph_ml/datasets/
 !graph_data_service/graph_ml/datasets/*.py
-*.log
 
-# Local planning docs
-plan.md
-
-# Runtime memory and session state
-!backend/agent/memory/.gitkeep
-backend/agent/memory/default_user/*
-!backend/agent/memory/default_user/.gitkeep
-backend/agent/memory/default_user/legacy_backup/
-
-# Local AI / IDE configuration
+# Local secrets and editor/agent state
+.env
+.env.*
+/secrets/
+provider-profile*.sh
+*.pem
+*.key
+/iGraph-feature-agentos-react-web/
+scripts/launch_*_server.sh
 .agents/
 .codex/
 .cursor/
@@ -59,15 +49,3 @@ backend/agent/memory/default_user/legacy_backup/
 .vscode/
 .windsurf/
 .zed/
-
-# Node.js and frontend build artifacts
-
-node_modules/
-dist/
-coverage/
-.vite/
-.pnpm-store/
-*.tsbuildinfo
-npm-debug.log*
-yarn-debug.log*
-pnpm-debug.log*

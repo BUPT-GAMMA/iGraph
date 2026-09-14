@@ -1,0 +1,33 @@
+{
+  "schema": "igraph.benchmark.questions",
+  "schema_version": "1.0",
+  "category": "ml",
+  "dataset": "cora",
+  "metadata": {
+    "purpose": "offline parallel shell smoke test"
+  },
+  "tasks": [
+    {
+      "id": "replay_lp_false",
+      "question": "Offline fixture: predict whether the requested edge exists.",
+      "task_type": "LP",
+      "required_tools": [],
+      "ground_truth": false,
+      "context": {
+        "node1": 1,
+        "node2": 2
+      }
+    },
+    {
+      "id": "replay_lp_true",
+      "question": "Offline fixture: predict whether the requested edge exists.",
+      "task_type": "LP",
+      "required_tools": [],
+      "ground_truth": true,
+      "context": {
+        "node1": 2,
+        "node2": 3
+      }
+    }
+  ]
+}

@@ -1,2 +1,0 @@
-# Development seed identities. Override IGRAPH_SUPPORTED_IDS_FILE in production.
-admin

@@ -7,9 +7,10 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from graph_data_service.session import GraphSession
+if TYPE_CHECKING:
+    from graph_data_service.session import GraphSession
 
 from .graph_classification import (
     GraphClassificationDatasetBundle,

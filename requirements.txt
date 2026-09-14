@@ -1,6 +1,6 @@
-# Combined development environment. Production images install only their own
-# module-specific requirement file under deploy/requirements/.
--r deploy/requirements/backend.txt
--r deploy/requirements/agent-runtime.txt
--r deploy/requirements/graph-data.txt
--r deploy/requirements/mcp.txt
+# Runtime dependencies for the headless question and graph-classification benchmarks.
+# The official remote environment is the existing Conda environment `vlm`.
+numpy>=2.2,<3
+pydantic>=2.12,<3
+torch>=2.5,<3
+torch-geometric>=2.7,<3
