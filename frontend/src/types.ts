@@ -65,6 +65,7 @@ export type GraphSnapshot = {
 };
 
 export type Message = {
+  run_status?: string;
   regenerate_of?: string | null;
   run_id?: string;
   id?: string;

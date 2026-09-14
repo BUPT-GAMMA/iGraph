@@ -29,6 +29,7 @@ class RegisterRequest(BaseModel):
     start_request_id: UUID
     fingerprint: str
     preparation_owner: UUID | None = None
+    replace_run_id: UUID | None = None
 
 
 class PreparationAck(BaseModel):
@@ -130,7 +131,14 @@ class ExecutionController(ProjectDeletionMixin):
         pid = (session.session_data or {}).get('session_state', {}).get('project_id')
         if pid:
             await self.call(self.store.register_project_session, uid, pid, sid)
-        row = await self.call(self.store.claim_agent, uid, sid, rid, continuing=continuing)
+        row_before = await self.call(self.store.get, uid, sid, run_id=rid)
+        editor = None
+        if row_before and row_before['state'].get('replace_run_id'):
+            from agent_runtime.turn_edit import NativeTurnEditor
+            table = await self.call(self.db._get_table, table_type='sessions')
+            editor = NativeTurnEditor(table)
+        row = await self.call(self.store.claim_agent, uid, sid, rid, continuing=continuing,
+                              replace_edit=editor.replace if editor else None)
         self.known_runs[row['run_id']] = row
         scope = RunScope(row["run_id"], uid, sid, row["generation"])
         # Mark starting before entering native code, including before registration.
@@ -469,7 +477,7 @@ def create_control_router(controller: ExecutionController):
                 ready = ready and value.get('run_cancel_v1') and value.get('job_cancel_v1')
         except Exception:
             ready = False
-        return {'run_cancel_v1': bool(ready), 'job_cancel_v1': bool(ready)}
+        return {'run_cancel_v1': bool(ready), 'job_cancel_v1': bool(ready), 'edit_latest_turn_v1': bool(ready)}
 
     @router.post('/internal/sessions/{sid}/jobs/register')
     async def register_job(sid: str, req: JobRegistration, request: Request):
@@ -579,8 +587,15 @@ def create_control_router(controller: ExecutionController):
         existing = await controller.call(controller.store.get, uid, sid, start_request_id=str(req.start_request_id))
         if existing is None and any(str(getattr(run.status, 'value', run.status)).lower() not in TERMINAL for run in session.runs or []):
             raise ControlError("RUN_ACTIVE")
+        editor = None
+        if req.replace_run_id:
+            from agent_runtime.turn_edit import NativeTurnEditor
+            table = await controller.call(controller.db._get_table, table_type='sessions')
+            editor = NativeTurnEditor(table)
         row, claimed = await controller.call(controller.store.register, uid, sid, str(req.start_request_id), req.fingerprint,
-                                            preparation_owner=str(req.preparation_owner) if req.preparation_owner else None)
+                                            preparation_owner=str(req.preparation_owner) if req.preparation_owner else None,
+                                            replace_run_id=str(req.replace_run_id) if req.replace_run_id else None,
+                                            validate_edit=editor.validate if editor else None)
         controller.known_runs[row['run_id']] = row
         controller.wake(row['run_id'])
         return {**await controller.call(controller.store.summary, row), "preparation_claimed": claimed}

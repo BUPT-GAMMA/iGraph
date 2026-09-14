@@ -291,7 +291,7 @@ class ExecutionStore:
         conn.execute(controls.update().where(controls.c.control_id == row["control_id"]).values(**updated))
         return updated
 
-    def register(self, uid: str, sid: str, key: str, digest: str, *, max_keys_per_minute=30, preparation_owner=None):
+    def register(self, uid: str, sid: str, key: str, digest: str, *, max_keys_per_minute=30, preparation_owner=None, replace_run_id=None, validate_edit=None):
         with self.transaction(uid, sid) as conn:
             self._assert_session_open(conn, uid, sid)
             row = self._find(conn, uid, sid, start_request_id=key)
@@ -305,8 +305,12 @@ class ExecutionStore:
             active = self._active(conn, uid, sid)
             if active:
                 raise ControlError("RUN_ACTIVE")
+            if replace_run_id:
+                if validate_edit is None:
+                    raise ControlError('EDIT_UNAVAILABLE')
+                validate_edit(conn, uid, sid, replace_run_id)
             row = self._insert_run(conn, uid, sid, key, digest)
-            row = self._update(conn, row, {**row['state'], 'preparation_owner': preparation_owner})
+            row = self._update(conn, row, {**row['state'], 'preparation_owner': preparation_owner, 'replace_run_id': replace_run_id})
             return row, True
 
     def _limit_new_keys(self, conn, uid, sid, limit=30):
@@ -324,7 +328,7 @@ class ExecutionStore:
         with self.transaction(uid, sid) as conn:
             return self._active(conn, uid, sid)
 
-    def claim_agent(self, uid, sid, rid, *, continuing=False):
+    def claim_agent(self, uid, sid, rid, *, continuing=False, replace_edit=None):
         with self.transaction(uid, sid) as conn:
             self._assert_session_open(conn, uid, sid)
             row = self._find(conn, uid, sid, run_id=rid)
@@ -340,6 +344,10 @@ class ExecutionStore:
                     raise ControlError("STALE_FEEDBACK")
             elif state["agent_claimed"]:
                 raise ControlError("RUN_ALREADY_STARTED")
+            if state.get('replace_run_id') and not continuing:
+                if replace_edit is None:
+                    raise ControlError('EDIT_UNAVAILABLE')
+                replace_edit(conn, uid, sid, state['replace_run_id'])
             state.update(agent_claimed=True, agent_stopped=False, run_status="running", terminal_persisted=False,
                          executor_instance=self.instance_id)
             return self._update(conn, row, state, generation=row["generation"] + int(continuing))

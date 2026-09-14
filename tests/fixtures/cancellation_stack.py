@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 
 
 @asynccontextmanager
-async def cancellation_stack(root: Path, url: str, *, learning=False, training_epochs=100000):
+async def cancellation_stack(root: Path, url: str, *, learning=False, training_epochs=100000, request_timeout=8):
     from agno.db.sqlite import SqliteDb
     from agno.run import cancel
     from backend.config import BackendConfig
@@ -89,12 +89,12 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         mcp.custom_route('/internal/capabilities', methods=['GET'])(mcp_server.control_capabilities)
         mcp_api = mcp.http_app(path='/mcp', transport='streamable-http')
         config = replace(BackendConfig.from_env(), agent_runtime_url=url + '/runtime', graph_engine_url=url + '/graph',
-                         request_timeout=8, stream_timeout=120, supported_ids_file=root / 'unused.txt')
+                         request_timeout=request_timeout, stream_timeout=120, supported_ids_file=root / 'unused.txt')
         users = UserDirectory(config.users_file, config.supported_ids_file, 'admin')
         users.save(UserRecord(user_id='admin', roles=['admin']))
         users.save(UserRecord(user_id='alice', roles=[]))
         bff = backend_app(config)
-        metrics = {'calls': {}, 'closed': {}, 'tool_calls': {}}
+        metrics = {'calls': {}, 'closed': {}, 'tool_calls': {}, 'contexts': {}}
         model = FastAPI()
 
         @model.post('/v1/embeddings')
@@ -113,6 +113,7 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         async def completion(request: Request):
             body = await request.json()
             key = next((str(msg.get('content')) for msg in reversed(body['messages']) if msg.get('role') == 'user'), '')
+            metrics['contexts'][key] = body['messages']
             count = metrics['calls'].get(key, 0) + 1
             metrics['calls'][key] = count
             if not body.get('stream'):

@@ -7,6 +7,7 @@ import type { ActiveRun, AttachmentRef, Dataset, DatasetView, DraftAttachment, F
 import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
 import { RunCancellation } from './RunCancellation';
+import { editableLatestTurn } from './latestTurn';
 import { getCapabilities } from './api';
 import { draftScopeKey, conversationReducer, createSessionView, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import { DatasetPanel } from './components/DatasetPanel';
@@ -80,7 +81,7 @@ function normalizeMessages(input: unknown): Message[] {
   if (!Array.isArray(input)) return [];
   return input.map((item, index) => ({
     id: item?.id || item?.message_id || `history:${index}`,
-    run_id: item?.run_id, role: item?.role === 'user' ? 'user' : 'assistant',
+    run_status: item?.run_status, run_id: item?.run_id, role: item?.role === 'user' ? 'user' : 'assistant',
     content: String(item?.content || ''), tools: item?.tools || [], plan: item?.plan || null,
     graphs: item?.graphs || [], reports: item?.reports || [],
     attachments: Array.isArray(item?.attachments) ? item.attachments.filter((file: any) =>
@@ -204,6 +205,7 @@ function App() {
   const [graphLayoutVersion, setGraphLayoutVersion] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [cancelEnabled, setCancelEnabled] = useState(false);
+  const [editEnabled, setEditEnabled] = useState(false);
   const conversationRef = useRef(conversation);
   const identityRef = useRef(userId);
   const accountEpochRef = useRef(0);
@@ -485,7 +487,7 @@ function App() {
   async function consumeRunConnection(
     sessionId: string, generation: string, connection: NonNullable<ReturnType<RunConnectionManager['get']>>,
     operation: 'start' | 'resume' | 'feedback',
-    startPayload?: { message: string; attachments: AttachmentRef[]; regenerateOf?: string }, pendingFeedback?: FeedbackRequest | null,
+    startPayload?: { message: string; attachments: AttachmentRef[]; regenerateOf?: string; replaceRunId?: string }, pendingFeedback?: FeedbackRequest | null,
     feedbackDecision?: 'approve' | 'reject', _resumeFromEventIndex?: number, feedbackDecisionId?: string, _clearPendingOnOpen = false,
   ) {
     await recoveryRef.current!.consume(connection, operation, startPayload, pendingFeedback, feedbackDecision, feedbackDecisionId);
@@ -781,6 +783,7 @@ function App() {
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     setCancelEnabled(false);
+    setEditEnabled(false);
     if (!userId || demoMode) return;
     async function refreshCapabilities() {
       if (disposed || inFlight || enabled) return;
@@ -793,6 +796,7 @@ function App() {
         if (!disposed && !request.signal.aborted) {
           enabled = value.run_cancel_v1;
           setCancelEnabled(enabled);
+          setEditEnabled(enabled && Boolean(value.edit_latest_turn_v1));
         }
       } catch { /* Startup and network failures are retried without restarting the run. */ }
       finally {
@@ -1344,12 +1348,12 @@ function App() {
     }
   }
 
-  async function send(override?: { message: string; attachments: AttachmentRef[]; regenerateOf: string }) {
+  async function send(edit?: { message: string; attachments: AttachmentRef[]; replaceRunId: string }) {
     if (conversationRef.current.activeDraftKey) return sendDraft();
     if (!activeSession) return;
     const sessionId = activeSession.session_id;
     const targetView = conversationRef.current.viewsBySessionId[sessionId];
-    const message = String(override?.message ?? targetView?.draft ?? '').trim();
+    const message = String(edit?.message ?? targetView?.draft ?? '').trim();
     if (!message) return;
     const gate = selectRunGate(targetView);
     if (!gate.canStartRun) {
@@ -1363,7 +1367,7 @@ function App() {
     }
     if (targetView?.uploading || [...uploadControllersRef.current.values()].some(item => item.sessionId === sessionId)) return;
     const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
-    if (!override && (targetView?.pendingAttachments.length || pendingFirstTurn)) {
+    if (!edit && (targetView?.pendingAttachments.length || pendingFirstTurn)) {
       const generation = crypto.randomUUID();
       dispatchConversation({ type: 'BEGIN_RUN_PREPARATION', sessionId, generation });
       const sessionProjectId = activeSession.project_id ?? pendingFirstTurn?.projectId ?? null;
@@ -1379,12 +1383,16 @@ function App() {
       );
       return;
     }
-    const attachments = override?.attachments ?? targetView?.attachments ?? [];
+    if (edit && (!editEnabled || editableLatestTurn(selectMessages(targetView))?.assistant.run_id !== edit.replaceRunId)) {
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '最新一轮已变化，请刷新后重试' } });
+      return;
+    }
+    const attachments = edit?.attachments ?? targetView?.attachments ?? [];
     const generation = crypto.randomUUID();
     const userMessage: Message = { id: `user:${generation}`, role: 'user', content: message, attachments };
     persistRun(sessionId, undefined, -1, generation);
-    const assistantMessage: Message = { id: `assistant:${generation}`, role: 'assistant', content: '', streaming: true, tools: [], regenerate_of: override?.regenerateOf };
-    dispatchConversation({ type: 'START_RUN', sessionId, generation, userMessage, assistantMessage });
+    const assistantMessage: Message = { id: `assistant:${generation}`, role: 'assistant', content: '', streaming: true, tools: [] };
+    dispatchConversation({ type: 'START_RUN', sessionId, generation, userMessage, assistantMessage, replaceRunId: edit?.replaceRunId });
     setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, preview: message, last_message: message } : session));
     const retry = () => {
       const run = conversationRef.current.viewsBySessionId[sessionId]?.activeRun;
@@ -1402,7 +1410,7 @@ function App() {
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '当前会话仍有连接正在收尾，请稍后重试' } });
       return;
     }
-    void consumeRunConnection(sessionId, generation, connection, 'start', { message, attachments, regenerateOf: override?.regenerateOf });
+    void consumeRunConnection(sessionId, generation, connection, 'start', { message, attachments, replaceRunId: edit?.replaceRunId });
   }
   async function respondToFeedback(decision: 'approve' | 'reject') {
     if (!activeSession) return;
@@ -1506,16 +1514,6 @@ function App() {
     if (attachment?.status === 'failed' && attachment.file) void uploadAttachment(sessionId, attachment);
   }
 
-  function editMessage(message: Message) {
-    const sessionId = conversationRef.current.activeSessionId;
-    if (!sessionId) return;
-    const view = conversationRef.current.viewsBySessionId[sessionId];
-    if (!view || selectRunGate(view).blocksSessionMutation || view.uploading) return;
-    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: {
-      draft: message.content, attachments: message.attachments || [], pendingAttachments: [], error: undefined,
-    } });
-    setComposerFocusRequest(current => current + 1);
-  }
   function removeAttachment(attachmentId: string) {
     const draftProjectId = conversationRef.current.activeDraftKey;
     const currentDraft = draftProjectId ? conversationRef.current.draftsByScope[draftProjectId] : null;
@@ -1830,9 +1828,9 @@ function App() {
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
           {activeDraft
-            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onRegenerate={(message: Message, runId: string) => void send({ message: message.content, attachments: message.attachments || [], regenerateOf: runId })} onUpload={upload} onRetryAttachment={retryAttachment} onEditMessage={editMessage} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
-            ? <ChatPaneWithState conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onRegenerate={(message: Message, runId: string) => void send({ message: message.content, attachments: message.attachments || [], regenerateOf: runId })} onUpload={upload} onRetryAttachment={retryAttachment} onEditMessage={editMessage} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState onEditLatest={editEnabled ? (message: Message, runId: string, content: string) => void send({ message: content, attachments: message.attachments || [], replaceRunId: runId }) : undefined} conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
             : <div className={`workspace-home ${userId ? '' : 'signed-out'}`}><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{userId ? '开始新的图分析' : '探索图数据，从一个问题开始'}</h1><p>{userId ? '选择左侧已有会话，或创建一个新任务。' : '点击左下角头像登录，你的项目、会话与分析结果会在这里保持同步。'}</p>{userId ? <button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button> : null}</div></div>}
         </>}
       </div>

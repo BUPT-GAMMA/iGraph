@@ -1,3 +1,4 @@
+import { editableLatestTurn } from './latestTurn';
 import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
 import type { RunSnapshot, RunControl } from './api';
@@ -35,6 +36,8 @@ export type SessionRunState = {
   replay?: Pick<SessionViewState, 'messagesById' | 'messageOrder' | 'graph'>;
   assistantMessageId?: string;
   submittedInput?: string;
+  editBackup?: { runId: string; messages: Message[] };
+  replaceRunId?: string;
   toolsById: Record<string, ToolCall>;
   toolOrder: string[];
   processItems?: ProcessItem[];
@@ -51,6 +54,7 @@ export type SessionRunState = {
 
 export type SessionViewState = {
   sessionId: string;
+  replacedRunIds?: string[];
   hydration: 'unloaded' | 'loading' | 'ready' | 'failed';
   hydrationRequestVersion: number;
   messagesById: Record<string, Message>;
@@ -102,7 +106,7 @@ export type ConversationAction =
   | { type: 'SET_PENDING_ATTACHMENT'; sessionId: string; localId: string; status: DraftAttachment['status']; error?: string; progress?: number }
   | { type: 'RESOLVE_PENDING_ATTACHMENT'; sessionId: string; localId: string; attachment: AttachmentRef }
   | { type: 'REMOVE_PENDING_ATTACHMENT'; sessionId: string; localId: string }
-  | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
+  | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message; replaceRunId?: string }
   | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string; restoreDraft?: string; restoreAttachments?: AttachmentRef[] }
   | { type: 'ADOPT_RUN'; sessionId: string; generation: string; activeRun: ActiveRun; feedback?: FeedbackRequest | null }
   | { type: 'SET_RUN_ID'; sessionId: string; generation: string; runId: string; lastAppliedEventIndex?: number }
@@ -210,6 +214,13 @@ function indexMessages(sessionId: string, messages: Message[]) {
   return { messagesById, messageOrder };
 }
 
+function restoreEditedTurn(view: SessionViewState, backup: NonNullable<SessionRunState['editBackup']>): SessionViewState {
+  const restored = indexMessages(view.sessionId, backup.messages);
+  return { ...view, messagesById: { ...view.messagesById, ...restored.messagesById },
+    messageOrder: [...view.messageOrder.filter(id => !restored.messagesById[id]), ...restored.messageOrder],
+    replacedRunIds: view.replacedRunIds?.filter(id => id !== backup.runId) };
+}
+
 function normalizeGraph(graph: GraphSnapshot): GraphData | null {
   if (!graph || !Array.isArray(graph.nodes)) return null;
   const edges = (graph.edges || graph.links || []).map(link => ({
@@ -253,7 +264,18 @@ function mergeRefreshedGraph(current: GraphData | null, next: GraphData): GraphD
 
 export function selectMessages(view?: SessionViewState | null): Message[] {
   if (!view) return [];
-  return view.messageOrder.map(id => view.messagesById[id]).filter(Boolean);
+  return view.messageOrder.map(id => view.messagesById[id]).filter(Boolean).map(message => {
+    if (message.role !== 'assistant') return message;
+    const run = view.activeRun;
+    const cancelled = message.run_status === 'cancelled' || (run?.status === 'cancelled' && (message.id === run.assistantMessageId
+      || Boolean(run.runId && message.run_id === run.runId)));
+    // Native cancellation text also occurs in saved history, without an active run.
+    const nativeCancellation = /^Run [a-z0-9_-]+ was cancelled\.?$/i.test(message.content.trim());
+    if (nativeCancellation || (cancelled && !message.content.trim())) {
+      return { ...message, content: '已停止本轮对话', streaming: false };
+    }
+    return message;
+  });
 }
 
 export function selectRunTools(view?: SessionViewState | null): ToolCall[] {
@@ -328,7 +350,7 @@ function bindRunMessages(view: SessionViewState, run: SessionRunState): SessionV
   if (!run.runId) return view;
   const ids = new Set([`user:${run.generation}`, `assistant:${run.generation}`, run.assistantMessageId]);
   return { ...view, messagesById: Object.fromEntries(Object.entries(view.messagesById).map(([id, message]) =>
-    [id, ids.has(id) ? { ...message, run_id: run.runId } : message])) };
+    [id, ids.has(id) ? { ...message, run_id: run.runId, ...(message.role === 'assistant' ? { run_status: run.status } : {}) } : message])) };
 }
 
 function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: StreamEvent): { view: SessionViewState; run: SessionRunState } {
@@ -862,16 +884,30 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'START_RUN': {
       if (PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle')) return state;
+      let editBackup: SessionRunState['editBackup'];
+      if (action.replaceRunId) {
+        const latest = editableLatestTurn(selectMessages(view));
+        if (latest?.assistant.run_id !== action.replaceRunId || !selectRunGate(view).canStartRun) return state;
+        const position = view.messageOrder.indexOf(latest.user.id!);
+        if (position < 0) return state;
+        const removedIds = view.messageOrder.slice(position);
+        editBackup = { runId: action.replaceRunId, messages: removedIds.map(id => view.messagesById[id]) };
+        view = { ...view, messageOrder: view.messageOrder.slice(0, position),
+          messagesById: Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !removedIds.includes(id))),
+          replacedRunIds: [...(view.replacedRunIds || []), action.replaceRunId] };
+      }
       view = appendMessages(view, [action.userMessage, action.assistantMessage]);
       view = {
         ...view,
-        draft: '',
+        draft: editBackup ? view.draft : '',
         error: undefined,
         activeRun: {
           generation: action.generation,
           startRequestId: action.generation,
           status: 'starting',
           submittedInput: action.userMessage.content,
+          editBackup,
+          replaceRunId: action.replaceRunId,
           lastAppliedEventIndex: -1,
           assistantMessageId: action.assistantMessage.id,
           toolsById: {}, toolOrder: [], plan: null, feedback: null,
@@ -882,6 +918,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
     case 'ROLLBACK_RUN_START': {
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
       if (view.activeRun.cancellation) return state;
+      const backup = view.activeRun.editBackup;
       const removeIds = new Set([`user:${action.generation}`, `assistant:${action.generation}`]);
       const messagesById = { ...view.messagesById };
       for (const id of removeIds) delete messagesById[id];
@@ -889,13 +926,14 @@ export function conversationReducer(state: ConversationState, action: Conversati
         ...view,
         messagesById,
         messageOrder: view.messageOrder.filter(id => !removeIds.has(id)),
-        draft: view.draft.trim() ? view.draft : action.restoreDraft || view.draft,
+        draft: backup ? view.draft : view.draft.trim() ? view.draft : action.restoreDraft || view.draft,
         attachments: [
           ...view.attachments,
-          ...(action.restoreAttachments || []).filter(item => !view.attachments.some(current => current.file_token === item.file_token)),
+          ...(backup ? [] : action.restoreAttachments || []).filter(item => !view.attachments.some(current => current.file_token === item.file_token)),
         ],
         activeRun: null,
       };
+      if (backup) view = restoreEditedTurn(view, backup);
       break;
     }
     case 'ADOPT_RUN':
@@ -945,14 +983,20 @@ export function conversationReducer(state: ConversationState, action: Conversati
       const safe = control.execution_stopped && control.terminal_persisted;
       const status = control.run_status === 'cancelled' ? 'cancelled' : control.run_status === 'completed' ? 'completed'
         : ['failed', 'error'].includes(control.run_status || '') ? 'failed' : run.status;
-      if (safe && control.native_run_created === false) {
-        const remove = new Set([`user:${run.generation}`, `assistant:${run.generation}`]);
+      // A stopped ordinary send is still a visible conversation turn. Only failed
+      // admission or an edit that never replaced native history should roll back.
+      if (safe && control.native_run_created === false && (status !== 'cancelled' || run.replaceRunId)) {
+        const remove = new Set([`user:${run.generation}`, `assistant:${run.generation}`, ...view.messageOrder.filter(id => view.messagesById[id]?.run_id === run.runId)]);
         view = { ...view, messagesById: Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !remove.has(id))),
-          messageOrder: view.messageOrder.filter(id => !remove.has(id)), draft: view.draft || run.submittedInput || '',
+          messageOrder: view.messageOrder.filter(id => !remove.has(id)), draft: run.replaceRunId ? view.draft : view.draft || run.submittedInput || '',
           pendingAttachments: view.pendingAttachments.map(item => item.status === 'uploading'
             ? { ...item, status: item.file ? 'staged' : 'needs_reselect' } : item) };
       }
+      if (safe && control.native_run_created === false && run.editBackup) {
+        view = restoreEditedTurn(view, run.editBackup);
+      }
       view = { ...view, activeRun: { ...run, runId: control.run_id || run.runId, controlRevision: control.revision,
+        editBackup: safe && control.native_run_created === false ? undefined : run.editBackup,
         serverCanSend: safe && control.can_send, status: run.status === 'cancelled' ? 'cancelled' : status,
         reception: safe ? 'idle' : run.reception,
         cancellation: run.cancellation || control.cancel_status !== 'none' ? safe ? 'confirmed' : control.execution_stopped ? 'saving' : 'stopping' : undefined,
@@ -962,7 +1006,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
     }
     case 'MERGE_RUN_SNAPSHOT': {
       const snapshot = action.snapshot;
-      if (!snapshot.snapshot_complete || snapshot.session_id !== view.sessionId) return state;
+      if (!snapshot.snapshot_complete || snapshot.session_id !== view.sessionId || view.replacedRunIds?.includes(snapshot.run_id)) return state;
       const own = snapshot.messages.filter(message => message.run_id === snapshot.run_id
         || message.id === `assistant:${snapshot.run_id}` || message.id === `user:${snapshot.run_id}`);
       const indexed = indexMessages(view.sessionId, own);
@@ -1041,7 +1085,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       const tools = assistant?.tools || [];
       view = { ...view, ...indexed, error: undefined, hydration: 'ready',
         graph: latestMessageGraph(snapshot.messages) ? { status: 'ready', data: latestMessageGraph(snapshot.messages)! } : view.graph,
-        activeRun: { ...run, runId: active?.run_id || run.runId,
+        activeRun: { ...run, editBackup: snapshot.messages.some(message => message.run_id === run.runId) ? undefined : run.editBackup, runId: active?.run_id || run.runId,
           ...(active && !sameRun ? { serverCanSend: false, cancellation: undefined, cancelRequestId: undefined, controlRevision: 0, startRequestId: undefined } : {}),
           generation: active && !sameRun ? `resume:${active.run_id}` : run.generation,
           status: (!active || sameRun) && run.status === 'cancelled' ? 'cancelled' : status, reception: active && !sameRun ? 'connecting' : 'idle', synchronized: !active || sameRun,

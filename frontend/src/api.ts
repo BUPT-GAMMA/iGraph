@@ -81,7 +81,7 @@ export class ApiError extends Error {
       : '';
     const message = typeof detail === 'string'
       ? detail
-      : validationMessage || String(body?.message || body?.error || `请求失败 (${status})`);
+      : validationMessage || ({ EDIT_TARGET_CHANGED: '最新一轮已变化，请刷新后重试', EDIT_TARGET_NOT_FINISHED: '请等待本轮结束后再修改', EDIT_UNAVAILABLE: '当前服务暂不支持修改对话' } as Record<string, string>)[body?.code] || String(body?.message || body?.error || `请求失败 (${status})`);
     const error = new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
     if (retryAfter) {
       const seconds = Number(retryAfter);
@@ -392,7 +392,7 @@ export type RunControl = {
 };
 export type RunTarget = { run_id: string; start_request_id?: never } | { start_request_id: string; run_id?: never };
 export function getCapabilities(signal?: AbortSignal) {
-  return json<{ run_cancel_v1: boolean; job_cancel_v1: boolean }>('/api/capabilities', { signal });
+  return json<{ run_cancel_v1: boolean; job_cancel_v1: boolean; edit_latest_turn_v1?: boolean }>('/api/capabilities', { signal });
 }
 export function cancelRun(sessionId: string, target: RunTarget, cancelRequestId: string, signal?: AbortSignal) {
   return json<RunControl>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/cancel`, {
@@ -419,12 +419,12 @@ export function getRunSnapshot(sessionId: string, runId: string, signal?: AbortS
   return json<RunSnapshot>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/snapshot`, { signal });
 }
 
-export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string, regenerateOf?: string) {
+export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string, regenerateOf?: string, replaceRunId?: string) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
   const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
     method: 'POST', signal, headers,
-    body: JSON.stringify({ message, start_request_id: startRequestId, ...(regenerateOf ? { regenerate: true, regenerate_of: regenerateOf } : {}), attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
+    body: JSON.stringify({ message, start_request_id: startRequestId, ...(replaceRunId ? { replace_run_id: replaceRunId } : {}), ...(regenerateOf ? { regenerate: true, regenerate_of: regenerateOf } : {}), attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
   });
   await consumeSseResponse(response, sessionId, handlers);
 }
