@@ -21,6 +21,8 @@ type Options = {
 
 class RecoveryRequired extends Error {}
 const terminal = (status?: string) => ['completed', 'failed', 'error', 'cancelled'].includes(status || '');
+const missingRun = (error: unknown) => error instanceof ApiError && error.status === 404
+  && (error.code === 'RUN_NOT_FOUND' || error.message === 'Run not found');
 const fatal = (error: unknown) => error instanceof ApiError && [400, 401, 403, 404, 422].includes(error.status);
 
 /** One owner for reconnect, snapshot polling, terminal checks and idle detection.
@@ -29,6 +31,7 @@ const fatal = (error: unknown) => error instanceof ApiError && [400, 401, 403, 4
 export class RunRecovery {
   private firstTurnEvidence = new Map<string, { generation: string; previousIds: Set<string>; message: string }>();
   private checks = new WeakMap<RunConnection, Promise<void>>();
+  private missingNativeConnections = new WeakSet<RunConnection>();
   private terminalConnections = new WeakSet<RunConnection>();
   constructor(private options: Options) {}
   configure(options: Options) { this.options = options; }
@@ -36,7 +39,9 @@ export class RunRecovery {
 
   open(sessionId: string, generation: string, active: ActiveRun, foreground = this.options.foreground(sessionId)) {
     const o = this.options;
-    if (!active.run_id || o.paused(sessionId) || o.manager.get(sessionId)) return;
+    const current = o.view(sessionId)?.activeRun;
+    if (!active.run_id || o.paused(sessionId) || o.manager.get(sessionId) || o.manager.isCancelling(sessionId)) return;
+    if (current?.generation === generation && terminal(current.status) && current.serverCanSend === true) return;
     const retry = () => {
       const run = o.view(sessionId)?.activeRun;
       if (run?.runId && run.generation === generation) this.open(sessionId, generation, { run_id: run.runId, status: run.status, last_event_index: -1 });
@@ -45,7 +50,7 @@ export class RunRecovery {
       onDetached: () => o.dispatch({ type: 'SET_RECEPTION', sessionId, generation, reception: 'capacity_suspended', synchronized: false }) });
     if (!connection) return;
     const run = o.view(sessionId)?.activeRun;
-    if (run?.snapshotOnly || active.status.toLowerCase() === 'paused') void this.check(connection, true);
+    if (run?.snapshotOnly || run?.cancellation || terminal(run?.status) || terminal(active.status) || active.status.toLowerCase() === 'paused') void this.check(connection, true);
     else void this.consume(connection, 'resume');
   }
 
@@ -144,8 +149,22 @@ export class RunRecovery {
       }
       return;
     }
+    if (operation === 'start' && error instanceof ApiError && error.status === 409 && error.code !== 'RUN_CANCELLED') {
+      // Preserve the preparation failure while control confirms that admission
+      // is safe to reopen. Restoring the draft must not silently hide the cause.
+      dispatch({ type: 'PATCH_VIEW', sessionId, patch: { error: error.message } });
+      this.retry(connection, error, true);
+      return;
+    }
     if (operation === 'feedback' && decisionId && error instanceof ApiError && error.feedbackAccepted === false) {
       dispatch({ type: 'FEEDBACK_NOT_ACCEPTED', sessionId, generation, decisionId });
+    }
+    // A control ledger entry may exist before a native run does. Resolve the
+    // authoritative state before treating a missing replay as a fatal failure.
+    if (operation === 'resume' && o.controlEnabled && missingRun(error)) {
+      this.missingNativeConnections.add(connection);
+      await this.check(connection, true);
+      return;
     }
     if (fatal(error)) return this.stop(connection, error);
     const needsSnapshot = error instanceof RecoveryRequired || error instanceof StreamProtocolError || (error instanceof ApiError && error.code === 'REPLAY_UNAVAILABLE') || legacy;
@@ -191,7 +210,8 @@ export class RunRecovery {
       if (!this.valid(connection, identity)) return;
       const next = o.manager.restart(connection.sessionId, connection.generation);
       if (!next) return;
-      if (checkFirst || !next.runId || o.view(next.sessionId)?.activeRun?.snapshotOnly) void this.check(next, true);
+      if (checkFirst || !next.runId || o.view(next.sessionId)?.activeRun?.snapshotOnly
+        || o.view(next.sessionId)?.activeRun?.cancellation || terminal(o.view(next.sessionId)?.activeRun?.status)) void this.check(next, true);
       else void this.consume(next, 'resume');
     }, error instanceof ApiError ? error.retryAfterMs : 0);
     recordRecovery('retry', { attempt: connection.reconnectAttempt });
@@ -263,7 +283,8 @@ export class RunRecovery {
         return;
       }
       const current = o.view(sessionId)?.activeRun;
-      if (o.controlEnabled && o.synchronize && (this.terminalConnections.has(connection) || terminal(current?.status)) && !current?.snapshotOnly) {
+      if (o.controlEnabled && (this.missingNativeConnections.has(connection) || this.terminalConnections.has(connection) || terminal(current?.status)
+        || current?.cancellation || ['starting', 'preparing'].includes(current?.status || ''))) {
         const control = await o.manager.query(sessionId, generation, signal => getRunControl(sessionId, { run_id: connection.runId! }, signal))
           .catch(error => { if (error instanceof ApiError && error.status === 404 && error.code === 'RUN_NOT_FOUND') return null; throw error; });
         if (!this.valid(connection, identity) || o.manager.isCancelling(sessionId)) return;
@@ -279,13 +300,15 @@ export class RunRecovery {
             o.manager.release(sessionId, generation);
             if (control.can_send) o.settled(sessionId);
             else o.dispatch({ type: 'ADOPT_RUN', sessionId, generation: `resume:${control.active_run!.run_id}`, activeRun: control.active_run! });
-            o.synchronize(sessionId, connection.runId!);
+            if (control.native_run_created !== false) o.synchronize?.(sessionId, connection.runId!);
             return;
           }
-          // Native completion may precede executor exit and its durable acknowledgement.
-          // Recheck promptly using the existing timer; content/graph I/O is independent.
-          o.manager.schedule(connection, () => void this.check(connection, true), Math.min(250 * 2 ** connection.reconnectAttempt++, 30000));
-          return;
+          // Preparing/cancelling runs may have no native replay or snapshot yet.
+          // Keep admission blocked until the coordinator confirms all work stopped.
+          if (control.native_run_created === false || control.cancel_status !== 'none' || terminal(control.run_status)) {
+            o.manager.schedule(connection, () => void this.check(connection, true), Math.min(250 * 2 ** connection.reconnectAttempt++, 30000));
+            return;
+          }
         }
       }
       const snapshot = await o.manager.query(sessionId, generation, signal => getRunSnapshot(sessionId, connection.runId!, signal));

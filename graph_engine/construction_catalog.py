@@ -85,8 +85,9 @@ CONSTRUCTION_TOOLS = [
           "查看 SQL/CSV/TXT 构图算法可用性与支持的优化规则。算法尚未接入时如实报告 algorithm_unavailable；"
           "原始文件构图由数据集面板的‘构图’按钮发起，不允许改走旧边表解析或文本抽取。", dataset=False),
     _tool("get_graph_construction_status",
-          "查看已保存数据集的构图状态、revision、source_type 和规模。ready 表示可复用已保存图；"
-          "not_built/algorithm_unavailable/failed 不表示已构图成功。"),
+          "仅查询 SQL/CSV/TXT 数据源的构图状态、revision、source_type 和规模。ready 表示可复用已保存图；"
+          "not_built/algorithm_unavailable/failed 不表示已构图成功。"
+          "PT 等已有图文件请用 get_graph_info；本工具对这类数据集返回 not_applicable，不能据此判断图未加载。"),
     _tool("get_constructed_graph",
           "只读取得数据集已保存的图和版本：graph 包含 directed、nodes(id,type,properties)、"
           "edges(id,source,target,type,properties)。用于检查真实元素及优化前的数据。"),

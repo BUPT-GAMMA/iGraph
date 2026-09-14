@@ -336,6 +336,66 @@ describe('ConversationInputArea', () => {
     expect(screen.queryByRole('button', { name: '滚动到最新消息' })).toBeNull();
   });
 
+  it.each(['completed', 'cancelled'])('preserves reading position when a %s snapshot replaces temporary IDs', (status) => {
+    const messages = [
+      { id: 'user:local-generation', role: 'user' as const, content: 'question', run_id: 'run-1' },
+      { id: 'assistant:local-generation', role: 'assistant' as const, content: 'partial answer', run_id: 'run-1', streaming: true },
+    ];
+    const { container, rerender } = render(<ChatPane {...baseChatProps} loading messages={messages} />);
+    const scroll = container.querySelector('.chat-scroll') as HTMLDivElement;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1800 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 120 },
+    });
+    fireEvent.scroll(scroll);
+    rerender(<ChatPane {...baseChatProps} loading={false} messages={[
+      { ...messages[0], id: 'user:run-1' },
+      { ...messages[1], id: 'assistant:run-1', streaming: false, run_status: status,
+        content: status === 'completed' ? 'complete answer' : '已停止本轮对话' },
+    ]} />);
+    expect(scroll.scrollTop).toBe(120);
+    expect(screen.getByRole('button', { name: '滚动到最新消息' })).toBeTruthy();
+  });
+
+  it('keeps following completion when already at the bottom', () => {
+    const messages = [{ id: 'user:local', role: 'user' as const, content: 'question' }];
+    const { container, rerender } = render(<ChatPane {...baseChatProps} messages={messages} loading />);
+    const scroll = container.querySelector('.chat-scroll') as HTMLDivElement;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 700 },
+    });
+    fireEvent.scroll(scroll);
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 1500 });
+    rerender(<ChatPane {...baseChatProps} messages={[
+      { ...messages[0], id: 'user:run' }, { id: 'assistant:run', role: 'assistant', content: 'done' },
+    ]} />);
+    expect(scroll.scrollTop).toBe(1500);
+  });
+
+  it('resumes following on an explicit send, even for an identical prompt', () => {
+    const onSend = vi.fn();
+    const messages = [{ id: 'user:old', role: 'user' as const, content: 'question' }];
+    const { container, rerender } = render(<ChatPane {...baseChatProps} messages={messages} value="question" onSend={onSend} />);
+    const scroll = container.querySelector('.chat-scroll') as HTMLDivElement;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 120 },
+    });
+    fireEvent.scroll(scroll);
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(scroll.scrollTop).toBe(1000);
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 1500 });
+    rerender(<ChatPane {...baseChatProps} messages={[...messages,
+      { id: 'user:new', role: 'user', content: 'question' },
+    ]} loading />);
+    expect(scroll.scrollTop).toBe(1500);
+  });
+
   it('jumps to the bottom when switching conversations', () => {
     const messages = [
       { id: 'user-1', role: 'user' as const, content: 'question' },

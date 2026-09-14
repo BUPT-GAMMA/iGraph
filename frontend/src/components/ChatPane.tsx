@@ -237,9 +237,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
   const sticksToBottomRef = useRef(true);
   const initializedRef = useRef(false);
   const previousConversationRef = useRef(conversationKey);
-  const previousLatestUserRef = useRef<string | undefined>(undefined);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
-  const latestUserId = [...messages].reverse().find(message => message.role === 'user')?.id;
   let liveAssistantIndex = -1;
   if (inputProps.loading) {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -271,18 +269,16 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
     const element = scrollRef.current;
     if (!element) return;
     const conversationChanged = previousConversationRef.current !== conversationKey;
-    const userSentMessage = Boolean(latestUserId && previousLatestUserRef.current !== latestUserId);
-    const shouldForceLatest = !initializedRef.current || conversationChanged || userSentMessage;
+    const shouldForceLatest = !initializedRef.current || conversationChanged;
     initializedRef.current = true;
     previousConversationRef.current = conversationKey;
-    previousLatestUserRef.current = latestUserId;
 
     if (shouldForceLatest || sticksToBottomRef.current) {
       scrollToLatest('auto');
       return;
     }
     setShowJumpToLatest(!isNearBottom(element));
-  }, [conversationKey, latestUserId, messages, plan, runTools, scrollToLatest]);
+  }, [conversationKey, messages, plan, runTools, scrollToLatest]);
 
   return <main className="chat-pane">
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
@@ -308,7 +304,10 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
             {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools)) : null}
             {isAssistant ? planCard(visiblePlan) : null}
             {isEditing ? <PromptEditor message={message} onCancel={() => setEditingKey(null)} onSubmit={content => {
-              if (latestTurn && onEditLatest) onEditLatest(message, latestTurn.assistant.run_id!, content);
+              if (latestTurn && onEditLatest) {
+                scrollToLatest('auto');
+                onEditLatest(message, latestTurn.assistant.run_id!, content);
+              }
               setEditingKey(null);
             }} /> : isAssistant ? contents : <div className="message-bubble">{contents}</div>}
             {displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}
@@ -326,6 +325,10 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
       {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图已加载 · 在右侧工作台查看</button> : null}
     </div>
     {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label="滚动到最新消息" title="滚动到最新消息"><Icon name="chevron" size={18} /></button></div> : null}
-    <ConversationInputArea {...inputProps} />
+    <ConversationInputArea {...inputProps} onSend={() => {
+      // Follow an explicit send, not message IDs replaced by persisted snapshots.
+      scrollToLatest('auto');
+      inputProps.onSend();
+    }} />
   </main>;
 }

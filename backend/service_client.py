@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 import httpx
+import uuid
 import anyio
 from fastapi import HTTPException, Request
 from execution_protocol import controls_enabled, execution_headers, service_headers
@@ -45,6 +46,10 @@ class ServiceClient:
         files: Any = None,
         timeout: float | None = None,
     ) -> Any:
+        # A preparation contains multiple independent graph operations. Allocate
+        # per HTTP operation, not per Run; keep caller-supplied retry keys intact.
+        if headers.get("X-Run-ID") and not headers.get("X-Operation-ID"):
+            headers = {**headers, "X-Operation-ID": str(uuid.uuid4())}
         async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout if timeout is None else timeout, trust_env=False) as client:
             response = await client.request(
                 method,

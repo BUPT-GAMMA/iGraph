@@ -4,6 +4,11 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 SCOPE_HEADER = "X-iGraph-Construction-Scope"
+CONSTRUCTION_NOT_APPLICABLE = "CONSTRUCTION_NOT_APPLICABLE"
+CONSTRUCTION_NOT_APPLICABLE_MESSAGE = (
+    "该数据集不适用 SQL/CSV/TXT 构图流程。"
+    "请使用 get_graph_info 查看当前图的加载状态和基本属性。"
+)
 DATASET_TOOLS = frozenset({"get_graph_construction_status", "get_constructed_graph",
     "load_constructed_graph", "preview_graph_optimization", "commit_graph_optimization"})
 

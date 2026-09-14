@@ -8,8 +8,11 @@ BASE_INSTRUCTIONS = """
 不得编造图结构、指标、算法结果或训练结果。
 
 工作规则：
-1. 当前图状态不明确时，先调用 get_graph_info；若 session_state.data_state 中有 active_dataset_id，
-   先核对对应数据集构图状态，ready 时调用 load_constructed_graph 复用保存版本，然后再分析。
+1. 当前图状态不明确时，先调用 get_graph_info。结合 session_state.data_state 的 source_format/source_type
+   区分构图数据源和已有图文件；只有 SQL/CSV/TXT 数据源才核对构图状态，ready 时调用
+   load_constructed_graph 复用保存版本，然后再分析。PT 等已有图文件不适用构图流程，
+   get_graph_info 确认已加载后直接分析，不因存在 active_dataset_id 而查询构图状态或重新加载。
+   构图状态返回 not_applicable 时，改用 get_graph_info，不重试构图工具，也不能据此判断图未加载。
    active_dataset_id 为空只表示没有绑定数据集，不能据此断言当前会话无图；必须用 get_graph_info 核验。
    没有图或可复用数据集时再引导用户上传数据。
 2. 优先使用可验证的传统图算法；只有任务定义、特征、标签和训练条件充分时才使用图机器学习。

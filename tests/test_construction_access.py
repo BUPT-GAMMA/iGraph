@@ -245,3 +245,86 @@ def test_cached_job_replay_rechecks_scope(scoped_engine, monkeypatch):
         assert ids(response) == {s.records['a'].dataset_id}
         # Filtering a replay must not mutate the durable job's original result.
         assert len(cached['datasets']) == 3
+
+
+@pytest.mark.parametrize('scope', ['a', 'personal'])
+@pytest.mark.parametrize('controlled', [False, True])
+def test_existing_graph_status_is_not_applicable_after_live_authorization(scoped_engine, monkeypatch, scope, controlled):
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+    s = scoped_engine
+    item = s.directory.create(project_id=s.records[scope].project_id, user_id='alice', name='Cora',
+        original_filename='cora.pt', content=b'already formed graph')
+    did = item.dataset_id
+    headers = session_headers(scope)
+    expected = s.client.get(f'/construction/{did}', headers=headers)
+    assert expected.status_code == 200
+    body = expected.json()
+    assert body['success'] is True and body['status'] == 'not_applicable'
+    assert body['construction_applicable'] is False and body['dataset_id'] == did
+    assert 'get_graph_info' in body['message']
+    assert 'revision' not in body and 'already formed graph' not in expected.text
+    assert item.storage_path not in expected.text
+    host = SimpleNamespace(execute=AsyncMock())
+    with monkeypatch.context() as patch:
+        if controlled:
+            patch.setattr(s.service, '_execution_host', host)
+            headers.update({'X-Run-ID': str(uuid4()), 'X-Execution-Generation': '1',
+                            'X-Operation-ID': str(uuid4())})
+        response = s.client.post(f'/sessions/{scope}/tools/get_graph_construction_status', headers=headers,
+            json={'arguments': {'dataset_id': did}})
+        assert response.status_code == 200 and response.json() == body
+        # A cached success cannot survive a directory deletion.
+        s.directory.delete(did, 'alice', item.project_id)
+        response = s.client.post(f'/sessions/{scope}/tools/get_graph_construction_status', headers=headers,
+            json={'arguments': {'dataset_id': did}})
+        assert response.status_code == 404
+        assert response.json()['detail']['code'] == 'DATASET_SCOPE_REQUIRED'
+        host.execute.assert_not_awaited()
+
+
+def test_existing_graph_type_does_not_disclose_foreign_dataset_or_enable_construction(scoped_engine):
+    s = scoped_engine
+    item = s.directory.create(project_id=s.records['a'].project_id, user_id='alice', name='Cora',
+        original_filename='cora.pt', content=b'already formed graph')
+    did = item.dataset_id
+    for headers in (session_headers('b'), session_headers('personal'), session_headers('a', 'bob')):
+        response = s.client.get(f'/construction/{did}', headers=headers)
+        assert response.status_code == 404
+        assert response.json()['detail']['code'] == 'DATASET_SCOPE_REQUIRED'
+    headers = session_headers('a')
+    requests = [('GET', f'/construction/{did}/graph', None),
+        ('POST', f'/construction/{did}/source', {'source_path': item.storage_path, 'source_filename': item.original_filename}),
+        ('POST', f'/construction/{did}/build', {}),
+        ('POST', '/sessions/a/graph/load_construction', {'dataset_id': did})]
+    for tool in ('get_constructed_graph', 'load_constructed_graph',
+                 'preview_graph_optimization', 'commit_graph_optimization'):
+        requests.append(('POST', f'/sessions/a/tools/{tool}', {'arguments': {'dataset_id': did,
+            'base_revision': 1, 'operations': [{'op': 'remove_self_loops'}]}}))
+    for method, path, body in requests:
+        response = s.client.request(method, path, headers=headers, json=body)
+        assert response.status_code == 422, (path, response.text)
+        assert response.json()['detail']['code'] == 'CONSTRUCTION_NOT_APPLICABLE'
+        assert item.storage_path not in response.text
+    assert s.store.status('alice', did)['status'] == 'not_built'
+    # The same endpoint still returns the saved CSV revision.
+    response = s.client.get(f'/construction/{s.records["a"].dataset_id}', headers=headers)
+    assert response.status_code == 200 and response.json()['status'] == 'ready'
+    assert response.json()['revision'] == 1
+
+
+@pytest.mark.parametrize('detail', [
+    {'code': 'CONSTRUCTION_NOT_APPLICABLE', 'message': '/private/secret'},
+    {'code': 'unexpected', 'message': '/private/secret'},
+    ['/private/secret'],
+])
+def test_authority_422_only_allows_known_applicability_code(scoped_engine, detail):
+    s = scoped_engine
+    s.service._construction_access = ConstructionAccessClient('http://authority', transport=httpx.MockTransport(
+        lambda _request: httpx.Response(422, json={'detail': detail})))
+    response = s.client.get('/construction/example', headers=session_headers('a'))
+    known = isinstance(detail, dict) and detail.get('code') == 'CONSTRUCTION_NOT_APPLICABLE'
+    assert response.status_code == (200 if known else 422)
+    assert '/private/secret' not in response.text
+    if not known:
+        assert response.json()['detail']['code'] == 'DATASET_SCOPE_REQUIRED'

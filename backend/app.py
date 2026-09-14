@@ -2545,7 +2545,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         rid, generation = registration['run_id'], registration['execution_generation']
         key = (user.user_id, session_id, rid)
         token = execution_headers.set({**service_headers(user.user_id), 'X-Run-ID': rid,
-                                       'X-Execution-Generation': str(generation), 'X-Operation-ID': str(uuid.uuid4())})
+                                       'X-Execution-Generation': str(generation)})
         try:
             task = asyncio.create_task(run_form(session_id, req, request))
         finally:

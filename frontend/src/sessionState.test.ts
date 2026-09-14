@@ -25,6 +25,33 @@ function lastMessage(state: ConversationState, sessionId: string) {
 }
 
 describe('conversationReducer session/run isolation', () => {
+  it('streams reasoning between tools without leaking it into the answer or duplicating replay', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    const frames = [
+      batch('A', 'r', 0, [{ type: 'token', content: '', event_index: 0 }, { type: 'thinking', content: '先', event_index: 0 }]),
+      batch('A', 'r', 1, [{ type: 'token', content: '', event_index: 1 }, { type: 'thinking', content: '检查', event_index: 1 }]),
+      batch('A', 'r', 2, [{ type: 'tool_call', call_id: 't', tool: 'get_graph_info', event_index: 2 }]),
+      batch('A', 'r', 3, [{ type: 'token', content: '', event_index: 3 }, { type: 'thinking', content: '再分析', event_index: 3 }]),
+      batch('A', 'r', 4, [{ type: 'token', content: '说明', event_index: 4 }]),
+      batch('A', 'r', 5, [{ type: 'tool_call', call_id: 't2', tool: 'degree_analysis', event_index: 5 }]),
+    ];
+    for (const frame of frames) {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: frame });
+    }
+    const process = lastMessage(state, 'A').processItems;
+    expect(process?.map(item => [item.kind, item.content, item.sequence])).toEqual([
+      ['reasoning', '先检查', 0], ['tool', undefined, 2], ['reasoning', '再分析', 3], ['text', '说明', 4], ['tool', undefined, 5],
+    ]);
+    expect(lastMessage(state, 'A').content).toBe('说明');
+    const duplicate = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: frames[5] });
+    expect(lastMessage(duplicate, 'A').processItems).toEqual(process);
+    state = conversationReducer(state, { type: 'BEGIN_REPLAY', sessionId: 'A', generation: 'g' });
+    for (const frame of frames) state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: frame });
+    state = conversationReducer(state, { type: 'REPLAY_CAUGHT_UP', sessionId: 'A', generation: 'g' });
+    expect(lastMessage(state, 'A').processItems).toEqual(process);
+    expect(lastMessage(state, 'A').content).toBe('说明');
+  });
+
   it('shows a friendly notice for a cancelled run with no answer', () => {
     let state = start(session(initialConversationState, 'A'), 'A', 'g');
     state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g',

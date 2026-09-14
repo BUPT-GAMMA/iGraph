@@ -46,6 +46,85 @@ beforeEach(() => {
 afterEach(() => { managers.splice(0).forEach(manager => manager.abortAll()); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('single recovery coordinator', () => {
+  it('preserves a preparation conflict message while restoring the draft after confirmed failure', async () => {
+    const h = harness(true, false, true);
+    const error = ApiError.fromResponse(409, { detail: { code: 'JOB_IDEMPOTENCY_CONFLICT' } });
+    vi.mocked(streamChat).mockRejectedValue(error);
+    vi.mocked(getRunControl).mockResolvedValue({ run_id: 'r', start_request_id: 'g', registration_status: 'registered',
+      run_status: 'failed', cancel_status: 'none', native_run_created: false, execution_stopped: true,
+      terminal_persisted: true, can_send: true, revision: 3 });
+    const connection = h.manager.acquire({ sessionId: 'A', generation: 'g', foreground: true, retry: vi.fn(), onDetached: vi.fn() })!;
+    await h.recovery.consume(connection, 'start', { message: 'question', attachments: [] });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.view().draft).toBe('question');
+    expect(h.view().error).toBe(error.message);
+    expect(h.view().error).toContain('数据加载操作编号冲突');
+    expect(selectRunGate(h.view()).canStartRun).toBe(true);
+    expect(streamChat).toHaveBeenCalledOnce();
+    expect(resumeRun).not.toHaveBeenCalled();
+  });
+
+  it('checks cancellation before reopening a terminal run, including snapshot-only recovery', async () => {
+    const h = harness(true, true, true);
+    h.dispatch({ type: 'SET_RECEPTION', sessionId: 'A', generation: 'g', reception: 'snapshot_sync', snapshotOnly: true });
+    h.dispatch({ type: 'REQUEST_CANCEL', sessionId: 'A', generation: 'g', cancelRequestId: 'c' });
+    vi.mocked(getRunControl).mockResolvedValueOnce({ run_id: 'r', start_request_id: 'g', registration_status: 'registered', run_status: 'cancelled',
+      cancel_status: 'requested', native_run_created: false, execution_stopped: false, terminal_persisted: false, can_send: false, revision: 2 })
+      .mockResolvedValue({ run_id: 'r', start_request_id: 'g', registration_status: 'registered', run_status: 'cancelled', cancel_status: 'confirmed',
+        native_run_created: false, execution_stopped: true, terminal_persisted: true, can_send: true, revision: 3 });
+    h.open(); await flush();
+    expect(selectRunGate(h.view()).canStartRun).toBe(false);
+    expect(resumeRun).not.toHaveBeenCalled();
+    expect(getRunSnapshot).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(selectRunGate(h.view()).canStartRun).toBe(true);
+    expect(h.view().activeRun?.reception).toBe('idle');
+    expect(h.view().activeRun?.synchronized).toBe(true);
+    expect(selectMessages(h.view()).map(message => message.content)).toEqual(['question', '已停止本轮对话']);
+    expect(h.synchronize).not.toHaveBeenCalled();
+    expect(h.settled).toHaveBeenCalledOnce();
+    h.dispatch({ type: 'SET_RECEPTION', sessionId: 'A', generation: 'g', reception: 'connecting', synchronized: false, error: 'Run not found' });
+    h.open(); await vi.advanceTimersByTimeAsync(30000);
+    expect(h.view().error).toBeUndefined();
+    expect(h.view().activeRun?.reception).toBe('idle');
+    expect(h.manager.all()).toHaveLength(0);
+    expect(getRunControl).toHaveBeenCalledTimes(2);
+    expect(resumeRun).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('resolves a missing native replay through control instead of leaving a fatal loading state', async () => {
+    const h = harness(true, true, true);
+    vi.mocked(resumeRun).mockRejectedValue(new ApiError(404, 'Run not found'));
+    vi.mocked(getRunControl).mockResolvedValue({ run_id: 'r', start_request_id: 'g', registration_status: 'registered', run_status: 'cancelled',
+      cancel_status: 'confirmed', native_run_created: false, execution_stopped: true, terminal_persisted: true, can_send: true, revision: 3 });
+    h.open(); await flush();
+    expect(resumeRun).toHaveBeenCalledOnce();
+    expect(getRunControl).toHaveBeenCalledOnce();
+    expect(getRunSnapshot).not.toHaveBeenCalled();
+    expect(h.synchronize).not.toHaveBeenCalled();
+    expect(h.view().error).toBeUndefined();
+    expect(selectRunGate(h.view()).canStartRun).toBe(true);
+    expect(h.view().activeRun?.replay).toBeUndefined();
+    expect(h.manager.all()).toHaveLength(0);
+  });
+  it('keeps a missing-run error when neither control nor native history contains the run', async () => {
+    const h = harness(true, true, true);
+    vi.mocked(resumeRun).mockRejectedValue(new ApiError(404, 'Run not found'));
+    vi.mocked(getRunControl).mockRejectedValue(ApiError.fromResponse(404, { detail: { code: 'RUN_NOT_FOUND' } }));
+    vi.mocked(getRunSnapshot).mockRejectedValue(new ApiError(404, 'Run not found'));
+    h.open(); await vi.advanceTimersByTimeAsync(0);
+    expect(h.view().error).toBe('Run not found');
+    expect(selectRunGate(h.view()).canStartRun).toBe(false);
+    expect(h.manager.all()).toHaveLength(0);
+  });
+  it('does not reopen the observer while cancellation owns the session', () => {
+    const h = harness(true, true, true);
+    h.manager.prioritizeCancellation('A');
+    h.open();
+    expect(resumeRun).not.toHaveBeenCalled();
+    expect(h.manager.all()).toHaveLength(0);
+  });
+
   it('reopens send on authoritative completion while the stream and content synchronization are still pending', async () => {
     const h = harness(false, true, true); let handlers!: StreamHandlers;
     vi.mocked(resumeRun).mockImplementation(async (_s, _r, _c, value) => { handlers = value; await new Promise(() => {}); });

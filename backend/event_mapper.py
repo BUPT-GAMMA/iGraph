@@ -262,6 +262,14 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Restore product UI events that used to be emitted by the legacy runtime."""
 
     event = str(payload.get("event") or payload.get("type") or "")
+    if event in {"RunContent", "TeamRunContent"}:
+        # Provider reasoning deltas share a native event with ordinary content.
+        # Keep both in the same V2 envelope so replay applies them atomically.
+        reasoning = payload.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            return [{"type": "thinking", "phase": "reasoning", "content": reasoning,
+                     **{key: payload[key] for key in ("run_id", "session_id", "event_index") if payload.get(key) is not None}}]
+        return []
     progress_content = graph_job_progress_payload(payload)
     if progress_content is not None:
         return _graph_job_progress_events(payload, progress_content)

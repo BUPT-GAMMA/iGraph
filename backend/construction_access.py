@@ -6,7 +6,8 @@ import asyncio
 from anyio import to_thread
 from fastapi import HTTPException, Request
 
-from construction_access import AccessGrant, AccessRequest, SourceRecord, scope_headers, SCOPE_HEADER
+from construction_access import (AccessGrant, AccessRequest, SourceRecord, scope_headers, SCOPE_HEADER,
+    CONSTRUCTION_NOT_APPLICABLE, CONSTRUCTION_NOT_APPLICABLE_MESSAGE)
 from execution_protocol import require_service
 
 
@@ -53,8 +54,11 @@ def install_construction_access(app, *, directory, projects, session_for, state_
                     raise HTTPException(409, {"code": "PROJECT_DELETING"})
             if body.dataset_id is not None:
                 item = directory.get(body.dataset_id, user_id, project_id)
-                if item is None or item.file_type not in {"sql", "csv", "txt"}:
+                if item is None:
                     raise HTTPException(404, {"code": "DATASET_SCOPE_REQUIRED"})
+                if item.file_type not in {"sql", "csv", "txt"}:
+                    raise HTTPException(422, {"code": CONSTRUCTION_NOT_APPLICABLE,
+                        "message": CONSTRUCTION_NOT_APPLICABLE_MESSAGE})
                 return AccessGrant(user_id=user_id, scope=scope, dataset_ids=[item.dataset_id],
                     source=SourceRecord(dataset_id=item.dataset_id, source_path=item.storage_path,
                                         source_filename=item.original_filename))
