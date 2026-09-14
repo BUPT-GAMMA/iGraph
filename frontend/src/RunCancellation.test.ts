@@ -92,8 +92,8 @@ describe('durable cancellation scheduler', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(cancelRun).toHaveBeenCalledTimes(2);
     expect(vi.mocked(cancelRun).mock.calls[0][2]).toBe(vi.mocked(cancelRun).mock.calls[1][2]);
-    expect(s.view().draft).toBe('question');
-    expect(selectMessages(s.view())).toEqual([]);
+    expect(s.view().draft).toBe('');
+    expect(selectMessages(s.view()).map(message => message.content)).toEqual(['question', 'A']);
     expect(selectRunGate(s.view()).canStartRun).toBe(true);
     await vi.advanceTimersByTimeAsync(1); // Deliver jsdom's queued storage event.
     expect(vi.getTimerCount()).toBe(0);

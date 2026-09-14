@@ -12,7 +12,7 @@ from tests.fixtures.cancellation_stack import cancellation_stack
 
 async def main():
     with TemporaryDirectory(prefix='igraph-cancel-e2e-') as directory:
-        async with cancellation_stack(Path(directory), 'http://127.0.0.1:11129') as (app, _graph, _controller, _metrics):
+        async with cancellation_stack(Path(directory), 'http://127.0.0.1:11129', request_timeout=30) as (app, _graph, _controller, _metrics):
             server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=11129, log_level='warning', lifespan='off'))
             await server.serve()
 

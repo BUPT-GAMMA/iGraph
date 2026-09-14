@@ -96,6 +96,7 @@ class ChatReq(BaseModel):
     output_format: Literal["chat", "report", "json"] = "chat"
     regenerate: bool = False
     regenerate_of: str | None = None
+    replace_run_id: uuid.UUID | None = None
     start_request_id: uuid.UUID | None = None
 
 
@@ -624,6 +625,7 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
                 "run_id": run_id,
                 "role": "assistant",
                 "content": assistant_text,
+                "run_status": status,
                 "tools": tool_cards,
                 "graphs": graphs,
                 "reports": reports,
@@ -895,7 +897,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 for client in (runtime, graph)
             ])
             ready = all(value.get('run_cancel_v1') and value.get('job_cancel_v1') for value in values)
-            return {"run_cancel_v1": bool(ready), "job_cancel_v1": bool(ready)}
+            return {"run_cancel_v1": bool(ready), "job_cancel_v1": bool(ready),
+                    "edit_latest_turn_v1": bool(ready and values[0].get("edit_latest_turn_v1"))}
         except Exception:
             return {"run_cancel_v1": False, "job_cancel_v1": False}
 
@@ -2427,6 +2430,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def run_form(session_id: str, req: ChatReq, request: Request) -> tuple[dict, dict[str, str], str]:
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
+        if req.replace_run_id and not controls_enabled():
+            raise HTTPException(409, {"code": "EDIT_UNAVAILABLE", "message": "当前服务不支持替换对话，请更新服务后重试"})
+        if req.replace_run_id and (req.regenerate or req.regenerate_of):
+            raise HTTPException(422, {"code": "INVALID_EDIT_REQUEST"})
         regeneration = None
         if req.regenerate or req.regenerate_of:
             history = _ordered_runs(await get_session_runs(session_id, request, user.user_id))
@@ -2517,6 +2524,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 starting_finished[start_key] = {'generation': 1, 'failed': failed}
 
     async def controlled_run_form_body(session_id: str, req: ChatReq, request: Request):
+        if req.replace_run_id and (not req.message.strip() or req.regenerate or req.regenerate_of):
+            raise HTTPException(422, {"code": "INVALID_EDIT_REQUEST", "message": "修改后的提示词不能为空"})
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
         start_id = str(req.start_request_id or uuid.uuid4())
@@ -2527,7 +2536,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         digest = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
         registration = await runtime.request('POST', f'/internal/sessions/{session_id}/runs/register',
                                              headers=forwarded_headers(request, user.user_id),
-                                             json_body={"start_request_id": start_id, "fingerprint": digest, 'preparation_owner': preparation_instance})
+                                             json_body={"start_request_id": start_id, "fingerprint": digest, 'preparation_owner': preparation_instance,
+                                                        "replace_run_id": str(req.replace_run_id) if req.replace_run_id else None})
         if not registration.get('preparation_claimed'):
             # Stable identity is enough for the client's normal resume/snapshot
             # path. Never resend a user question on an idempotent duplicate.

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Composer } from './Composer';
 import { ChatPane } from './ChatPane';
@@ -11,7 +11,7 @@ vi.mock('../api', async () => ({ ...await vi.importActual('../api'), apiFetch: v
 const noop = () => {};
 const composer = { value: '', model: 'model', models: ['model'], onChange: noop, onModelChange: noop, onDataset: noop,
   onSend: noop, onUpload: noop, onRemoveAttachment: noop, attachments: [], loading: false, uploading: false, disabled: false };
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 beforeEach(() => { localStorage.clear(); setUserId('a'); });
 
 it('does not submit IME candidate confirmation or Enter during an upload', () => {
@@ -79,16 +79,67 @@ it('switches only explicit answer versions and copies the selected answer', asyn
   expect(card.querySelector('.message-content')?.textContent).toBe('First');
   expect(card.textContent).toContain('first_tool'); expect(card.textContent).not.toContain('second_tool');
   fireEvent.click(within(card).getByRole('button', { name: '复制' }));
-  await waitFor(() => expect(copy).toHaveBeenCalledWith('First'));
+  await waitFor(() => expect(within(card).getByRole('button', { name: '已复制' })).toBeTruthy());
+  expect(copy).toHaveBeenCalledWith('First');
+  fireEvent.click(screen.getByRole('button', { name: '下一个回答版本' }));
+  expect(within(card).queryByRole('button', { name: '已复制' })).toBeNull();
+  fireEvent.click(within(card).getByRole('button', { name: '复制' }));
+  await waitFor(() => expect(copy).toHaveBeenLastCalledWith('Second'));
   expect(answerVersions({ ...last, regenerate_of: null }, [first, last])).toHaveLength(1);
 });
-it('passes attachments with edit and shows them before message text', () => {
-  const onEditMessage = vi.fn();
+it('keeps attachments before user text inside the bubble and actions outside it', () => {
   const message: Message = { id: 'u', role: 'user', content: 'Question', attachments: [{ file_token: 't', filename: 'data.csv' }] };
   const { container } = render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }}
-    messages={[message]} onEditMessage={onEditMessage} />);
-  fireEvent.click(screen.getByRole('button', { name: '编辑并重发' })); expect(onEditMessage).toHaveBeenCalledWith(message);
-  const body = container.querySelector('.message-body')!;
+    messages={[message]} />);
+  expect(screen.queryByRole('button', { name: '编辑并重发' })).toBeNull();
+  const body = container.querySelector('.message-bubble')!;
+  expect(body.contains(screen.getByRole('button', { name: '复制' }))).toBe(false);
   const children = Array.from(body.children);
   expect(children.indexOf(body.querySelector('.message-attachments')!)).toBeLessThan(children.indexOf(body.querySelector('.message-content')!));
+});
+
+it('shows a temporary copy check only on the copied message', async () => {
+  vi.useFakeTimers();
+  const copy = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+  const { container } = render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }} messages={[
+    { id: 'u', role: 'user', content: 'Question' },
+    { id: 'a', role: 'assistant', content: '**Answer**\nDetails' },
+  ]} />);
+  const [user, assistant] = Array.from(container.querySelectorAll<HTMLElement>('.message-row'));
+  await act(async () => { fireEvent.click(within(assistant).getByRole('button', { name: '复制' })); });
+  expect(copy).toHaveBeenCalledWith('**Answer**\nDetails');
+  const copied = within(assistant).getByRole('button', { name: '已复制' });
+  expect(copied.textContent).toBe('');
+  expect(copied.querySelector('svg')).not.toBeNull();
+  expect(within(user).getByRole('button', { name: '复制' })).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(within(assistant).getByRole('button', { name: '复制' })).toBeTruthy();
+});
+
+it('allows retry after a clipboard failure without falsely reporting success', async () => {
+  const copy = vi.fn().mockRejectedValueOnce(new Error('Clipboard denied')).mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+  render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }}
+    messages={[{ id: 'a', role: 'assistant', content: 'Answer' }]} />);
+  fireEvent.click(screen.getByRole('button', { name: '复制' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('复制失败');
+  expect(screen.queryByRole('button', { name: '已复制' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '复制' }));
+  await screen.findByRole('button', { name: '已复制' });
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('ignores a pending copy result after the displayed message changes', async () => {
+  let finishCopy!: () => void;
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: () => new Promise<void>(resolve => { finishCopy = resolve; }),
+  } });
+  const props = { ...composer, hasGraph: false, onOpenGraph: noop, interaction: { kind: 'composer' as const } };
+  const { rerender } = render(<ChatPane {...props} messages={[{ id: 'a', role: 'assistant', content: 'Earlier content' }]} />);
+  fireEvent.click(screen.getByRole('button', { name: '复制' }));
+  rerender(<ChatPane {...props} messages={[{ id: 'a', role: 'assistant', content: 'Current content' }]} />);
+  await act(async () => { finishCopy(); });
+  expect(screen.queryByRole('button', { name: '已复制' })).toBeNull();
+  expect(screen.getByRole('button', { name: '复制' })).toBeTruthy();
 });

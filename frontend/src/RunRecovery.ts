@@ -50,7 +50,7 @@ export class RunRecovery {
   }
 
   async consume(connection: RunConnection, operation: 'start' | 'resume' | 'feedback',
-    start?: { message: string; attachments: AttachmentRef[]; regenerateOf?: string }, feedback?: FeedbackRequest | null,
+    start?: { message: string; attachments: AttachmentRef[]; regenerateOf?: string; replaceRunId?: string }, feedback?: FeedbackRequest | null,
     decision?: 'approve' | 'reject', decisionId?: string) {
     const o = this.options;
     const { sessionId, generation } = connection;
@@ -102,7 +102,7 @@ export class RunRecovery {
         if (next.activeRun?.recoveryRequired) throw new RecoveryRequired('事件回放不连续');
         shadow = next;
         if (runId) o.accepted(sessionId);
-        if (operation === 'start' && runId && start && !sentAttachmentsCleared) {
+        if (operation === 'start' && runId && start && !start.replaceRunId && !sentAttachmentsCleared) {
           sentAttachmentsCleared = true;
           const sent = new Set(start.attachments.map(item => item.file_token));
           dispatch({ type: 'PATCH_VIEW', sessionId, patch: { attachments: (o.view(sessionId)?.attachments || []).filter(item => !sent.has(item.file_token)) } });
@@ -122,7 +122,8 @@ export class RunRecovery {
     };
     try {
       if (operation === 'start' && start) {
-        if (start.regenerateOf) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation, start.regenerateOf);
+        if (start.replaceRunId) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation, undefined, start.replaceRunId);
+        else if (start.regenerateOf) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation, start.regenerateOf);
         else await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation);
       }
       else if (operation === 'feedback' && feedback && decision && decisionId) await streamFeedback(sessionId, feedback, decision, decisionId, handlers, connection.controller.signal);
@@ -131,7 +132,7 @@ export class RunRecovery {
     connection.observing = false;
     if (!valid()) return;
     if (o.manager.isCancelling(sessionId)) return;
-    if (operation === 'start' && start && error instanceof ApiError && (error.status === 409 && error.activeRun || [400, 422].includes(error.status))) {
+    if (operation === 'start' && start && error instanceof ApiError && (error.status === 409 && (error.activeRun || start.replaceRunId) || [400, 422].includes(error.status))) {
       dispatch({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: start.message, restoreAttachments: start.attachments });
       if (error.activeRun) {
         dispatch({ type: 'ADOPT_RUN', sessionId, generation, activeRun: error.activeRun, feedback: error.pendingFeedback });

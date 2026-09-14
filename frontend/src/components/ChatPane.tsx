@@ -1,6 +1,7 @@
-import { Fragment, type ReactNode, useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
+import { editableLatestTurn } from '../latestTurn';
 import { answerVersions } from '../answerVersions';
 import { FileTypeIcon } from './FileTypeIcon';
 import { BrandLogo, Icon } from './Icon';
@@ -131,6 +132,82 @@ function MarkdownContent({ content }: { content: string }) {
 
 function renderContent(content: string, role: Message['role']) { return role === 'assistant' ? <MarkdownContent content={content} /> : <span className="plain-content">{content}</span>; }
 
+function MessageCopyAction({ content, onEdit }: { content: string; onEdit?: () => void }) {
+  const [status, setStatus] = useState<'idle' | 'copied' | 'error'>('idle');
+  const requestRef = useRef(0);
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    setStatus('idle');
+    return () => {
+      requestRef.current += 1;
+      clearTimeout(resetTimerRef.current);
+    };
+  }, [content]);
+
+  async function copy() {
+    const request = ++requestRef.current;
+    clearTimeout(resetTimerRef.current);
+    setStatus('idle');
+    try {
+      await navigator.clipboard.writeText(content);
+      if (request !== requestRef.current) return;
+      setStatus('copied');
+      resetTimerRef.current = setTimeout(() => setStatus('idle'), 2000);
+    } catch {
+      if (request === requestRef.current) setStatus('error');
+    }
+  }
+
+  return <div className={`message-actions${status === 'error' ? ' has-error' : ''}`}>
+    <button type="button" className={`message-action${status === 'copied' ? ' is-copied' : ''}`}
+      aria-label={status === 'copied' ? '已复制' : '复制'} title={status === 'copied' ? '已复制' : '复制'}
+      onClick={() => void copy()}>
+      <Icon name={status === 'copied' ? 'check' : 'copy'} size={16} />
+    </button>
+    {onEdit ? <button type="button" className="message-action" aria-label="修改提示词" title="修改提示词" onClick={onEdit}><Icon name="edit" size={16} /></button> : null}
+    {status === 'error' ? <span className="message-copy-error" role="alert">复制失败，请重试或手动选择文本</span> : null}
+  </div>;
+}
+
+function PromptEditor({ message, onCancel, onSubmit }: { message: Message; onCancel: () => void; onSubmit: (content: string) => void }) {
+  const [value, setValue] = useState(message.content);
+  const textarea = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const input = textarea.current;
+    if (!input) return;
+    const resize = () => {
+      input.style.height = 'auto';
+      input.style.height = `${Math.min(360, Math.max(100, input.scrollHeight))}px`;
+    };
+    resize();
+    let width = input.getBoundingClientRect().width;
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(entries => {
+      const nextWidth = entries[0]?.contentRect.width;
+      if (nextWidth !== undefined && nextWidth !== width) { width = nextWidth; resize(); }
+    });
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, [value]);
+  useEffect(() => {
+    const input = textarea.current;
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.scrollTop = input.scrollHeight;
+  }, []);
+  return <form className="prompt-editor" onSubmit={event => { event.preventDefault(); if (value.trim()) onSubmit(value.trim()); }}>
+    {message.attachments?.length ? <div className="message-attachments">{message.attachments.map(file => <span key={file.file_token}><FileTypeIcon filename={file.filename} /> {file.filename}</span>)}</div> : null}
+    <textarea ref={textarea} aria-label="修改本轮提示词" value={value} onChange={event => setValue(event.target.value)} onKeyDown={event => {
+      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Escape') { event.preventDefault(); onCancel(); }
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && value.trim()) { event.preventDefault(); onSubmit(value.trim()); }
+    }} />
+    <div className="prompt-editor-actions"><button type="button" onClick={onCancel}>取消</button><button type="submit" disabled={!value.trim()} aria-label="发送修改后的提示词">发送</button></div>
+  </form>;
+}
+
 export type ChatPaneProps = ConversationInputAreaProps & {
   messages: Message[];
   conversationKey?: string;
@@ -139,8 +216,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   onOpenGraph: () => void;
   runTools?: ToolCall[];
   plan?: Plan | null;
-  onRegenerate?: (message: Message, runId: string) => void;
-  onEditMessage?: (message: Message) => void;
+  onEditLatest?: (message: Message, runId: string, content: string) => void;
 };
 
 const BOTTOM_THRESHOLD = 48;
@@ -149,13 +225,13 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onRegenerate, onEditMessage, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onEditLatest, ...inputProps }: ChatPaneProps) {
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const latestTurn = editableLatestTurn(messages);
+  const editableKey = onEditLatest && latestTurn && !inputProps.loading && !inputProps.uploading && !inputProps.disabled && !inputProps.sendBlocked
+    ? `${conversationKey}:${latestTurn.assistant.run_id}` : null;
+  useEffect(() => { setEditingKey(null); }, [editableKey]);
   const [versionSelection, setVersionSelection] = useState<Record<string, string>>({});
-  const [copyStatus, setCopyStatus] = useState('');
-  async function copyMessage(content: string) {
-    try { await navigator.clipboard.writeText(content); setCopyStatus('已复制'); }
-    catch { setCopyStatus('复制失败，请手动选择内容'); }
-  }
   const composerAvailable = inputProps.interaction.kind === 'composer';
   const scrollRef = useRef<HTMLDivElement>(null);
   const sticksToBottomRef = useRef(true);
@@ -219,20 +295,37 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
         const displayed = selectedVersion || message;
         const versionIndex = versions.indexOf(displayed);
         const visibleTools = isLiveAssistant && runTools?.length ? runTools : displayed.tools;
-        const previousUser = messages.slice(0, index).reverse().find(item => item.role === 'user');
         const visiblePlan = isLiveAssistant && plan ? plan : displayed.plan;
-        return <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.content.slice(0, 8)}`}>{isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}<div className="message-body"><div className="message-label">{isAssistant ? (message.regenerate_of ? 'iGraph 助手 · 重新生成' : 'iGraph 助手') : '你'}</div>{isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools)) : null}{isAssistant ? planCard(visiblePlan) : null}{displayed.attachments?.length ? <div className="message-attachments">{displayed.attachments.map(file => <span key={file.file_token}><FileTypeIcon filename={file.filename} /> {file.filename || '附件'}</span>)}</div> : null}<div className="message-content">{renderContent(displayed.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>
-          {versions.length > 1 && !message.streaming && !isLiveAssistant ? <nav className="answer-versions" aria-label="回答版本">
-            <button type="button" aria-label="上一个回答版本" disabled={versionIndex <= 0} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex - 1].run_id! }))}>‹</button>
-            <span>版本 {versionIndex + 1} / {versions.length}</span>
-            <button type="button" aria-label="下一个回答版本" disabled={versionIndex >= versions.length - 1} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex + 1].run_id! }))}>›</button>
-          </nav> : null}<div className="message-actions">{isAssistant && index === messages.length - 1 && previousUser && message.run_id && onRegenerate && <button type="button" disabled={inputProps.disabled || inputProps.sendBlocked || inputProps.uploading || inputProps.loading || Boolean(inputProps.value.trim()) || Boolean(inputProps.attachments?.length)} title="保留已有回复和上下文；请先发送或清空当前草稿" onClick={() => onRegenerate(previousUser, message.run_id!)}>重新生成</button>}{displayed.content && <button type="button" onClick={() => void copyMessage(displayed.content)}>复制</button>}{message.role === 'user' && composerAvailable && <button type="button" disabled={inputProps.disabled || inputProps.sendBlocked || inputProps.uploading || inputProps.loading} onClick={() => onEditMessage ? onEditMessage(message) : inputProps.onChange(message.content)}>编辑并重发</button>}</div>{displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}</div></div>;
+        const isEditing = Boolean(editableKey && editingKey === editableKey && message === latestTurn?.user);
+        const contents = <>
+          {displayed.attachments?.length ? <div className="message-attachments">{displayed.attachments.map(file => <span key={file.file_token}><FileTypeIcon filename={file.filename} /> {file.filename || '附件'}</span>)}</div> : null}
+          <div className="message-content">{renderContent(displayed.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>
+        </>;
+        return <div className={`message-row ${message.role}${isEditing ? ' is-editing' : ''}`} key={versionKey}>
+          {isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}
+          <div className="message-body">
+            <div className="message-label">{isAssistant ? (message.regenerate_of ? 'iGraph 助手 · 重新生成' : 'iGraph 助手') : '你'}</div>
+            {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools)) : null}
+            {isAssistant ? planCard(visiblePlan) : null}
+            {isEditing ? <PromptEditor message={message} onCancel={() => setEditingKey(null)} onSubmit={content => {
+              if (latestTurn && onEditLatest) onEditLatest(message, latestTurn.assistant.run_id!, content);
+              setEditingKey(null);
+            }} /> : isAssistant ? contents : <div className="message-bubble">{contents}</div>}
+            {displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}
+            {versions.length > 1 && !message.streaming && !isLiveAssistant ? <nav className="answer-versions" aria-label="回答版本">
+              <button type="button" aria-label="上一个回答版本" disabled={versionIndex <= 0} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex - 1].run_id! }))}>‹</button>
+              <span>版本 {versionIndex + 1} / {versions.length}</span>
+              <button type="button" aria-label="下一个回答版本" disabled={versionIndex >= versions.length - 1} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex + 1].run_id! }))}>›</button>
+            </nav> : null}
+            {displayed.content && !isEditing ? <MessageCopyAction content={displayed.content}
+              onEdit={editableKey && message === latestTurn?.user ? () => setEditingKey(editableKey) : undefined} /> : null}
+          </div>
+        </div>;
       })}
       {inputProps.loading && liveAssistantIndex < 0 && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{toolList(runTools)}{planCard(plan)}</div> : null}
       {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图已加载 · 在右侧工作台查看</button> : null}
     </div>
     {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label="滚动到最新消息" title="滚动到最新消息"><Icon name="chevron" size={18} /></button></div> : null}
-    {copyStatus && <span role="status" className="message-copy-status">{copyStatus}</span>}
     <ConversationInputArea {...inputProps} />
   </main>;
 }

@@ -123,19 +123,28 @@ it('restores unfinished files as needing reselection and isolates stored drafts'
   expect(screen.getByText('需重新选择')).toBeTruthy();
   expect(uploadFile).not.toHaveBeenCalled();
 });
-it('editing a prior user message includes its original attachments in the next send', async () => {
+it('copying history preserves the current draft and sends only its new attachments', async () => {
   vi.mocked(activateSession).mockResolvedValue({ model: 'qwen3.6-plus', has_graph: false, active_run: null, messages: [
     { id: 'user:r', role: 'user', content: '原问题', attachments: [{ file_token: 'original', filename: 'original.csv' }] },
     { id: 'assistant:r', role: 'assistant', content: '原回复', run_id: 'r' },
   ] });
-  await mount();
-  fireEvent.click(screen.getByRole('button', { name: '编辑并重发' }));
-  expect(screen.getByRole('button', { name: '移除 original.csv' })).toBeTruthy();
-  fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value: '修改后的问题' } });
+  const copy = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+  const { container } = await mount();
+  fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value: '新的问题' } });
+  choose(container);
+  await screen.findByRole('button', { name: '移除 data.pt' });
+  await waitFor(() => expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.queryByRole('button', { name: '编辑并重发' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '重新生成' })).toBeNull();
+  fireEvent.click(screen.getAllByRole('button', { name: '复制' })[0]);
+  await waitFor(() => expect(copy).toHaveBeenCalledWith('原问题'));
+  expect((screen.getByPlaceholderText(placeholder) as HTMLTextAreaElement).value).toBe('新的问题');
+  expect(screen.queryByRole('button', { name: '移除 original.csv' })).toBeNull();
+  expect(streamChat).not.toHaveBeenCalled();
   fireEvent.keyDown(screen.getByPlaceholderText(placeholder), { key: 'Enter' });
   await waitFor(() => expect(streamChat).toHaveBeenCalledOnce());
-  expect(vi.mocked(streamChat).mock.calls[0][2]).toEqual([{ filename: 'original.csv', file_token: 'original' }]);
-  expect(uploadFile).not.toHaveBeenCalled();
+  expect(vi.mocked(streamChat).mock.calls[0].slice(0, 3)).toEqual(['A', '新的问题', [{ filename: 'data.pt', file_token: 'token' }]]);
 });
 
 it('retains process events and regeneration links when loading history', async () => {

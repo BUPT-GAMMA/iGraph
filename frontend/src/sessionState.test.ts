@@ -25,6 +25,52 @@ function lastMessage(state: ConversationState, sessionId: string) {
 }
 
 describe('conversationReducer session/run isolation', () => {
+  it('shows a friendly notice for a cancelled run with no answer', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g',
+      batch: batch('A', 'r', 0, [{ type: 'error', cancelled: true, error: 'Run r was cancelled' }]) });
+    expect(lastMessage(state, 'A').content).toBe('已停止本轮对话');
+    expect(state.viewsBySessionId.A.error).toBeUndefined();
+    state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g',
+      batch: batch('A', 'r', 1, [{ type: 'done', content: 'Run r was cancelled' }]) });
+    expect(lastMessage(state, 'A').content).toBe('已停止本轮对话');
+  });
+  it.each([false, true])('keeps an immediately stopped first message (run identity already known: %s)', known => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    if (known) state = conversationReducer(state, { type: 'SET_RUN_ID', sessionId: 'A', generation: 'g', runId: 'r' });
+    state = conversationReducer(state, { type: 'REQUEST_CANCEL', sessionId: 'A', generation: 'g', cancelRequestId: 'c' });
+    const control = { run_id: 'r', start_request_id: 'g', registration_status: 'registered' as const,
+      run_status: 'cancelled', cancel_status: 'confirmed' as const, execution_stopped: true,
+      terminal_persisted: true, native_run_created: false, can_send: true, revision: 2, active_run: null };
+    for (let index = 0; index < 2; index++) {
+      state = conversationReducer(state, { type: 'APPLY_CONTROL', sessionId: 'A', generation: 'g', control });
+      expect(selectMessages(state.viewsBySessionId.A).map(message => message.content)).toEqual(['question', '已停止本轮对话']);
+      expect(state.viewsBySessionId.A.draft).toBe('');
+      expect(lastMessage(state, 'A').streaming).toBe(false);
+      expect(selectRunGate(state.viewsBySessionId.A).canStartRun).toBe(true);
+    }
+    state = start(state, 'A', 'next');
+    expect(selectMessages(state.viewsBySessionId.A).map(message => message.content)).toEqual(['question', '已停止本轮对话', 'question', '']);
+  });
+  it('still rolls back a send that fails before native execution', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    state = conversationReducer(state, { type: 'APPLY_CONTROL', sessionId: 'A', generation: 'g', control: {
+      run_id: 'r', start_request_id: 'g', registration_status: 'registered', run_status: 'failed', cancel_status: 'none',
+      execution_stopped: true, terminal_persisted: true, native_run_created: false, can_send: true, revision: 2, active_run: null,
+    } });
+    expect(selectMessages(state.viewsBySessionId.A)).toEqual([]);
+    expect(state.viewsBySessionId.A.draft).toBe('question');
+  });
+  it('normalizes saved cancellation notices without changing user text or real errors', () => {
+    const state = session(initialConversationState, 'A');
+    const notice = 'Run c865e4a4-be91-4af2-b4d0-90fcf777b35f was cancelled';
+    const view = { ...state.viewsBySessionId.A, messageOrder: ['u', 'a', 'e'], messagesById: {
+      u: { id: 'u', role: 'user' as const, content: notice },
+      a: { id: 'a', role: 'assistant' as const, content: notice },
+      e: { id: 'e', role: 'assistant' as const, content: 'Connection failed' },
+    } };
+    expect(selectMessages(view).map(message => message.content)).toEqual([notice, '已停止本轮对话', 'Connection failed']);
+  });
   it('does not unlock a cancelling preparation when its old upload fails', () => {
     let state = session(initialConversationState, 'A');
     state = conversationReducer(state, { type: 'BEGIN_RUN_PREPARATION', sessionId: 'A', generation: 'g' });
