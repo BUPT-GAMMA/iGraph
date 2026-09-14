@@ -15,35 +15,59 @@ _DATASET = {
     "minLength": 1,
 }
 
+_OPERATION_TEXT = {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": r"\S"}
+_OPERATION_RULES = {
+    "collapse_node": (("node_id", "edge_type"), ()),
+    "node_property_to_edge": (("node_id", "property", "edge_ids"), ("target_property", "remove_from_node")),
+    "extract_property_node": (("node_ids", "property", "node_type", "edge_type"), ("remove_from_node",)),
+    "delete": (("target", "ids"), ("property", "cascade")),
+    "reverse_edges": (("edge_ids",), ()),
+    "rename_type": (("target", "old_type", "new_type"), ()),
+}
+_OPERATION_PROPERTIES = {
+    "op": {"type": "string", "enum": list(_OPERATION_RULES)},
+    "node_id": _OPERATION_TEXT,
+    "node_ids": {"type": "array", "items": _OPERATION_TEXT, "minItems": 1,
+                 "maxItems": 200_000, "uniqueItems": True},
+    "edge_ids": {"type": "array", "items": _OPERATION_TEXT, "minItems": 1,
+                 "maxItems": 1_000_000, "uniqueItems": True},
+    "ids": {"type": "array", "items": _OPERATION_TEXT, "minItems": 1,
+            "maxItems": 1_000_000, "uniqueItems": True},
+    "property": _OPERATION_TEXT,
+    "target_property": _OPERATION_TEXT,
+    "remove_from_node": {"type": "boolean"},
+    "node_type": _OPERATION_TEXT,
+    "edge_type": _OPERATION_TEXT,
+    "target": {"type": "string", "enum": ["node", "edge"]},
+    "cascade": {"type": "boolean"},
+    "old_type": _OPERATION_TEXT,
+    "new_type": _OPERATION_TEXT,
+}
+
+
+def _operation_schema(name, required, optional):
+    return {
+        "type": "object",
+        "properties": {"op": {"type": "string", "enum": [name]},
+                       **{field: _OPERATION_PROPERTIES[field] for field in (*required, *optional)}},
+        "required": ["op", *required],
+        "additionalProperties": False,
+    }
+
+
 _OPERATIONS = {
     "type": "array",
     "minItems": 1,
+    "maxItems": 100,
     "items": {
         "type": "object",
-        "properties": {
-            "op": {
-                "type": "string",
-                "enum": [
-                    "collapse_node", "node_property_to_edge", "extract_property_node",
-                    "delete", "reverse_edges", "rename_type",
-                ],
-            },
-            "node_id": {"type": "string"},
-            "node_ids": {"type": "array", "items": {"type": "string"}},
-            "edge_ids": {"type": "array", "items": {"type": "string"}},
-            "ids": {"type": "array", "items": {"type": "string"}},
-            "property": {"type": "string"},
-            "target_property": {"type": "string"},
-            "remove_from_node": {"type": "boolean"},
-            "node_type": {"type": "string"},
-            "edge_type": {"type": "string"},
-            "target": {"type": "string", "enum": ["node", "edge"]},
-            "cascade": {"type": "boolean"},
-            "old_type": {"type": "string"},
-            "new_type": {"type": "string"},
-        },
+        # Keep the common property catalog for clients that inspect op.enum;
+        # each branch supplies the actual operation-specific argument contract.
+        "properties": _OPERATION_PROPERTIES,
         "required": ["op"],
         "additionalProperties": False,
+        "oneOf": [_operation_schema(name, required, optional)
+                  for name, (required, optional) in _OPERATION_RULES.items()],
     },
 }
 

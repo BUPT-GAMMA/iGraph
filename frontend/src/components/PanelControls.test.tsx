@@ -16,6 +16,7 @@ const sidebarProps = {
   onTheme: noop,
   onMemory: noop,
   onSkills: noop,
+  onCreateGraph: noop,
   mobileOpen: false,
   onCloseMobile: noop,
   onNew: noop,
@@ -37,6 +38,21 @@ const graphProps = {
 };
 
 describe('docked panel controls', () => {
+  it('keeps create your graph as a permanent first-level destination', () => {
+    const onCreateGraph = vi.fn();
+    const onCloseMobile = vi.fn();
+    const { rerender } = render(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} onCloseMobile={onCloseMobile} collapsed={false} onCollapse={noop} />);
+
+    const entry = screen.getByRole('button', { name: 'create your graph' });
+    expect(entry.getAttribute('aria-current')).toBeNull();
+    fireEvent.click(entry);
+    expect(onCreateGraph).toHaveBeenCalledOnce();
+    expect(onCloseMobile).toHaveBeenCalledOnce();
+
+    rerender(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} createGraphActive collapsed={false} onCollapse={noop} />);
+    expect(screen.getByRole('button', { name: 'create your graph' }).getAttribute('aria-current')).toBe('page');
+  });
+
   it('removes the legacy sidebar version label and keeps a functional toggle', () => {
     const onCollapse = vi.fn();
     const { rerender } = render(<Sidebar {...sidebarProps} collapsed={false} onCollapse={onCollapse} />);

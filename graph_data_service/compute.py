@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import heapq
 import os
-import random
 import statistics
 from itertools import islice
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,6 +25,7 @@ import networkx as nx
 
 from graph_data_service.graph_data import GraphData
 from graph_data_service.analysis_contract import analysis_contract
+from graph_data_service.smart_overview import SmartOverviewSelection, select_smart_overview
 
 # ── 全局输出规模上限 ─────────────────────────────────────────────
 _MAX_LIST_ITEMS = 20        # 节点/边列表最大条数
@@ -1343,7 +1343,11 @@ class GraphCompute:
     ]
 
     @staticmethod
-    def _normalize_highlights(highlights: Optional[dict], g: nx.DiGraph) -> Optional[dict]:
+    def _normalize_highlights(
+        highlights: Optional[dict],
+        g: nx.DiGraph,
+        visible_nodes: Optional[set] = None,
+    ) -> Optional[dict]:
         """校验、补全 highlights 结构，自动分配颜色。
 
         highlights 统一格式:
@@ -1359,7 +1363,7 @@ class GraphCompute:
             ]
         }
         """
-        if not highlights:
+        if not isinstance(highlights, dict) or not highlights:
             return None
 
         palette = GraphCompute._HIGHLIGHT_PALETTE
@@ -1371,12 +1375,16 @@ class GraphCompute:
             color_idx += 1
             return c
 
-        # Validate node IDs exist
-        all_nodes = set(g.nodes())
+        # Only emit highlights that the client can actually draw.  Passing the
+        # already-selected set avoids building another all-graph node set and
+        # prevents metadata from pointing at nodes removed by the overview cap.
+        all_nodes = visible_nodes if visible_nodes is not None else set(g.nodes())
         result = {"nodes": [], "paths": [], "subgraphs": []}
 
         # Process node highlights
         for item in highlights.get("nodes", []):
+            if not isinstance(item, dict):
+                continue
             ids = item.get("ids", [])
             # Filter to existing nodes
             valid_ids = [n for n in ids if n in all_nodes]
@@ -1389,6 +1397,8 @@ class GraphCompute:
 
         # Process path highlights
         for item in highlights.get("paths", []):
+            if not isinstance(item, dict):
+                continue
             seq = item.get("node_sequence", [])
             valid_seq = [n for n in seq if n in all_nodes]
             if len(valid_seq) >= 2:
@@ -1407,14 +1417,17 @@ class GraphCompute:
 
         # Process subgraph highlights
         for item in highlights.get("subgraphs", []):
+            if not isinstance(item, dict):
+                continue
             node_list = item.get("nodes", [])
             valid_nodes = [n for n in node_list if n in all_nodes]
             if valid_nodes:
                 # Derive edges within the subgraph
-                sub_edges = []
-                for u, v in g.edges():
-                    if u in set(valid_nodes) and v in set(valid_nodes):
-                        sub_edges.append([u, v])
+                valid_set = set(valid_nodes)
+                sub_edges = [
+                    [u, v]
+                    for u, v in g.subgraph(valid_set).edges()
+                ]
                 result["subgraphs"].append({
                     "nodes": valid_nodes,
                     "edges": sub_edges,
@@ -1427,8 +1440,9 @@ class GraphCompute:
             return None
         return result
 
-    # 可视化返回的最大节点数上限，防止大图将 LLM 上下文撑爆
-    _MAX_VIZ_NODES = int(os.environ.get("VISUALIZE_MAX_NODES", "200"))
+    # SVG 画布对小图直接全量渲染；大图由确定性智能概览收敛到该上限。
+    _MAX_VIZ_NODES = int(os.environ.get("VISUALIZE_MAX_NODES", "800"))
+    _MAX_VIZ_EDGES = int(os.environ.get("VISUALIZE_MAX_EDGES", "2000"))
 
     def visualize_subgraph(
         self,
@@ -1451,10 +1465,16 @@ class GraphCompute:
                     "subgraphs": [{"nodes": [...], "color": "#hex", "label": "..."}]
                 }
                 color 和 label 可选，会自动分配。
-            max_nodes: 返回的最大节点数，默认 200。超出时以高亮节点为起点做
-                       BFS 邻域扩展，保证返回子图尽可能连通，并标记 truncated=True。
+            max_nodes: 返回的最大节点数，默认 800。超出时生成确定性的智能概览：
+                       保留高亮，覆盖节点类型和社区，优先高连接度节点，并补齐
+                       代表节点之间的有界连接路径。
         """
-        node_cap = int(max_nodes) if max_nodes and int(max_nodes) > 0 else self._MAX_VIZ_NODES
+        try:
+            requested_cap = int(max_nodes) if max_nodes is not None else self._MAX_VIZ_NODES
+        except (TypeError, ValueError):
+            requested_cap = self._MAX_VIZ_NODES
+        node_cap = max(1, requested_cap) if requested_cap > 0 else max(1, self._MAX_VIZ_NODES)
+        edge_cap = max(1, self._MAX_VIZ_EDGES)
 
         # 确定要可视化的节点
         if node_names:
@@ -1470,54 +1490,59 @@ class GraphCompute:
         else:
             target_nodes = set(g.nodes())
 
-        # ── 节点数 cap：超出上限时做 BFS 邻域扩展，保证连通性 ──────────
-        truncated = False
+        # Keep source-scope totals before replacing the node set with the smart
+        # overview.  For an explicitly requested subset these totals must refer
+        # to that subset, not to the unrelated remainder of the session graph.
+        source_nodes = set(target_nodes)
+        source_total_nodes = len(source_nodes)
+        source_total_edges = (
+            g.subgraph(source_nodes).number_of_edges()
+            if node_names
+            else g.number_of_edges()
+        )
+
+        # ── 节点数 cap：超出上限时生成稳定、可复现的拓扑智能概览 ──────
+        nodes_truncated = False
+        overview_selection: Optional[SmartOverviewSelection] = None
         if len(target_nodes) > node_cap:
-            # 1. 收集高亮中涉及的节点作为 BFS 起点（seed）
-            seeds: set = set()
+            required_nodes: set = set()
             if highlights and isinstance(highlights, dict):
                 for item in highlights.get("nodes", []):
-                    seeds.update(item.get("ids", []))
+                    required_nodes.update(item.get("ids", []))
                 for item in highlights.get("paths", []):
-                    seeds.update(item.get("node_sequence", []))
+                    required_nodes.update(item.get("node_sequence", []))
                 for item in highlights.get("subgraphs", []):
-                    seeds.update(item.get("nodes", []))
-            seeds &= target_nodes  # 只保留实际存在的
+                    required_nodes.update(item.get("nodes", []))
 
-            # 若没有高亮节点，选 target_nodes 内部度最高的节点作为起点
-            # 只统计两端都在 target_nodes 里的边，避免用全图度误判子集内连通性
-            if not seeds:
-                internal_degree: dict = {n: 0 for n in target_nodes}
-                for u, v in (g.to_undirected() if g.is_directed() else g).edges():
-                    if u in target_nodes and v in target_nodes:
-                        internal_degree[u] += 1
-                        internal_degree[v] += 1
-                seeds = {max(target_nodes, key=lambda n: internal_degree[n])}
+            node_types: dict = {}
+            for node in target_nodes:
+                node_type = None
+                try:
+                    nid = gd.name_to_id(node) if gd.has_node_names else None
+                except KeyError:
+                    nid = None
+                if nid is not None and gd.has_node_type:
+                    try:
+                        node_type = gd.get_node_type_by_id(nid)
+                    except Exception:
+                        node_type = None
+                nx_attrs = g.nodes[node]
+                node_type = node_type or nx_attrs.get("node_type") or nx_attrs.get("type")
+                node_types[node] = str(node_type or "unknown")
 
-            # 2. BFS / 邻域扩展：从 seeds 出发，按层逐步纳入邻居
-            selected: set = set(seeds)
-            frontier = list(seeds)
-            ug_for_bfs = g.to_undirected() if g.is_directed() else g
-            while len(selected) < node_cap and frontier:
-                next_frontier: list = []
-                random.shuffle(frontier)
-                for node in frontier:
-                    if len(selected) >= node_cap:
-                        break
-                    for nb in ug_for_bfs.neighbors(node):
-                        if nb in target_nodes and nb not in selected:
-                            selected.add(nb)
-                            next_frontier.append(nb)
-                            if len(selected) >= node_cap:
-                                break
-                frontier = next_frontier
-
-            target_nodes = selected
-            truncated = True
+            overview_selection = select_smart_overview(
+                g,
+                target_nodes,
+                max_nodes=node_cap,
+                node_types=node_types,
+                required_nodes=required_nodes,
+            )
+            target_nodes = set(overview_selection.nodes)
+            nodes_truncated = True
 
         # 构建节点列表
         nodes = []
-        for node in target_nodes:
+        for node in sorted(target_nodes, key=lambda value: (type(value).__name__, repr(value))):
             try:
                 nid = gd.name_to_id(node) if gd.has_node_names else None
             except KeyError:
@@ -1565,23 +1590,105 @@ class GraphCompute:
                 "attrs": attrs if attrs else None,
             })
 
-        # 构建边列表；只遍历目标子图，避免大图可视化时扫描全图边导致 SSE 推送卡住。
+        # 构建边列表。即使节点数不超过 800，稠密图仍可能包含几十万条边；
+        # 使用有界 top-k 而不是先物化全部边。连接路径/高亮路径各保留一条
+        # 关系，其余边优先选择连接高连接度端点的边，并稳定地打破平局。
+        display_graph = g.subgraph(target_nodes)
+        available_display_edges = display_graph.number_of_edges()
+        display_degrees = {node: int(g.degree(node)) for node in target_nodes}
+
+        def undirected_pair(left, right):
+            left_key = (f"{type(left).__module__}.{type(left).__qualname__}", repr(left))
+            right_key = (f"{type(right).__module__}.{type(right).__qualname__}", repr(right))
+            return (left, right) if left_key <= right_key else (right, left)
+
+        protected_pairs = set()
+        if overview_selection is not None:
+            for path in overview_selection.connector_paths:
+                protected_pairs.update(undirected_pair(left, right) for left, right in zip(path, path[1:]))
+        if isinstance(highlights, dict):
+            for item in highlights.get("paths", []):
+                if not isinstance(item, dict):
+                    continue
+                path = [node for node in item.get("node_sequence", []) if node in target_nodes]
+                protected_pairs.update(undirected_pair(left, right) for left, right in zip(path, path[1:]))
+
+        def iter_edge_records():
+            if display_graph.is_multigraph():
+                yield from display_graph.edges(keys=True, data=True)
+            else:
+                for left, right, data in display_graph.edges(data=True):
+                    yield left, right, None, data
+
+        def edge_stable_key(record):
+            left, right, key, data = record
+            return (
+                f"{type(left).__module__}.{type(left).__qualname__}", repr(left),
+                f"{type(right).__module__}.{type(right).__qualname__}", repr(right),
+                repr(data.get("id", data.get("name", key))),
+                repr(data.get("type", data.get("edge_type", ""))),
+                repr(key),
+            )
+
+        def edge_priority(record):
+            left, right, _key, _data = record
+            return (
+                -(display_degrees.get(left, 0) + display_degrees.get(right, 0)),
+                edge_stable_key(record),
+            )
+
+        # One canonical edge per protected path segment is selected first so a
+        # large set of parallel relationships cannot crowd out another segment.
+        protected_best = {}
+        if protected_pairs and available_display_edges > edge_cap:
+            for record in iter_edge_records():
+                pair = undirected_pair(record[0], record[1])
+                if pair not in protected_pairs:
+                    continue
+                previous = protected_best.get(pair)
+                if previous is None or edge_stable_key(record) < edge_stable_key(previous):
+                    protected_best[pair] = record
+        protected_records = sorted(protected_best.values(), key=edge_stable_key)[:edge_cap]
+        protected_keys = {edge_stable_key(record) for record in protected_records}
+        remaining_edge_slots = edge_cap - len(protected_records)
+        if available_display_edges <= edge_cap:
+            overview_edges = sorted(iter_edge_records(), key=edge_stable_key)
+        elif remaining_edge_slots > 0:
+            overview_edges = protected_records + heapq.nsmallest(
+                remaining_edge_slots,
+                (
+                    record for record in iter_edge_records()
+                    if edge_stable_key(record) not in protected_keys
+                ),
+                key=edge_priority,
+            )
+        else:
+            overview_edges = protected_records
+        overview_edges.sort(key=edge_stable_key)
+
         edges = []
-        for u, v, data in g.subgraph(target_nodes).edges(data=True):
-            edges.append({
-                "src": u,
-                "dst": v,
-                "weight": data.get("weight", 1.0),
-                **({"id": data.get("id"), "type": data.get("type"), "properties": data["properties"]}
-                   if "properties" in data else {}),
-            })
+        for u, v, _key, data in overview_edges:
+            edge = {"src": u, "dst": v, "weight": data.get("weight", 1.0)}
+            edge_id = data.get("id", data.get("name"))
+            edge_type = data.get("type", data.get("edge_type"))
+            if edge_id is not None:
+                edge["id"] = edge_id
+            if edge_type is not None:
+                edge["type"] = edge_type
+            if "properties" in data:
+                edge["properties"] = data["properties"]
+            edges.append(edge)
+        edges_truncated = available_display_edges > len(edges)
 
         # 社区检测（可选）
         community_info = None
         if include_community and len(target_nodes) > 1:
-            ug = g.to_undirected()
             try:
-                communities = self._detect_communities(ug, "louvain")
+                communities = (
+                    overview_selection.communities
+                    if overview_selection is not None
+                    else self._detect_communities(g.subgraph(target_nodes).to_undirected(), "louvain")
+                )
                 node_community = {}
                 for i, comm in enumerate(communities):
                     for n in comm:
@@ -1595,7 +1702,7 @@ class GraphCompute:
                 pass
 
         # 标准化高亮信息
-        normalized_highlights = self._normalize_highlights(highlights, g)
+        normalized_highlights = self._normalize_highlights(highlights, g, target_nodes)
 
         result = {
             "success": True,
@@ -1607,11 +1714,30 @@ class GraphCompute:
             "community": community_info,
             "highlights": normalized_highlights,
         }
-        if truncated:
+        if nodes_truncated or edges_truncated:
             result["truncated"] = True
-            result["total_nodes"] = g.number_of_nodes()
-            result["total_edges"] = g.number_of_edges()
-            result["truncated_to"] = node_cap
+            result["total_nodes"] = source_total_nodes
+            result["total_edges"] = source_total_edges
+            result["nodes_truncated"] = nodes_truncated
+            result["edges_truncated"] = edges_truncated
+            if nodes_truncated:
+                result["truncated_to"] = len(nodes)
+            if edges_truncated:
+                result["truncated_edges_to"] = len(edges)
+            result["overview"] = {
+                "mode": "smart",
+                "algorithm": "topology-types-communities-v1",
+                "deterministic": True,
+                "node_limit": node_cap,
+                "edge_limit": edge_cap,
+                "community_count": len(overview_selection.communities) if overview_selection is not None else 0,
+                "community_representative_count": len(overview_selection.community_representatives) if overview_selection is not None else 0,
+                "node_type_representative_count": len(overview_selection.type_representatives) if overview_selection is not None else 0,
+                "required_node_count": len(overview_selection.required_nodes) if overview_selection is not None else 0,
+                "required_nodes_truncated": overview_selection.required_truncated if overview_selection is not None else False,
+                "connector_node_count": len(overview_selection.connector_nodes) if overview_selection is not None else 0,
+                "connector_path_count": len(overview_selection.connector_paths) if overview_selection is not None else 0,
+            }
         return result
 
 

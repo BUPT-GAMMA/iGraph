@@ -32,6 +32,8 @@ type Props = {
   onTheme: () => void;
   onMemory: () => void;
   onSkills: () => void;
+  onCreateGraph: () => void;
+  createGraphActive?: boolean;
   mobileOpen: boolean;
   onCloseMobile: () => void;
   onNew: () => void;
@@ -57,7 +59,7 @@ function runStatusLabel(status?: string) {
   return '';
 }
 
-export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
   const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
   useEffect(() => {
@@ -218,6 +220,12 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
     <div className="sidebar-head"><button className="sidebar-collapse" onClick={onCollapse} aria-label={mobileOpen ? '关闭左侧栏' : effectivelyCollapsed ? '展开左侧栏' : '收起左侧栏'} title={mobileOpen ? '关闭左侧栏' : effectivelyCollapsed ? '展开左侧栏' : '收起左侧栏'}><Icon name={effectivelyCollapsed ? 'panel-left-open' : 'panel-left-close'} size={18} /></button></div>
     <div className="sidebar-content" aria-hidden={effectivelyCollapsed}>
     <button className="new-task" onClick={createTaskFromContext}><Icon name="plus" size={18} /> 新建任务</button>
+    <nav className="sidebar-create-graph" aria-label="构图工作区">
+      <button className={createGraphActive ? 'active' : ''} aria-current={createGraphActive ? 'page' : undefined} onClick={() => { onCreateGraph(); onCloseMobile(); }}>
+        <span className="sidebar-create-graph-icon"><Icon name="graph-create" size={19} /></span>
+        <span>create your graph</span>
+      </button>
+    </nav>
     <nav className="sidebar-utilities" aria-label="知识与能力管理">
       <button onClick={() => requireAccount(() => { onMemory(); onCloseMobile(); })}><Icon name="spark" size={16} /><span>记忆</span></button>
       <button onClick={() => requireAccount(() => { onSkills(); onCloseMobile(); })}><Icon name="cube" size={16} /><span>技能</span></button>

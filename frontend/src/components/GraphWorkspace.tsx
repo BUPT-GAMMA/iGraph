@@ -1,6 +1,7 @@
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { listProjectTrainingRuns } from '../api';
+import { createGraphOverview, GRAPH_OVERVIEW_NODE_LIMIT } from '../graphOverview';
 import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
 import { SlidingTabs } from './SlidingTabs';
@@ -17,7 +18,6 @@ const TAB_LABELS: Record<Tab, string> = {
   ML: '机器学习',
   Artifacts: '分析产物',
 };
-
 function nodeId(node: Record<string, unknown>, index: number) { return String(node.id ?? node.label ?? index); }
 
 const COMMUNITY_COLORS = ['#3b82f6', '#f97316', '#10b981', '#a855f7', '#eab308', '#ef4444', '#06b6d4', '#ec4899'];
@@ -75,6 +75,64 @@ function highlightEdgePairs(highlight: Highlight) {
   return pairs;
 }
 
+function compactLabel(value: unknown, maxLength: number) {
+  const label = String(value ?? '');
+  if (label.length <= maxLength) return label;
+  const visibleLength = Math.max(2, maxLength - 1);
+  const headLength = Math.ceil(visibleLength * .65);
+  return `${label.slice(0, headLength)}…${label.slice(-(visibleLength - headLength))}`;
+}
+
+function schemaEdgeLabel(edge: Record<string, unknown>, compact = false) {
+  const properties = edge.properties && typeof edge.properties === 'object' && !Array.isArray(edge.properties)
+    ? edge.properties as Record<string, unknown>
+    : {};
+  const type = String(edge.type ?? edge.label ?? edge.relationship_type ?? '关系');
+  const count = Number(edge.relationship_count ?? properties.relationship_count ?? edge.count ?? properties.count);
+  const visibleType = compact ? compactLabel(type, /^fk_[0-9a-f]{20,}$/i.test(type) ? 14 : 18) : type;
+  return Number.isFinite(count) ? `${visibleType} · ${count.toLocaleString()}` : visibleType;
+}
+
+function schemaEdgeGeometry(edge: any) {
+  const sourceX = Number(edge.source?.x) || 0;
+  const sourceY = Number(edge.source?.y) || 0;
+  const targetX = Number(edge.target?.x) || 0;
+  const targetY = Number(edge.target?.y) || 0;
+  const index = Number(edge.__schemaParallelIndex) || 0;
+  const count = Math.max(1, Number(edge.__schemaParallelCount) || 1);
+  if (String(edge.source?.id) === String(edge.target?.id)) {
+    const angle = (-Math.PI / 2) + ((index / count) * Math.PI * 2);
+    const radius = 27 + Math.floor(index / 4) * 9;
+    const spread = .58;
+    const startX = sourceX + Math.cos(angle - spread) * 10;
+    const startY = sourceY + Math.sin(angle - spread) * 10;
+    const endX = sourceX + Math.cos(angle + spread) * 10;
+    const endY = sourceY + Math.sin(angle + spread) * 10;
+    return {
+      path: `M${startX},${startY}A${radius},${radius} 0 1,1 ${endX},${endY}`,
+      labelX: sourceX + Math.cos(angle) * (radius + 12),
+      labelY: sourceY + Math.sin(angle) * (radius + 12),
+    };
+  }
+  const curve = index - ((count - 1) / 2);
+  const dx = targetX - sourceX;
+  const dy = targetY - sourceY;
+  const length = Math.max(1, Math.hypot(dx, dy));
+  if (curve === 0) return {
+    path: `M${sourceX},${sourceY}L${targetX},${targetY}`,
+    labelX: (sourceX + targetX) / 2 - (dy / length) * 10,
+    labelY: (sourceY + targetY) / 2 + (dx / length) * 10,
+  };
+  const offset = curve * 24;
+  const controlX = (sourceX + targetX) / 2 - (dy / length) * offset;
+  const controlY = (sourceY + targetY) / 2 + (dx / length) * offset;
+  return {
+    path: `M${sourceX},${sourceY}Q${controlX},${controlY} ${targetX},${targetY}`,
+    labelX: (sourceX + (2 * controlX) + targetX) / 4,
+    labelY: (sourceY + (2 * controlY) + targetY) / 4 - 4,
+  };
+}
+
 type GraphWorkspaceProps = {
   data: GraphData | null;
   view?: GraphViewState;
@@ -113,12 +171,38 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
   return true;
 }
 
+function sameRecord(left: Record<string, unknown>, right: Record<string, unknown>) {
+  if (left === right) return true;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every(key => Object.prototype.hasOwnProperty.call(right, key) && left[key] === right[key]);
+}
+
+function sameWorkspaceGraph(left: GraphData | null, right: GraphData | null) {
+  if (left === right) return true;
+  if (!left || !right || left.nodes.length !== right.nodes.length || left.edges.length !== right.edges.length) return false;
+  const leftMetadata = Object.keys(left).filter(key => key !== 'nodes' && key !== 'edges');
+  const rightMetadata = Object.keys(right).filter(key => key !== 'nodes' && key !== 'edges');
+  return leftMetadata.length === rightMetadata.length
+    && leftMetadata.every(key => Object.prototype.hasOwnProperty.call(right, key)
+      && left[key as keyof GraphData] === right[key as keyof GraphData])
+    && left.nodes.every((node, index) => sameRecord(node, right.nodes[index]))
+    && left.edges.every((edge, index) => sameRecord(edge, right.edges[index]));
+}
+
+function sameOverviewGraph(left: ReturnType<typeof createGraphOverview> | null, right: ReturnType<typeof createGraphOverview> | null) {
+  if (left === right) return true;
+  if (!left || !right || left.nodeIds.length !== right.nodeIds.length || left.edges.length !== right.edges.length) return false;
+  return left.nodeIds.every((id, index) => id === right.nodeIds[index])
+    && left.edges.every((edge, index) => edge === right.edges[index]);
+}
+
 export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob, embedded, onConstruct, constructionLabel = '构图' }: GraphWorkspaceProps) {
   const arrowId = `graph-arrow-${useId().replace(/:/g, '')}`;
-  const incomingDataSignature = useMemo(() => data ? JSON.stringify(data) : 'empty', [data]);
-  const stableDataRef = useRef<{ signature: string; data: GraphData | null }>({ signature: incomingDataSignature, data });
-  if (stableDataRef.current.signature !== incomingDataSignature) stableDataRef.current = { signature: incomingDataSignature, data };
-  const renderedData = stableDataRef.current.data;
+  const stableDataRef = useRef<GraphData | null>(data);
+  if (!sameWorkspaceGraph(stableDataRef.current, data)) stableDataRef.current = data;
+  const renderedData = stableDataRef.current;
   const canvas = useRef<SVGSVGElement>(null);
   const onSelectRef = useRef(onSelect);
   const zoomTransformRef = useRef(d3.zoomIdentity);
@@ -157,6 +241,12 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     }));
     return mapping;
   }, [highlights]);
+  const highlightedNodeIds = useMemo(() => highlights.flatMap(highlight => (highlight.nodes || []).map(String)), [highlights]);
+  const highlightedEdgePairs = useMemo(() => {
+    const pairs = new Set<string>();
+    highlights.forEach(highlight => highlightEdgePairs(highlight).forEach(pair => pairs.add(pair)));
+    return pairs;
+  }, [highlights]);
   const degreeById = useMemo(() => {
     const degrees = new Map<string, number>();
     (renderedData?.edges || []).forEach(edge => {
@@ -167,15 +257,18 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     });
     return degrees;
   }, [renderedData]);
-  const visibleNodes = useMemo(() => {
-    if (!renderedData?.nodes) return [];
-    const text = query.trim().toLowerCase();
-    return renderedData.nodes.map((node, index) => ({ node, id: nodeId(node, index) })).filter(item => {
-      const matches = !text || item.id.toLowerCase().includes(text) || String(item.node.label ?? '').toLowerCase().includes(text);
-      const connected = !connectedOnly || (degreeById.get(item.id) || 0) > 0;
-      return matches && connected;
-    });
-  }, [renderedData, query, connectedOnly, degreeById]);
+  const schemaMode = renderedData?.visualization_kind === 'schema';
+  const overview = useMemo(() => renderedData && tab === 'Graph' ? createGraphOverview(renderedData, {
+    query,
+    selectedNodeId: selected?.id,
+    highlightedNodeIds,
+    highlightedEdgePairs,
+    connectedOnly,
+    forceComplete: schemaMode,
+  }) : null, [renderedData, tab, query, selected?.id, highlightedNodeIds, highlightedEdgePairs, connectedOnly, schemaMode]);
+  const stableOverviewRef = useRef<ReturnType<typeof createGraphOverview> | null>(overview);
+  if (!sameOverviewGraph(stableOverviewRef.current, overview)) stableOverviewRef.current = overview;
+  const canvasOverview = stableOverviewRef.current;
 
   useEffect(() => {
     if (tab !== 'ML' || !projectId) {
@@ -222,24 +315,60 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     const viewport = svg.append('g').attr('class', 'graph-viewport').attr('transform', zoomTransformRef.current.toString());
     const zoom = d3.zoom<SVGSVGElement, unknown>().extent([[0, 0], [width, height]]).scaleExtent([.25, 6]).on('zoom', event => { zoomTransformRef.current = event.transform; viewport.attr('transform', event.transform.toString()); });
     svg.call(zoom).call(zoom.transform, zoomTransformRef.current).on('dblclick.zoom', null);
-    const nodes = visibleNodes.slice(0, 180).map(item => ({ ...item.node, id: item.id }));
+    if (!canvasOverview) return;
+    const nodes = canvasOverview.nodes.map((item, index) => ({ ...item, id: canvasOverview.nodeIds[index] }));
     const nodeIds = new Set(nodes.map(node => node.id));
-    const edges = (renderedData.edges || []).map(edge => ({ source: String(edge.src ?? edge.source), target: String(edge.dst ?? edge.target), weight: edge.weight })).filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target)).slice(0, 400);
+    const edges = canvasOverview.edges.map(edge => ({ ...edge, source: endpointId(edge.src ?? edge.source), target: endpointId(edge.dst ?? edge.target), weight: edge.weight })).filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+    if (schemaMode) {
+      const parallelGroups = new Map<string, typeof edges>();
+      edges.forEach(edge => {
+        const source = String(edge.source);
+        const target = String(edge.target);
+        const key = source === target ? `loop\u0000${source}` : [source, target].sort().join('\u0000');
+        const group = parallelGroups.get(key);
+        if (group) group.push(edge);
+        else parallelGroups.set(key, [edge]);
+      });
+      parallelGroups.forEach(group => group.forEach((edge, index) => {
+        Object.assign(edge, { __schemaParallelIndex: index, __schemaParallelCount: group.length });
+      }));
+    }
     const visibleHighlights = highlights.filter(highlight => (highlight.nodes || []).some(id => nodeIds.has(String(id))));
     const pathPairs = new Map<string, string>();
     visibleHighlights.filter(highlight => highlight.type === 'path').forEach(highlight => highlightEdgePairs(highlight).forEach(key => pathPairs.set(key, highlight.color || DEFAULT_HIGHLIGHT_COLORS.path)));
     const subgraphPairs = new Map<string, string>();
     visibleHighlights.filter(highlight => highlight.type === 'subgraph').forEach(highlight => highlightEdgePairs(highlight).forEach(key => subgraphPairs.set(key, highlight.color || DEFAULT_HIGHLIGHT_COLORS.subgraph)));
-    const simulation = d3.forceSimulation(nodes as any).force('link', d3.forceLink(edges as any).id((node: any) => node.id).distance(layout === 'radial' ? 72 : 58)).force('charge', d3.forceManyBody().strength(-150)).force('center', d3.forceCenter(width / 2, height / 2)).force('collision', d3.forceCollide(15));
+    const schemaLinkDistance = Math.max(90, Math.min(125, Math.min(width, height) * .55));
+    const simulation = d3.forceSimulation(nodes as any)
+      .force('link', d3.forceLink(edges as any).id((node: any) => node.id).distance(schemaMode ? schemaLinkDistance : layout === 'radial' ? 72 : 58))
+      .force('charge', d3.forceManyBody().strength(schemaMode ? -360 : -150))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collision', d3.forceCollide(schemaMode ? 40 : 15).iterations(schemaMode ? 2 : 1));
+    if (schemaMode) {
+      simulation.force('x', d3.forceX(width / 2).strength(.035));
+      simulation.force('y', d3.forceY(height / 2).strength(.045));
+    }
     if (layout === 'radial') simulation.force('radial', d3.forceRadial(Math.min(width, height) * .3, width / 2, height / 2).strength(.45));
     const hullLayer = viewport.append('g').attr('class', 'graph-subgraph-hulls');
     const subgraphHulls = visibleHighlights.filter(highlight => highlight.type === 'subgraph').map((highlight, index) => ({ highlight, path: hullLayer.append('path').attr('class', 'graph-subgraph-hull').attr('fill', highlight.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('stroke', highlight.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('aria-label', highlight.label || `子图 ${index + 1}`) }));
-    const link = viewport.append('g').selectAll('line').data(edges).join('line').attr('class', 'graph-link')
+    const link: any = schemaMode
+      ? viewport.append('g').selectAll('path').data(edges).join('path').attr('class', 'graph-link graph-schema-link')
+      : viewport.append('g').selectAll('line').data(edges).join('line').attr('class', 'graph-link');
+    link
       .attr('marker-end', renderedData.directed ? `url(#${arrowId})` : null)
-      .attr('stroke', edge => highlightedEdgeColor(pathPairs, edge.source, edge.target) || highlightedEdgeColor(subgraphPairs, edge.source, edge.target) || null)
-      .classed('is-path-highlight', edge => Boolean(highlightedEdgeColor(pathPairs, edge.source, edge.target)))
-      .classed('is-subgraph-highlight', edge => !highlightedEdgeColor(pathPairs, edge.source, edge.target) && Boolean(highlightedEdgeColor(subgraphPairs, edge.source, edge.target)));
-    const node = viewport.append('g').selectAll('g').data(nodes).join('g').attr('class', 'graph-node').on('click', (_, item) => onSelectRef.current(item as Record<string, unknown>)).call(d3.drag<any, any>().on('start', (event, item) => { if (!event.active) simulation.alphaTarget(.25).restart(); item.fx = item.x; item.fy = item.y; }).on('drag', (event, item) => { item.fx = event.x; item.fy = event.y; }).on('end', (event, item) => { if (!event.active) simulation.alphaTarget(0); item.fx = null; item.fy = null; }));
+      .attr('aria-label', schemaMode ? (edge: any) => schemaEdgeLabel(edge) : null)
+      .attr('stroke', (edge: any) => highlightedEdgeColor(pathPairs, edge.source, edge.target) || highlightedEdgeColor(subgraphPairs, edge.source, edge.target) || null)
+      .classed('is-path-highlight', (edge: any) => Boolean(highlightedEdgeColor(pathPairs, edge.source, edge.target)))
+      .classed('is-subgraph-highlight', (edge: any) => !highlightedEdgeColor(pathPairs, edge.source, edge.target) && Boolean(highlightedEdgeColor(subgraphPairs, edge.source, edge.target)));
+    if (schemaMode) link.append('title').text((edge: any) => schemaEdgeLabel(edge));
+    const edgeLabel = schemaMode
+      ? viewport.append('g').attr('class', 'graph-schema-edge-labels').selectAll('text').data(edges).join('text')
+        .attr('class', 'graph-schema-edge-label')
+        .attr('aria-label', edge => schemaEdgeLabel(edge))
+        .attr('data-full-label', edge => schemaEdgeLabel(edge))
+        .text(edge => schemaEdgeLabel(edge, true))
+      : null;
+    const node = viewport.append('g').selectAll('g').data(nodes).join('g').attr('class', 'graph-node').attr('aria-label', (item: any) => schemaMode ? String(item.label ?? item.id) : null).on('click', (_, item) => onSelectRef.current(item as Record<string, unknown>)).call(d3.drag<any, any>().on('start', (event, item) => { if (!event.active) simulation.alphaTarget(.25).restart(); item.fx = item.x; item.fy = item.y; }).on('drag', (event, item) => { item.fx = event.x; item.fy = event.y; }).on('end', (event, item) => { if (!event.active) simulation.alphaTarget(0); item.fx = null; item.fy = null; }));
     if (layout === 'circle') {
       const radius = Math.max(35, Math.min(width, height) * .34);
       nodes.forEach((item: any, index) => { const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2; item.x = width / 2 + Math.cos(angle) * radius; item.y = height / 2 + Math.sin(angle) * radius; });
@@ -247,13 +376,23 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     }
     node.append('circle').attr('r', (item: any) => item.id === String(selected?.id ?? '') ? 13 : 8).attr('fill', (item: any) => item.id === String(selected?.id ?? '') ? 'var(--graph-node-selected-fill)' : communityColor(communityById.get(item.id))).attr('stroke', item => highlightByNode.get(item.id)?.[0]?.color || null).classed('is-highlighted', item => highlightByNode.has(item.id));
     node.append('circle').attr('class', 'graph-node-halo').attr('r', (item: any) => highlightByNode.has(item.id) ? 13 : 0).attr('fill', item => highlightByNode.get(item.id)?.[0]?.color || DEFAULT_HIGHLIGHT_COLORS.node).attr('opacity', .2);
-    node.append('text').attr('dy', 20).text((item: any) => String(item.label ?? item.id).slice(0, 12));
+    node.append('text')
+      .attr('dy', 20)
+      .attr('aria-label', (item: any) => String(item.label ?? item.id))
+      .text((item: any) => schemaMode ? compactLabel(item.label ?? item.id, 18) : String(item.label ?? item.id).slice(0, 12));
     const renderFrame = () => {
       if (embedded) nodes.forEach((item: any) => {
-        item.x = Math.max(24, Math.min(width - 24, item.x));
-        item.y = Math.max(24, Math.min(height - 30, item.y));
+        const horizontalPadding = schemaMode ? 58 : 24;
+        item.x = Math.max(horizontalPadding, Math.min(width - horizontalPadding, item.x));
+        const verticalPadding = schemaMode ? 40 : 24;
+        item.y = Math.max(verticalPadding, Math.min(height - (schemaMode ? 40 : 30), item.y));
       });
-      link.attr('x1', (edge: any) => edge.source.x).attr('y1', (edge: any) => edge.source.y).attr('x2', (edge: any) => edge.target.x).attr('y2', (edge: any) => edge.target.y);
+      if (schemaMode) {
+        link.attr('d', (edge: any) => schemaEdgeGeometry(edge).path);
+        edgeLabel?.attr('x', (edge: any) => schemaEdgeGeometry(edge).labelX).attr('y', (edge: any) => schemaEdgeGeometry(edge).labelY);
+      } else {
+        link.attr('x1', (edge: any) => edge.source.x).attr('y1', (edge: any) => edge.source.y).attr('x2', (edge: any) => edge.target.x).attr('y2', (edge: any) => edge.target.y);
+      }
       node.attr('transform', (item: any) => `translate(${item.x},${item.y})`);
       subgraphHulls.forEach(({ highlight, path }) => {
         const points = (highlight.nodes || []).map(id => nodes.find((item: any) => item.id === String(id))).filter(Boolean).map((item: any) => [item.x, item.y] as [number, number]);
@@ -261,10 +400,10 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
       });
     };
     simulation.on('tick', renderFrame);
-    simulation.tick();
+    simulation.tick(schemaMode ? 72 : 1);
     renderFrame();
     return () => { simulation.stop(); svg.on('.zoom', null); };
-  }, [collapsed, renderedData, tab, layoutVersion, layout, visibleNodes, highlights, communityById, highlightByNode, embedded, canvasBounds, fitVersion]);
+  }, [collapsed, renderedData, tab, layoutVersion, layout, canvasOverview, highlights, communityById, highlightByNode, embedded, canvasBounds, fitVersion, schemaMode]);
   useEffect(() => {
     if (!canvas.current || collapsed || tab !== 'Graph') return;
     const selectedId = String(selected?.id ?? '');
@@ -273,8 +412,19 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
       .attr('fill', item => String(item.id ?? '') === selectedId ? 'var(--graph-node-selected-fill)' : communityColor(communityById.get(String(item.id ?? ''))));
   }, [selected, communityById, collapsed, tab]);
   const tabs: Tab[] = embedded ? ['Graph', 'Overview', 'Data'] : ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
+  const overviewStatus = overview ? schemaMode
+    ? `Graph Schema · ${overview.nodes.length.toLocaleString()} 种节点类型 · ${overview.edges.length.toLocaleString()} 种关系`
+    : overview.sourcePartial
+      ? `上游部分图 · 已载入 ${overview.availableNodes.toLocaleString()} / ${overview.totalNodes.toLocaleString()} 个节点，当前显示 ${overview.nodes.length.toLocaleString()} 个节点 / ${overview.edges.length.toLocaleString()} 条边${overview.locallySampledNodes || overview.locallySampledEdges ? '（本地智能概览）' : ''}`
+      : overview.mode === 'overview'
+        ? `智能概览 · 当前显示 ${overview.nodes.length.toLocaleString()} / ${overview.totalNodes.toLocaleString()} 个节点，${overview.edges.length.toLocaleString()} / ${overview.totalEdges.toLocaleString()} 条边`
+        : `完整图 · ${overview.nodes.length.toLocaleString()} 个节点 · ${overview.edges.length.toLocaleString()} 条边`
+    : '';
+  const queryStatus = overview && query.trim()
+    ? ` · 搜索命中 ${overview.queryMatchCount.toLocaleString()} 个，概览保留 ${overview.retainedQueryMatchCount.toLocaleString()} 个`
+    : '';
   return <aside className={`graph-workspace ${collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图工作台</strong>{onConstruct && !collapsed && <button className="workspace-construction-button" onClick={onConstruct} title={datasetName ? `${constructionLabel}：${datasetName}` : '选择数据集并构图'}><Icon name="graph" size={14} />{constructionLabel}</button>}<button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={collapsed ? '展开右侧栏' : '收起右侧栏'} title={collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={21} /></button></div><div className="workspace-panel-content" aria-hidden={collapsed}><SlidingTabs ariaLabel="图工作台视图" className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: TAB_LABELS[item] }))} value={tab} onChange={onTab} />
-    {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={projectTrainingError} /> : tab === 'Artifacts' ? <><WorkspaceFiles key={sessionId} sessionId={sessionId} revision={JSON.stringify([messages.length, ...[...messages.flatMap(message => message.tools || []), ...liveTools].filter(tool => tool.tool?.startsWith('workspace_')).map(tool => [tool.call_id, tool.done, tool.result])])} /><ArtifactsTab messages={messages} /></> : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图</strong></div> : view?.status === 'failed' ? <div className="graph-empty"><strong>图加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>暂无图</strong><span>加载数据或发送建图请求后，这里会显示图分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button>{embedded && <button onClick={() => { zoomTransformRef.current = d3.zoomIdentity; setFitVersion(current => current + 1); }}>适应画布</button>}</div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} aria-label="图谱画布，可拖动平移并使用滚轮缩放" /></div>{(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? '已选节点')}</strong><span>已选择</span></div><div className="inspector-row"><span>节点 ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>类型</span><strong>{String(selected.type ?? selected.category ?? '节点')}</strong></div><div className="inspector-row"><span>度数</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} />}
+    {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={projectTrainingError} /> : tab === 'Artifacts' ? <><WorkspaceFiles key={sessionId} sessionId={sessionId} revision={JSON.stringify([messages.length, ...[...messages.flatMap(message => message.tools || []), ...liveTools].filter(tool => tool.tool?.startsWith('workspace_')).map(tool => [tool.call_id, tool.done, tool.result])])} /><ArtifactsTab messages={messages} /></> : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图</strong></div> : view?.status === 'failed' ? <div className="graph-empty"><strong>图加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>暂无图</strong><span>加载数据或发送建图请求后，这里会显示图分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button>{embedded && <button onClick={() => { zoomTransformRef.current = d3.zoomIdentity; setFitVersion(current => current + 1); }}>适应画布</button>}</div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{overview?.queryMatchCount ?? 0} 个结果</span></div> : null}{overview ? <div className="graph-overview-status" role="status"><strong>{overviewStatus}</strong>{queryStatus}</div> : null}<div className={`graph-canvas ${schemaMode ? 'is-schema' : ''}`}><svg ref={canvas} aria-label={schemaMode ? 'Graph Schema 画布，可拖动平移并使用滚轮缩放' : '图谱画布，可拖动平移并使用滚轮缩放'} /></div>{(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? '已选节点')}</strong><span>已选择</span></div><div className="inspector-row"><span>节点 ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>类型</span><strong>{String(selected.type ?? selected.category ?? '节点')}</strong></div><div className="inspector-row"><span>度数</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} />}
   </div></aside>;
 }, graphWorkspacePropsEqual);
 
@@ -295,8 +445,10 @@ function WorkspaceTab({ tab, data, messages }: { tab: Tab; data: GraphData; mess
   if (tab === 'Overview') {
     const totalNodes = data.total_nodes ?? data.num_nodes ?? data.nodes.length;
     const totalEdges = data.total_edges ?? data.num_edges ?? data.edges.length;
-    const renderedNodes = data.truncated_to ?? data.nodes.length;
-    return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">当前图</span><h2>当前数据集</h2><strong>图分析已就绪</strong></div><div className="stat-grid"><div><span>节点数</span><strong>{totalNodes.toLocaleString()}</strong></div><div><span>边数</span><strong>{totalEdges.toLocaleString()}</strong></div><div><span>方向</span><strong>{data.directed ? '有向图' : '无向图'}</strong></div><div><span>画布节点</span><strong>{renderedNodes.toLocaleString()}</strong></div></div>{data.truncated ? <div className="workspace-note"><Icon name="spark" size={15} /> 画布当前展示 {renderedNodes.toLocaleString()} 个节点，数据集总量统计保持完整。</div> : <div className="workspace-note"><Icon name="spark" size={15} /> 从中央对话发起图算法，结果会同步到这里。</div>}</div>;
+    const renderedNodes = data.visualization_kind === 'schema' ? data.nodes.length : Math.min(data.nodes.length, GRAPH_OVERVIEW_NODE_LIMIT);
+    const upstreamPartial = data.truncated === true || totalNodes > data.nodes.length || totalEdges > data.edges.length;
+    const localOverview = data.visualization_kind !== 'schema' && data.nodes.length > GRAPH_OVERVIEW_NODE_LIMIT;
+    return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">当前图</span><h2>当前数据集</h2><strong>图分析已就绪</strong></div><div className="stat-grid"><div><span>节点数</span><strong>{totalNodes.toLocaleString()}</strong></div><div><span>边数</span><strong>{totalEdges.toLocaleString()}</strong></div><div><span>方向</span><strong>{data.directed ? '有向图' : '无向图'}</strong></div><div><span>画布节点</span><strong>{renderedNodes.toLocaleString()}</strong></div></div>{upstreamPartial ? <div className="workspace-note"><Icon name="spark" size={15} /> 上游当前只返回 {data.nodes.length.toLocaleString()} / {totalNodes.toLocaleString()} 个节点，画布不会将其误标为全图智能抽样。</div> : localOverview ? <div className="workspace-note"><Icon name="spark" size={15} /> 画布基于类型、社区、度数与连接路径稳定生成最多 {GRAPH_OVERVIEW_NODE_LIMIT.toLocaleString()} 个节点的智能概览。</div> : <div className="workspace-note"><Icon name="spark" size={15} /> 从中央对话发起图算法，结果会同步到这里。</div>}</div>;
   }
   if (tab === 'Data') return <div className="tab-content"><div className="tab-title"><strong>节点与边数据</strong><span>{(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString()} 个节点</span></div><div className="data-list">{data.nodes.slice(0, 20).map((node, index) => <div key={index}><Icon name="project" size={14} /><span>{String(node.label ?? node.id ?? `节点 ${index + 1}`)}</span><small>{String(node.type ?? '节点')}</small></div>)}</div>{data.nodes.length < (data.total_nodes ?? data.num_nodes ?? data.nodes.length) ? <div className="workspace-note">当前为可视化预览，已加载 {data.nodes.length.toLocaleString()} 个节点样本。</div> : null}</div>;
   return <ArtifactsTab messages={messages} />;

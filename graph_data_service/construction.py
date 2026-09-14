@@ -1,6 +1,6 @@
 """Durable property graphs and explicit, transactional graph optimizations.
 
-This store remains algorithm-agnostic. Graph Engine installs private SQL/CSV
+This store remains algorithm-agnostic. Graph Engine installs private SQL/CSV/TXT
 construction workers through ``register_algorithm(format, builder)``. The callable
 receives the retained source Path and JSON options and returns the graph document
 specified below. Its output passes the same validation as every optimization.
@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,24 @@ from graph_engine.analysis_policy import numeric_weight
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
               "delete", "reverse_edges", "rename_type")
+PUBLIC_PROGRESS_STAGES = ("starting", "source_profiled", "extracting_entities", "materializing_graph",
+                          "generating_workload", "evaluating_baseline", "evolving",
+                          "validating_final", "ready", "failed")
+PUBLIC_PROGRESS_KINDS = ("stage", "candidate", "terminal")
+PUBLIC_PROGRESS_OUTCOMES = ("accepted", "rejected", "ready", "failed")
+PUBLIC_PROGRESS_METRICS = ("query_count", "max_iterations", "iterations", "tool_calls",
+                           "evaluated_candidates", "accepted_candidates", "initial_nodes", "initial_edges",
+                           "chunks_completed", "chunks_total", "extracted_nodes", "extracted_edges")
+SCHEMA_PROPERTY_TYPES = ("null", "boolean", "integer", "number", "string", "object", "array")
+_TEXT_EXTRACTION_FAILURE_MESSAGES = {
+    "text_extraction_requires_llm": "TXT 实体关系抽取需要智能构图模式；源文件已保留，请选择 LLM 抽取后重试。",
+    "text_extraction_llm_unavailable": "TXT 实体关系抽取需要可用的构图模型配置；源文件已保留，请配置模型或改用表格/逐行记录模式。",
+    "text_extraction_empty": "未从 TXT 中识别到明确的实体关系；源文件已保留，可补充更明确的文本或抽取目标后重试。",
+    "text_extraction_input_too_large": "TXT 超过本次语义抽取的字符上限；源文件已保留，请拆分文件后重试。",
+    "text_extraction_chunk_limit_exceeded": "TXT 超过本次语义抽取的分块上限；源文件已保留，请拆分文件后重试。",
+    "text_extraction_call_limit_exceeded": "TXT 抽取达到模型调用上限且尚未完整处理；未发布半成品图，请拆分文件后重试。",
+    "text_extraction_graph_too_large": "抽取到的实体关系超过图规模上限；源文件已保留，请拆分文件后重试。",
+}
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -75,7 +94,8 @@ def _json_keys(value):
         _fail("Properties must contain JSON values.", "invalid_graph")
 
 
-def validate_graph(graph: dict) -> dict:
+def validate_graph(graph: dict, *, max_nodes: int = 200_000, max_edges: int = 1_000_000,
+                   copy_graph: bool = True) -> dict:
     """Copy and validate a complete property graph; never coerce identifiers."""
     from graph_engine.construction.budget import checked, check_deadline
     check_deadline()
@@ -83,12 +103,17 @@ def validate_graph(graph: dict) -> dict:
         _fail("Graph requires exactly directed, nodes and edges.", "invalid_graph")
     if not isinstance(graph["directed"], bool):
         _fail("Graph directed must be a boolean.", "invalid_graph")
+    if type(copy_graph) is not bool:
+        _fail("copy_graph must be a boolean.", "invalid_graph")
+    if (type(max_nodes) is not int or type(max_edges) is not int
+            or not 1 <= max_nodes <= 20_000_000 or not 1 <= max_edges <= 50_000_000):
+        _fail("Graph limits are invalid.", "invalid_graph")
     if not isinstance(graph["nodes"], list) or not isinstance(graph["edges"], list):
         _fail("Graph nodes and edges must be arrays.", "invalid_graph")
-    if len(graph["nodes"]) > 200_000 or len(graph["edges"]) > 1_000_000:
+    if len(graph["nodes"]) > max_nodes or len(graph["edges"]) > max_edges:
         _fail("Graph exceeds the construction document size limit.", "graph_too_large", 413)
     node_ids, edge_ids = set(), set()
-    result = copy.deepcopy(graph)
+    result = copy.deepcopy(graph) if copy_graph else graph
     for target, identities, fields in (("nodes", node_ids, {"id", "type", "properties"}),
                                         ("edges", edge_ids, {"id", "type", "properties", "source", "target"})):
         for row in checked(result[target]):
@@ -114,6 +139,143 @@ def validate_graph(graph: dict) -> dict:
                 if row["source"] not in node_ids or row["target"] not in node_ids:
                     _fail(f"Edge {identity} has a missing endpoint.", "invalid_graph")
     return result
+
+
+def _schema_value_type(value) -> str:
+    """Return an unambiguous JSON type name (``bool`` is not an integer)."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, dict):
+        return "object"
+    return "array"
+
+
+def _schema_property_path(parent: str, key: str) -> str:
+    """Use readable dotted paths while keeping unusual JSON keys unambiguous."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        return f"{parent}.{key}" if parent else key
+    quoted = json.dumps(key, ensure_ascii=False, separators=(",", ":"))
+    return f"{parent}[{quoted}]" if parent else f"[{quoted}]"
+
+
+def _collect_schema_observations(value, path: str, observations: dict[str, Counter]):
+    observations.setdefault(path, Counter())[_schema_value_type(value)] += 1
+    if isinstance(value, dict):
+        for key in sorted(value):
+            _collect_schema_observations(value[key], _schema_property_path(path, key), observations)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_schema_observations(item, path + "[]", observations)
+
+
+def _schema_property_stats(rows: list[dict]) -> list[dict]:
+    """Aggregate recursive paths without retaining or returning any source value."""
+    aggregate: dict[str, dict] = {}
+    for row in rows:
+        observations: dict[str, Counter] = {}
+        for key in sorted(row["properties"]):
+            _collect_schema_observations(row["properties"][key], _schema_property_path("", key), observations)
+        for path, counts in observations.items():
+            current = aggregate.setdefault(path, {"present_count": 0, "type_counts": Counter()})
+            current["present_count"] += 1
+            current["type_counts"].update(counts)
+    result = []
+    for path in sorted(aggregate):
+        counts = aggregate[path]["type_counts"]
+        type_counts = {kind: counts[kind] for kind in SCHEMA_PROPERTY_TYPES if counts[kind]}
+        result.append({
+            "path": path,
+            "types": list(type_counts),
+            "type_counts": type_counts,
+            "present_count": aggregate[path]["present_count"],
+            "value_count": sum(type_counts.values()),
+        })
+    return result
+
+
+def graph_schema(graph: dict) -> dict:
+    """Build a deterministic, value-free meta-graph from a property graph.
+
+    An undirected graph canonicalizes the endpoint type pair, while a directed
+    graph keeps opposite relationships as distinct schema edges.
+    """
+    graph = validate_graph(graph, copy_graph=False)
+    nodes_by_type: dict[str, list[dict]] = {}
+    node_type_by_id: dict[str, str] = {}
+    for node in graph["nodes"]:
+        nodes_by_type.setdefault(node["type"], []).append(node)
+        node_type_by_id[node["id"]] = node["type"]
+
+    edges_by_signature: dict[tuple[str, str, str], list[dict]] = {}
+    for edge in graph["edges"]:
+        source_type = node_type_by_id[edge["source"]]
+        target_type = node_type_by_id[edge["target"]]
+        if not graph["directed"] and target_type < source_type:
+            source_type, target_type = target_type, source_type
+        signature = (source_type, edge["type"], target_type)
+        edges_by_signature.setdefault(signature, []).append(edge)
+
+    node_types = []
+    schema_nodes = []
+    for type_name in sorted(nodes_by_type):
+        rows = nodes_by_type[type_name]
+        property_paths = _schema_property_stats(rows)
+        item = {"id": type_name, "type": type_name, "instance_count": len(rows),
+                "property_paths": property_paths}
+        node_types.append(item)
+        schema_nodes.append({
+            "id": type_name,
+            "label": type_name,
+            "type": "schema_node",
+            "properties": {"schema_kind": "node_type", "type_name": type_name,
+                           "instance_count": len(rows), "property_paths": property_paths},
+        })
+
+    edge_types = []
+    schema_edges = []
+    for (source_type, type_name, target_type), rows in sorted(edges_by_signature.items()):
+        edge_id = _generated_id("schema_edge_", graph["directed"], source_type, type_name, target_type)
+        property_paths = _schema_property_stats(rows)
+        item = {"id": edge_id, "type": type_name, "source_type": source_type,
+                "target_type": target_type, "relationship_count": len(rows),
+                "property_paths": property_paths}
+        edge_types.append(item)
+        schema_edges.append({
+            "id": edge_id,
+            "source": source_type,
+            "target": target_type,
+            "type": type_name,
+            "label": type_name,
+            "properties": {"schema_kind": "edge_type", "type_name": type_name,
+                           "source_type": source_type, "target_type": target_type,
+                           "relationship_count": len(rows), "property_paths": property_paths},
+        })
+
+    return {
+        "directed": graph["directed"],
+        "node_count": len(graph["nodes"]),
+        "edge_count": len(graph["edges"]),
+        "node_type_count": len(node_types),
+        "edge_type_count": len(edge_types),
+        "node_types": node_types,
+        "edge_types": edge_types,
+        "graph": {
+            "visualization_kind": "schema",
+            "directed": graph["directed"],
+            "nodes": schema_nodes,
+            "edges": schema_edges,
+            "num_nodes": len(schema_nodes),
+            "num_edges": len(schema_edges),
+        },
+    }
 
 
 def _ids(value, field: str) -> list[str]:
@@ -143,79 +305,13 @@ def _get(rows: dict, identity: str, target: str) -> dict:
     return rows[identity]
 
 
-def _row_data(row: dict) -> dict | None:
-    """Recognize source rows; a legacy property merely named data stays literal."""
-    props = row["properties"]
-    if (isinstance(props.get("table"), str) and props["table"] and
-            type(props.get("row_index")) is int and props["row_index"] >= 0 and
-            isinstance(props.get("data"), dict)):
-        return props["data"]
-    return None
-
-
-def _relocated_attributes(row: dict) -> list:
-    records = row["properties"].get("relocated_attributes")
-    if ("source" in row and isinstance(records, list) and records and all(
-            isinstance(record, dict) and {"row_id", "column", "value"} <= record.keys() and
-            not record.keys() - {"row_id", "column", "value", "name"} and
-            all(isinstance(record.get(key), str) and record[key] for key in ("row_id", "column")) and
-            ("name" not in record or isinstance(record["name"], str) and record["name"])
-            for record in records)):
-        return records
-    return []
-
-
-def _property_locations(row: dict, name: str) -> list[tuple[dict, str]]:
-    data = _row_data(row)
-    container = row["properties"] if data is None else data
-    relocated = _relocated_attributes(row)
-    locations = [(container, name)] if name in container and not (data is None and relocated and name == "relocated_attributes") else []
-    locations.extend((record, "value") for record in relocated if record.get("name", record["column"]) == name)
-    return locations
-
-
-def _property_value(row: dict, name: str):
-    locations = _property_locations(row, name)
-    if not locations:
-        _fail(f"Element {row['id']} has no business property {name}.")
-    value = locations[0][0][locations[0][1]]
-    if any(_json(container[key]) != _json(value) for container, key in locations[1:]):
-        _fail(f"Element {row['id']} has conflicting values for {name}.", "property_conflict")
-    return value
-
-
-def _remove_property(row: dict, name: str):
-    _property_value(row, name)
-    records = _relocated_attributes(row)
-    had_records = bool(records)
-    for container, key in _property_locations(row, name):
-        if any(container is record for record in records):
-            records[:] = [record for record in records if record is not container]
-        else:
-            del container[key]
-    if had_records and not records:
-        del row["properties"]["relocated_attributes"]
-
-
-def _relocate_property(node: dict, edge: dict, prop: str, destination: str, value):
-    records = _relocated_attributes(edge)
-    if "relocated_attributes" in edge["properties"] and not records:
-        _fail("The edge contains an invalid or conflicting relocated_attributes property.", "property_conflict")
-    matching = [record for record in records if record["row_id"] == node["id"] and record["column"] == prop]
-    expected = {"row_id": node["id"], "column": prop, "name": destination, "value": copy.deepcopy(value)}
-    if matching:
-        if len(matching) != 1 or matching[0] != expected:
-            _fail(f"Edge {edge['id']} already has a different value or name for {destination}.", "property_conflict")
-        return
-    if _property_locations(edge, destination):
-        _fail(f"Edge {edge['id']} already has a property named {destination}.", "property_conflict")
-    edge["properties"].setdefault("relocated_attributes", []).append(expected)
-
-
-def optimize_graph(graph: dict, operations: list[dict]) -> tuple[dict, dict]:
+def optimize_graph(graph: dict, operations: list[dict], *, max_nodes: int = 200_000,
+                   max_edges: int = 1_000_000) -> tuple[dict, dict]:
     if not isinstance(operations, list) or not 1 <= len(operations) <= 100:
         _fail("Provide between 1 and 100 operations.")
-    original = validate_graph(graph)
+    # The candidate is the only mutable snapshot. Validation can inspect the
+    # durable source in place, avoiding a second full-graph copy per preview.
+    original = validate_graph(graph, max_nodes=max_nodes, max_edges=max_edges, copy_graph=False)
     candidate = copy.deepcopy(original)
     fields = {
         "collapse_node": {"op", "node_id", "edge_type"},
@@ -263,50 +359,44 @@ def optimize_graph(graph: dict, operations: list[dict]) -> tuple[dict, dict]:
                 node = _get(nodes, operation.get("node_id"), "node")
                 prop = _text(operation.get("property"), "property")
                 destination = _text(operation.get("target_property", prop), "target_property")
-                value = _property_value(node, prop)
+                if prop not in node["properties"]:
+                    _fail(f"Node {node['id']} has no property {prop}.")
                 selected = [_get(edges, identity, "edge") for identity in _ids(operation.get("edge_ids"), "edge_ids")]
                 for edge in selected:
                     if node["id"] not in (edge["source"], edge["target"]):
                         _fail("The selected edges must be incident to the selected node.")
-                    if _row_data(node) is not None:
-                        _relocate_property(node, edge, prop, destination, value)
-                    else:
-                        if destination == "relocated_attributes" and _relocated_attributes(edge) and _row_data(edge) is None:
-                            _fail("Cannot overwrite current attribute storage.", "property_conflict")
-                        if _property_locations(edge, destination) and _json(_property_value(edge, destination)) != _json(value):
-                            _fail(f"Edge {edge['id']} already has a different value for {destination}.", "property_conflict")
-                        data = _row_data(edge)
-                        (edge["properties"] if data is None else data)[destination] = copy.deepcopy(value)
+                    if destination in edge["properties"] and _json(edge["properties"][destination]) != _json(node["properties"][prop]):
+                        _fail(f"Edge {edge['id']} already has a different value for {destination}.", "property_conflict")
+                    edge["properties"][destination] = copy.deepcopy(node["properties"][prop])
                 if _boolean(operation, "remove_from_node", True):
-                    _remove_property(node, prop)
+                    del node["properties"][prop]
             elif kind == "extract_property_node":
                 selected = [_get(nodes, identity, "node") for identity in _ids(operation.get("node_ids"), "node_ids")]
                 prop = _text(operation.get("property"), "property")
                 node_type, edge_type = _text(operation.get("node_type"), "node_type"), _text(operation.get("edge_type"), "edge_type")
                 remove = _boolean(operation, "remove_from_node", True)
                 for node in selected:
-                    value = _property_value(node, prop)
-                    source_row = _row_data(node) is not None
-                    new_id = _generated_id("attribute_" if source_row else "property_", node_type, prop, value)
+                    if prop not in node["properties"]:
+                        _fail(f"Node {node['id']} has no property {prop}.")
+                    value = node["properties"][prop]
+                    new_id = _generated_id("property_", node_type, prop, value)
                     if new_id == node["id"]:
                         _fail("A property node cannot be extracted into itself.")
-                    new_node = {"id": new_id, "type": node_type, "properties": {"value" if source_row else prop: copy.deepcopy(value)}}
+                    new_node = {"id": new_id, "type": node_type, "properties": {prop: copy.deepcopy(value)}}
                     if new_id in nodes and nodes[new_id] != new_node:
                         _fail("Generated property node conflicts with an existing node.", "property_conflict")
                     if new_id not in nodes:
                         candidate["nodes"].append(new_node)
                         nodes[new_id] = new_node
-                    edge_id = (_generated_id("attribute_link_", node["id"], prop, new_id) if source_row else
-                               _generated_id("property_edge_", node["id"], new_id, edge_type))
-                    metadata = {"extracted_attribute": {"table": node["properties"]["table"], "column": prop}} if source_row else {}
-                    new_edge = {"id": edge_id, "source": node["id"], "target": new_id, "type": edge_type, "properties": metadata}
+                    edge_id = _generated_id("property_edge_", node["id"], new_id, edge_type)
+                    new_edge = {"id": edge_id, "source": node["id"], "target": new_id, "type": edge_type, "properties": {}}
                     if edge_id in edges and edges[edge_id] != new_edge:
                         _fail("Generated property edge conflicts with an existing edge.")
                     if edge_id not in edges:
                         candidate["edges"].append(new_edge)
                         edges[edge_id] = new_edge
                     if remove:
-                        _remove_property(node, prop)
+                        del node["properties"][prop]
             elif kind == "delete":
                 target = operation.get("target")
                 if not isinstance(target, str) or target not in {"node", "edge"}:
@@ -319,7 +409,9 @@ def optimize_graph(graph: dict, operations: list[dict]) -> tuple[dict, dict]:
                     if cascade:
                         _fail("cascade does not apply to property deletion.")
                     for row in selected:
-                        _remove_property(row, prop)
+                        if prop not in row["properties"]:
+                            _fail(f"{target} {row['id']} has no property {prop}.")
+                        del row["properties"][prop]
                 elif target == "edge":
                     if cascade:
                         _fail("cascade applies only to node deletion.")
@@ -346,7 +438,7 @@ def optimize_graph(graph: dict, operations: list[dict]) -> tuple[dict, dict]:
                     _fail("Choose an existing type and a different replacement name.")
                 for row in selected:
                     row["type"] = new_type
-            validate_graph(candidate)
+            validate_graph(candidate, max_nodes=max_nodes, max_edges=max_edges, copy_graph=False)
         except ConstructionError as exc:
             exc.detail["operation_index"] = index
             raise
@@ -366,7 +458,9 @@ def _atomic_json(path: Path, value, *, before_replace=None):
     descriptor, temporary = tempfile.mkstemp(prefix=".construction-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(_json(value))
+            encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            for chunk in encoder.iterencode(value):
+                stream.write(chunk)
             stream.flush()
             os.fsync(stream.fileno())
         if before_replace:
@@ -380,6 +474,52 @@ def _atomic_json(path: Path, value, *, before_replace=None):
                 os.close(fd)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def _read_public_progress(directory: Path, record: dict):
+    """Return a bounded, whitelisted worker projection; never expose its report."""
+    try:
+        value = json.loads((directory / "construction-progress.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return None
+    if (not isinstance(value, dict) or value.get("version") != "construction_progress.v1"
+            or value.get("build_id") != record.get("build_id")):
+        return None
+    stage = value.get("stage")
+    if stage not in PUBLIC_PROGRESS_STAGES:
+        return None
+    result = {"version": "construction_progress.v1", "stage": stage}
+    if value.get("status") in {"running", "ready", "failed"}:
+        result["status"] = value["status"]
+    for key in ("current_message", "updated_at"):
+        item = value.get(key)
+        if isinstance(item, str) and len(item) <= (320 if key == "current_message" else 80):
+            result[key] = item
+    elapsed = value.get("elapsed_seconds")
+    if type(elapsed) in (int, float) and 0 <= elapsed <= 43_200:
+        result["elapsed_seconds"] = elapsed
+    metrics = value.get("metrics")
+    if isinstance(metrics, dict):
+        result["metrics"] = {key: metrics[key] for key in PUBLIC_PROGRESS_METRICS
+                             if type(metrics.get(key)) is int and 0 <= metrics[key] <= 50_000_000}
+    events = []
+    if isinstance(value.get("events"), list):
+        for item in value["events"][-24:]:
+            if not isinstance(item, dict) or item.get("kind") not in PUBLIC_PROGRESS_KINDS:
+                continue
+            event_stage, identity, message = item.get("stage"), item.get("id"), item.get("message")
+            if (event_stage not in PUBLIC_PROGRESS_STAGES or not isinstance(identity, str) or len(identity) > 80
+                    or not isinstance(message, str) or not message or len(message) > 320):
+                continue
+            event = {"id": identity, "kind": item["kind"], "stage": event_stage, "message": message}
+            outcome, timestamp = item.get("outcome"), item.get("timestamp")
+            if outcome in PUBLIC_PROGRESS_OUTCOMES:
+                event["outcome"] = outcome
+            if isinstance(timestamp, str) and len(timestamp) <= 80:
+                event["timestamp"] = timestamp
+            events.append(event)
+    result["events"] = events
+    return result
 
 
 class ConstructionStore:
@@ -475,18 +615,32 @@ class ConstructionStore:
             _fail("Dataset construction ownership mismatch.", "invalid_identity", 403)
         return record
 
-    def _status(self, record):
+    def _status(self, record, directory=None):
         graph = record.get("graph")
-        return {key: copy.deepcopy(value) for key, value in {
-            "dataset_id": record["dataset_id"], "status": record["status"], "revision": record["revision"],
+        algorithm_available = record.get("source_type") in self._algorithms
+        status = record["status"]
+        message = record.get("message", "")
+        # An unavailable result records the registry state at the time of that
+        # attempt. Once a builder is installed, expose the retained source as
+        # buildable instead of presenting contradictory current capabilities.
+        if graph is None and status == "algorithm_unavailable" and algorithm_available:
+            status = "not_built"
+            message = "构图算法已就绪，源文件已保留，可开始构图。"
+        result = {key: copy.deepcopy(value) for key, value in {
+            "dataset_id": record["dataset_id"], "status": status, "revision": record["revision"],
             "node_count": len(graph["nodes"]) if graph else 0, "edge_count": len(graph["edges"]) if graph else 0,
             "directed": graph["directed"] if graph else True,
             "source_filename": record.get("source_filename", ""), "source_type": record.get("source_type", ""),
-            "algorithm_available": record.get("source_type") in self._algorithms,
-            "message": record.get("message", ""), "updated_at": record.get("updated_at"),
+            "algorithm_available": algorithm_available,
+            "message": message, "updated_at": record.get("updated_at"),
             "last_build_status": record.get("last_build_status"),
             "build_id": record.get("build_id"), "failure_code": record.get("failure_code"),
         }.items()}
+        if directory is not None:
+            progress = _read_public_progress(Path(directory), record)
+            if progress is not None:
+                result["progress"] = progress
+        return result
 
     def status(self, user_id: str, dataset_id: str):
         # Writers publish complete JSON snapshots with os.replace. Readers must
@@ -507,7 +661,7 @@ class ConstructionStore:
                                       message="上次构图已中断；已有图数据仍可使用。" if previous_graph else "上次构图已中断；源文件已保留，可重新开始构图。",
                                       updated_at=datetime.now(timezone.utc).isoformat())
                         _atomic_json(claimed / "record.json", record)
-        return self._status(record)
+        return self._status(record, directory)
 
     def list_ready(self, user_id: str):
         directory = self.root / "users" / _identity(user_id) / "datasets"
@@ -556,7 +710,7 @@ class ConstructionStore:
     def register_source(self, user_id, dataset_id, source_path, source_filename):
         with self._write_lock(user_id, dataset_id) as directory:
             record = self._register(directory, self._read(directory, dataset_id), source_path, source_filename)
-            return self._status(record)
+            return self._status(record, directory)
 
     def reuse_ready(self, user_id, dataset_id, source_path=None, source_filename=None):
         """Fast reuse cannot claim compute capacity or change a running source."""
@@ -568,7 +722,7 @@ class ConstructionStore:
                 return None
             if source_path is not None:
                 record = self._register(directory, record, source_path, source_filename)
-            return {"success": True, **self._status(record), "reused": True}
+            return {"success": True, **self._status(record, directory), "reused": True}
 
     def finish_interrupted(self, user_id, dataset_id, build_id):
         """Only the coordinator calls this after proving the old worker exited."""
@@ -601,13 +755,13 @@ class ConstructionStore:
             # Reusing a ready dataset is intentionally idempotent. Rebuild semantics
             # can be added with their own revision contract when algorithms exist.
             if record.get("graph") is not None:
-                return {"success": True, **self._status(record), "reused": True}
+                return {"success": True, **self._status(record, directory), "reused": True}
             algorithm = self._algorithms.get(record["source_type"])
             if algorithm is None:
                 record.update(status="algorithm_unavailable", last_build_status="algorithm_unavailable",
                               message="构图算法尚未接入。源文件已保留，接入算法后可再次构图。")
                 _atomic_json(directory / "record.json", record)
-                return {"success": False, **self._status(record)}
+                return {"success": False, **self._status(record, directory)}
             record.update(status="building", last_build_status="building",
                           failure_code=None,
                           message="构图子代理正在生成并验证图，请稍后查询状态。",
@@ -617,6 +771,11 @@ class ConstructionStore:
                               request_fingerprint=_execution.fingerprint)
             _atomic_json(directory / "record.json", record)
             try:
+                (directory / "construction-progress.json").unlink(missing_ok=True)
+            except OSError:
+                # A stale observational file must never block construction.
+                pass
+            try:
                 source = directory / record["retained_source"]
                 result = (algorithm(source, copy.deepcopy(options)) if _execution is None else
                           _execution.invoke(algorithm, source, copy.deepcopy(options), lease_fds,
@@ -624,16 +783,23 @@ class ConstructionStore:
                 graph = validate_graph(result)
             except Exception as exc:
                 code = getattr(exc, "code", "construction_failed")
+                if code in _TEXT_EXTRACTION_FAILURE_MESSAGES:
+                    message = _TEXT_EXTRACTION_FAILURE_MESSAGES[code]
+                elif isinstance(code, str) and code.startswith("text_extraction_"):
+                    message = "TXT 实体关系抽取未完整成功；未发布半成品图，源文件已保留，请检查文本或模型配置后重试。"
+                elif code == "construction_time_budget_exhausted":
+                    message = "构图超过时间预算；源文件已保留，可调整预算后重试。"
+                else:
+                    message = "构图失败；源文件已保留，请检查构图算法后重试。"
                 record.update(status="failed", last_build_status="failed", failure_code=code,
-                              message="构图超过时间预算；源文件已保留，可调整预算后重试。" if code == "construction_time_budget_exhausted" else
-                                      "构图失败；源文件已保留，请检查构图算法后重试。",
+                              message=message,
                               updated_at=datetime.now(timezone.utc).isoformat())
                 _atomic_json(directory / "record.json", record)
-                return {"success": False, **self._status(record)}
+                return {"success": False, **self._status(record, directory)}
             record.update(graph=graph, revision=record["revision"] + 1, status="ready", last_build_status="ready",
                           message="构图完成，结果已保存到数据集。", updated_at=datetime.now(timezone.utc).isoformat())
             _atomic_json(directory / "record.json", record)
-            return {"success": True, **self._status(record)}
+            return {"success": True, **self._status(record, directory)}
 
     def graph(self, user_id, dataset_id):
         directory = self._directory(user_id, dataset_id)
@@ -641,6 +807,15 @@ class ConstructionStore:
         if record.get("graph") is None:
             _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
         return {"dataset_id": dataset_id, "revision": record["revision"], "graph": copy.deepcopy(record["graph"])}
+
+    def schema(self, user_id, dataset_id):
+        """Return a freshly aggregated schema; the persisted instance graph is untouched."""
+        directory = self._directory(user_id, dataset_id)
+        record = self._read(directory, dataset_id)
+        if record.get("graph") is None:
+            _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
+        return {"dataset_id": dataset_id, "revision": record["revision"],
+                "schema": graph_schema(record["graph"])}
 
     def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None):
         if type(base_revision) is not int or base_revision < 1:

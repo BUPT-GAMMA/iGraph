@@ -1430,13 +1430,13 @@ class ApiGatewayServer:
             # 直接调用 graph_data_service API，不依赖 MCP/agent
             import httpx
             
-            include_community = (req or {}).get("include_community", False)
+            arguments = {"include_community": True, "max_nodes": 800, **(req or {})}
             graph_data_url = self.config.resolved_graph_data_base_url()
             
             try:
                 resp = httpx.post(
                     f"{graph_data_url}/sessions/{session_id}/graph/visualize",
-                    json={"arguments": {"include_community": include_community}},
+                    json={"arguments": arguments},
                     headers={"X-User-ID": user_id},
                     timeout=30.0,
                 )

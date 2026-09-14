@@ -62,7 +62,7 @@ def test_api_schema_distinguishes_legacy_routes_and_current_routes(client):
     paths = client.get("/openapi.json").json()["paths"]
     assert paths["/api/datasets"]["get"]["deprecated"] is True
     assert paths["/api/sessions/{session_id}/load-dataset"]["post"]["deprecated"] is True
-    for suffix, method in [("", "get"), ("/build", "post"), ("/graph", "get"),
+    for suffix, method in [("", "get"), ("/build", "post"), ("/graph", "get"), ("/schema", "get"),
                            ("/preview", "post"), ("/commit", "post")]:
         assert paths["/api/datasets/{dataset_id}/construction" + suffix][method]["deprecated"] is True
         assert paths["/api/personal-datasets/{dataset_id}/construction" + suffix][method].get("deprecated", False) is False
