@@ -27,6 +27,7 @@ logger = logging.getLogger("igraph")
 
 _ZONES = ("Uploaded", "Ephemeral", "Derived", "Environment")
 _MANIFEST_NAME = ".workspace_manifest.json"
+_ENVIRONMENT_ZONE = "Environment"
 _DEFAULT_OUTPUT_LIMIT = 100_000
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _SANDBOX_MODE_ENV = "IGRAPH_WORKSPACE_SANDBOX_MODE"
@@ -186,6 +187,11 @@ def _iter_files(root: Path) -> dict[str, tuple[str, int, str]]:
     for directory, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [name for name in dirnames if name != _MANIFEST_NAME]
         base = Path(directory)
+        # A virtual environment holds tens of thousands of files. Checksumming
+        # it on both sides of every command would make each shell call cost a
+        # full-tree rehash; the zone is server-managed and read-only anyway.
+        if base == root:
+            dirnames[:] = [name for name in dirnames if name != _ENVIRONMENT_ZONE]
         for filename in filenames:
             path = base / filename
             relative = path.relative_to(root)
