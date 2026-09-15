@@ -1449,7 +1449,7 @@ class GraphCompute:
         g: nx.DiGraph,
         gd: GraphData,
         node_names: Optional[List[str]] = None,
-        include_community: bool = False,
+        include_community: bool = True,
         highlights: Optional[dict] = None,
         max_nodes: Optional[int] = None,
     ) -> dict:
@@ -1457,7 +1457,7 @@ class GraphCompute:
 
         Args:
             node_names: 指定节点列表；为空则返回全图
-            include_community: 是否包含社区信息
+            include_community: 是否包含社区信息，默认开启
             highlights: 高亮信息，统一格式:
                 {
                     "nodes": [{"ids": [...], "color": "#hex", "label": "..."}],
