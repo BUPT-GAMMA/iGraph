@@ -518,3 +518,24 @@ def test_environment_files_are_not_reported_as_artifacts(tmp_path):
     assert result["success"] is True
     paths = [item["path"] for item in result["artifacts"]]
     assert not any(path.startswith("Environment/") for path in paths)
+
+
+def test_sandbox_command_avoids_pid_namespace_and_mounts_environment(tmp_path, monkeypatch):
+    from agent_runtime.workspace_tools import _sandbox_command, _ensure_layout
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
+    root = tmp_path / "ws"
+    _ensure_layout(root)
+    argv, _env = _sandbox_command(root, "echo hi")
+
+    # 容器内 PID namespace 配合 proc 挂载会被内核拒绝
+    assert "--unshare-all" not in argv
+    assert "--unshare-pid" not in argv
+    for flag in ("--unshare-user", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--unshare-net"):
+        assert flag in argv, flag
+    assert "--proc" in argv
+
+    joined = " ".join(argv)
+    assert f"--ro-bind {root / 'Environment'} /workspace/Environment" in joined
+    # 网络仍然隔离：不得出现 share-net
+    assert "--share-net" not in argv
