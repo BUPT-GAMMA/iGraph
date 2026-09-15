@@ -333,6 +333,22 @@ export function createGraphOverview(data: GraphData, options: GraphOverviewOptio
       const type = eligibleById.get(id)?.type;
       if (type) currentByType.set(type, (currentByType.get(type) || 0) + 1);
     });
+    // Prefer neighbors within each type's quota, so equal-degree graphs retain
+    // actual relationships rather than only disconnected statistical samples.
+    const frontier = new Map<string, NodeEntry[]>();
+    const queued = new Set<string>();
+    const queueNeighbors = (id: string) => {
+      for (const adjacent of adjacency.get(id) || []) {
+        const entry = eligibleById.get(adjacent.node);
+        if (!entry || selected.has(entry.id) || queued.has(entry.id)) continue;
+        queued.add(entry.id);
+        const group = frontier.get(entry.type);
+        if (group) group.push(entry);
+        else frontier.set(entry.type, [entry]);
+      }
+    };
+    selected.forEach(queueNeighbors);
+    const frontierCursors = new Map<string, number>();
     const cursors = new Map<string, number>();
     while (selected.size < nodeLimit) {
       const candidateType = types
@@ -340,15 +356,23 @@ export function createGraphOverview(data: GraphData, options: GraphOverviewOptio
         .filter(item => item.deficit > 0)
         .sort((left, right) => right.deficit - left.deficit || compareIds(left.type, right.type))[0];
       if (!candidateType) break;
-      let cursor = cursors.get(candidateType.type) || 0;
-      while (cursor < candidateType.entries.length && selected.has(candidateType.entries[cursor].id)) cursor += 1;
-      cursors.set(candidateType.type, cursor + 1);
-      const candidate = candidateType.entries[cursor];
+      const neighbors = frontier.get(candidateType.type) || [];
+      let neighborCursor = frontierCursors.get(candidateType.type) || 0;
+      while (neighborCursor < neighbors.length && selected.has(neighbors[neighborCursor].id)) neighborCursor += 1;
+      let candidate = neighbors[neighborCursor];
+      if (candidate) frontierCursors.set(candidateType.type, neighborCursor + 1);
+      else {
+        let cursor = cursors.get(candidateType.type) || 0;
+        while (cursor < candidateType.entries.length && selected.has(candidateType.entries[cursor].id)) cursor += 1;
+        cursors.set(candidateType.type, cursor + 1);
+        candidate = candidateType.entries[cursor];
+      }
       if (!candidate) {
         targets.set(candidateType.type, currentByType.get(candidateType.type) || 0);
         continue;
       }
       selected.add(candidate.id);
+      queueNeighbors(candidate.id);
       currentByType.set(candidateType.type, (currentByType.get(candidateType.type) || 0) + 1);
     }
     addRanked(selected, eligible.filter(entry => !selected.has(entry.id)).sort(compareNodes), nodeLimit);

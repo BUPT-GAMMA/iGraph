@@ -195,8 +195,17 @@ export function GraphCanvas(props: Props) {
     }
     function fit() {
       if (!nodes.length) return;
-      const x0 = Math.min(...nodes.map(n => (n.x || 0) - radius(n))) - 30, x1 = Math.max(...nodes.map(n => (n.x || 0) + radius(n))) + 30;
-      const y0 = Math.min(...nodes.map(n => (n.y || 0) - radius(n))) - 30, y1 = Math.max(...nodes.map(n => (n.y || 0) + radius(n))) + 40;
+      let x0 = Math.min(...nodes.map(n => (n.x || 0) - radius(n))) - 30, x1 = Math.max(...nodes.map(n => (n.x || 0) + radius(n))) + 30;
+      let y0 = Math.min(...nodes.map(n => (n.y || 0) - radius(n))) - 30, y1 = Math.max(...nodes.map(n => (n.y || 0) + radius(n))) + 40;
+      // Schema loops and relationship labels extend beyond the node circles.
+      // Measure the rendered content once on fit, never in the animation loop.
+      if (p.schema) {
+        const bounds = viewport.node()?.getBBox?.();
+        if (bounds && Number.isFinite(bounds.width) && bounds.width > 0 && Number.isFinite(bounds.height) && bounds.height > 0) {
+          x0 = Math.min(x0, bounds.x - 20); x1 = Math.max(x1, bounds.x + bounds.width + 20);
+          y0 = Math.min(y0, bounds.y - 20); y1 = Math.max(y1, bounds.y + bounds.height + 20);
+        }
+      }
       const k = Math.max(.15, Math.min(2, width / Math.max(1, x1 - x0), height / Math.max(1, y1 - y0)));
       svg.call(zoom.transform, d3.zoomIdentity.translate(width / 2 - k * (x0 + x1) / 2, height / 2 - k * (y0 + y1) / 2).scale(k));
     }

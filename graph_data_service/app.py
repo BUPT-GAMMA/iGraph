@@ -3257,7 +3257,7 @@ class GraphDataService:
                     hops=0,
                     direction="both",
                     max_nodes=candidate_cap,
-                    max_edges=max(int(summary.num_edges), candidate_cap * 10, 200),
+                    max_edges=min(200_000, max(candidate_cap * 10, 200)),
                     allow_truncate=expand_to_limit or len(requested_nodes) > candidate_cap,
                     expand_to_limit=expand_to_limit,
                 )
