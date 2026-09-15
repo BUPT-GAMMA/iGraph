@@ -76,6 +76,7 @@ export type Message = {
   graphs?: GraphSnapshot[];
   reports?: Array<Record<string, unknown>>;
   attachments?: AttachmentRef[];
+  artifacts?: ArtifactRef[];
   streaming?: boolean;
   thinking?: Array<{ phase?: string; text?: string; streaming?: boolean }>;
   processItems?: ProcessItem[];
@@ -212,6 +213,8 @@ export type ConstructionResult = ConstructionGraph & {
   };
 };
 export type AttachmentRef = { file_token: string; filename: string };
+/** A Derived workspace file the agent published as a deliverable for one turn. */
+export type ArtifactRef = { path: string; filename: string; size?: number; mime_type?: string; artifact_id?: string };
 export type DraftPhase = 'editing' | 'creating_session' | 'uploading' | 'starting_run' | 'failed';
 export type DraftAttachment = {
   localId: string;

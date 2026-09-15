@@ -1,11 +1,54 @@
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { Message, Plan, ToolCall } from '../types';
+import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { editableLatestTurn } from '../latestTurn';
 import { answerVersions } from '../answerVersions';
 import { FileTypeIcon } from './FileTypeIcon';
 import { BrandLogo, Icon } from './Icon';
 import { ProcessTimeline } from './ProcessTimeline';
+import { fetchArtifact } from './WorkspaceFiles';
+
+function formatBytes(size?: number) {
+  if (!Number.isFinite(size) || (size as number) < 0) return '';
+  const bytes = size as number;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Deliverables the agent published this turn, downloadable inline. */
+function ArtifactList({ artifacts, sessionId }: { artifacts: ArtifactRef[]; sessionId?: string }) {
+  const [downloading, setDownloading] = useState('');
+  const [error, setError] = useState('');
+  async function download(artifact: ArtifactRef) {
+    if (!sessionId) return;
+    setDownloading(artifact.path); setError('');
+    try {
+      const blob = await fetchArtifact(sessionId, artifact.path);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = artifact.filename; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '文件下载失败');
+    } finally { setDownloading(''); }
+  }
+  return <div className="message-artifacts">
+    {artifacts.map(artifact => {
+      const size = formatBytes(artifact.size);
+      return <button type="button" className="artifact-chip" key={artifact.path}
+        disabled={!sessionId || Boolean(downloading)}
+        title={`下载 ${artifact.filename}`} aria-label={`下载 ${artifact.filename}`}
+        onClick={() => void download(artifact)}>
+        <FileTypeIcon filename={artifact.filename} />
+        <span className="artifact-name">{artifact.filename}</span>
+        {size ? <em>{size}</em> : null}
+        <span className="artifact-action">{downloading === artifact.path ? '下载中…' : '下载'}</span>
+      </button>;
+    })}
+    {error ? <p role="alert" className="artifact-error">{error}</p> : null}
+  </div>;
+}
 
 function planCard(plan?: Plan | null) {
   if (!plan?.steps?.length) return null;
@@ -217,6 +260,8 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   runTools?: ToolCall[];
   plan?: Plan | null;
   onEditLatest?: (message: Message, runId: string, content: string) => void;
+  /** Session that owns published artifacts; absent for unsaved drafts. */
+  artifactSessionId?: string;
 };
 
 const BOTTOM_THRESHOLD = 48;
@@ -225,7 +270,7 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onEditLatest, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const latestTurn = editableLatestTurn(messages);
   const editableKey = onEditLatest && latestTurn && !inputProps.loading && !inputProps.uploading && !inputProps.disabled && !inputProps.sendBlocked
@@ -293,16 +338,19 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
         const visibleTools = isLiveAssistant && runTools?.length ? runTools : displayed.tools;
         const visiblePlan = isLiveAssistant && plan ? plan : displayed.plan;
         const isEditing = Boolean(editableKey && editingKey === editableKey && message === latestTurn?.user);
-        const contents = <>
-          {displayed.attachments?.length ? <div className="message-attachments">{displayed.attachments.map(file => <span key={file.file_token}><FileTypeIcon filename={file.filename} /> {file.filename || '附件'}</span>)}</div> : null}
-          <div className="message-content">{renderContent(displayed.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>
-        </>;
+        // Attachment chips sit above the user bubble so they read as separate
+        // files rather than as part of the sent text.
+        const attachmentChips = displayed.attachments?.length
+          ? <div className="message-attachments">{displayed.attachments.map(file => <span key={file.file_token || file.filename}><FileTypeIcon filename={file.filename} /> {file.filename || '附件'}</span>)}</div>
+          : null;
+        const contents = <div className="message-content">{renderContent(displayed.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>;
         return <div className={`message-row ${message.role}${isEditing ? ' is-editing' : ''}`} key={versionKey}>
           {isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}
           <div className="message-body">
             <div className="message-label">{isAssistant ? (message.regenerate_of ? 'iGraph 助手 · 重新生成' : 'iGraph 助手') : '你'}</div>
             {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools)) : null}
             {isAssistant ? planCard(visiblePlan) : null}
+            {!isAssistant && !isEditing ? attachmentChips : null}
             {isEditing ? <PromptEditor message={message} onCancel={() => setEditingKey(null)} onSubmit={content => {
               if (latestTurn && onEditLatest) {
                 scrollToLatest('auto');
@@ -310,6 +358,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
               }
               setEditingKey(null);
             }} /> : isAssistant ? contents : <div className="message-bubble">{contents}</div>}
+            {isAssistant && displayed.artifacts?.length ? <ArtifactList artifacts={displayed.artifacts} sessionId={artifactSessionId} /> : null}
             {displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}
             {versions.length > 1 && !message.streaming && !isLiveAssistant ? <nav className="answer-versions" aria-label="回答版本">
               <button type="button" aria-label="上一个回答版本" disabled={versionIndex <= 0} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex - 1].run_id! }))}>‹</button>

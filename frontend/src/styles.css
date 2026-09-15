@@ -175,6 +175,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 [data-theme="dark"] .auto-mode { color: #a8afba; }
 [data-theme="dark"] .composer-upload { color: #b6bbc5; }
 [data-theme="dark"] .attachment-chip { color: var(--accent-strong); border-color: var(--accent-border); background: var(--accent-soft); }
+[data-theme="dark"] .message-attachments > span { color: var(--accent-strong); border-color: var(--accent-border); background: var(--accent-soft); }
+[data-theme="dark"] .artifact-chip { color: #d8e2f0; border-color: #3a4557; background: #262c38; }
+[data-theme="dark"] .artifact-chip:hover:not(:disabled) { border-color: var(--accent-border); background: var(--accent-soft); }
+[data-theme="dark"] .artifact-chip em { color: #94a3b8; }
+[data-theme="dark"] .artifact-chip .artifact-action { border-left-color: #3a4557; }
 [data-theme="dark"] .composer-dataset,
 [data-theme="dark"] .composer-model { color: #e2e8f0; border-color: #353e4f; background: #232934; box-shadow: none; }
 [data-theme="dark"] .composer-dataset:hover:not(:disabled),
@@ -1689,8 +1694,16 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .attachment-progress-track { stroke: currentColor; opacity: .15; }
 .attachment-progress-value { stroke: var(--accent); transition: stroke-dasharray .15s linear; }
 .attachment-progress small { font-size: 9px; font-variant-numeric: tabular-nums; }
-.message-attachments { margin: 4px 0 10px; flex-wrap: wrap; }
-.message-attachments > span { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; overflow-wrap: anywhere; }
+.message-attachments { display: flex; gap: 7px; margin: 0 0 7px; flex-wrap: wrap; }
+.message-attachments > span { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; padding: 6px 9px; border: 1px solid #e2e8f0; border-radius: 8px; color: #324972; background: var(--accent-soft); font-size: 12px; overflow-wrap: anywhere; }
+.message-artifacts { display: flex; gap: 7px; margin: 9px 0 0; flex-wrap: wrap; }
+.artifact-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 320px; padding: 7px 10px; border: 1px solid #e2e8f0; border-radius: 8px; color: #324972; background: #f8fafc; font-size: 12px; text-align: left; cursor: pointer; }
+.artifact-chip:hover:not(:disabled) { border-color: var(--accent-border); background: var(--accent-soft); }
+.artifact-chip:disabled { cursor: default; opacity: .7; }
+.artifact-chip .artifact-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-chip em { color: #8a8a8a; font-style: normal; font-size: 11px; }
+.artifact-chip .artifact-action { padding-left: 7px; border-left: 1px solid #dde3ea; color: var(--accent); }
+.artifact-error { margin: 6px 0 0; color: #c04a4a; font-size: 12px; }
 .session-pin { border: 0; background: transparent; color: inherit; opacity: 0; padding: 4px; flex-shrink: 0; border-radius: 4px; cursor: pointer; }
 .session-row:hover .session-pin, .project-session-row:hover .session-pin, .session-pin:focus-visible, .session-pin.is-pinned { opacity: .7; }
 .session-pin:hover, .session-pin.is-pinned { color: var(--accent, #63836a); }

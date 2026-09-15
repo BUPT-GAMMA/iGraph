@@ -305,6 +305,33 @@ def _stream_event_frame(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+# AgentOS does not persist the metadata form field sent with each run, so
+# the only record of the original user message and attached filenames is the
+# injected run_input string produced by _message_with_attachments().
+_ATTACHMENT_BLOCK_MARKER = "\n\n[附件文件]\n"
+
+
+def _parse_run_input(text: str) -> "tuple[str, list[dict]]":
+    """Split the injected attachment context block out of a run_input string.
+
+    Returns (clean_user_text, attachments) where each attachment dict carries
+    filename; file_token is left as an empty string because it is not stored
+    in the run record and is only needed for re-upload, not for display.
+    """
+    idx = text.find(_ATTACHMENT_BLOCK_MARKER)
+    if idx < 0:
+        return text, []
+    clean = text[:idx]
+    block = text[idx + len(_ATTACHMENT_BLOCK_MARKER):]
+    attachments: list[dict] = []
+    for line in block.splitlines():
+        line = line.strip()
+        if line.startswith("- ") and "（" in line:
+            filename = line[2 : line.index("（")]
+            attachments.append({"file_token": "", "filename": filename})
+    return clean, attachments
+
+
 def _run_input_text(run: dict) -> str:
     metadata = run.get("metadata")
     turn = metadata.get("igraph_turn") if isinstance(metadata, dict) else None
@@ -312,11 +339,13 @@ def _run_input_text(run: dict) -> str:
         return turn["user_message"]
     value = run.get("run_input")
     if isinstance(value, str):
-        return value
+        clean, _ = _parse_run_input(value)
+        return clean
     if isinstance(value, dict):
         for key in ("input_content", "message", "content"):
             if value.get(key) is not None:
-                return str(value[key])
+                clean, _ = _parse_run_input(str(value[key]))
+                return clean
         return json.dumps(value, ensure_ascii=False)
     if value is not None:
         return str(value)
@@ -489,12 +518,21 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
         metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
         turn = metadata.get("igraph_turn") if isinstance(metadata.get("igraph_turn"), dict) else {}
         if user_text:
+            # Prefer the clean metadata attachments list; fall back to parsing
+            # filenames out of the injected run_input block when AgentOS has not
+            # persisted the metadata field (which is the common case).
+            attachments = turn.get("attachments")
+            if not attachments:
+                raw_input = run.get("run_input") or ""
+                if isinstance(raw_input, str):
+                    _, attachments = _parse_run_input(raw_input)
             messages.append({"id": f"user:{run_id}", "run_id": run_id, "role": "user", "content": user_text,
-                             "attachments": turn.get("attachments") or []})
+                             "attachments": attachments or []})
 
         tool_cards: list[dict] = []
         graphs: list[dict] = []
         reports: list[dict] = []
+        artifacts: list[dict] = []
         projection = project_run(run)
         tools = run.get("tools") or []
         if not tools:
@@ -544,6 +582,19 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
                     })
             elif name == "create_analysis_report" and isinstance(result.get("report"), dict):
                 reports.append(result["report"])
+            elif name == "workspace_publish":
+                # A published Derived file is a user-visible delivery for this turn.
+                # Surface it on the assistant message, not only in the files panel.
+                published = result.get("artifact") if isinstance(result.get("artifact"), dict) else result
+                path = str(published.get("path") or published.get("relative_name") or "")
+                if path.startswith("Derived/"):
+                    artifacts.append({
+                        "path": path,
+                        "filename": path.split("/")[-1],
+                        "size": published.get("size"),
+                        "mime_type": published.get("mime_type"),
+                        "artifact_id": published.get("artifact_id"),
+                    })
 
         # Custom progress events are native, persisted run events. Rebuild the
         # same card by tool-call ID, including snapshots taken before completion.
@@ -629,6 +680,7 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
                 "tools": tool_cards,
                 "graphs": graphs,
                 "reports": reports,
+                "artifacts": artifacts,
                 "thinking": ([{"phase": "reasoning", "text": reasoning_text, "streaming": False}] if reasoning_text else []),
                 "processItems": projection["processItems"],
                 "regenerate_of": turn.get("regenerate_of"),
