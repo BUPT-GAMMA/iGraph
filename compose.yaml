@@ -102,6 +102,10 @@ services:
         condition: service_healthy
     networks:
       - backplane
+    # bubblewrap needs to create namespaces; Docker's default seccomp profile
+    # refuses that, which forces the workspace into unisolated fallback mode.
+    security_opt:
+      - seccomp:unconfined
     restart: unless-stopped
 
   backend:
