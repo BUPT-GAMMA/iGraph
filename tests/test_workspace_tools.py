@@ -615,3 +615,16 @@ def test_environment_cannot_be_modified_by_bash_in_fallback(tmp_path):
     asyncio.run(tools["workspace_bash"]("printf tampered > Environment/venv/sitecustomize.py", current))
     # bwrap 下由 --ro-bind 保证；fallback 下至少不得静默成功地留下篡改
     assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_tool_descriptions_mention_environment_workflow():
+    from agent_runtime.instructions import instructions_for
+
+    tools = toolset()
+    bash_doc = tools["workspace_bash"].__doc__ or ""
+    assert "Environment" in bash_doc
+    assert "workspace_env_ensure" in bash_doc
+
+    text = " ".join(instructions_for(reasoning_mode="direct", planning_mode="auto"))
+    assert "Environment" in text
+    assert "workspace_env_ensure" in text
