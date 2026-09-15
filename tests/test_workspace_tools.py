@@ -486,3 +486,35 @@ def test_environment_zone_exists_and_survives_bash(tmp_path):
     asyncio.run(tools["workspace_bash"]("printf y > Ephemeral/again.txt", current))
     assert (root / "Environment" / "venv" / "marker.txt").read_text() == "kept"
     assert not (root / "Ephemeral" / "Environment").exists()
+
+
+def test_iter_files_skips_environment_subtree(tmp_path):
+    from agent_runtime.workspace_tools import _iter_files
+
+    current = ctx(tmp_path)
+    tools = toolset()
+    root = tmp_path / "u1" / "s1"
+    asyncio.run(tools["workspace_bash"]("printf x > Ephemeral/probe.txt", current))
+
+    venv = root / "Environment" / "venv" / "lib"
+    venv.mkdir(parents=True)
+    for index in range(50):
+        (venv / f"module{index}.py").write_text(f"# {index}", encoding="utf-8")
+
+    keys = _iter_files(root)
+    assert "Ephemeral/probe.txt" in keys
+    assert not any(key.startswith("Environment/") for key in keys)
+
+
+def test_environment_files_are_not_reported_as_artifacts(tmp_path):
+    current = ctx(tmp_path)
+    tools = toolset()
+    root = tmp_path / "u1" / "s1"
+    (root / "Environment").mkdir(parents=True, exist_ok=True)
+
+    # 命令期间在 Environment 下新增文件，不应出现在变更产物里
+    result = asyncio.run(tools["workspace_bash"](
+        "mkdir -p Environment/venv && printf pkg > Environment/venv/site.py", current))
+    assert result["success"] is True
+    paths = [item["path"] for item in result["artifacts"]]
+    assert not any(path.startswith("Environment/") for path in paths)
