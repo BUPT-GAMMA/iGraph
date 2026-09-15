@@ -30,6 +30,7 @@ logger = logging.getLogger("igraph")
 _ZONES = ("Uploaded", "Ephemeral", "Derived", "Environment")
 _MANIFEST_NAME = ".workspace_manifest.json"
 _ENVIRONMENT_ZONE = "Environment"
+_PROTECTED_ZONES = frozenset({"Uploaded", "Derived", "Environment"})
 _DEFAULT_OUTPUT_LIMIT = 100_000
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _SANDBOX_MODE_ENV = "IGRAPH_WORKSPACE_SANDBOX_MODE"
@@ -214,7 +215,7 @@ def _protected_snapshot(root: Path) -> dict[str, bytes | None]:
     snapshot: dict[str, bytes | None] = {}
     for key, descriptor in _iter_files(root).items():
         relative = Path(key)
-        if _zone(relative) not in {"Uploaded", "Derived"}:
+        if _zone(relative) not in _PROTECTED_ZONES:
             continue
         path = root / relative
         if descriptor[0] == "file":
@@ -264,12 +265,12 @@ def _command_rejects_workspace_mutation(command: str) -> bool:
         return True
     for index, token in enumerate(tokens):
         if token in {"rm", "mv", "rmdir", "unlink", "chmod", "chown", "touch", "truncate"}:
-            if any("Uploaded" in value for value in tokens[index + 1 :]):
+            if any(zone in value for value in tokens[index + 1 :] for zone in ("Uploaded", "Environment")):
                 return True
         if token in {">", ">>", "1>", "1>>", "2>", "2>>"}:
-            if any("Uploaded" in value for value in tokens[index + 1 :]):
+            if any(zone in value for value in tokens[index + 1 :] for zone in ("Uploaded", "Environment")):
                 return True
-        if ">" in token and "Uploaded" in token:
+        if ">" in token and ("Uploaded" in token or "Environment" in token):
             return True
     return False
 
@@ -449,7 +450,7 @@ def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tu
             continue
         relative = Path(key)
         zone = _zone(relative)
-        if zone in {"Uploaded", "Derived"}:
+        if zone in _PROTECTED_ZONES:
             protected_changed = True
             continue
         path = root / relative
