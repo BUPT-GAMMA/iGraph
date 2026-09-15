@@ -32,7 +32,7 @@ def toolset():
 def test_workspace_bash_and_read_are_session_scoped(tmp_path):
     c = ctx(tmp_path)
     tools = toolset()
-    assert set(tools) == {"workspace_list", "workspace_bash", "workspace_publish"}
+    assert set(tools) == {"workspace_list", "workspace_bash", "workspace_publish", "workspace_env_ensure"}
     result = asyncio.run(tools["workspace_bash"]("printf hello > Ephemeral/result.txt", c))
     assert result["success"]
     read = asyncio.run(tools["workspace_bash"]("cat Ephemeral/result.txt", c))
@@ -539,3 +539,35 @@ def test_sandbox_command_avoids_pid_namespace_and_mounts_environment(tmp_path, m
     assert f"--ro-bind {root / 'Environment'} /workspace/Environment" in joined
     # 网络仍然隔离：不得出现 share-net
     assert "--share-net" not in argv
+
+
+def test_env_ensure_rejects_non_pypi_sources(tmp_path):
+    current = ctx(tmp_path)
+    result = asyncio.run(toolset()["workspace_env_ensure"](["git+https://evil.example/x"], current))
+    assert result["success"] is False
+    assert "PyPI" in result["error"]
+
+
+def test_env_ensure_reports_fallback_security_level(tmp_path, monkeypatch):
+    # fallback 下 Environment 的只读保证不成立，必须在返回值里说明
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
+    monkeypatch.setenv("IGRAPH_UV_BINARY", "/nonexistent/uv")
+    current = ctx(tmp_path)
+    result = asyncio.run(toolset()["workspace_env_ensure"](["requests"], current))
+    assert result["sandbox_mode"] == "fallback"
+    assert result["sandbox_security_level"] == "development-compatibility"
+
+
+def test_env_ensure_surfaces_missing_uv(tmp_path, monkeypatch):
+    monkeypatch.setenv("IGRAPH_UV_BINARY", "/nonexistent/uv")
+    current = ctx(tmp_path)
+    result = asyncio.run(toolset()["workspace_env_ensure"](["requests"], current))
+    assert result["success"] is False
+    assert "uv" in result["error"]
+
+
+def test_env_ensure_requires_session_identity(tmp_path):
+    os.environ["IGRAPH_WORKSPACE_ROOT"] = str(tmp_path)
+    broken = SimpleNamespace(user_id="u1", session_id="")
+    result = asyncio.run(toolset()["workspace_env_ensure"](["requests"], broken))
+    assert result["success"] is False
