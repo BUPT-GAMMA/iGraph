@@ -221,10 +221,11 @@ def _protected_snapshot(root: Path) -> dict[str, bytes | None]:
 
 def _restore_protected(root: Path, before: dict[str, bytes | None]) -> None:
     current = _iter_files(root)
-    protected = set(before) | {key for key in current if _zone(Path(key)) in {"Uploaded", "Derived"}}
-    for key in protected:
+    # Only restore files that existed in the snapshot; ignore new files in protected
+    # zones (they may come from concurrent workspace_publish or user uploads).
+    for key in before:
         path = root / key
-        expected = before.get(key)
+        expected = before[key]
         # A fallback process can replace a protected zone with a symlink (or a
         # regular file). Reset every parent component before restoring so that
         # recovery never follows an attacker-controlled path outside root.
