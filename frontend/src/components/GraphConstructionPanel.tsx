@@ -295,7 +295,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onUse }: Pro
     catch (cause) { if (alive.current) handleFailure(cause); }
     finally { if (alive.current) setBusy(''); }
   }
-  function selectNode(node: Record<string, unknown>) { setSelected(node); setNodeIds([String(node.id)]); setProperty(''); setEdgeIds([]); }
+  function selectNode(node: Record<string, unknown> | null) { setSelected(node); setNodeIds(node ? [String(node.id)] : []); setProperty(''); setEdgeIds([]); }
   function switchRule(next: Rule) { setRule(next); setError(''); setProperty(''); setEdgeIds([]); }
   const wantsNodes = ['collapse_node', 'node_property_to_edge', 'extract_property_node'].includes(rule) || rule === 'delete' && target === 'node';
   const wantsEdges = ['node_property_to_edge', 'reverse_edges'].includes(rule) || rule === 'delete' && target === 'edge';

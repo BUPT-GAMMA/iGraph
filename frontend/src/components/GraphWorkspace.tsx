@@ -1,5 +1,7 @@
-import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
-import * as d3 from 'd3';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { GraphCanvas } from './GraphCanvas';
+import { graphIndex, previewGraph } from '../graphPreview';
+import { normalizeHighlights } from '../graphAppearance';
 import { listProjectTrainingRuns } from '../api';
 import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
@@ -18,63 +20,6 @@ const TAB_LABELS: Record<Tab, string> = {
   Artifacts: '分析产物',
 };
 
-function nodeId(node: Record<string, unknown>, index: number) { return String(node.id ?? node.label ?? index); }
-
-const COMMUNITY_COLORS = ['#3b82f6', '#f97316', '#10b981', '#a855f7', '#eab308', '#ef4444', '#06b6d4', '#ec4899'];
-const DEFAULT_HIGHLIGHT_COLORS: Record<string, string> = { node: 'var(--accent, #2563eb)', path: '#d97706', subgraph: '#7c3aed' };
-
-function normalizeHighlights(value: GraphData['highlights']): Highlight[] {
-  if (Array.isArray(value)) return value;
-  if (!value || typeof value !== 'object') return [];
-  const output: Highlight[] = [];
-  (value.nodes || []).forEach((item, index) => output.push({ id: `node-${index}`, type: 'node', nodes: item.ids || [], color: item.color, label: item.label }));
-  (value.paths || []).forEach((item, index) => output.push({ id: `path-${index}`, type: 'path', nodes: item.node_sequence || [], edges: item.edges as Highlight['edges'], color: item.color, label: item.label }));
-  (value.subgraphs || []).forEach((item, index) => output.push({ id: `subgraph-${index}`, type: 'subgraph', nodes: item.nodes || [], edges: item.edges as Highlight['edges'], color: item.color, label: item.label }));
-  return output;
-}
-
-function edgeKey(source: unknown, target: unknown) { return `${String(source)}\u0000${String(target)}`; }
-
-function endpointId(value: unknown) {
-  return String(value && typeof value === 'object' && 'id' in value ? (value as { id: unknown }).id : value);
-}
-
-function highlightedEdgeColor(mapping: Map<string, string>, source: unknown, target: unknown) {
-  const sourceId = endpointId(source);
-  const targetId = endpointId(target);
-  return mapping.get(edgeKey(sourceId, targetId)) || mapping.get(edgeKey(targetId, sourceId));
-}
-
-function communityColor(community: string | undefined) {
-  if (community === undefined) return 'var(--graph-node-fill)';
-  const numeric = Number(community);
-  const index = Number.isFinite(numeric)
-    ? Math.abs(Math.trunc(numeric))
-    : [...community].reduce((hash, character) => ((hash * 31) + character.charCodeAt(0)) >>> 0, 0);
-  return COMMUNITY_COLORS[index % COMMUNITY_COLORS.length];
-}
-
-function paddedHullPath(points: Array<[number, number]>, padding = 15) {
-  if (!points.length) return null;
-  const expanded = points.flatMap(([x, y]) => Array.from({ length: 8 }, (_, index) => {
-    const angle = index * Math.PI / 4;
-    return [x + Math.cos(angle) * padding, y + Math.sin(angle) * padding] as [number, number];
-  }));
-  const hull = d3.polygonHull(expanded);
-  return hull ? `M${hull.map(point => point.join(',')).join('L')}Z` : null;
-}
-
-function highlightEdgePairs(highlight: Highlight) {
-  const pairs = new Set<string>();
-  const sequence = (highlight.nodes || []).map(String);
-  for (let index = 1; index < sequence.length; index += 1) pairs.add(edgeKey(sequence[index - 1], sequence[index]));
-  (highlight.edges || []).forEach(edge => {
-    if (Array.isArray(edge)) pairs.add(edgeKey(edge[0], edge[1]));
-    else pairs.add(edgeKey(edge.src ?? edge.source, edge.dst ?? edge.target));
-  });
-  return pairs;
-}
-
 type GraphWorkspaceProps = {
   data: GraphData | null;
   view?: GraphViewState;
@@ -86,7 +31,7 @@ type GraphWorkspaceProps = {
   tab: Tab;
   onTab: (tab: Tab) => void;
   selected: Record<string, unknown> | null;
-  onSelect: (node: Record<string, unknown>) => void;
+  onSelect: (node: Record<string, unknown> | null) => void;
   collapsed: boolean;
   onToggle: () => void;
   onExpand?: (node: Record<string, unknown>) => void;
@@ -105,6 +50,10 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
     && previous.collapsed === next.collapsed
     && previous.layoutVersion === next.layoutVersion
     && previous.projectId === next.projectId
+    && previous.onSelect === next.onSelect
+    && previous.onExpand === next.onExpand
+    && previous.onTab === next.onTab
+    && previous.onToggle === next.onToggle
     && previous.sessionId === next.sessionId
     && previous.onStopJob === next.onStopJob;
   if (previous.embedded !== next.embedded || previous.onConstruct !== next.onConstruct || previous.constructionLabel !== next.constructionLabel || previous.datasetName !== next.datasetName) return false;
@@ -114,35 +63,26 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
 }
 
 export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob, embedded, onConstruct, constructionLabel = '构图' }: GraphWorkspaceProps) {
-  const arrowId = `graph-arrow-${useId().replace(/:/g, '')}`;
   const incomingDataSignature = useMemo(() => data ? JSON.stringify(data) : 'empty', [data]);
   const stableDataRef = useRef<{ signature: string; data: GraphData | null }>({ signature: incomingDataSignature, data });
   if (stableDataRef.current.signature !== incomingDataSignature) stableDataRef.current = { signature: incomingDataSignature, data };
   const renderedData = stableDataRef.current.data;
-  const canvas = useRef<SVGSVGElement>(null);
-  const onSelectRef = useRef(onSelect);
-  const zoomTransformRef = useRef(d3.zoomIdentity);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [layout, setLayout] = useState<LayoutMode>('force');
   const [connectedOnly, setConnectedOnly] = useState(false);
-  const [canvasBounds, setCanvasBounds] = useState('');
+  const [displayOpen, setDisplayOpen] = useState(false);
+  const [sizeMode, setSizeMode] = useState<'degree' | 'uniform'>('degree');
+  const [labels, setLabels] = useState<'auto' | 'all' | 'hidden'>('auto');
+  const [edgeWidth, setEdgeWidth] = useState(1);
+  const [filterMatches, setFilterMatches] = useState(false);
+  const [focusId, setFocusId] = useState('');
+  const [depth, setDepth] = useState(0);
   const [fitVersion, setFitVersion] = useState(0);
   const [projectTrainingRuns, setProjectTrainingRuns] = useState<ProjectTrainingRun[]>([]);
   const [projectTrainingLoading, setProjectTrainingLoading] = useState(false);
   const [projectTrainingError, setProjectTrainingError] = useState('');
   const hasPendingLiveTraining = liveTools.some(tool => String(tool.tool || '') === 'train' && !tool.done);
-  useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
-  useEffect(() => {
-    const host = canvas.current?.parentElement;
-    if (!embedded || collapsed || tab !== 'Graph' || !host || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(entries => {
-      const size = entries[0]?.contentRect;
-      if (size) setCanvasBounds(`${Math.round(size.width)}:${Math.round(size.height)}`);
-    });
-    observer.observe(host);
-    return () => observer.disconnect();
-  }, [embedded, collapsed, tab, renderedData]);
   const layoutLabel = layout === 'force' ? '力导向' : layout === 'radial' ? '径向' : '环形';
   const communityById = useMemo(() => {
     const raw = renderedData?.community || renderedData?.communities;
@@ -150,32 +90,16 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     return mapping && typeof mapping === 'object' ? new Map(Object.entries(mapping).map(([id, value]) => [String(id), String(value)])) : new Map<string, string>();
   }, [renderedData]);
   const highlights = useMemo(() => normalizeHighlights(renderedData?.highlights), [renderedData]);
-  const highlightByNode = useMemo(() => {
-    const mapping = new Map<string, Highlight[]>();
-    highlights.forEach(highlight => (highlight.nodes || []).forEach(id => {
-      const key = String(id); mapping.set(key, [...(mapping.get(key) || []), highlight]);
-    }));
-    return mapping;
-  }, [highlights]);
-  const degreeById = useMemo(() => {
-    const degrees = new Map<string, number>();
-    (renderedData?.edges || []).forEach(edge => {
-      const source = String(edge.src ?? edge.source ?? '');
-      const target = String(edge.dst ?? edge.target ?? '');
-      degrees.set(source, (degrees.get(source) || 0) + 1);
-      degrees.set(target, (degrees.get(target) || 0) + 1);
-    });
-    return degrees;
-  }, [renderedData]);
-  const visibleNodes = useMemo(() => {
-    if (!renderedData?.nodes) return [];
-    const text = query.trim().toLowerCase();
-    return renderedData.nodes.map((node, index) => ({ node, id: nodeId(node, index) })).filter(item => {
-      const matches = !text || item.id.toLowerCase().includes(text) || String(item.node.label ?? '').toLowerCase().includes(text);
-      const connected = !connectedOnly || (degreeById.get(item.id) || 0) > 0;
-      return matches && connected;
-    });
-  }, [renderedData, query, connectedOnly, degreeById]);
+  const index = useMemo(() => graphIndex(renderedData || { nodes: [], edges: [] }), [renderedData]);
+  const preview = useMemo(() => previewGraph(index, highlights, query, filterMatches, connectedOnly, focusId, depth),
+    [index, highlights, query, filterMatches, connectedOnly, focusId, depth]);
+  useEffect(() => {
+    const id = String(selected?.id ?? '');
+    if (id && index.nodes.has(id) && !preview.nodes.some(node => node.id === id) && !filterMatches && !depth) setFocusId(id);
+  }, [selected, index, preview.nodes, filterMatches, depth]);
+  const selectedInfo = selected ? index.nodes.get(String(selected.id)) : undefined;
+  const locate = (id: string) => { setFocusId(id); const node = index.nodes.get(id); if (node) onSelect(node); };
+  useEffect(() => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); }, [sessionId, datasetName]);
 
   useEffect(() => {
     if (tab !== 'ML' || !projectId) {
@@ -214,67 +138,21 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     };
   }, [projectId, tab, hasPendingLiveTraining]);
 
-  useEffect(() => {
-    if (collapsed || !canvas.current || !renderedData?.nodes?.length || tab !== 'Graph') return;
-    const svg = d3.select(canvas.current); svg.selectAll('*').remove();
-    if (renderedData.directed) svg.append('defs').append('marker').attr('id', arrowId).attr('viewBox', '0 -5 10 10').attr('refX', 19).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto').append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--graph-edge-stroke, #94a3b8)');
-    const host = canvas.current.parentElement; const width = host?.clientWidth || 360; const height = host?.clientHeight || 420;
-    const viewport = svg.append('g').attr('class', 'graph-viewport').attr('transform', zoomTransformRef.current.toString());
-    const zoom = d3.zoom<SVGSVGElement, unknown>().extent([[0, 0], [width, height]]).scaleExtent([.25, 6]).on('zoom', event => { zoomTransformRef.current = event.transform; viewport.attr('transform', event.transform.toString()); });
-    svg.call(zoom).call(zoom.transform, zoomTransformRef.current).on('dblclick.zoom', null);
-    const nodes = visibleNodes.slice(0, 180).map(item => ({ ...item.node, id: item.id }));
-    const nodeIds = new Set(nodes.map(node => node.id));
-    const edges = (renderedData.edges || []).map(edge => ({ source: String(edge.src ?? edge.source), target: String(edge.dst ?? edge.target), weight: edge.weight })).filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target)).slice(0, 400);
-    const visibleHighlights = highlights.filter(highlight => (highlight.nodes || []).some(id => nodeIds.has(String(id))));
-    const pathPairs = new Map<string, string>();
-    visibleHighlights.filter(highlight => highlight.type === 'path').forEach(highlight => highlightEdgePairs(highlight).forEach(key => pathPairs.set(key, highlight.color || DEFAULT_HIGHLIGHT_COLORS.path)));
-    const subgraphPairs = new Map<string, string>();
-    visibleHighlights.filter(highlight => highlight.type === 'subgraph').forEach(highlight => highlightEdgePairs(highlight).forEach(key => subgraphPairs.set(key, highlight.color || DEFAULT_HIGHLIGHT_COLORS.subgraph)));
-    const simulation = d3.forceSimulation(nodes as any).force('link', d3.forceLink(edges as any).id((node: any) => node.id).distance(layout === 'radial' ? 72 : 58)).force('charge', d3.forceManyBody().strength(-150)).force('center', d3.forceCenter(width / 2, height / 2)).force('collision', d3.forceCollide(15));
-    if (layout === 'radial') simulation.force('radial', d3.forceRadial(Math.min(width, height) * .3, width / 2, height / 2).strength(.45));
-    const hullLayer = viewport.append('g').attr('class', 'graph-subgraph-hulls');
-    const subgraphHulls = visibleHighlights.filter(highlight => highlight.type === 'subgraph').map((highlight, index) => ({ highlight, path: hullLayer.append('path').attr('class', 'graph-subgraph-hull').attr('fill', highlight.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('stroke', highlight.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('aria-label', highlight.label || `子图 ${index + 1}`) }));
-    const link = viewport.append('g').selectAll('line').data(edges).join('line').attr('class', 'graph-link')
-      .attr('marker-end', renderedData.directed ? `url(#${arrowId})` : null)
-      .attr('stroke', edge => highlightedEdgeColor(pathPairs, edge.source, edge.target) || highlightedEdgeColor(subgraphPairs, edge.source, edge.target) || null)
-      .classed('is-path-highlight', edge => Boolean(highlightedEdgeColor(pathPairs, edge.source, edge.target)))
-      .classed('is-subgraph-highlight', edge => !highlightedEdgeColor(pathPairs, edge.source, edge.target) && Boolean(highlightedEdgeColor(subgraphPairs, edge.source, edge.target)));
-    const node = viewport.append('g').selectAll('g').data(nodes).join('g').attr('class', 'graph-node').on('click', (_, item) => onSelectRef.current(item as Record<string, unknown>)).call(d3.drag<any, any>().on('start', (event, item) => { if (!event.active) simulation.alphaTarget(.25).restart(); item.fx = item.x; item.fy = item.y; }).on('drag', (event, item) => { item.fx = event.x; item.fy = event.y; }).on('end', (event, item) => { if (!event.active) simulation.alphaTarget(0); item.fx = null; item.fy = null; }));
-    if (layout === 'circle') {
-      const radius = Math.max(35, Math.min(width, height) * .34);
-      nodes.forEach((item: any, index) => { const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2; item.x = width / 2 + Math.cos(angle) * radius; item.y = height / 2 + Math.sin(angle) * radius; });
-      simulation.stop();
-    }
-    node.append('circle').attr('r', (item: any) => item.id === String(selected?.id ?? '') ? 13 : 8).attr('fill', (item: any) => item.id === String(selected?.id ?? '') ? 'var(--graph-node-selected-fill)' : communityColor(communityById.get(item.id))).attr('stroke', item => highlightByNode.get(item.id)?.[0]?.color || null).classed('is-highlighted', item => highlightByNode.has(item.id));
-    node.append('circle').attr('class', 'graph-node-halo').attr('r', (item: any) => highlightByNode.has(item.id) ? 13 : 0).attr('fill', item => highlightByNode.get(item.id)?.[0]?.color || DEFAULT_HIGHLIGHT_COLORS.node).attr('opacity', .2);
-    node.append('text').attr('dy', 20).text((item: any) => String(item.label ?? item.id).slice(0, 12));
-    const renderFrame = () => {
-      if (embedded) nodes.forEach((item: any) => {
-        item.x = Math.max(24, Math.min(width - 24, item.x));
-        item.y = Math.max(24, Math.min(height - 30, item.y));
-      });
-      link.attr('x1', (edge: any) => edge.source.x).attr('y1', (edge: any) => edge.source.y).attr('x2', (edge: any) => edge.target.x).attr('y2', (edge: any) => edge.target.y);
-      node.attr('transform', (item: any) => `translate(${item.x},${item.y})`);
-      subgraphHulls.forEach(({ highlight, path }) => {
-        const points = (highlight.nodes || []).map(id => nodes.find((item: any) => item.id === String(id))).filter(Boolean).map((item: any) => [item.x, item.y] as [number, number]);
-        path.attr('d', paddedHullPath(points));
-      });
-    };
-    simulation.on('tick', renderFrame);
-    simulation.tick();
-    renderFrame();
-    return () => { simulation.stop(); svg.on('.zoom', null); };
-  }, [collapsed, renderedData, tab, layoutVersion, layout, visibleNodes, highlights, communityById, highlightByNode, embedded, canvasBounds, fitVersion]);
-  useEffect(() => {
-    if (!canvas.current || collapsed || tab !== 'Graph') return;
-    const selectedId = String(selected?.id ?? '');
-    d3.select(canvas.current).selectAll<SVGCircleElement, Record<string, unknown>>('.graph-node > circle:not(.graph-node-halo)')
-      .attr('r', item => String(item.id ?? '') === selectedId ? 13 : 8)
-      .attr('fill', item => String(item.id ?? '') === selectedId ? 'var(--graph-node-selected-fill)' : communityColor(communityById.get(String(item.id ?? ''))));
-  }, [selected, communityById, collapsed, tab]);
   const tabs: Tab[] = embedded ? ['Graph', 'Overview', 'Data'] : ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
   return <aside className={`graph-workspace ${collapsed ? 'is-collapsed' : ''}`}><div className="workspace-top"><strong className="workspace-title">图工作台</strong>{onConstruct && !collapsed && <button className="workspace-construction-button" onClick={onConstruct} title={datasetName ? `${constructionLabel}：${datasetName}` : '选择数据集并构图'}><Icon name="graph" size={14} />{constructionLabel}</button>}<button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={collapsed ? '展开右侧栏' : '收起右侧栏'} title={collapsed ? '展开右侧栏' : '收起右侧栏'}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={21} /></button></div><div className="workspace-panel-content" aria-hidden={collapsed}><SlidingTabs ariaLabel="图工作台视图" className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: TAB_LABELS[item] }))} value={tab} onChange={onTab} />
-    {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={projectTrainingError} /> : tab === 'Artifacts' ? <><WorkspaceFiles key={sessionId} sessionId={sessionId} revision={JSON.stringify([messages.length, ...[...messages.flatMap(message => message.tools || []), ...liveTools].filter(tool => tool.tool?.startsWith('workspace_')).map(tool => [tool.call_id, tool.done, tool.result])])} /><ArtifactsTab messages={messages} /></> : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图</strong></div> : view?.status === 'failed' ? <div className="graph-empty"><strong>图加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>暂无图</strong><span>加载数据或发送建图请求后，这里会显示图分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button>{embedded && <button onClick={() => { zoomTransformRef.current = d3.zoomIdentity; setFitVersion(current => current + 1); }}>适应画布</button>}</div>{searchOpen ? <div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索节点 ID 或名称" /><span>{visibleNodes.length} 个结果</span></div> : null}<div className="graph-canvas"><svg ref={canvas} aria-label="图谱画布，可拖动平移并使用滚轮缩放" /></div>{(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? '已选节点')}</strong><span>已选择</span></div><div className="inspector-row"><span>节点 ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>类型</span><strong>{String(selected.type ?? selected.category ?? '节点')}</strong></div><div className="inspector-row"><span>度数</span><strong>{degreeById.get(String(selected.id ?? '')) ?? '-'}</strong></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} />}
+    {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={projectTrainingError} /> : tab === 'Artifacts' ? <><WorkspaceFiles key={sessionId} sessionId={sessionId} revision={JSON.stringify([messages.length, ...[...messages.flatMap(message => message.tools || []), ...liveTools].filter(tool => tool.tool?.startsWith('workspace_')).map(tool => [tool.call_id, tool.done, tool.result])])} /><ArtifactsTab messages={messages} /></> : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>非独立图，无法直接可视化</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />) : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>正在加载图</strong></div> : view?.status === 'failed' ? <div className="graph-empty"><strong>图加载失败</strong><span>{view.error}</span></div> : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>暂无图</strong><span>加载数据或发送建图请求后，这里会显示图分析结果。</span></div> : tab === 'Graph' ? <><div className="graph-toolbar"><button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> 搜索节点</button><button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title="切换图布局">布局：{layoutLabel} <Icon name="chevron" size={12} /></button><button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>过滤{connectedOnly ? '：有连接' : ''}</button><button onClick={() => setFitVersion(current => current + 1)}>适应画布</button><button aria-expanded={displayOpen} onClick={() => setDisplayOpen(value => !value)}>显示设置</button></div>{displayOpen && <div className="graph-display-settings">
+      <label>节点大小<select value={sizeMode} onChange={e => setSizeMode(e.target.value as typeof sizeMode)}><option value="degree">按度数</option><option value="uniform">统一大小</option></select></label>
+      <label>节点标签<select value={labels} onChange={e => setLabels(e.target.value as typeof labels)}><option value="auto">自动</option><option value="all">全部</option><option value="hidden">隐藏</option></select></label>
+      <label>边粗细<input aria-label="边粗细" type="range" min="0.6" max="2" step="0.2" value={edgeWidth} onChange={e => setEdgeWidth(Number(e.target.value))} /></label>
+      <button onClick={() => { setSizeMode('degree'); setLabels('auto'); setEdgeWidth(1); }}>恢复默认</button>
+    </div>}
+    {searchOpen ? <div className="graph-search-group"><div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { const id = preview.matches.values().next().value; if (id) locate(id); } }} placeholder="搜索节点 ID 或名称" /><span>{preview.matches.size} 个结果</span></div>
+      <label className="graph-filter-match"><input type="checkbox" checked={filterMatches} onChange={event => setFilterMatches(event.target.checked)} />仅显示匹配项</label>
+      {query.trim() && <div className="graph-search-results">{[...preview.matches].slice(0, 8).map(id => <button key={id} onClick={() => locate(id)}>{String(index.nodes.get(id)?.label ?? id)}<small>{id}</small></button>)}{!preview.matches.size && <span>当前已加载数据中没有匹配节点</span>}</div>}
+    </div> : null}
+    <div className="graph-canvas"><GraphCanvas active={!collapsed} key={`${sessionId}:${datasetName || ''}`} preview={preview} directed={renderedData?.directed} communities={communityById} highlights={highlights} selected={selected} onSelect={node => { onSelect(node); if (!node) { setFocusId(''); setDepth(0); } }} layout={layout} layoutVersion={layoutVersion} sizeMode={sizeMode} labels={labels} edgeWidth={edgeWidth} fitVersion={fitVersion} focusId={focusId} />{!preview.nodes.length && <div className="graph-preview-empty">没有符合条件的节点</div>}</div>
+    <div className="graph-preview-note" role="status">显示 {preview.nodes.length} / {renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size} 个节点 · {preview.edges.length} / {renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length} 条边{(preview.nodes.length < index.nodes.size || renderedData?.truncated || preview.edges.length < index.edges.length) && ' · 有界预览'}{depth > 0 && ` · ${depth} 跳邻域`}{sizeMode === 'degree' && ` · 大小：${preview.nodes[0]?.degreeLabel || '度数'}`}{preview.omittedHighlights > 0 && ` · ${preview.omittedHighlights} 个高亮节点超出预览范围`}</div>
+    {(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? '已选节点')}</strong><span>已选择</span></div><div className="inspector-row"><span>节点 ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>类型</span><strong>{String(selected.type ?? selected.category ?? '节点')}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || '度数'}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div><div className="graph-neighborhood"><label>查看范围<select aria-label="查看邻域范围" value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">全部预览</option><option value="1">一跳邻域</option><option value="2">两跳邻域</option></select></label><span>邻域基于已加载数据</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} previewNodes={preview.nodes.length} previewEdges={preview.edges.length} />}
   </div></aside>;
 }, graphWorkspacePropsEqual);
 
@@ -291,12 +169,12 @@ function CollectionTab({ tab, datasetName, summary }: { tab: Tab; datasetName?: 
   return <div className="tab-content collection-data"><div className="tab-title"><strong>数据集划分与特征</strong><span>{displayCount(summary.num_graphs)} 张图</span></div><div className="collection-section"><strong>数据划分</strong><div className="stat-grid"><div><span>训练集</span><strong>{displayCount(splits.train)}</strong></div><div><span>验证集</span><strong>{displayCount(validationSize)}</strong></div><div><span>测试集</span><strong>{displayCount(splits.test)}</strong></div><div><span>无边图</span><strong>{displayCount(summary.num_edgeless_graphs)}</strong></div></div></div><div className="collection-section"><strong>词表与标签</strong><div className="stat-grid"><div><span>节点词表</span><strong>{displayCount(summary.node_vocab_size)}</strong></div><div><span>边词表</span><strong>{displayCount(summary.edge_vocab_size)}</strong></div><div><span>缺失标签</span><strong>{Number.isFinite(missingRate) ? `${(missingRate * 100).toFixed(2)}%` : '-'}</strong></div><div><span>边特征</span><strong>{summary.uses_edge_features == null ? '-' : summary.uses_edge_features ? '是' : '否'}</strong></div></div></div></div>;
 }
 
-function WorkspaceTab({ tab, data, messages }: { tab: Tab; data: GraphData; messages: Message[] }) {
+function WorkspaceTab({ tab, data, messages, previewNodes, previewEdges }: { tab: Tab; data: GraphData; messages: Message[]; previewNodes: number; previewEdges: number }) {
   if (tab === 'Overview') {
     const totalNodes = data.total_nodes ?? data.num_nodes ?? data.nodes.length;
     const totalEdges = data.total_edges ?? data.num_edges ?? data.edges.length;
-    const renderedNodes = data.truncated_to ?? data.nodes.length;
-    return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">当前图</span><h2>当前数据集</h2><strong>图分析已就绪</strong></div><div className="stat-grid"><div><span>节点数</span><strong>{totalNodes.toLocaleString()}</strong></div><div><span>边数</span><strong>{totalEdges.toLocaleString()}</strong></div><div><span>方向</span><strong>{data.directed ? '有向图' : '无向图'}</strong></div><div><span>画布节点</span><strong>{renderedNodes.toLocaleString()}</strong></div></div>{data.truncated ? <div className="workspace-note"><Icon name="spark" size={15} /> 画布当前展示 {renderedNodes.toLocaleString()} 个节点，数据集总量统计保持完整。</div> : <div className="workspace-note"><Icon name="spark" size={15} /> 从中央对话发起图算法，结果会同步到这里。</div>}</div>;
+    const renderedNodes = previewNodes;
+    return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">当前图</span><h2>当前数据集</h2><strong>图分析已就绪</strong></div><div className="stat-grid"><div><span>节点数</span><strong>{totalNodes.toLocaleString()}</strong></div><div><span>边数</span><strong>{totalEdges.toLocaleString()}</strong></div><div><span>方向</span><strong>{data.directed ? '有向图' : '无向图'}</strong></div><div><span>画布节点</span><strong>{renderedNodes.toLocaleString()}</strong></div></div>{renderedNodes < totalNodes || previewEdges < totalEdges ? <div className="workspace-note"><Icon name="spark" size={15} /> 画布当前展示 {renderedNodes.toLocaleString()} 个节点、{previewEdges.toLocaleString()} 条边，数据集总量统计保持完整。</div> : <div className="workspace-note"><Icon name="spark" size={15} /> 从中央对话发起图算法，结果会同步到这里。</div>}</div>;
   }
   if (tab === 'Data') return <div className="tab-content"><div className="tab-title"><strong>节点与边数据</strong><span>{(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString()} 个节点</span></div><div className="data-list">{data.nodes.slice(0, 20).map((node, index) => <div key={index}><Icon name="project" size={14} /><span>{String(node.label ?? node.id ?? `节点 ${index + 1}`)}</span><small>{String(node.type ?? '节点')}</small></div>)}</div>{data.nodes.length < (data.total_nodes ?? data.num_nodes ?? data.nodes.length) ? <div className="workspace-note">当前为可视化预览，已加载 {data.nodes.length.toLocaleString()} 个节点样本。</div> : null}</div>;
   return <ArtifactsTab messages={messages} />;

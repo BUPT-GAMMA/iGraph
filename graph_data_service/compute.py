@@ -1598,6 +1598,7 @@ class GraphCompute:
         normalized_highlights = self._normalize_highlights(highlights, g)
 
         result = {
+            "degree_scope": "full_graph",
             "success": True,
             "directed": g.is_directed(),
             "num_nodes": len(nodes),

@@ -22,6 +22,18 @@ describe('GraphWorkspace visualization layers', () => {
     expect(new Set(markers).size).toBe(2);
     expect(Array.from(container.querySelectorAll('.graph-link'), item => item.getAttribute('marker-end'))).toEqual(markers.map(id => `url(#${id})`));
   });
+  it('keeps edge-only highlights and respects directed path orientation', async () => {
+    const { container } = render(<GraphWorkspace data={{
+      directed: true, nodes: [{ id: 'a' }, { id: 'b' }],
+      edges: [{ source: 'b', target: 'a' }, { source: 'a', target: 'b' }],
+      highlights: [{ type: 'path', edges: [['a', 'b']], color: '#f59e0b' }],
+    }} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+    await waitFor(() => expect(container.querySelectorAll('.is-path-highlight')).toHaveLength(1));
+    const edges = Array.from(container.querySelectorAll('.graph-link'));
+    // Result edges are prioritized ahead of the unhighlighted reverse edge.
+    expect(edges[0].classList.contains('is-path-highlight')).toBe(true);
+    expect(edges[1].classList.contains('is-path-highlight')).toBe(false);
+  });
   it('renders community colors, node halos, path edges, subgraph hulls, and legends', async () => {
     const { container } = render(<GraphWorkspace
       data={{
@@ -48,9 +60,9 @@ describe('GraphWorkspace visualization layers', () => {
     />);
 
     await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(4));
-    const nodeFills = new Set([...container.querySelectorAll('.graph-node circle:not(.graph-node-halo)')].map(node => node.getAttribute('fill')));
+    const nodeFills = new Set([...container.querySelectorAll('.graph-node-dot')].map(node => node.getAttribute('fill')));
     expect(nodeFills.size).toBe(3);
-    expect(container.querySelectorAll('.graph-node-halo[r="13"]')).toHaveLength(4);
+    expect([...container.querySelectorAll('.graph-node-halo')].filter(node => Number(node.getAttribute('r')) > 0)).toHaveLength(4);
     expect(container.querySelectorAll('.graph-link.is-path-highlight')).toHaveLength(2);
     expect(container.querySelectorAll('.graph-link.is-subgraph-highlight')).toHaveLength(2);
     await waitFor(() => expect(container.querySelector('.graph-subgraph-hull')?.getAttribute('d')).toBeTruthy());
@@ -121,4 +133,29 @@ describe('GraphWorkspace visualization layers', () => {
     fireEvent.click(screen.getByText('项目对比'));
     expect(screen.getAllByText('当前实验').length).toBeGreaterThan(0);
   });
+});
+
+it('highlights neighbors without moving nodes, preserves community colors and supports display controls', async () => {
+  const graph = { degree_scope: 'full_graph' as const, nodes: [{ id: 'hub', total_degree: 20 }, { id: 'leaf', total_degree: 1 }, { id: 'other', total_degree: 0 }], edges: [{ source: 'hub', target: 'leaf' }], community: { node_community: { hub: 0, leaf: 1 } } };
+  const onSelect = vi.fn();
+  const { container, rerender } = render(<GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={null} onSelect={onSelect} collapsed={false} onToggle={vi.fn()} />);
+  const hub = container.querySelector('[data-node-id="hub"]')!;
+  const leaf = container.querySelector('[data-node-id="leaf"]')!;
+  expect(Number(hub.querySelector('.graph-node-dot')?.getAttribute('r'))).toBeGreaterThan(Number(leaf.querySelector('.graph-node-dot')?.getAttribute('r')));
+  const fill = leaf.querySelector('.graph-node-dot')?.getAttribute('fill');
+  fireEvent.pointerEnter(hub);
+  await waitFor(() => expect(container.querySelectorAll('.graph-link.is-neighbor')).toHaveLength(1));
+  expect(container.querySelector('[data-node-id="other"]')?.classList.contains('is-muted')).toBe(true);
+  expect(leaf.querySelector('.graph-node-dot')?.getAttribute('fill')).toBe(fill);
+  fireEvent.pointerLeave(hub);
+  await waitFor(() => expect(container.querySelectorAll('.graph-node.is-muted')).toHaveLength(0));
+  fireEvent.click(screen.getByRole('button', { name: '显示设置' }));
+  fireEvent.change(screen.getByLabelText('节点大小'), { target: { value: 'uniform' } });
+  expect(Number(hub.querySelector('.graph-node-dot')?.getAttribute('r'))).toBe(8);
+  expect(container.querySelector('[data-node-id="hub"]')).toBe(hub);
+  fireEvent.click(hub);
+  expect(onSelect).toHaveBeenCalled();
+  rerender(<GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={graph.nodes[0]} onSelect={onSelect} collapsed={false} onToggle={vi.fn()} />);
+  await waitFor(() => expect(hub.classList.contains('is-selected')).toBe(true));
+  expect(container.querySelector('[data-node-id="hub"]')).toBe(hub);
 });

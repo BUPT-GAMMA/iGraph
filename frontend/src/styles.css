@@ -1720,6 +1720,7 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
   background: transparent;
   opacity: 1;
 }
+.sidebar .project-disclosure:focus { outline: none; }
 .sidebar button:is(.project-session-delete, .session-delete):is(:hover, :focus-visible) {
   color: var(--sidebar-delete-hover);
 }
@@ -1734,3 +1735,39 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .prompt-editor-actions button[type=submit] { background: var(--text-primary); color: var(--surface); border-color: transparent; }
 .prompt-editor-actions button:disabled { opacity: .4; cursor: default; }
 .prompt-editor-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Graph reading: quiet context, explicit neighborhood focus, theme-aware labels. */
+.graph-canvas { position: relative; }
+.graph-canvas .graph-link { opacity: .5; stroke-width: 1; vector-effect: non-scaling-stroke; transition: opacity .15s, stroke-width .15s; }
+.graph-canvas .graph-link.is-neighbor { opacity: 1; stroke: var(--accent); }
+.graph-canvas .graph-link.is-path-highlight, .graph-canvas .graph-link.is-subgraph-highlight { opacity: .95; }
+.graph-canvas .graph-link.is-muted { opacity: .08; }
+.graph-canvas .graph-node { transition: opacity .15s; outline: none; }
+.graph-canvas .graph-node.is-muted { opacity: .18; }
+.graph-canvas .graph-node-dot { stroke-width: 1.2; }
+.graph-canvas .graph-node.is-focused .graph-node-dot { stroke: var(--accent); stroke-width: 2; }
+.graph-canvas .graph-selection-ring { stroke: var(--accent); stroke-width: 1.5; opacity: .9; }
+.graph-canvas .graph-node-label { fill: var(--text-secondary); paint-order: stroke; stroke: var(--surface); stroke-width: 3; stroke-linejoin: round; }
+.graph-canvas .graph-node.is-focused .graph-node-label { fill: var(--text-primary); font-weight: 600; }
+.graph-display-settings { margin: 8px 12px 0; padding: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: var(--text-secondary); background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 8px; font-size: 11px; }
+.graph-display-settings label, .graph-neighborhood label { display: flex; align-items: center; gap: 6px; }
+.graph-display-settings select, .graph-neighborhood select { color: var(--text-primary); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 4px; }
+.graph-display-settings input { width: 70px; accent-color: var(--accent); }
+.graph-display-settings button { color: var(--accent); background: transparent; }
+.graph-filter-match { display: flex; align-items: center; gap: 5px; margin: 6px 12px; font-size: 11px; color: var(--text-secondary); }
+.graph-search-results { max-height: 120px; overflow: auto; margin: 0 12px; display: grid; border-radius: 6px; background: var(--surface-subtle); }
+.graph-search-results button { display: flex; justify-content: space-between; gap: 8px; padding: 5px 8px; text-align: left; color: var(--text-primary); background: transparent; font-size: 11px; }
+.graph-search-results button:hover { background: var(--accent-soft); }
+.graph-search-results small, .graph-search-results > span { color: var(--text-secondary); }
+.graph-preview-note { padding: 0 12px 8px; font-size: 10px; color: var(--text-secondary); line-height: 1.6; }
+.graph-preview-empty { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 12px; color: var(--text-secondary); }
+.graph-neighborhood { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 8px 0; }
+.graph-neighborhood > span { font-size: 10px; color: var(--text-secondary); }
+.graph-toolbar { flex-wrap: wrap; }
+@media (prefers-reduced-motion: reduce) { .graph-canvas .graph-node, .graph-canvas .graph-link, .graph-canvas .graph-node-label { transition: none; } }
+.graph-canvas { background: var(--surface); }
+.graph-canvas > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.graph-canvas { --graph-node-fill: #7ba7da; contain: layout paint; }
+[data-theme="dark"] .graph-canvas { --graph-node-fill: #699acb; background: var(--surface); }
+
+.graph-canvas > svg.is-zooming :is(.graph-node, .graph-link) { transition: none; }
