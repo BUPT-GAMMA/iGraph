@@ -87,15 +87,33 @@ it('switches only explicit answer versions and copies the selected answer', asyn
   await waitFor(() => expect(copy).toHaveBeenLastCalledWith('Second'));
   expect(answerVersions({ ...last, regenerate_of: null }, [first, last])).toHaveLength(1);
 });
-it('keeps attachments before user text inside the bubble and actions outside it', () => {
+it('keeps attachments above the user bubble and actions outside it', () => {
   const message: Message = { id: 'u', role: 'user', content: 'Question', attachments: [{ file_token: 't', filename: 'data.csv' }] };
   const { container } = render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }}
     messages={[message]} />);
   expect(screen.queryByRole('button', { name: '编辑并重发' })).toBeNull();
-  const body = container.querySelector('.message-bubble')!;
-  expect(body.contains(screen.getByRole('button', { name: '复制' }))).toBe(false);
+  const bubble = container.querySelector('.message-bubble')!;
+  expect(bubble.contains(screen.getByRole('button', { name: '复制' }))).toBe(false);
+  // Attachment chips are a sibling above the bubble, not part of the sent text.
+  const attachments = container.querySelector('.message-attachments')!;
+  expect(bubble.contains(attachments)).toBe(false);
+  const body = container.querySelector('.message-body')!;
   const children = Array.from(body.children);
-  expect(children.indexOf(body.querySelector('.message-attachments')!)).toBeLessThan(children.indexOf(body.querySelector('.message-content')!));
+  expect(children.indexOf(attachments)).toBeLessThan(children.indexOf(bubble));
+});
+
+it('renders agent deliverables as downloadable chips below the assistant message', () => {
+  const message: Message = { id: 'a', role: 'assistant', content: 'Report ready',
+    artifacts: [{ path: 'Derived/report.csv', filename: 'report.csv', size: 2048 }] };
+  const { container } = render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }}
+    artifactSessionId="S" messages={[message]} />);
+  const chip = screen.getByRole('button', { name: '下载 report.csv' });
+  expect(chip).toBeTruthy();
+  expect(chip.textContent).toContain('2.0 KB');
+  const body = container.querySelector('.message-body')!;
+  const children = Array.from(body.children);
+  const artifacts = container.querySelector('.message-artifacts')!;
+  expect(children.indexOf(artifacts)).toBeGreaterThan(children.indexOf(container.querySelector('.message-content')!));
 });
 
 it('shows a temporary copy check only on the copied message', async () => {
