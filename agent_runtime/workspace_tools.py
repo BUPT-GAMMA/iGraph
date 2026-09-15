@@ -378,7 +378,13 @@ def _sandbox_command(root: Path, command: str) -> tuple[list[str], dict[str, str
     bwrap = shutil.which("bwrap")
     if not bwrap:
         return None
-    args = [bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--tmpfs", "/"]
+    # Namespaces are listed explicitly rather than via --unshare-all: a PID
+    # namespace combined with mounting proc is refused inside a container
+    # ("Can't mount proc on /proc"), while every other namespace works. The
+    # network namespace stays unshared, so sandboxed code has no network.
+    args = [bwrap, "--unshare-user", "--unshare-ipc", "--unshare-uts",
+            "--unshare-cgroup", "--unshare-net",
+            "--die-with-parent", "--new-session", "--tmpfs", "/"]
     for source, target in (("/usr", "/usr"), ("/bin", "/bin"), ("/lib", "/lib"), ("/lib64", "/lib64"), ("/usr/local", "/usr/local")):
         if Path(source).exists():
             args.extend(["--ro-bind", source, target])
@@ -386,6 +392,7 @@ def _sandbox_command(root: Path, command: str) -> tuple[list[str], dict[str, str
     args.extend(["--ro-bind", str(root / "Uploaded"), "/workspace/Uploaded"])
     args.extend(["--bind", str(root / "Ephemeral"), "/workspace/Ephemeral"])
     args.extend(["--ro-bind", str(root / "Derived"), "/workspace/Derived"])
+    args.extend(["--ro-bind", str(root / "Environment"), "/workspace/Environment"])
     executable = Path(sys.executable).resolve()
     runtime_root = executable.parent.parent
     if runtime_root.exists() and runtime_root not in {Path("/usr"), Path("/usr/local")}:
