@@ -21,10 +21,9 @@ const sidebarProps = {
   onCloseMobile: noop,
   onNew: noop,
   onNewProject: noop,
-  onNewInProject: noop,
+  onNewInProject: noop, onProjectDatasets: noop,
   onEditProject: noop,
   onDeleteProject: noop,
-  onSelectProject: noop,
   onSelect: noop,
   onDelete: noop,
 };
@@ -140,7 +139,7 @@ describe('docked panel controls', () => {
     const { container } = render(<Sidebar {...sidebarProps} projects={projects} sessions={[]} collapsed={false} onCollapse={noop} />);
 
     expect(container.querySelector('.project-row-icon path')?.getAttribute('d')).toContain('M3 6.5');
-    fireEvent.click(screen.getByRole('button', { name: '展开 项目一' }));
+    fireEvent.click(screen.getByRole('button', { name: '项目一' }));
     expect(container.querySelector('.project-row-icon path')?.getAttribute('d')).toContain('M3 16.5');
   });
 
@@ -152,6 +151,7 @@ describe('docked panel controls', () => {
 
     const trigger = screen.getByRole('button', { name: '项目一 项目操作' });
     expect(Array.from(trigger.closest('.project-row')!.querySelectorAll('.project-inline-action')).map(button => button.getAttribute('aria-label'))).toEqual([
+      '项目一 项目数据集',
       '项目一 项目操作',
       '在 项目一 中新建会话',
     ]);
@@ -300,4 +300,22 @@ describe('docked panel controls', () => {
     expect(screen.getByRole('button', { name: '重命名 Cora' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '删除 Cora' })).toBeTruthy();
   });
+});
+
+it('keeps the animated project list mounted and makes collapsed sessions inert', () => {
+  const onProjectDatasets = vi.fn();
+  const { container } = render(<Sidebar {...sidebarProps} projects={[{ project_id: 'p', user_id: 'tester', name: '项目' }]} sessions={[{ session_id: 's', project_id: 'p', title: '会话' }]} onProjectDatasets={onProjectDatasets} collapsed={false} onCollapse={noop} />);
+  const list = container.querySelector('.project-session-collapse')!;
+  expect(list.hasAttribute('inert')).toBe(true);
+  expect(list.querySelector('.project-session-main')).not.toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '项目 项目数据集' }));
+  expect(onProjectDatasets).toHaveBeenCalledWith('p');
+  expect(list.hasAttribute('inert')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: '项目' }));
+  expect(list.hasAttribute('inert')).toBe(false);
+  expect(screen.getByRole('button', { name: '会话' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '项目' }));
+  expect(list.hasAttribute('inert')).toBe(true);
+  expect(screen.queryByRole('button', { name: '会话' })).toBeNull();
+  expect(list.querySelector('.project-session-main')).not.toBeNull();
 });

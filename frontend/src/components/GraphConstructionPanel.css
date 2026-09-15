@@ -25,7 +25,7 @@
 .construction-build-options label { display: grid; gap: 6px; margin: 12px 0; font-size: 12px; }
 .construction-build-options input:not([type="checkbox"]), .construction-build-options select, .construction-build-options textarea { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px 10px; border: 1px solid var(--construction-line); border-radius: 6px; background: var(--construction-bg); color: var(--construction-text); font: inherit; }
 .construction-build-options textarea { resize: vertical; min-height: 78px; max-height: 200px; }
-.construction-build-options input:focus, .construction-build-options select:focus, .construction-build-options textarea:focus { outline: 2px solid var(--accent-border, #bfdbfe); outline-offset: 1px; }
+.construction-build-options input:focus, .construction-build-options select:focus, .construction-build-options textarea:focus { outline: none; }
 .construction-build-options .construction-check { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; line-height: 1.5; }
 .construction-build-options .construction-check input { margin: 0; }
 .construction-build-options .construction-text-disclosure { color: #9a6700; }
@@ -45,7 +45,7 @@
 .construction-form input:not([type="checkbox"]), .construction-form select { box-sizing: border-box; min-width: 0; width: 100%; padding: 9px 10px; border: 1px solid var(--construction-line); border-radius: 6px; background: var(--construction-bg); color: var(--construction-text); font-size: 12px; }
 .construction-form select[multiple] { padding: 4px; }
 .construction-form select[multiple] option { padding: 6px; }
-.construction-form input:focus, .construction-form select:focus { outline: 2px solid var(--accent-border, #bfdbfe); outline-offset: 1px; }
+.construction-form input:focus, .construction-form select:focus { outline: none; }
 .construction-form .construction-check { display: flex; align-items: flex-start; line-height: 1.5; gap: 8px; }
 .construction-check input { accent-color: var(--accent, #2563eb); margin-top: 3px; }
 .construction-preview-button { width: 100%; margin-top: 15px; }

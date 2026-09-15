@@ -1,15 +1,15 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => {} }) }));
 vi.mock('./components/GraphWorkspace', () => ({ GraphWorkspace: () => null }));
 vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
-  validateUser: vi.fn(), listProjects: vi.fn(), listSessions: vi.fn(), listCustomModels: vi.fn(),
+  validateUser: vi.fn(), createProject: vi.fn(), listProjectConversations: vi.fn(), listProjects: vi.fn(), listSessions: vi.fn(), listCustomModels: vi.fn(),
   listProjectDatasets: vi.fn(), activateSession: vi.fn(), getCapabilities: vi.fn(), createSession: vi.fn(),
-  uploadFile: vi.fn(), streamChat: vi.fn(), visualizeGraph: vi.fn(), getRunControl: vi.fn(),
+  uploadProjectDataset: vi.fn(), uploadFile: vi.fn(), streamChat: vi.fn(), visualizeGraph: vi.fn(), getRunControl: vi.fn(),
 }));
 import App from './main';
-import { USER_KEY, activateSession, createSession, getCapabilities, getRunControl, listCustomModels, listProjectDatasets,
-  listProjects, listSessions, streamChat, uploadFile, validateUser, visualizeGraph } from './api';
+import { USER_KEY, activateSession, createProject, createSession, listProjectConversations, getCapabilities, getRunControl, listCustomModels, listProjectDatasets,
+  listProjects, listSessions, streamChat, uploadFile, uploadProjectDataset, validateUser, visualizeGraph } from './api';
 import { composerStorageKey, readComposerDraft, writeComposerDraft } from './composerDrafts';
 const placeholder = '今天帮你分析什么？粘贴边列表，或直接用自然语言提问';
 beforeEach(() => {
@@ -158,4 +158,88 @@ it('retains process events and regeneration links when loading history', async (
   fireEvent.click(screen.getByRole('button', { name: '上一个回答版本' }));
   expect(container.querySelectorAll('.message-content')[1].textContent).toBe('早先回复');
   expect(container.querySelectorAll('.process-panel')[1].textContent).toContain('old_tool');
+});
+
+it('opens a project draft immediately after creation without materializing a conversation', async () => {
+  vi.mocked(createProject).mockResolvedValue({ success: true, project: {
+    project_id: 'new-project', user_id: 'ux-user', name: '新项目',
+  } });
+  const { container } = await mount();
+  fireEvent.click(screen.getByRole('button', { name: '创建项目' }));
+  fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '新项目' } });
+  fireEvent.submit(container.querySelector('.project-dialog')!);
+  await waitFor(() => expect(Object.fromEntries(new URLSearchParams(window.location.search))).toEqual({ new: '1', project: 'new-project' }));
+  expect(screen.getByRole('heading', { name: '开始在 新项目 中图分析' })).toBeTruthy();
+  expect(screen.getByPlaceholderText(placeholder)).toBe(document.activeElement);
+  expect(container.querySelector('.project-workspace')).toBeNull();
+  expect(screen.getByRole('button', { name: '新项目' }).getAttribute('aria-expanded')).toBe('true');
+  expect(createSession).not.toHaveBeenCalled();
+  expect(listProjectConversations).not.toHaveBeenCalled();
+});
+
+it('toggling a project keeps the current conversation, draft and URL', async () => {
+  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'ux-user', name: '项目一' }] });
+  vi.mocked(listSessions).mockResolvedValue({ sessions: [
+    { session_id: 'A', title: 'Session A' }, { session_id: 'B', project_id: 'p', title: '项目会话' },
+  ] });
+  const { container } = await mount();
+  const input = screen.getByPlaceholderText(placeholder);
+  fireEvent.change(input, { target: { value: '尚未发送的问题' } });
+  const project = screen.getByRole('button', { name: '项目一' });
+  expect(container.querySelector('.project-disclosure')).toBeNull();
+  fireEvent.click(project);
+  expect(project.getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByRole('button', { name: '项目会话' })).toBeTruthy();
+  fireEvent.click(project);
+  expect(project.getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByRole('button', { name: '项目会话' })).toBeNull();
+  expect(window.location.search).toBe('?session=A');
+  expect((input as HTMLTextAreaElement).value).toBe('尚未发送的问题');
+  expect(listProjectConversations).not.toHaveBeenCalled();
+  expect(createSession).not.toHaveBeenCalled();
+});
+
+it('opens legacy project URLs as project drafts and replaces the obsolete route', async () => {
+  window.history.replaceState({}, '', '/?project=p');
+  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'ux-user', name: '项目一' }] });
+  vi.mocked(listProjectConversations).mockResolvedValue({ conversations: [] });
+  vi.mocked(listProjectDatasets).mockResolvedValue({ project_id: 'p', datasets: [], default_dataset_id: null });
+  const { container } = await mount();
+  await waitFor(() => expect(Object.fromEntries(new URLSearchParams(window.location.search))).toEqual({ new: '1', project: 'p' }));
+  expect(screen.getByRole('heading', { name: '开始在 项目一 中图分析' })).toBeTruthy();
+  expect(container.querySelector('.project-workspace')).toBeNull();
+  expect(createSession).not.toHaveBeenCalled();
+});
+
+it('opens the chosen project datasets without navigating, uploads there, and selects into its draft', async () => {
+  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'ux-user', name: '项目一' }] });
+  const dataset = { dataset_id: 'p-data', project_id: 'p', name: '项目图', original_filename: 'p.csv', file_type: 'csv', status: 'ready' };
+  vi.mocked(listProjectDatasets).mockImplementation(async projectId => ({ project_id: projectId, datasets: projectId === 'p' ? [dataset] : [] }));
+  vi.mocked(uploadProjectDataset).mockResolvedValue({ success: true, dataset: { ...dataset, dataset_id: 'p-upload', name: '新图' }, default_dataset_id: 'p-data' });
+  await mount();
+  const input = screen.getByPlaceholderText(placeholder);
+  fireEvent.change(input, { target: { value: '当前会话的草稿' } });
+  fireEvent.click(screen.getByRole('button', { name: '项目一 项目数据集' }));
+  const panel = await screen.findByRole('dialog', { name: '项目数据集' });
+  await within(panel).findByText('项目图');
+  expect(listProjectDatasets).toHaveBeenLastCalledWith('p');
+  expect(window.location.search).toBe('?session=A');
+  expect((input as HTMLTextAreaElement).value).toBe('当前会话的草稿');
+  fireEvent.change(panel.querySelector('input[type="file"]')!, { target: { files: [new File(['a,b'], 'new.csv')] } });
+  await within(panel).findByText('新图');
+  expect(vi.mocked(uploadProjectDataset).mock.calls[0][0]).toBe('p');
+  expect(vi.mocked(uploadProjectDataset).mock.calls[0][2]).toBeUndefined();
+  expect(within(panel).getByText('项目图')).toBeTruthy();
+  fireEvent.click(within(panel).getByRole('button', { name: /^项目图/ }));
+  await screen.findByRole('heading', { name: '开始在 项目一 中图分析' });
+  expect(screen.queryByRole('dialog', { name: '项目数据集' })).toBeNull();
+  expect(screen.getByRole('button', { name: '项目图' })).toBeTruthy();
+  expect(createSession).not.toHaveBeenCalled();
+});
+
+it('the composer dataset button still loads the current conversation scope', async () => {
+  await mount();
+  fireEvent.click(screen.getByRole('button', { name: '数据集' }));
+  await screen.findByRole('dialog', { name: '个人数据集' });
+  expect(listProjectDatasets).toHaveBeenLastCalledWith(null);
 });
