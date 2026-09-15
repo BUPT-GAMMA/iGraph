@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import multiprocessing
 import tempfile
 import threading
@@ -9,7 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from graph_data_service.construction import ConstructionError, ConstructionStore, _atomic_json, optimize_graph, validate_graph
+from graph_data_service.construction import (
+    ConstructionError, ConstructionStore, _atomic_json, graph_schema, optimize_graph, validate_graph,
+)
 
 
 def _process_build(root, started, release):
@@ -143,6 +146,72 @@ class GraphOptimizationTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ConstructionError):
                 validate_graph(graph)
 
+    def test_schema_is_deterministic_recursive_and_contains_no_property_values(self):
+        graph = {
+            "directed": True,
+            "nodes": [
+                {"id": "alice", "type": "Person", "properties": {
+                    "profile": {"active": True, "score": 1},
+                    "aliases": ["PRIVATE_ALIAS", {"lang": "PRIVATE_LANGUAGE"}],
+                    "a.b": None,
+                }},
+                {"id": "acme", "type": "Company", "properties": {"name": "PRIVATE_COMPANY"}},
+                {"id": "bob", "type": "Person", "properties": {
+                    "profile": {"active": None, "score": 1.5}, "aliases": [],
+                }},
+            ],
+            "edges": [
+                {"id": "works-2", "source": "bob", "target": "acme", "type": "WORKS_AT",
+                 "properties": {"roles": [{"title": "PRIVATE_ROLE"}]}},
+                {"id": "works-1", "source": "alice", "target": "acme", "type": "WORKS_AT",
+                 "properties": {"roles": []}},
+            ],
+        }
+        schema = graph_schema(graph)
+        reversed_graph = {**graph, "nodes": list(reversed(graph["nodes"])),
+                          "edges": list(reversed(graph["edges"]))}
+        self.assertEqual(schema, graph_schema(reversed_graph))
+        self.assertEqual((schema["node_count"], schema["edge_count"]), (3, 2))
+        self.assertEqual((schema["node_type_count"], schema["edge_type_count"]), (2, 1))
+        self.assertEqual(schema["graph"]["visualization_kind"], "schema")
+        self.assertEqual([node["id"] for node in schema["graph"]["nodes"]], ["Company", "Person"])
+        edge = schema["graph"]["edges"][0]
+        self.assertEqual((edge["source"], edge["target"], edge["type"], edge["label"]),
+                         ("Person", "Company", "WORKS_AT", "WORKS_AT"))
+        self.assertEqual(edge["properties"]["relationship_count"], 2)
+
+        person = next(row for row in schema["node_types"] if row["type"] == "Person")
+        paths = {row["path"]: row for row in person["property_paths"]}
+        self.assertEqual(paths["profile.active"], {
+            "path": "profile.active", "types": ["null", "boolean"],
+            "type_counts": {"null": 1, "boolean": 1}, "present_count": 2, "value_count": 2,
+        })
+        self.assertEqual(paths["profile.score"]["type_counts"], {"integer": 1, "number": 1})
+        self.assertEqual(paths["aliases[]"]["present_count"], 1)
+        self.assertEqual(paths["aliases[]"]["value_count"], 2)
+        self.assertIn('["a.b"]', paths)
+        serialized = json.dumps(schema, ensure_ascii=False)
+        for private in ("PRIVATE_ALIAS", "PRIVATE_LANGUAGE", "PRIVATE_COMPANY", "PRIVATE_ROLE"):
+            self.assertNotIn(private, serialized)
+
+    def test_undirected_schema_combines_opposite_endpoint_orientations(self):
+        graph = {
+            "directed": False,
+            "nodes": [
+                {"id": "a", "type": "A", "properties": {}},
+                {"id": "b", "type": "B", "properties": {}},
+            ],
+            "edges": [
+                {"id": "ab", "source": "a", "target": "b", "type": "REL", "properties": {}},
+                {"id": "ba", "source": "b", "target": "a", "type": "REL", "properties": {}},
+            ],
+        }
+        schema = graph_schema(graph)
+        self.assertEqual(schema["edge_type_count"], 1)
+        self.assertEqual(schema["edge_types"][0]["relationship_count"], 2)
+        self.assertEqual((schema["edge_types"][0]["source_type"], schema["edge_types"][0]["target_type"]),
+                         ("A", "B"))
+
 
 class ConstructionStoreTest(unittest.TestCase):
     def setUp(self):
@@ -176,6 +245,89 @@ class ConstructionStoreTest(unittest.TestCase):
                 self.store.graph("user-a", f"dataset-{kind}")
             self.assertEqual(caught.exception.detail["code"], "graph_not_ready")
 
+    def test_retained_unavailable_source_becomes_buildable_when_algorithm_is_installed(self):
+        result = self.store.build("user-a", "dataset-txt", self.source, "notes.txt")
+        self.assertEqual(result["status"], "algorithm_unavailable")
+        upgraded = ConstructionStore(self.root)
+        upgraded.register_algorithm("txt", lambda _source, _options: sample_graph())
+        state = upgraded.status("user-a", "dataset-txt")
+        self.assertEqual(state["status"], "not_built")
+        self.assertTrue(state["algorithm_available"])
+        self.assertEqual(state["revision"], 0)
+        self.assertEqual(state["last_build_status"], "algorithm_unavailable")
+        self.assertIn("已就绪", state["message"])
+        self.assertNotIn("尚未接入", state["message"])
+        self.assertEqual(upgraded.build("user-a", "dataset-txt")["status"], "ready")
+
+    def test_status_exposes_only_bounded_whitelisted_agent_progress(self):
+        self.store.register_source("user-a", "progress", self.source, "example.csv")
+        directory = self.store._directory("user-a", "progress")
+        record = self.store._read(directory, "progress")
+        record.update(status="building", build_id="current-build", executor_instance="live-instance")
+        _atomic_json(directory / "record.json", record)
+        _atomic_json(directory / "construction-progress.json", {
+            "version": "construction_progress.v1", "build_id": "current-build", "status": "running",
+            "stage": "evolving", "current_message": "Agent 正在验收候选。", "elapsed_seconds": 12.5,
+            "queries": [{"secret": True}], "source_schema": {"private": True},
+            "metrics": {"iterations": 2, "evaluated_candidates": 3, "secret_count": 999},
+            "events": [{"id": "candidate:3", "kind": "candidate", "stage": "evolving",
+                        "message": "未采用候选：结构优化（未达到稳定性能收益门槛）。",
+                        "outcome": "rejected", "arguments": {"private": True}}],
+        })
+        progress = self.store.status("user-a", "progress")["progress"]
+        self.assertEqual(progress["stage"], "evolving")
+        self.assertEqual(progress["metrics"], {"iterations": 2, "evaluated_candidates": 3})
+        self.assertEqual(set(progress["events"][0]), {"id", "kind", "stage", "message", "outcome"})
+        self.assertNotIn("queries", progress)
+        self.assertNotIn("source_schema", progress)
+        _atomic_json(directory / "construction-progress.json", {
+            "version": "construction_progress.v1", "build_id": "current-build", "status": "running",
+            "stage": "extracting_entities", "current_message": "正在分块识别实体与关系。",
+            "elapsed_seconds": 2.5, "source_text": "must remain private",
+            "metrics": {"chunks_completed": 2, "chunks_total": 5, "extracted_nodes": 7,
+                        "extracted_edges": 4, "raw_triple_count": 11, "secret_count": 999},
+            "events": [{"id": "stage:extracting_entities", "kind": "stage",
+                        "stage": "extracting_entities", "message": "正在分块识别实体与关系。",
+                        "prompt": "must remain private"}],
+        })
+        semantic_progress = self.store.status("user-a", "progress")["progress"]
+        self.assertEqual(semantic_progress["stage"], "extracting_entities")
+        self.assertEqual(semantic_progress["metrics"], {
+            "chunks_completed": 2, "chunks_total": 5,
+            "extracted_nodes": 7, "extracted_edges": 4,
+        })
+        self.assertEqual(set(semantic_progress["events"][0]),
+                         {"id", "kind", "stage", "message"})
+        self.assertNotIn("source_text", semantic_progress)
+        _atomic_json(directory / "construction-progress.json", {
+            "version": "construction_progress.v1", "build_id": "stale-build", "stage": "evolving", "events": []})
+        self.assertNotIn("progress", self.store.status("user-a", "progress"))
+        (directory / "construction-progress.json").write_text("{", encoding="utf-8")
+        self.assertNotIn("progress", self.store.status("user-a", "progress"))
+
+    def test_semantic_llm_unavailable_is_a_build_failure_not_an_unavailable_algorithm(self):
+        class SemanticLLMUnavailable(RuntimeError):
+            code = "text_extraction_llm_unavailable"
+
+        def algorithm(_source, _options):
+            raise SemanticLLMUnavailable("private provider configuration details")
+
+        self.store.register_algorithm("txt", algorithm)
+        result = self.store.build("user-a", "semantic-failure", self.source, "notes.txt",
+                                  options={"txt_mode": "entities", "mode": "llm"})
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["last_build_status"], "failed")
+        self.assertEqual(result["failure_code"], "text_extraction_llm_unavailable")
+        self.assertTrue(result["algorithm_available"])
+        self.assertEqual(result["revision"], 0)
+        self.assertIn("构图模型配置", result["message"])
+        self.assertNotIn("private provider", result["message"])
+        with self.assertRaises(ConstructionError) as caught:
+            self.store.graph("user-a", "semantic-failure")
+        self.assertEqual(caught.exception.detail["code"], "graph_not_ready")
+
     def test_plugin_builds_retained_source_and_ready_graph_survives_restart(self):
         calls = []
         self.store.register_source("user-a", "dataset-1", self.source, "example.csv")
@@ -199,6 +351,21 @@ class ConstructionStoreTest(unittest.TestCase):
         self.assertTrue(reused["reused"])
         self.assertEqual(reused["revision"], 1)
         self.assertEqual(len(calls), 1)
+
+    def test_schema_requires_a_graph_and_tracks_committed_revision(self):
+        with self.assertRaises(ConstructionError) as caught:
+            self.store.schema("user-a", "dataset-1")
+        self.assertEqual(caught.exception.detail["code"], "graph_not_ready")
+        self.build_ready()
+        first = self.store.schema("user-a", "dataset-1")
+        self.assertEqual(first["revision"], 1)
+        self.assertEqual(first["schema"]["node_type_count"], 3)
+        self.store.optimize("user-a", "dataset-1", 1,
+                            [{"op": "rename_type", "target": "node", "old_type": "unused",
+                              "new_type": "person"}], commit=True)
+        second = self.store.schema("user-a", "dataset-1")
+        self.assertEqual(second["revision"], 2)
+        self.assertEqual(second["schema"]["node_type_count"], 2)
 
     def test_preview_is_readonly_commit_persists_and_stale_revision_is_rejected(self):
         original = self.build_ready()

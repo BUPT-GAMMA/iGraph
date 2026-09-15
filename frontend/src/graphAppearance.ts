@@ -54,3 +54,21 @@ export function highlightEdgePairs(highlight: Highlight) {
   });
   return pairs;
 }
+
+function compactLabel(value: unknown, maxLength: number) {
+  const label = String(value ?? '');
+  if (label.length <= maxLength) return label;
+  const visibleLength = Math.max(2, maxLength - 1);
+  const headLength = Math.ceil(visibleLength * .65);
+  return `${label.slice(0, headLength)}…${label.slice(-(visibleLength - headLength))}`;
+}
+
+export function schemaEdgeLabel(edge: Record<string, unknown>, compact = false) {
+  const properties = edge.properties && typeof edge.properties === 'object' && !Array.isArray(edge.properties)
+    ? edge.properties as Record<string, unknown>
+    : {};
+  const type = String(edge.type ?? edge.label ?? edge.relationship_type ?? '关系');
+  const count = Number(edge.relationship_count ?? properties.relationship_count ?? edge.count ?? properties.count);
+  const visibleType = compact ? compactLabel(type, /^fk_[0-9a-f]{20,}$/i.test(type) ? 14 : 18) : type;
+  return Number.isFinite(count) ? `${visibleType} · ${count.toLocaleString()}` : visibleType;
+}

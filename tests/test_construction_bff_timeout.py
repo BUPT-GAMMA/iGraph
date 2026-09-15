@@ -61,6 +61,21 @@ class ConstructionTimeoutRouteTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arguments["json_body"]["options"], {"max_seconds": 600, "query_count": 15})
         sync.assert_called_once()
 
+    async def test_schema_read_uses_owned_dataset_scope_without_mutating_metadata(self):
+        expected = {
+            "dataset_id": "dataset-1", "revision": 3,
+            "schema": {"node_type_count": 1, "edge_type_count": 0,
+                       "graph": {"visualization_kind": "schema", "nodes": [], "edges": []}},
+        }
+        self.graph.request.return_value = expected
+        with patch("backend.construction.sync_record") as sync:
+            response = await self.request("GET", self.endpoint + "/schema")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), expected)
+        self.assertEqual(self.graph.request.call_args.args[:2], ("GET", "/construction/dataset-1/schema"))
+        self.assertEqual(self.graph.request.call_args.kwargs["headers"]["X-User-ID"], "user-1")
+        sync.assert_not_called()
+
     async def test_timeout_does_not_claim_failure_or_overwrite_dataset_metadata(self):
         self.graph.request.side_effect = httpx.ReadTimeout("worker still running")
         with patch("backend.construction.sync_record") as sync:

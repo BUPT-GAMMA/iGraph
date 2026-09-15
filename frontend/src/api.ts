@@ -1,6 +1,6 @@
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
-import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionState, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
@@ -275,6 +275,9 @@ export function buildDatasetGraph(dataset: Dataset, options: ConstructionBuildOp
 export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionGraph>(`${constructionUrl(dataset)}/graph`, { signal });
 }
+export function getConstructionSchema(dataset: Dataset, signal?: AbortSignal) {
+  return json<ConstructionSchemaResponse>(`${constructionUrl(dataset)}/schema`, { signal });
+}
 export function previewConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[]) {
   return json<ConstructionResult>(`${constructionUrl(dataset)}/preview`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
@@ -287,7 +290,7 @@ export function commitConstruction(dataset: Dataset, baseRevision: number, opera
 }
 export async function visualizeGraph(sessionId: string, options: Record<string, unknown> = {}, signal?: AbortSignal): Promise<GraphData> {
   const value = await json<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/visualize`, {
-    method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ include_community: true, ...options }),
+    method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ include_community: true, max_nodes: 800, ...options }),
   });
   return parseGraphDataResponse(value);
 }

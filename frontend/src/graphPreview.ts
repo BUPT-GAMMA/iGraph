@@ -1,4 +1,5 @@
 import type { GraphData, Highlight } from './types';
+import { createGraphOverview } from './graphOverview';
 
 export const NODE_LIMIT = 180;
 export const EDGE_LIMIT = 400;
@@ -31,7 +32,10 @@ export function graphIndex(data: GraphData) {
     }
   });
   let maxDegree = 1; nodes.forEach(node => { maxDegree = Math.max(maxDegree, node.degree); });
-  return { nodes, edges, neighbors, maxDegree, directed: Boolean(data.directed) };
+  const overview = nodes.size > NODE_LIMIT || edges.length > EDGE_LIMIT
+    ? createGraphOverview(data, { nodeLimit: NODE_LIMIT, edgeLimit: EDGE_LIMIT }) : null;
+  const overviewEdges = new Set(overview?.edges);
+  return { nodes, edges, neighbors, maxDegree, directed: Boolean(data.directed), overview, overviewEdges };
 }
 export type GraphIndex = ReturnType<typeof graphIndex>;
 export function previewGraph(index: GraphIndex, highlights: Highlight[], query: string, filterMatches: boolean, connectedOnly: boolean, focusId: string, depth: number) {
@@ -63,6 +67,12 @@ export function previewGraph(index: GraphIndex, highlights: Highlight[], query: 
   add(focusId); important.forEach(add);
   // Reserve space for neighbors instead of letting a broad search consume the canvas.
   matches.slice(0, 20).forEach(node => add(node.id));
+  // Keep the selected neighborhood useful while retaining representatives of
+  // types, communities and connecting paths from the smart overview.
+  if (focusId && !depth && !filterMatches) {
+    for (const id of index.neighbors.get(focusId) || []) { if (chosen.size >= 20) break; add(id); }
+  }
+  index.overview?.nodeIds.forEach(add);
   if (!queue.length) {
     let best: PreviewNode | undefined;
     index.nodes.forEach(node => { if (eligible(node.id) && (!best || node.degree > best.degree)) best = node; });
@@ -71,10 +81,10 @@ export function previewGraph(index: GraphIndex, highlights: Highlight[], query: 
   for (let i = 0; i < queue.length && chosen.size < NODE_LIMIT; i++) index.neighbors.get(queue[i])?.forEach(add);
   index.nodes.forEach(node => add(node.id));
   const candidateEdges = index.edges.filter(edge => chosen.has(edge.source) && chosen.has(edge.target));
-  const score = (edge: PreviewEdge) => importantEdges.has(JSON.stringify([edge.source, edge.target])) || (!index.directed && importantEdges.has(JSON.stringify([edge.target, edge.source]))) ? 0 : edge.source === focusId || edge.target === focusId ? 1 : 2;
+  const score = (edge: PreviewEdge) => importantEdges.has(JSON.stringify([edge.source, edge.target])) || (!index.directed && importantEdges.has(JSON.stringify([edge.target, edge.source]))) ? 0 : edge.source === focusId || edge.target === focusId ? 1 : index.overviewEdges.has(edge.raw) ? 2 : 3;
   // Stable order, with result paths and the focused neighborhood first.
   const edges: PreviewEdge[] = [];
-  for (let priority = 0; priority < 3 && edges.length < EDGE_LIMIT; priority++) {
+  for (let priority = 0; priority < 4 && edges.length < EDGE_LIMIT; priority++) {
     for (const edge of candidateEdges) if (score(edge) === priority && edges.length < EDGE_LIMIT) edges.push(edge);
   }
   return { maxDegree: index.maxDegree, nodes: [...index.nodes.values()].filter(node => chosen.has(node.id)), edges, matches: matchIds,

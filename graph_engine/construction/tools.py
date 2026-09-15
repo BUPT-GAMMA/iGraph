@@ -16,6 +16,20 @@ from graph_engine.construction.sources import foreign_key_pairs, source_integrit
 from .budget import checked, check_deadline
 
 
+def _graph_limits(source):
+    limits = getattr(source, "resource_limits", None)
+    return (getattr(limits, "max_graph_nodes", 200_000),
+            getattr(limits, "max_graph_edges", 1_000_000),
+            getattr(limits, "max_intermediate_rows", 200_000))
+
+
+def _validate_for_source(graph, source):
+    max_nodes, max_edges, _ = _graph_limits(source)
+    # Every transformation has already built a fresh graph. Validate it in
+    # place to avoid a second whole-document copy in explicit full-scale runs.
+    return validate_graph(graph, max_nodes=max_nodes, max_edges=max_edges, copy_graph=False)
+
+
 def _key(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -55,6 +69,14 @@ because the finite acceptance workload happens not to read it.
 def _check_fields(args, allowed, required=()):
     if not isinstance(args, dict) or set(args) - set(allowed) or set(required) - set(args):
         raise ValueError("Invalid tool parameters; required: " + ", ".join(required))
+
+
+def _scope_ids(value, field, maximum):
+    if (not isinstance(value, list) or not 1 <= len(value) <= maximum
+            or any(not isinstance(item, str) or not item.strip() or len(item) > 1024 for item in value)
+            or len(value) != len(set(value))):
+        raise ValueError(f"{field} must be a nonempty unique list of identifiers (maximum {maximum})")
+    return value
 
 
 def _column(source, table, columns):
@@ -99,6 +121,7 @@ def materialize_join(graph, source, args, *, deadline=None):
     result = copy.deepcopy(graph)
     result["edges"] = [e for e in result["edges"] if e["properties"].get("materialized_join", {}).get("path") != path]
     edge_type = args.get("edge_type") or "materialized_" + hashlib.sha256(_key(path).encode()).hexdigest()[:12]
+    _, max_edges, max_intermediate = _graph_limits(source)
     for start in maps[0]:
         _budget(deadline)
         paths = [[start]]
@@ -107,14 +130,16 @@ def materialize_join(graph, source, args, *, deadline=None):
             for nodes in paths:
                 _budget(deadline)
                 for target in adjacency.get(nodes[-1], ()):
-                    if len(expanded) + len(result["edges"]) >= 200_000:
+                    if len(expanded) >= max_intermediate:
                         raise ValueError("Materialization exceeds intermediate path budget")
                     expanded.append((*nodes, target))
             paths = expanded
         for nodes in paths:
+            if len(result["edges"]) >= max_edges:
+                raise ValueError("Materialization exceeds graph edge budget")
             result["edges"].append({"id": _id("join_", path, nodes), "source": start, "target": nodes[-1],
                                     "type": edge_type, "properties": {"materialized_join": {"path": copy.deepcopy(path), "node_ids": list(nodes)}}})
-    return validate_graph(result)
+    return _validate_for_source(result, source)
 
 
 def _budget(deadline):
@@ -131,6 +156,7 @@ def _business_operations(graph, source, operations, deadline=None):
     if not isinstance(operations, list) or not 1 <= len(operations) <= 100:
         raise ValueError("Provide 1..100 graph operations")
     result = graph
+    max_nodes, max_edges, _ = _graph_limits(source)
     for operation in operations:
         _budget(deadline)
         if not isinstance(operation, dict):
@@ -161,9 +187,7 @@ def _business_operations(graph, source, operations, deadline=None):
         elif kind == "extract_property_node" and prop not in {"data", "table", "row_index", "relational_schema"}:
             _check_fields(operation, ("op", "node_ids", "property", "node_type", "edge_type", "remove_from_node"),
                           ("op", "node_ids", "property", "node_type", "edge_type"))
-            ids = operation["node_ids"]
-            if not isinstance(ids, list) or not ids or len(ids) != len(set(ids)):
-                raise ValueError("node_ids must be a nonempty unique list")
+            ids = _scope_ids(operation["node_ids"], "node_ids", 200_000)
             remove = operation.get("remove_from_node", True)
             if type(remove) is not bool:
                 raise ValueError("remove_from_node must be boolean")
@@ -179,11 +203,11 @@ def _business_operations(graph, source, operations, deadline=None):
                 if attribute_id in by_id and by_id[attribute_id] != attribute:
                     raise ValueError("Conflicting attribute entity")
                 if attribute_id not in by_id:
-                    if len(result["nodes"]) >= 200000:
+                    if len(result["nodes"]) >= max_nodes:
                         raise ValueError("Attribute entity budget exceeded")
                     by_id[attribute_id] = attribute
                     result["nodes"].append(attribute)
-                if len(result["edges"]) >= 1000000:
+                if len(result["edges"]) >= max_edges:
                     raise ValueError("Attribute edge budget exceeded")
                 result["edges"].append({"id": _id("attribute_link_", identity, prop, attribute_id), "type": operation["edge_type"],
                     "source": identity, "target": attribute_id, "properties": {"extracted_attribute": {"table": table, "column": prop}}})
@@ -193,11 +217,12 @@ def _business_operations(graph, source, operations, deadline=None):
             _check_fields(operation, ("op", "node_id", "property", "edge_ids", "target_property", "remove_from_node"),
                           ("op", "node_id", "property", "edge_ids"))
             remove = operation.get("remove_from_node", True)
-            if type(remove) is not bool or not isinstance(operation["edge_ids"], list) or not operation["edge_ids"]:
+            if type(remove) is not bool:
                 raise ValueError("Invalid property relocation arguments")
+            selected_edges = _scope_ids(operation["edge_ids"], "edge_ids", 1_000_000)
             edges = {e["id"]: e for e in result["edges"]}
             value = node["properties"]["data"][prop]
-            for edge_id in operation["edge_ids"]:
+            for edge_id in selected_edges:
                 edge = edges.get(edge_id)
                 if not edge or node["id"] not in (edge["source"], edge["target"]):
                     raise ValueError("Property relocation requires a current incident edge")
@@ -207,12 +232,50 @@ def _business_operations(graph, source, operations, deadline=None):
             if remove:
                 del node["properties"]["data"][prop]
         else:
-            result = optimize_graph(result, [operation])[0]
-    return validate_graph(result)
+            result = optimize_graph(result, [operation], max_nodes=max_nodes, max_edges=max_edges)[0]
+    return _validate_for_source(result, source)
+
+
+def _transform_batch(graph, source, args, *, deadline=None):
+    """Execute one atomic candidate; the agent evaluates only the final graph.
+
+    Existing single transforms invalidate shortcuts conservatively. Therefore
+    all structural/attribute steps must precede the terminal materialize_join
+    steps. Reject a reversed order instead of silently discarding an earlier
+    step's shortcuts. Consecutive materializations accumulate distinct paths.
+    """
+    _check_fields(args, ("steps",), ("steps",))
+    steps = args["steps"]
+    if not isinstance(steps, list) or not 1 <= len(steps) <= 6:
+        raise ValueError("transform_batch requires 1..6 steps")
+    materializing = False
+    for index, step in enumerate(steps, 1):
+        _budget(deadline)
+        _check_fields(step, ("tool", "arguments"), ("tool", "arguments"))
+        name = step["tool"]
+        if not isinstance(name, str) or name not in SINGLE_TRANSFORM_NAMES:
+            raise ValueError(f"transform_batch step {index}: expected a single transformation tool; nested batches are forbidden")
+        if not isinstance(step["arguments"], dict):
+            raise ValueError(f"transform_batch step {index}: arguments must be an object")
+        if materializing and name != "materialize_join":
+            raise ValueError("transform_batch: put all structural/attribute steps before terminal materialize_join steps")
+        materializing = materializing or name == "materialize_join"
+    result = graph
+    for index, step in enumerate(steps, 1):
+        _budget(deadline)
+        try:
+            # Every single transformation returns a fresh graph. A later failure
+            # cannot mutate the caller's graph or publish a partial candidate.
+            result = transform(result, source, step["tool"], step["arguments"], deadline=deadline)
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
+            raise ValueError(f"transform_batch step {index} ({step['tool']}): {exc}") from exc
+    return result
 
 
 def transform(graph, source, name, args, *, deadline=None):
     _budget(deadline)
+    if name == "transform_batch":
+        return _transform_batch(graph, source, args, deadline=deadline)
     if name == "materialize_join":
         return materialize_join(graph, source, args, deadline=deadline)
     result = _without_shortcuts(graph)
@@ -249,7 +312,7 @@ def transform(graph, source, name, args, *, deadline=None):
                     continue
                 result["edges"].append({"id": _id("column_", child, parent, fk), "source": child, "target": parent,
                     "type": args.get("edge_type") or "column_connection", "properties": {"foreign_key": fk}})
-            return validate_graph(result)
+            return _validate_for_source(result, source)
         for row in _rows(result, args["table"]):
             _budget(deadline)
             values = [row["properties"]["data"][c] for c in args["columns"]]
@@ -258,7 +321,7 @@ def transform(graph, source, name, args, *, deadline=None):
                     continue
                 result["edges"].append({"id": _id("column_", row["id"], target, fk), "source": row["id"], "target": target,
                     "type": args.get("edge_type") or "column_connection", "properties": {"foreign_key" if declared else "column_join": fk}})
-                if len(result["edges"]) > 1_000_000:
+                if len(result["edges"]) > _graph_limits(source)[1]:
                     raise ValueError("Column join exceeds graph edge budget")
     elif name in ("generate_entity_table", "unfold_multi_category"):
         _check_fields(args, ("table", "column", "node_type", "edge_type", "delimiter"), ("table", "column", "node_type"))
@@ -268,6 +331,7 @@ def transform(graph, source, name, args, *, deadline=None):
         delimiter = args.get("delimiter", ",")
         if not isinstance(delimiter, str) or not delimiter:
             raise ValueError("delimiter must be nonempty")
+        max_nodes, max_edges, _ = _graph_limits(source)
         node_ids = {n["id"] for n in result["nodes"]}
         edge_ids = {e["id"] for e in result["edges"]}
         for row in _rows(result, args["table"]):
@@ -283,13 +347,13 @@ def transform(graph, source, name, args, *, deadline=None):
                 _budget(deadline)
                 node_id = _id("entity_", args["node_type"], args["column"], item)
                 if node_id not in node_ids:
-                    if len(result["nodes"]) >= 200000:
+                    if len(result["nodes"]) >= max_nodes:
                         raise ValueError("Entity node budget exceeded")
                     result["nodes"].append({"id": node_id, "type": args["node_type"], "properties": {"value": item}})
                     node_ids.add(node_id)
                 edge_id = _id("entity_edge_", row["id"], node_id, args["column"], position)
                 if edge_id not in edge_ids:
-                    if len(result["edges"]) >= 1000000:
+                    if len(result["edges"]) >= max_edges:
                         raise ValueError("Entity edge budget exceeded")
                     result["edges"].append({"id": edge_id, "source": row["id"], "target": node_id,
                         "type": args.get("edge_type") or "has_" + args["column"], "properties": {"column": args["column"], "position": position}})
@@ -311,11 +375,12 @@ def transform(graph, source, name, args, *, deadline=None):
                 row["properties"].pop("identity_key", None)
     else:
         raise ValueError("Unknown construction transformation")
-    return validate_graph(result)
+    return _validate_for_source(result, source)
 
 
-TRANSFORM_NAMES = frozenset(("optimize_graph", "connect_columns", "generate_entity_table", "unfold_multi_category",
-                             "add_primary_key", "remove_primary_key", "materialize_join"))
+SINGLE_TRANSFORM_NAMES = frozenset(("optimize_graph", "connect_columns", "generate_entity_table", "unfold_multi_category",
+                                    "add_primary_key", "remove_primary_key", "materialize_join"))
+TRANSFORM_NAMES = SINGLE_TRANSFORM_NAMES | {"transform_batch"}
 
 
 def _tool(name, description, properties, required=()):
@@ -348,4 +413,21 @@ def tool_specs(stage="evolve"):
               {"path": {"type": "array", "minItems": 2, "maxItems": 3, "items": {"type": "object", "properties": {**_FK_PROPS, "direction": {"type": "string", "enum": ["forward", "reverse"]}}, "required": [*_FK_PROPS, "direction"], "additionalProperties": False}}, "edge_type": _STR}, ("path",)),
         _tool("finish", "Request finalization. The worker independently reruns every frozen query and refuses publication unless all pass.", {"reason": _STR}, ("reason",)),
     ])
+    step_schemas = [
+        {"type": "object", "properties": {
+            "tool": {"type": "string", "enum": [spec["function"]["name"]]},
+            "arguments": spec["function"]["parameters"],
+        }, "required": ["tool", "arguments"], "additionalProperties": False}
+        for spec in specs if spec["function"]["name"] in SINGLE_TRANSFORM_NAMES
+    ]
+    specs.append(_tool(
+        "transform_batch",
+        "Compose 1..6 single transformations as one atomic candidate; only the complete final graph is scored. "
+        "Each step is {tool, arguments}, using that tool's exact parameter schema and current graph IDs. "
+        "Do structural/attribute transformations first, then all materialize_join steps last: later ordinary "
+        "transforms invalidate shortcuts, so reversed order is rejected. Consecutive materializations accumulate. "
+        "No nested batches or intermediate acceptance. If any step fails, the entire candidate is discarded.",
+        {"steps": {"type": "array", "minItems": 1, "maxItems": 6,
+                   "items": {"oneOf": step_schemas}}}, ("steps",),
+    ))
     return specs

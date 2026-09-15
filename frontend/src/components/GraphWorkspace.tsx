@@ -62,11 +62,30 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
   return true;
 }
 
+function sameRecord(left: Record<string, unknown>, right: Record<string, unknown>) {
+  if (left === right) return true;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every(key => Object.prototype.hasOwnProperty.call(right, key) && left[key] === right[key]);
+}
+
+function sameWorkspaceGraph(left: GraphData | null, right: GraphData | null) {
+  if (left === right) return true;
+  if (!left || !right || left.nodes.length !== right.nodes.length || left.edges.length !== right.edges.length) return false;
+  const leftMetadata = Object.keys(left).filter(key => key !== 'nodes' && key !== 'edges');
+  const rightMetadata = Object.keys(right).filter(key => key !== 'nodes' && key !== 'edges');
+  return leftMetadata.length === rightMetadata.length
+    && leftMetadata.every(key => Object.prototype.hasOwnProperty.call(right, key)
+      && left[key as keyof GraphData] === right[key as keyof GraphData])
+    && left.nodes.every((node, index) => sameRecord(node, right.nodes[index]))
+    && left.edges.every((edge, index) => sameRecord(edge, right.edges[index]));
+}
+
 export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob, embedded, onConstruct, constructionLabel = '构图' }: GraphWorkspaceProps) {
-  const incomingDataSignature = useMemo(() => data ? JSON.stringify(data) : 'empty', [data]);
-  const stableDataRef = useRef<{ signature: string; data: GraphData | null }>({ signature: incomingDataSignature, data });
-  if (stableDataRef.current.signature !== incomingDataSignature) stableDataRef.current = { signature: incomingDataSignature, data };
-  const renderedData = stableDataRef.current.data;
+  const stableDataRef = useRef<GraphData | null>(data);
+  if (!sameWorkspaceGraph(stableDataRef.current, data)) stableDataRef.current = data;
+  const renderedData = stableDataRef.current;
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [layout, setLayout] = useState<LayoutMode>('force');
@@ -97,6 +116,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     const id = String(selected?.id ?? '');
     if (id && index.nodes.has(id) && !preview.nodes.some(node => node.id === id) && !filterMatches && !depth) setFocusId(id);
   }, [selected, index, preview.nodes, filterMatches, depth]);
+  const schemaMode = renderedData?.visualization_kind === 'schema';
+  const sourcePartial = !!renderedData && (renderedData.truncated === true || (renderedData.total_nodes ?? 0) > index.nodes.size || (renderedData.total_edges ?? 0) > index.edges.length);
   const selectedInfo = selected ? index.nodes.get(String(selected.id)) : undefined;
   const locate = (id: string) => { setFocusId(id); const node = index.nodes.get(id); if (node) onSelect(node); };
   useEffect(() => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); }, [sessionId, datasetName]);
@@ -150,8 +171,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
       <label className="graph-filter-match"><input type="checkbox" checked={filterMatches} onChange={event => setFilterMatches(event.target.checked)} />仅显示匹配项</label>
       {query.trim() && <div className="graph-search-results">{[...preview.matches].slice(0, 8).map(id => <button key={id} onClick={() => locate(id)}>{String(index.nodes.get(id)?.label ?? id)}<small>{id}</small></button>)}{!preview.matches.size && <span>当前已加载数据中没有匹配节点</span>}</div>}
     </div> : null}
-    <div className="graph-canvas"><GraphCanvas active={!collapsed} key={`${sessionId}:${datasetName || ''}`} preview={preview} directed={renderedData?.directed} communities={communityById} highlights={highlights} selected={selected} onSelect={node => { onSelect(node); if (!node) { setFocusId(''); setDepth(0); } }} layout={layout} layoutVersion={layoutVersion} sizeMode={sizeMode} labels={labels} edgeWidth={edgeWidth} fitVersion={fitVersion} focusId={focusId} />{!preview.nodes.length && <div className="graph-preview-empty">没有符合条件的节点</div>}</div>
-    <div className="graph-preview-note" role="status">显示 {preview.nodes.length} / {renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size} 个节点 · {preview.edges.length} / {renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length} 条边{(preview.nodes.length < index.nodes.size || renderedData?.truncated || preview.edges.length < index.edges.length) && ' · 有界预览'}{depth > 0 && ` · ${depth} 跳邻域`}{sizeMode === 'degree' && ` · 大小：${preview.nodes[0]?.degreeLabel || '度数'}`}{preview.omittedHighlights > 0 && ` · ${preview.omittedHighlights} 个高亮节点超出预览范围`}</div>
+    <div className={`graph-canvas ${schemaMode ? 'is-schema' : ''}`}><GraphCanvas schema={schemaMode} active={!collapsed} key={`${sessionId}:${datasetName || ''}`} preview={preview} directed={renderedData?.directed} communities={communityById} highlights={highlights} selected={selected} onSelect={node => { onSelect(node); if (!node) { setFocusId(''); setDepth(0); } }} layout={layout} layoutVersion={layoutVersion} sizeMode={sizeMode} labels={labels} edgeWidth={edgeWidth} fitVersion={fitVersion} focusId={focusId} />{!preview.nodes.length && <div className="graph-preview-empty">没有符合条件的节点</div>}</div>
+    <div className="graph-preview-note graph-overview-status" role="status">{schemaMode ? `Graph Schema · ${preview.nodes.length} 种节点类型 · ${preview.edges.length} 种关系` : <>{sourcePartial ? `上游部分图 · 已载入 ${index.nodes.size.toLocaleString()} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString()} 个节点 · ` : preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length ? '智能概览 · ' : '完整图 · '}显示 {preview.nodes.length} / {renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size} 个节点 · {preview.edges.length} / {renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length} 条边{(preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length) && ' · 本地智能概览（有界预览）'}{depth > 0 && ` · ${depth} 跳邻域`}{sizeMode === 'degree' && ` · 大小：${preview.nodes[0]?.degreeLabel || '度数'}`}</>}{preview.omittedHighlights > 0 && ` · ${preview.omittedHighlights} 个高亮节点超出预览范围`}{schemaMode && (preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length) && ` · 有界预览，共 ${index.nodes.size} 种节点类型、${index.edges.length} 种关系`}</div>
     {(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">图例</span>{communityById.size ? <span><i className="legend-dot community" />社区着色</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />节点高亮</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />路径高亮</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />子图高亮</span> : null}</div> : null}<div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? '已选节点')}</strong><span>已选择</span></div><div className="inspector-row"><span>节点 ID</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>类型</span><strong>{String(selected.type ?? selected.category ?? '节点')}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || '度数'}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div><div className="graph-neighborhood"><label>查看范围<select aria-label="查看邻域范围" value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">全部预览</option><option value="1">一跳邻域</option><option value="2">两跳邻域</option></select></label><span>邻域基于已加载数据</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> 扩展邻居</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> 复制 ID</button></div></> : <span>点击图中节点查看属性</span>}</div></> : <WorkspaceTab tab={tab} data={data} messages={messages} previewNodes={preview.nodes.length} previewEdges={preview.edges.length} />}
   </div></aside>;
 }, graphWorkspacePropsEqual);

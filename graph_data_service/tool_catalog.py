@@ -1125,9 +1125,10 @@ GRAPH_TOOLS: List[dict] = [
             "参数:\n"
             "- node_names(可选): 指定节点列表；为空则返回全图。\n"
             "- include_community(可选): 是否包含社区信息，默认 false。\n"
-            "- max_nodes(可选): 返回的最大节点数，默认 200。超出时优先保留高亮节点，\n"
-            "  其余随机采样补足，结果中含 truncated=true 及 total_nodes 字段。\n"
-            "  图规模较大时，可减小该值以避免上下文膨胀；需完整展示时可适当调大。\n"
+            "- max_nodes(可选): 返回的最大节点数，默认 800。超出时生成确定性的智能概览，\n"
+            "  保留高亮、节点类型与社区代表，优先高连接度节点并补齐代表间路径；\n"
+            "  结果中含 truncated=true、total_nodes 与 overview 字段。\n"
+            "  图规模较大时可减小该值；交互式 SVG 画布最高展示 800 个节点、2000 条边。\n"
             "- highlights(可选): 高亮信息，统一格式:\n"
             "  {\n"
             '    "nodes": [{"ids": ["A","B"], "color": "#hex", "label": "关键节点"}],\n'
@@ -1137,7 +1138,7 @@ GRAPH_TOOLS: List[dict] = [
             "  color 和 label 可选，系统会自动分配颜色。\n\n"
             "返回:\n"
             "- JSON 字符串，包含节点、边、高亮信息及元数据。\n"
-            "- 若节点被截断，结果含 truncated=true、total_nodes（图总节点数）、truncated_to（实际返回上限）。"
+            "- 若节点或边被截断，结果含 truncated=true、全图计数及实际返回上限。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1154,8 +1155,8 @@ GRAPH_TOOLS: List[dict] = [
                 },
                 "max_nodes": {
                     "type": "integer",
-                    "description": "返回的最大节点数，默认 200。超出时优先保留高亮节点，其余随机采样。",
-                    "default": 200,
+                    "description": "返回的最大节点数，默认 800。超出时生成稳定、可复现的拓扑智能概览。",
+                    "default": 800,
                 },
                 "highlights": {
                     "type": "object",

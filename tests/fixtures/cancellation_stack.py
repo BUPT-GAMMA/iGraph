@@ -38,6 +38,9 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
                 'MCP_HOST': '127.0.0.1', 'MCP_PORT': '21110', 'GRAPH_DATA_SERVER_URL': url + '/graph',
                 'AGENT_RUNTIME_URL': url + '/runtime', 'BACKEND_CONTROL_URL': url + '/bff',
                 'GRAPH_ENGINE_API_URL': url + '/graph'}
+    settings.update(GRAPH_CONSTRUCTION_API_KEY='local-construction-test-only',
+                    GRAPH_CONSTRUCTION_BASE_URL=url + '/model/construction/v1',
+                    GRAPH_CONSTRUCTION_RESOLVED_IP='')
     settings['NO_PROXY'] = settings['no_proxy'] = '127.0.0.1,localhost'
     previous_manager = cancel.get_cancellation_manager()
     async with AsyncExitStack() as stack:
@@ -96,6 +99,13 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         bff = backend_app(config)
         metrics = {'calls': {}, 'closed': {}, 'tool_calls': {}, 'contexts': {}}
         model = FastAPI()
+
+        @model.post('/construction/v1/chat/completions')
+        async def construction_completion(request: Request):
+            body = await request.json()
+            metrics['calls']['construction'] = metrics['calls'].get('construction', 0) + 1
+            return {'choices': [{'message': {'role': 'assistant', 'content':
+                '<triples>\nAlice | works_at | OpenAI\nBob | works_at | OpenAI\nAlice | mentors | Bob\n</triples>'}}]}
 
         @model.post('/v1/embeddings')
         async def embedding(request: Request):
