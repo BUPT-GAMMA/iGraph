@@ -6,7 +6,7 @@ import re
 import tempfile
 from pathlib import Path
 
-_ZONES = ("Uploaded", "Ephemeral", "Derived")
+_ZONES = ("Uploaded", "Ephemeral", "Derived", "Environment")
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_-]")
 
 def data_root() -> Path:

@@ -25,7 +25,7 @@ from workspace_storage import workspace_root_for
 
 logger = logging.getLogger("igraph")
 
-_ZONES = ("Uploaded", "Ephemeral", "Derived")
+_ZONES = ("Uploaded", "Ephemeral", "Derived", "Environment")
 _MANIFEST_NAME = ".workspace_manifest.json"
 _DEFAULT_OUTPUT_LIMIT = 100_000
 _DEFAULT_TIMEOUT_SECONDS = 30.0
