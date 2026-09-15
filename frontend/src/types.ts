@@ -48,6 +48,7 @@ export type ProjectTrainingRun = ToolCall & {
 };
 export type Plan = { steps?: Array<{ step_id?: number; goal?: string; status?: string; result_summary?: string }>; completed?: boolean };
 export type GraphSnapshot = {
+  degree_scope?: 'full_graph' | 'subgraph';
   id?: string;
   nodes: Array<Record<string, unknown>>;
   edges?: Array<Record<string, unknown>>;
@@ -103,6 +104,7 @@ export type GraphHighlights = Highlight[] | {
 };
 
 export type GraphData = {
+  degree_scope?: 'full_graph' | 'subgraph';
   success?: boolean;
   nodes: Array<Record<string, unknown>>;
   edges: Array<Record<string, unknown>>;

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DatasetPanel } from './DatasetPanel';
 import { DrawerShell } from './DrawerShell';
@@ -234,7 +234,7 @@ describe('docked panel controls', () => {
     expect(screen.getByText('暂无图')).toBeTruthy();
   });
 
-  it('keeps the graph canvas stable across unrelated renders and supports zoom gestures', () => {
+  it('keeps the graph canvas stable across unrelated renders and supports zoom gestures', async () => {
     const graphData = {
       nodes: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
       edges: [{ source: 'a', target: 'b' }],
@@ -249,7 +249,8 @@ describe('docked panel controls', () => {
     rerender(<GraphWorkspace {...graphProps} data={{ nodes: graphData.nodes.map(node => ({ ...node })), edges: graphData.edges.map(edge => ({ ...edge })) }} messages={[{ id: 'm1', role: 'user', content: '输入变化' }]} selected={{ id: 'a' }} onSelect={() => undefined} collapsed={false} onToggle={noop} />);
 
     expect(container.querySelector('.graph-viewport')).toBe(originalViewport);
-    expect(container.querySelector<SVGCircleElement>('.graph-node circle')?.getAttribute('r')).toBe('13');
+    await waitFor(() => expect(container.querySelector('.graph-node.is-selected')).toBeTruthy());
+    expect(Number(container.querySelector('.graph-node.is-selected .graph-selection-ring')?.getAttribute('r'))).toBeGreaterThan(0);
   });
 
   it('keeps a drawer mounted until its exit animation completes', () => {

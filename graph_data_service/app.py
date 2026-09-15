@@ -3262,6 +3262,7 @@ class GraphDataService:
                 result["total_nodes"] = total_nodes
                 result["total_edges"] = summary.num_edges
                 result["truncated_to"] = gd.num_nodes
+            result["degree_scope"] = "subgraph" if gd.num_nodes < total_nodes or gd.num_edges < summary.num_edges else "full_graph"
             result["backend"] = "nebula"
             result["graph_version"] = session.graph_version
             return result
