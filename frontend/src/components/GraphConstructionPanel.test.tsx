@@ -41,6 +41,25 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('graph construction workflow', () => {
+  it('edits nested business columns while preserving raw schema property paths', async () => {
+    const nested = { directed: true, nodes: [{ id: 'row1', type: 'Customer', properties: {
+      table: 'customers', row_index: 0, data: { phone: '123', 'a.b': null, table: 'business' },
+    } }], edges: [] };
+    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph: nested });
+    mocks.schema.mockRejectedValue(new ApiError(503, 'offline'));
+    await openPanel();
+    fireEvent.click(screen.getByRole('button', { name: /节点属性提取为独立节点/ }));
+    const nodes = screen.getByLabelText('选择节点') as HTMLSelectElement;
+    Array.from(nodes.options).forEach(option => { option.selected = option.value === 'row1'; });
+    fireEvent.change(nodes);
+    const names = Array.from((screen.getByLabelText('选择属性') as HTMLSelectElement).options, item => item.value);
+    expect(names).toEqual(expect.arrayContaining(['phone', 'a.b', 'table']));
+    expect(names).not.toContain('row_index');
+    expect(names).not.toContain('data');
+    fireEvent.click(screen.getByRole('button', { name: '图节点 Customer' }));
+    expect(screen.getByText('data.phone')).toBeTruthy();
+  });
+
   it('renders the saved graph as a Graph Schema with type-level counts', async () => {
     await openPanel();
     expect(screen.getByText('Graph Schema')).toBeTruthy();

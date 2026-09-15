@@ -4,6 +4,7 @@ import { isGraphData } from '../types';
 import type { ConstructionBuildOptions, ConstructionDomainCategory, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaPropertyPath, ConstructionSchemaResponse, ConstructionState, Dataset, GraphData } from '../types';
 import { GraphWorkspace } from './GraphWorkspace';
 import { Icon } from './Icon';
+import { constructionProperties as properties } from '../constructionProperties';
 import './GraphConstructionPanel.css';
 
 type Rule = ConstructionOperation['op'];
@@ -25,7 +26,7 @@ const RULES: Array<{ id: Rule; label: string; description: string }> = [
   { id: 'rename_type', label: '重命名节点、边类型', description: '统一替换选中类型的名称，让图数据符合业务语义。' },
 ];
 
-function properties(item: Record<string, unknown> | undefined) {
+function rawProperties(item: Record<string, unknown> | undefined) {
   const value = item?.properties;
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -75,7 +76,7 @@ function summarizePropertyPaths(records: Array<Record<string, unknown>>): Constr
           visit((value as Record<string, unknown>)[key], schemaPropertyPath(path, key)));
       }
     };
-    const recordProperties = properties(record);
+    const recordProperties = rawProperties(record);
     Object.keys(recordProperties).sort(compareSchemaText).forEach(key => visit(recordProperties[key], schemaPropertyPath('', key)));
     perRecord.forEach((types, path) => {
       const aggregate = summary.get(path) || { types: new Map<string, number>(), present: 0 };
@@ -531,7 +532,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
   }, [edges, edgeIds]);
   const schemaNodeTypeCount = activeSchema?.schema.node_type_count ?? activeSchema?.schema.node_types.length ?? 0;
   const schemaEdgeTypeCount = activeSchema?.schema.edge_type_count ?? activeSchema?.schema.edge_types.length ?? 0;
-  const selectedSchemaProperties = properties(schemaSelected || undefined);
+  const selectedSchemaProperties = rawProperties(schemaSelected || undefined);
   const selectedSchemaTypeName = String(selectedSchemaProperties.type_name || schemaSelected?.label || schemaSelected?.id || '');
   const selectedSchemaPaths = Array.isArray(selectedSchemaProperties.property_paths)
     ? selectedSchemaProperties.property_paths.filter((item): item is ConstructionSchemaPropertyPath => Boolean(item && typeof item === 'object' && !Array.isArray(item) && 'path' in item))

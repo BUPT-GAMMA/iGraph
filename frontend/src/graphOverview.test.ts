@@ -126,6 +126,23 @@ describe('createGraphOverview', () => {
     expect(result.locallySampledEdges).toBe(true);
   });
 
+  it('retains relationships and type quotas when all nodes have the same degree', () => {
+    const nodes = Array.from({ length: 2_000 }, (_, i) => ({ id: String(i), type: ['A', 'B', 'C'][i % 3] }));
+    const edges = Array.from({ length: 10_000 }, (_, i) => ({ id: `e${i}`, source: String(i % 2_000), target: String((i * 7 + 3) % 2_000) }));
+    const options = { nodeLimit: 180, edgeLimit: 400 };
+    const result = createGraphOverview({ nodes, edges }, options);
+    const reversed = createGraphOverview({ nodes: [...nodes].reverse(), edges: [...edges].reverse() }, options);
+
+    expect(result.nodes).toHaveLength(180);
+    expect(result.edges.length).toBeGreaterThan(100);
+    expect(result.edges.length).toBeLessThanOrEqual(400);
+    for (const type of ['A', 'B', 'C']) {
+      expect(result.nodes.filter(node => node.type === type).length).toBeGreaterThanOrEqual(58);
+    }
+    expect(result.nodeIds).toEqual(reversed.nodeIds);
+    expect(result.edges.map(edge => edge.id)).toEqual(reversed.edges.map(edge => edge.id));
+  });
+
   it('reports an upstream partial payload separately from local smart sampling', () => {
     const nodes = Array.from({ length: 200 }, (_, index) => ({ id: `n-${index}` }));
     const result = createGraphOverview({ nodes, edges: [], total_nodes: 10_000, total_edges: 25_000, truncated: true });
