@@ -512,11 +512,16 @@ def create_workspace_tools() -> list[Any]:
         """Run Bash in the current session workspace to inspect/process files or run code.
 
         Each call starts a fresh shell at the workspace root; use relative paths.
-        Uploaded and Derived are read-only. Write intermediate files to Ephemeral,
-        then use workspace_publish to deliver them as user-visible artifacts.
-        Prefer head/sed or bounded Python reads for large files. Results contain
-        exit_code, bounded output, output_truncated and changed file metadata.
-        Commands have a server-configured timeout and inherit no provider secrets.
+        Uploaded, Derived and Environment are read-only. Write intermediate files
+        to Ephemeral, then use workspace_publish to deliver them as user-visible
+        artifacts. Only the standard library is importable by default; when
+        uploaded code needs third-party packages, call workspace_env_ensure first
+        and then run it with the interpreter it returns, e.g.
+        "Environment/venv/bin/python Uploaded/script.py". There is no network
+        here. Prefer head/sed or bounded Python reads for large files. Results
+        contain exit_code, bounded output, output_truncated and changed file
+        metadata. Commands have a server-configured timeout and inherit no
+        provider secrets.
         """
         mode = _sandbox_mode()
         empty = {
