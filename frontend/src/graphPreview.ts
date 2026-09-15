@@ -1,5 +1,6 @@
 import type { GraphData, Highlight } from './types';
 import { createGraphOverview } from './graphOverview';
+import { topologyFirstEdges } from './structureSampling';
 
 export const NODE_LIMIT = 180;
 export const EDGE_LIMIT = 400;
@@ -83,10 +84,11 @@ export function previewGraph(index: GraphIndex, highlights: Highlight[], query: 
   const candidateEdges = index.edges.filter(edge => chosen.has(edge.source) && chosen.has(edge.target));
   const score = (edge: PreviewEdge) => importantEdges.has(JSON.stringify([edge.source, edge.target])) || (!index.directed && importantEdges.has(JSON.stringify([edge.target, edge.source]))) ? 0 : edge.source === focusId || edge.target === focusId ? 1 : index.overviewEdges.has(edge.raw) ? 2 : 3;
   // Stable order, with result paths and the focused neighborhood first.
-  const edges: PreviewEdge[] = [];
-  for (let priority = 0; priority < 4 && edges.length < EDGE_LIMIT; priority++) {
-    for (const edge of candidateEdges) if (score(edge) === priority && edges.length < EDGE_LIMIT) edges.push(edge);
+  const rankedEdges: PreviewEdge[] = [];
+  for (let priority = 0; priority < 4; priority++) {
+    for (const edge of candidateEdges) if (score(edge) === priority) rankedEdges.push(edge);
   }
+  const edges = topologyFirstEdges(chosen, rankedEdges, edge => [edge.source, edge.target], edge => score(edge) === 0, EDGE_LIMIT);
   return { maxDegree: index.maxDegree, nodes: [...index.nodes.values()].filter(node => chosen.has(node.id)), edges, matches: matchIds,
     eligibleCount: [...index.nodes.keys()].filter(eligible).length, candidateEdges: candidateEdges.length,
     omittedHighlights: [...important].filter(id => index.nodes.has(id) && !chosen.has(id)).length };

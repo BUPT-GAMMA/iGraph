@@ -83,11 +83,13 @@ describe('createGraphOverview', () => {
 
   it('uses bounded paths to join nearby type and community representatives', () => {
     const graph: GraphData = {
-      nodes: ['a', 'x', 'y', 'b', 'isolated-1', 'isolated-2'].map(id => ({ id, type: 'Node' })),
+      nodes: ['a', 'x', 'y', 'b', 'leaf-1', 'leaf-2'].map(id => ({ id, type: 'Node' })),
       edges: [
         { id: 'ax', source: 'a', target: 'x' },
         { id: 'xy', source: 'x', target: 'y' },
         { id: 'yb', source: 'y', target: 'b' },
+        { id: 'xl', source: 'x', target: 'leaf-1' },
+        { id: 'yl', source: 'y', target: 'leaf-2' },
       ],
       community: { node_community: { a: 'left', b: 'right' } },
     };
@@ -137,7 +139,8 @@ describe('createGraphOverview', () => {
     expect(result.edges.length).toBeGreaterThan(100);
     expect(result.edges.length).toBeLessThanOrEqual(400);
     for (const type of ['A', 'B', 'C']) {
-      expect(result.nodes.filter(node => node.type === type).length).toBeGreaterThanOrEqual(58);
+      expect(result.nodes.filter(node => node.type === type).length).toBeGreaterThanOrEqual(45);
+      expect(result.nodes.filter(node => node.type === type).length).toBeLessThanOrEqual(75);
     }
     expect(result.nodeIds).toEqual(reversed.nodeIds);
     expect(result.edges.map(edge => edge.id)).toEqual(reversed.edges.map(edge => edge.id));

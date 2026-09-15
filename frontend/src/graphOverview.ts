@@ -1,4 +1,5 @@
 import type { GraphData } from './types';
+import { sampleStructure, topologyFirstEdges } from './structureSampling';
 
 export const GRAPH_OVERVIEW_NODE_LIMIT = 800;
 export const GRAPH_OVERVIEW_EDGE_LIMIT = 2_000;
@@ -11,6 +12,7 @@ type NodeEntry = {
   degree: number;
   type: string;
   community?: string;
+  sourceDegree?: number;
 };
 
 type EdgeEntry = {
@@ -123,94 +125,7 @@ function pairKey(source: unknown, target: unknown) {
   return `${String(source)}\u0000${String(target)}`;
 }
 
-function sortedGroups(entries: NodeEntry[], key: (entry: NodeEntry) => string | undefined) {
-  const groups = new Map<string, NodeEntry[]>();
-  entries.forEach(entry => {
-    const value = key(entry);
-    if (value === undefined) return;
-    const group = groups.get(value);
-    if (group) group.push(entry);
-    else groups.set(value, [entry]);
-  });
-  groups.forEach(group => group.sort(compareNodes));
-  return [...groups.entries()].sort(([left], [right]) => compareIds(left, right));
-}
-
-function proportionalTargets(groups: Array<[string, NodeEntry[]]>, total: number, limit: number) {
-  const targets = new Map<string, number>();
-  if (!groups.length || total <= 0 || limit <= 0) return targets;
-  const fractions = groups.map(([key, entries]) => {
-    const exact = (entries.length / total) * limit;
-    return { key, exact, target: Math.floor(exact), remainder: exact - Math.floor(exact) };
-  });
-  if (limit >= fractions.length) fractions.forEach(item => { item.target = Math.max(1, item.target); });
-  let assigned = fractions.reduce((sum, item) => sum + item.target, 0);
-  while (assigned > limit) {
-    const candidate = [...fractions]
-      .filter(item => item.target > (limit >= fractions.length ? 1 : 0))
-      .sort((left, right) => left.remainder - right.remainder || compareIds(right.key, left.key))[0];
-    if (!candidate) break;
-    candidate.target -= 1;
-    assigned -= 1;
-  }
-  const additions = [...fractions].sort((left, right) => right.remainder - left.remainder || compareIds(left.key, right.key));
-  let cursor = 0;
-  while (assigned < limit && additions.length) {
-    additions[cursor % additions.length].target += 1;
-    cursor += 1;
-    assigned += 1;
-  }
-  fractions.forEach(item => targets.set(item.key, item.target));
-  return targets;
-}
-
 type Adjacent = { node: string; edgeIndex: number; stableKey: string };
-
-function boundedPath(
-  start: string,
-  targets: Set<string>,
-  adjacency: Map<string, Adjacent[]>,
-  nodeById: Map<string, NodeEntry>,
-  visitBudget: number,
-  maxDepth: number,
-) {
-  const queue: Array<{ id: string; depth: number }> = [{ id: start, depth: 0 }];
-  const visited = new Set([start]);
-  const parent = new Map<string, { id: string; edgeIndex: number }>();
-  let cursor = 0;
-  let visits = 0;
-  let found = '';
-  while (cursor < queue.length && visits < visitBudget && !found) {
-    const current = queue[cursor++];
-    visits += 1;
-    if (current.depth >= maxDepth) continue;
-    const neighbors = adjacency.get(current.id) || [];
-    for (const neighbor of neighbors) {
-      if (visited.has(neighbor.node)) continue;
-      visited.add(neighbor.node);
-      parent.set(neighbor.node, { id: current.id, edgeIndex: neighbor.edgeIndex });
-      if (targets.has(neighbor.node)) {
-        found = neighbor.node;
-        break;
-      }
-      queue.push({ id: neighbor.node, depth: current.depth + 1 });
-    }
-  }
-  if (!found) return { nodes: [] as string[], edgeIndexes: [] as number[], visits };
-  const pathNodes = [found];
-  const edgeIndexes: number[] = [];
-  let current = found;
-  while (current !== start) {
-    const step = parent.get(current);
-    if (!step) return { nodes: [] as string[], edgeIndexes: [] as number[], visits };
-    edgeIndexes.push(step.edgeIndex);
-    current = step.id;
-    pathNodes.push(current);
-  }
-  pathNodes.reverse();
-  edgeIndexes.reverse();
-  return { nodes: pathNodes, edgeIndexes, visits };
-}
 
 function addRanked(selected: Set<string>, entries: Iterable<NodeEntry>, limit: number) {
   for (const entry of entries) {
@@ -221,8 +136,8 @@ function addRanked(selected: Set<string>, entries: Iterable<NodeEntry>, limit: n
 
 /**
  * Select a stable, topology-aware SVG preview without depending on input order.
- * The algorithm is deliberately bounded: at most 64 representative path searches,
- * six hops per search, and 12,000 visited nodes in total.
+ * Components receive proportional budgets; each sampled component grows through
+ * real paths and neighbors. Tree construction is linear in the loaded graph.
  */
 export function createGraphOverview(data: GraphData, options: GraphOverviewOptions = {}): GraphOverview {
   const forceComplete = options.forceComplete === true;
@@ -237,7 +152,7 @@ export function createGraphOverview(data: GraphData, options: GraphOverviewOptio
     const attrs = node.attrs && typeof node.attrs === 'object' && !Array.isArray(node.attrs) ? node.attrs as GraphRecord : undefined;
     const inlineCommunity = node.community ?? node.community_id ?? attrs?.community ?? attrs?.community_id;
     const community = communityMapping[id] ?? inlineCommunity;
-    nodeById.set(id, { id, node, degree: 0, type: nodeType(node), community: community == null ? undefined : String(community) });
+    nodeById.set(id, { id, node, degree: 0, sourceDegree: typeof node.total_degree === 'number' ? node.total_degree : undefined, type: nodeType(node), community: community == null ? undefined : String(community) });
   });
 
   const edgeEntries: EdgeEntry[] = [];
@@ -282,7 +197,6 @@ export function createGraphOverview(data: GraphData, options: GraphOverviewOptio
   const eligible = [...nodeById.values()].filter(entry => !options.connectedOnly || entry.degree > 0 || pinnedIds.has(entry.id));
   const eligibleById = new Map(eligible.map(entry => [entry.id, entry]));
   const selected = new Set<string>();
-  const pathEdgeIndexes = new Set<number>();
 
   if (forceComplete || eligible.length <= nodeLimit) {
     eligible.sort((left, right) => compareIds(left.id, right.id)).forEach(entry => selected.add(entry.id));
@@ -292,90 +206,8 @@ export function createGraphOverview(data: GraphData, options: GraphOverviewOptio
     addRanked(selected, [...highlightedIds].map(id => eligibleById.get(id)).filter(isNodeEntry).sort(compareNodes), nodeLimit);
     addRanked(selected, queryMatches.filter(entry => eligibleById.has(entry.id)), nodeLimit);
 
-    const communities = sortedGroups(eligible, entry => entry.community);
-    const types = sortedGroups(eligible, entry => entry.type);
-    const representatives = new Map<string, NodeEntry>();
-    communities.forEach(([, entries]) => { if (entries[0]) representatives.set(entries[0].id, entries[0]); });
-    types.forEach(([, entries]) => { if (entries[0]) representatives.set(entries[0].id, entries[0]); });
-    const rankedRepresentatives = [...representatives.values()].sort(compareNodes);
-    addRanked(selected, rankedRepresentatives, nodeLimit);
-
-    // Join nearby type/community representatives so the preview keeps meaningful
-    // routes instead of a bag of disconnected high-degree vertices.
-    const pathRepresentatives = rankedRepresentatives.filter(entry => selected.has(entry.id)).slice(0, 64);
-    if (pathRepresentatives.length > 1 && selected.size < nodeLimit) {
-      const connected = new Set([pathRepresentatives[0].id]);
-      let remainingVisits = 12_000;
-      const pathNodeBudget = Math.min(nodeLimit - selected.size, Math.max(8, Math.floor(nodeLimit * .2)));
-      let addedPathNodes = 0;
-      for (const representative of pathRepresentatives.slice(1)) {
-        if (remainingVisits <= 0 || selected.size >= nodeLimit || addedPathNodes >= pathNodeBudget) break;
-        const path = boundedPath(representative.id, connected, adjacency, nodeById, Math.min(1_500, remainingVisits), 6);
-        remainingVisits -= path.visits;
-        if (!path.nodes.length) {
-          connected.add(representative.id);
-          continue;
-        }
-        const additions = path.nodes.filter(id => !selected.has(id));
-        if (additions.length + addedPathNodes > pathNodeBudget || additions.length + selected.size > nodeLimit) continue;
-        additions.forEach(id => selected.add(id));
-        path.nodes.forEach(id => connected.add(id));
-        path.edgeIndexes.forEach(index => pathEdgeIndexes.add(index));
-        addedPathNodes += additions.length;
-      }
-    }
-
-    // Fill each type toward its proportional quota; within a type, degree and a
-    // stable ID hash select useful representatives without depending on row order.
-    const targets = proportionalTargets(types, eligible.length, nodeLimit);
-    const currentByType = new Map<string, number>();
-    selected.forEach(id => {
-      const type = eligibleById.get(id)?.type;
-      if (type) currentByType.set(type, (currentByType.get(type) || 0) + 1);
-    });
-    // Prefer neighbors within each type's quota, so equal-degree graphs retain
-    // actual relationships rather than only disconnected statistical samples.
-    const frontier = new Map<string, NodeEntry[]>();
-    const queued = new Set<string>();
-    const queueNeighbors = (id: string) => {
-      for (const adjacent of adjacency.get(id) || []) {
-        const entry = eligibleById.get(adjacent.node);
-        if (!entry || selected.has(entry.id) || queued.has(entry.id)) continue;
-        queued.add(entry.id);
-        const group = frontier.get(entry.type);
-        if (group) group.push(entry);
-        else frontier.set(entry.type, [entry]);
-      }
-    };
-    selected.forEach(queueNeighbors);
-    const frontierCursors = new Map<string, number>();
-    const cursors = new Map<string, number>();
-    while (selected.size < nodeLimit) {
-      const candidateType = types
-        .map(([type, entries]) => ({ type, entries, deficit: (targets.get(type) || 0) - (currentByType.get(type) || 0) }))
-        .filter(item => item.deficit > 0)
-        .sort((left, right) => right.deficit - left.deficit || compareIds(left.type, right.type))[0];
-      if (!candidateType) break;
-      const neighbors = frontier.get(candidateType.type) || [];
-      let neighborCursor = frontierCursors.get(candidateType.type) || 0;
-      while (neighborCursor < neighbors.length && selected.has(neighbors[neighborCursor].id)) neighborCursor += 1;
-      let candidate = neighbors[neighborCursor];
-      if (candidate) frontierCursors.set(candidateType.type, neighborCursor + 1);
-      else {
-        let cursor = cursors.get(candidateType.type) || 0;
-        while (cursor < candidateType.entries.length && selected.has(candidateType.entries[cursor].id)) cursor += 1;
-        cursors.set(candidateType.type, cursor + 1);
-        candidate = candidateType.entries[cursor];
-      }
-      if (!candidate) {
-        targets.set(candidateType.type, currentByType.get(candidateType.type) || 0);
-        continue;
-      }
-      selected.add(candidate.id);
-      queueNeighbors(candidate.id);
-      currentByType.set(candidateType.type, (currentByType.get(candidateType.type) || 0) + 1);
-    }
-    addRanked(selected, eligible.filter(entry => !selected.has(entry.id)).sort(compareNodes), nodeLimit);
+    const structural = sampleStructure(eligible, adjacency, nodeLimit, selected, compareNodes);
+    selected.clear(); structural.forEach(id => selected.add(id));
   }
 
   const selectedNodes = [...selected]
@@ -383,19 +215,19 @@ export function createGraphOverview(data: GraphData, options: GraphOverviewOptio
     .filter(Boolean)
     .sort((left, right) => compareIds(left!.id, right!.id)) as NodeEntry[];
   const highlightedPairs = new Set(options.highlightedEdgePairs || []);
-  const selectedEdges = edgeEntries
+  const rankedEdges = edgeEntries
     .filter(edge => selected.has(edge.source) && selected.has(edge.target))
     .sort((left, right) => {
       const leftHighlight = highlightedPairs.has(pairKey(left.source, left.target)) || highlightedPairs.has(pairKey(left.target, left.source));
       const rightHighlight = highlightedPairs.has(pairKey(right.source, right.target)) || highlightedPairs.has(pairKey(right.target, right.source));
-      const leftPriority = leftHighlight ? 0 : pathEdgeIndexes.has(left.index) ? 1 : pinnedIds.has(left.source) || pinnedIds.has(left.target) ? 2 : 3;
-      const rightPriority = rightHighlight ? 0 : pathEdgeIndexes.has(right.index) ? 1 : pinnedIds.has(right.source) || pinnedIds.has(right.target) ? 2 : 3;
+      const leftPriority = leftHighlight ? 0 : pinnedIds.has(left.source) || pinnedIds.has(left.target) ? 2 : 3;
+      const rightPriority = rightHighlight ? 0 : pinnedIds.has(right.source) || pinnedIds.has(right.target) ? 2 : 3;
       if (leftPriority !== rightPriority) return leftPriority - rightPriority;
       const degreeDifference = (nodeById.get(right.source)!.degree + nodeById.get(right.target)!.degree)
         - (nodeById.get(left.source)!.degree + nodeById.get(left.target)!.degree);
       return degreeDifference || compareIds(left.stableKey, right.stableKey);
-    })
-    .slice(0, edgeLimit);
+    });
+  const selectedEdges = topologyFirstEdges(selected, rankedEdges, edge => [edge.source, edge.target], edge => highlightedPairs.has(pairKey(edge.source, edge.target)) || highlightedPairs.has(pairKey(edge.target, edge.source)), edgeLimit);
 
   const totalNodes = graphCount(data.total_nodes, data.num_nodes, nodeById.size);
   const totalEdges = graphCount(data.total_edges, data.num_edges, edgeEntries.length);

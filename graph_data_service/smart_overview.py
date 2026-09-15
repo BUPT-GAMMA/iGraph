@@ -126,255 +126,162 @@ def select_smart_overview(
     node_types: Mapping[Any, str] | None = None,
     required_nodes: Iterable[Any] = (),
 ) -> SmartOverviewSelection:
-    """Select a stable, representative induced subgraph.
+    """Proportional connected-component samples with real connector paths.
 
-    ``max_nodes`` is a hard canvas budget.  Explicit requirements take first
-    priority, followed by a representative for each community and node type,
-    high-degree hubs, connector paths, proportional per-type samples, and a
-    final global degree-ranked fill.
+    Connectivity takes precedence over exact type quotas. Explicit user targets
+    are preserved even when their paths cannot fit inside the display budget.
     """
+    import heapq
+    from collections import Counter
 
     limit = max(1, int(max_nodes))
-    allowed = {node for node in candidates if graph.has_node(node)}
-    ordered = sorted(allowed, key=_stable_key)
+    ordered = sorted({n for n in candidates if graph.has_node(n)}, key=_stable_key)
+    topology = _canonical_undirected_graph(graph, ordered)
+    communities = _normalised_communities(topology)
     if len(ordered) <= limit:
-        communities = _normalised_communities(_canonical_undirected_graph(graph, ordered))
-        required = tuple(_ordered_unique(required_nodes, allowed))
-        return SmartOverviewSelection(
-            nodes=tuple(ordered),
-            communities=tuple(communities),
-            community_representatives=(),
-            type_representatives=(),
-            required_nodes=required,
-            connector_nodes=(),
-            connector_paths=(),
-        )
+        return SmartOverviewSelection(tuple(ordered), tuple(communities), (), (), tuple(_ordered_unique(required_nodes, set(ordered))), (), ())
+    degrees = dict(topology.degree())
+    priority = lambda n: (-degrees[n], _stable_key(n))
+    required_all = sorted(_ordered_unique(required_nodes, set(ordered)), key=priority)
+    required = set(required_all[:limit])
+    types = {n: str((node_types or {}).get(n) or "unknown") for n in ordered}
+    community_by_node = {n: str(i) for i, group in enumerate(communities) for n in group}
+    components = [sorted(group, key=priority) for group in nx.connected_components(topology)]
+    components.sort(key=lambda group: priority(group[0]))
+    isolates = sorted(nx.isolates(topology), key=priority)
+    if isolates:
+        isolate_ids = set(isolates)
+        components = [group for group in components if group[0] not in isolate_ids] + [isolates]
+    quotas = [sum(n in required for n in group) for group in components]
+    remaining = limit - sum(quotas)
+    exact = [len(group) * limit / len(ordered) for group in components]
 
-    overview_graph = _canonical_undirected_graph(graph, ordered)
-    degrees = {node: int(overview_graph.degree(node)) for node in ordered}
+    def cost(i):
+        return 2 if quotas[i] == 0 and len(components[i]) > 1 and degrees[components[i][0]] > 0 else 1
 
-    def priority(node: Any) -> tuple[int, tuple[str, str]]:
-        return (-degrees.get(node, 0), _stable_key(node))
+    def allocation(i):
+        return (-(exact[i] - quotas[i]) / cost(i), -len(components[i]), i)
 
-    required_all = _ordered_unique(required_nodes, allowed)
-    required_ranked = sorted(required_all, key=priority)
-    required = required_ranked[:limit]
-    selected: set[Any] = set(required)
-    required_truncated = len(required_all) > len(required)
-
-    effective_types = {node: str((node_types or {}).get(node) or "unknown") for node in ordered}
-    type_groups: dict[str, list[Any]] = {}
-    for node in ordered:
-        type_groups.setdefault(effective_types[node], []).append(node)
-    # Type coverage precedes structural representatives.  This matters for an
-    # edgeless/many-component graph where every vertex is technically its own
-    # community and would otherwise consume the entire budget before a minority
-    # node type receives even one slot.
-    type_representatives = [min(type_groups[type_name], key=priority) for type_name in sorted(type_groups)]
-    kept_type_reps: list[Any] = []
-    for representative in type_representatives:
-        if representative in selected:
-            kept_type_reps.append(representative)
+    heap = [allocation(i) for i, group in enumerate(components) if quotas[i] < len(group)]
+    heapq.heapify(heap)
+    while remaining and heap:
+        _, _, i = heapq.heappop(heap)
+        increment = cost(i)
+        if increment > remaining:
             continue
-        if len(selected) >= limit:
-            break
-        selected.add(representative)
-        kept_type_reps.append(representative)
+        quotas[i] += increment
+        remaining -= increment
+        if quotas[i] < len(components[i]):
+            heapq.heappush(heap, allocation(i))
+    if remaining:
+        for i, group in enumerate(components):
+            if quotas[i] < len(group):
+                quotas[i] += 1
+                remaining -= 1
+                if not remaining:
+                    break
 
-    communities = _normalised_communities(overview_graph)
-    community_representatives = [min(community, key=priority) for community in communities]
-    # If there are more communities than display slots, represent the largest
-    # ones first; IDs/output ordering remain canonical below.
-    community_add_order = sorted(
-        zip(communities, community_representatives),
-        key=lambda item: (-len(item[0]), priority(item[1])),
-    )
-    kept_community_reps: list[Any] = []
-    for _community, representative in community_add_order:
-        if representative in selected:
-            kept_community_reps.append(representative)
+    selected = set()
+    connector_nodes = set()
+    connector_paths = []
+    for group, quota in zip(components, quotas):
+        if not quota:
             continue
-        if len(selected) >= limit:
-            break
-        selected.add(representative)
-        kept_community_reps.append(representative)
-
-    # Reserve a small, bounded hub set before proportional filling.  This makes
-    # bridges and structurally important nodes survive even in a dominant type.
-    hub_budget = min(64, max(1, limit // 10))
-    for node in sorted(ordered, key=priority)[:hub_budget]:
-        if len(selected) >= limit:
-            break
-        selected.add(node)
-
-    # Connect representatives within each connected component.  A deterministic
-    # BFS tree supplies one stable shortest path from the component anchor to all
-    # other representatives.  Connector nodes may use at most 20% of the budget.
-    representatives = set(required) | set(kept_community_reps) | set(kept_type_reps)
-    connector_budget = min(max(0, limit - len(selected)), max(8, limit // 5))
-    path_candidates: list[tuple[int, tuple[str, str], tuple[Any, ...]]] = []
-    if connector_budget:
-        for component in nx.connected_components(overview_graph):
-            component_reps = sorted(representatives.intersection(component), key=priority)
-            # Path finding stays linear in the graph plus a small bounded number
-            # of reconstructions even when an edgeless graph has many groups.
-            component_reps = component_reps[:64]
-            if len(component_reps) < 2:
-                continue
-            anchor = component_reps[0]
-            parents = _bfs_parent_tree(overview_graph.subgraph(component), anchor)
-            for representative in component_reps[1:]:
-                path = _tree_path(parents, representative)
-                if path:
-                    missing = sum(node not in selected for node in path)
-                    path_candidates.append((missing, _stable_key(representative), path))
-    connector_nodes: set[Any] = set()
-    connector_paths: list[tuple[Any, ...]] = []
-    spent = 0
-    for missing, _target_key, path in sorted(path_candidates, key=lambda item: (item[0], item[1])):
-        newly_added = [node for node in path if node not in selected]
-        if spent + len(newly_added) > connector_budget or len(selected) + len(newly_added) > limit:
+        if quota >= len(group):
+            selected.update(group)
             continue
-        selected.update(newly_added)
-        connector_nodes.update(newly_added)
-        connector_paths.append(path)
-        spent += len(newly_added)
-
-    # Per-type proportional targets use largest remainders.  Already-preserved
-    # representatives count toward their type's target; missing slots are filled
-    # by descending degree with a stable ID tie-break.
-    type_names = sorted(type_groups)
-    exact_targets = {
-        type_name: limit * len(type_groups[type_name]) / len(ordered)
-        for type_name in type_names
-    }
-    targets = {type_name: int(exact_targets[type_name]) for type_name in type_names}
-    remaining_target_slots = limit - sum(targets.values())
-    remainder_order = sorted(
-        type_names,
-        key=lambda type_name: (-(exact_targets[type_name] - targets[type_name]), type_name),
-    )
-    for type_name in remainder_order[:remaining_target_slots]:
-        targets[type_name] += 1
-
-    current_counts = {
-        type_name: sum(1 for node in selected if effective_types[node] == type_name)
-        for type_name in type_names
-    }
-    deficits = {
-        type_name: max(0, targets[type_name] - current_counts[type_name])
-        for type_name in type_names
-    }
-    available_slots = max(0, limit - len(selected))
-    total_deficit = sum(deficits.values())
-    allocations = dict(deficits)
-    if total_deficit > available_slots and total_deficit:
-        exact_allocations = {
-            type_name: available_slots * deficits[type_name] / total_deficit
-            for type_name in type_names
-        }
-        allocations = {
-            type_name: int(exact_allocations[type_name])
-            for type_name in type_names
-        }
-        left = available_slots - sum(allocations.values())
-        allocation_order = sorted(
-            type_names,
-            key=lambda type_name: (
-                -(exact_allocations[type_name] - allocations[type_name]),
-                type_name,
-            ),
-        )
-        for type_name in allocation_order[:left]:
-            allocations[type_name] += 1
-
-    for type_name in type_names:
-        remaining = allocations[type_name]
-        if not remaining:
+        local = required.intersection(group)
+        if all(degrees[n] == 0 for n in group):
+            type_groups = {}
+            for n in group:
+                type_groups.setdefault(types[n], []).append(n)
+            counts = Counter(types[n] for n in local)
+            cursors = Counter()
+            while len(local) < quota:
+                options = []
+                for kind, items in type_groups.items():
+                    while cursors[kind] < len(items) and items[cursors[kind]] in local:
+                        cursors[kind] += 1
+                    if cursors[kind] < len(items):
+                        n = items[cursors[kind]]
+                        options.append((-(len(items) * quota / len(group) - counts[kind]), priority(n), n))
+                if not options:
+                    break
+                n = min(options)[2]
+                local.add(n)
+                counts[types[n]] += 1
+            selected.update(local)
             continue
-        for node in sorted(type_groups[type_name], key=priority):
-            if node in selected:
-                continue
-            selected.add(node)
-            remaining -= 1
-            if remaining <= 0 or len(selected) >= limit:
+        anchor = min(local, key=priority) if local else group[0]
+        local.add(anchor)
+        parents = _bfs_parent_tree(topology, anchor)
+
+        def keys(n):
+            return (("type", types[n]), ("community", community_by_node[n]))
+
+        groups = {}
+        for n in group:
+            for key in keys(n):
+                groups.setdefault(key, []).append(n)
+        representatives = [items[0] for items in sorted(groups.values(), key=lambda items: (-len(items), priority(items[0])))]
+        targets = sorted(required.intersection(group), key=priority) + representatives[:64]
+        for target in targets:
+            path = _tree_path(parents, target)
+            missing = set(path) - local
+            path_budget = quota if target in required or quota <= 8 else max(len(local), int(quota * .65))
+            if missing and len(local) + len(missing) <= path_budget:
+                local.update(missing)
+                connector_nodes.update(missing)
+                connector_paths.append(path)
+        counts = Counter(key for n in local for key in keys(n))
+        frontier = {}
+        queued = set()
+
+        def enqueue(n):
+            for nb in topology.neighbors(n):
+                if nb in local or nb in queued:
+                    continue
+                queued.add(nb)
+                heapq.heappush(frontier.setdefault(keys(nb), []), (priority(nb), nb))
+
+        for n in sorted(local, key=priority):
+            enqueue(n)
+        while len(local) < quota:
+            best = None
+            for bucket in frontier.values():
+                while bucket and bucket[0][1] in local:
+                    heapq.heappop(bucket)
+                if not bucket:
+                    continue
+                n = bucket[0][1]
+                deficit = sum((len(groups[key]) * quota / len(group) - counts[key]) / max(1, len(groups[key]) * quota / len(group)) for key in keys(n))
+                candidate = (-deficit, priority(n), n)
+                if best is None or candidate[:2] < best[:2]:
+                    best = candidate
+            if best is None:
                 break
+            n = best[2]
+            heapq.heappop(frontier[keys(n)])
+            local.add(n)
+            counts.update(keys(n))
+            enqueue(n)
+        selected.update(local)
 
-    # Quota rounding or over-represented mandatory groups can leave spare slots.
-    # Fill those with the globally highest-degree remaining nodes.
-    if len(selected) < limit:
-        for node in sorted(ordered, key=priority):
-            if node in selected:
-                continue
-            selected.add(node)
-            if len(selected) >= limit:
-                break
-
-    # Community/path preservation can legitimately overfill one type before
-    # quotas are applied.  Rebalance expendable hub/fill nodes so a minority
-    # type does not disappear merely because its communities occur later in the
-    # topology.  Required nodes, type/community representatives and connector
-    # paths are never evicted.
-    protected = (
-        set(required)
-        | set(kept_type_reps)
-        | set(kept_community_reps)
-        | connector_nodes
-    )
-    final_counts = {
-        type_name: sum(1 for node in selected if effective_types[node] == type_name)
-        for type_name in type_names
-    }
-    for type_name in sorted(
-        type_names,
-        key=lambda name: (
-            -(targets[name] - final_counts[name]),
-            name,
-        ),
-    ):
-        while final_counts[type_name] < targets[type_name]:
-            replacement = next(
-                (
-                    node for node in sorted(type_groups[type_name], key=priority)
-                    if node not in selected
-                ),
-                None,
-            )
-            donor = next(
-                (
-                    node
-                    for donor_type in sorted(
-                        type_names,
-                        key=lambda name: (-(final_counts[name] - targets[name]), name),
-                    )
-                    if final_counts[donor_type] > targets[donor_type]
-                    for node in sorted(
-                        (
-                            item for item in selected
-                            if effective_types[item] == donor_type and item not in protected
-                        ),
-                        key=lambda item: (degrees.get(item, 0), _stable_key(item)),
-                    )
-                ),
-                None,
-            )
-            if replacement is None or donor is None:
-                break
-            donor_type = effective_types[donor]
-            selected.remove(donor)
-            selected.add(replacement)
-            final_counts[donor_type] -= 1
-            final_counts[type_name] += 1
-
+    # Metadata describes representatives actually retained, not mandatory naked
+    # vertices from every small component.
+    kept_communities = [min(set(group) & selected, key=priority) for group in communities if set(group) & selected]
+    kept_types = {}
+    for n in sorted(selected, key=priority):
+        kept_types.setdefault(types[n], n)
     return SmartOverviewSelection(
         nodes=tuple(sorted(selected, key=_stable_key)),
         communities=tuple(communities),
-        community_representatives=tuple(sorted(set(kept_community_reps), key=_stable_key)),
-        type_representatives=tuple(sorted(set(kept_type_reps), key=_stable_key)),
+        community_representatives=tuple(sorted(kept_communities, key=_stable_key)),
+        type_representatives=tuple(sorted(kept_types.values(), key=_stable_key)),
         required_nodes=tuple(sorted(required, key=_stable_key)),
         connector_nodes=tuple(sorted(connector_nodes, key=_stable_key)),
         connector_paths=tuple(connector_paths),
-        required_truncated=required_truncated,
+        required_truncated=len(required_all) > len(required),
     )
 
 
