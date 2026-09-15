@@ -108,6 +108,7 @@ export type GraphData = {
   success?: boolean;
   nodes: Array<Record<string, unknown>>;
   edges: Array<Record<string, unknown>>;
+  visualization_kind?: 'instances' | 'schema' | string;
   directed?: boolean;
   num_nodes?: number;
   num_edges?: number;
@@ -186,13 +187,50 @@ export type ConstructionState = {
   source_type?: string;
   algorithm_available?: boolean;
   message?: string;
+  updated_at?: string;
+  last_build_status?: string;
+  progress?: ConstructionProgress;
+};
+export type ConstructionProgressEvent = {
+  id: string;
+  kind: 'stage' | 'candidate' | 'terminal';
+  stage: string;
+  message: string;
+  outcome?: 'accepted' | 'rejected' | 'ready' | 'failed';
+  timestamp?: string;
+};
+export type ConstructionProgress = {
+  version: 'construction_progress.v1';
+  status?: string;
+  stage: string;
+  current_message?: string;
+  elapsed_seconds?: number;
+  updated_at?: string;
+  metrics?: {
+    query_count?: number;
+    max_iterations?: number;
+    iterations?: number;
+    tool_calls?: number;
+    evaluated_candidates?: number;
+    accepted_candidates?: number;
+    initial_nodes?: number;
+    initial_edges?: number;
+    chunks_completed?: number;
+    chunks_total?: number;
+    extracted_nodes?: number;
+    extracted_edges?: number;
+  };
+  events: ConstructionProgressEvent[];
 };
 export type ConstructionDomainCategory = 'auto' | 'finance' | 'academic' | 'commerce' | 'healthcare' | 'social' | 'general';
 export type ConstructionBuildOptions = {
+  mode?: 'llm' | 'rules';
   query_count?: number;
   domain?: string;
   domain_category?: ConstructionDomainCategory;
   experience_enabled?: boolean;
+  delimiter?: string;
+  txt_mode?: 'auto' | 'lines' | 'entities';
 };
 export type ConstructionOperation =
   | { op: 'collapse_node'; node_id: string; edge_type: string }
@@ -202,6 +240,40 @@ export type ConstructionOperation =
   | { op: 'reverse_edges'; edge_ids: string[] }
   | { op: 'rename_type'; target: 'node' | 'edge'; old_type: string; new_type: string };
 export type ConstructionGraph = { dataset_id: string; revision: number; graph: GraphData };
+export type ConstructionSchemaPropertyPath = {
+  path: string;
+  types?: string[];
+  type_counts?: Record<string, number>;
+  present_count?: number;
+  value_count?: number;
+};
+export type ConstructionSchemaNodeType = {
+  id: string;
+  type: string;
+  type_name?: string;
+  instance_count: number;
+  property_paths?: ConstructionSchemaPropertyPath[];
+};
+export type ConstructionSchemaEdgeType = {
+  id: string;
+  type: string;
+  type_name?: string;
+  source_type: string;
+  target_type: string;
+  relationship_count: number;
+  property_paths?: ConstructionSchemaPropertyPath[];
+};
+export type ConstructionSchema = {
+  directed?: boolean;
+  node_count?: number;
+  edge_count?: number;
+  node_type_count: number;
+  edge_type_count: number;
+  node_types: ConstructionSchemaNodeType[];
+  edge_types: ConstructionSchemaEdgeType[];
+  graph: GraphData;
+};
+export type ConstructionSchemaResponse = { dataset_id: string; revision: number; schema: ConstructionSchema };
 export type ConstructionResult = ConstructionGraph & {
   success: boolean;
   status: 'preview' | 'ready';

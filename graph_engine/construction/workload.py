@@ -17,6 +17,7 @@ import sqlite3
 import statistics
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 from graph_engine.construction.representation import resolve_rows
@@ -28,6 +29,7 @@ _FUNCTIONS = {"count", "sum", "min", "max", "avg"}
 MAX_INTERMEDIATE_ROWS = 200_000
 QUERY_TIMEOUT_SECONDS = 10.0
 MAX_GENERATED_PLANS = 2_000
+MAX_BENCHMARK_INNER_ITERATIONS = 256
 
 
 class QueryLimitError(ValueError):
@@ -38,10 +40,23 @@ def _check_overall_deadline(deadline: float | None) -> None:
     check_deadline(deadline)
 
 
-def _query_deadline(deadline: float | None) -> float:
+def _query_deadline(deadline: float | None, query_timeout_seconds: float | None = None) -> float:
     _check_overall_deadline(deadline)
-    remaining = QUERY_TIMEOUT_SECONDS if deadline is None else min(QUERY_TIMEOUT_SECONDS, deadline - time.monotonic())
+    timeout = QUERY_TIMEOUT_SECONDS if query_timeout_seconds is None else query_timeout_seconds
+    remaining = timeout if deadline is None else min(timeout, deadline - time.monotonic())
     return time.perf_counter() + remaining
+
+
+def _query_resource_limits(source: Any) -> tuple[int, float]:
+    """Resolve validated numeric query limits without exposing source to the executor."""
+    limits = _get(source, "resource_limits")
+    max_rows = _get(limits, "max_intermediate_rows", MAX_INTERMEDIATE_ROWS)
+    timeout = _get(limits, "query_timeout_seconds", QUERY_TIMEOUT_SECONDS)
+    if type(max_rows) is not int or max_rows < 1:
+        raise ValueError("max_intermediate_rows must be a positive integer")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout):
+        raise ValueError("query_timeout_seconds must be a finite number")
+    return max_rows, float(timeout)
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -290,7 +305,7 @@ def _compile_sql(q: dict, source: Any = None) -> tuple[str, list]:
         on = " AND ".join(f"{_quote(parent_alias)}.{_quote(p)} = {_quote(child_alias)}.{_quote(c)}"
                           for c, p in zip(f["columns"], f["ref_columns"]))
         if source is not None and not _get(source.tables[f["table"]], "create_sql"):
-            # CSV import defines an empty FK cell as a missing relationship,
+            # CSV/TXT import defines an empty FK cell as a missing relationship,
             # while preserving the original empty string in row properties.
             on += " AND " + " AND ".join(f"{_quote(child_alias)}.{_quote(c)} != ''" for c in f["columns"])
         sql += f" {join['kind'].upper()} JOIN {_quote(join['table'])} AS {_quote(join['alias'])} ON {on}"
@@ -329,6 +344,34 @@ def _oracle(source: Any, *, deadline: float | None = None) -> sqlite3.Connection
     _check_overall_deadline(deadline)
     db = sqlite3.connect(":memory:")
     try:
+        database_path = _get(source, "_database_path")
+        if database_path is not None:
+            path = Path(database_path)
+            expected_identity = _get(source, "_database_identity")
+
+            def identity(candidate):
+                try:
+                    stat = candidate.stat()
+                except FileNotFoundError:
+                    return None
+                return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+            def current_identity():
+                return (identity(path), identity(Path(str(path) + "-wal")),
+                        identity(Path(str(path) + "-journal")))
+
+            if expected_identity is None or current_identity() != expected_identity:
+                raise ValueError("SQLite source file changed after loading")
+            db.close()
+            # Do not use immutable=1: it can silently ignore committed WAL rows.
+            db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+            db.enable_load_extension(False)
+            db.execute("PRAGMA trusted_schema=OFF")
+            db.execute("PRAGMA temp_store=MEMORY")
+            db.execute("PRAGMA query_only=ON")
+            if current_identity() != expected_identity:
+                raise ValueError("SQLite source file changed while opening the oracle")
+            return db
         original = _get(source, "_connection")
         if original is not None:
             original.backup(db, pages=256, progress=lambda *_: _check_overall_deadline(deadline))
@@ -449,13 +492,28 @@ def _matches(env: dict, item: dict, affinity: str = "BLOB", collation: str = "BI
 class GraphExecutor:
     """Index and execute the current graph only; does not accept a source object."""
 
-    def __init__(self, graph: dict, *, deadline=None):
+    def __init__(self, graph: dict, *, deadline=None, max_intermediate_rows=None,
+                 query_timeout_seconds=None):
         # Schema is read from the current graph's row metadata. No source
         # object, connection or oracle answers enter this executor.
+        max_intermediate_rows = (MAX_INTERMEDIATE_ROWS if max_intermediate_rows is None
+                                 else max_intermediate_rows)
+        query_timeout_seconds = (QUERY_TIMEOUT_SECONDS if query_timeout_seconds is None
+                                 else query_timeout_seconds)
+        if type(max_intermediate_rows) is not int or max_intermediate_rows < 1:
+            raise ValueError("max_intermediate_rows must be a positive integer")
+        if (isinstance(query_timeout_seconds, bool)
+                or not isinstance(query_timeout_seconds, (int, float))
+                or not math.isfinite(query_timeout_seconds)):
+            raise ValueError("query_timeout_seconds must be a finite number")
+        self.max_intermediate_rows = max_intermediate_rows
+        self.query_timeout_seconds = float(query_timeout_seconds)
         self.schema = {}
         self.nodes, self.tables = {}, defaultdict(list)
         self.adjacency = defaultdict(lambda: defaultdict(set))
         self.shortcuts = {}
+        self.attribute_indexes = {}
+        self.last_execution_stats = {}
         self.materialized_hits = 0
         self.deadline = float("inf")
         self.overall_deadline = deadline
@@ -483,6 +541,7 @@ class GraphExecutor:
                 raise ValueError("Graph data rows must contain finite JSON scalars")
             self.nodes[node["id"]] = node
             self.tables[props["table"]].append(node)
+        self._build_attribute_indexes(graph, deadline=deadline)
         materialized = []
         relationships = []
         for edge in checked(graph.get("edges", []), deadline=deadline):
@@ -568,19 +627,145 @@ class GraphExecutor:
             if complete:
                 self.shortcuts[key] = complete
 
+    def _build_attribute_indexes(self, graph: dict, *, deadline=None) -> None:
+        """Certify entity access paths against complete *current graph* rows.
+
+        A derived entity is an index only when its edges cover every non-NULL
+        row of a table/column and each entity value equals that row's live cell.
+        Partial, stale or tokenized category structures cannot narrow a scan.
+        Extracted cells were resolved from their actual storage by resolve_rows;
+        no source table, provenance snapshot or oracle is consulted here.
+        """
+        entities = {node["id"]: node for node in checked(graph.get("nodes", []), deadline=deadline)}
+        candidates = {}
+        for edge in checked(graph.get("edges", []), deadline=deadline):
+            props = edge.get("properties", {})
+            extracted = props.get("extracted_attribute")
+            if isinstance(extracted, dict):
+                column, kind = extracted.get("column"), "extracted_attribute"
+            elif "column" in props and "position" in props:
+                column, kind = props["column"], "entity_column"
+            else:
+                continue
+            row = self.nodes.get(edge.get("source"))
+            if row is None or not isinstance(column, str):
+                continue
+            table = row["properties"]["table"]
+            state = candidates.setdefault((table, column), {"rows": {}, "kinds": set(), "valid": True})
+            state["kinds"].add(kind)
+            target = entities.get(edge.get("target"))
+            data = row["properties"]["data"]
+            if (column not in data or target is None or "value" not in target.get("properties", {})
+                    or "table" in target.get("properties", {})
+                    or isinstance(extracted, dict) and extracted.get("table") != table):
+                state["valid"] = False
+                continue
+            value = target["properties"]["value"]
+            # Exact stored values must agree before SQLite comparison semantics
+            # are applied. Collation equivalence must not bless stale data.
+            if (not _scalar(value) or json.dumps(value, ensure_ascii=False, allow_nan=False)
+                    != json.dumps(data[column], ensure_ascii=False, allow_nan=False)):
+                state["valid"] = False
+                continue
+            state["rows"][row["id"]] = value
+        for (table, column), state in checked(candidates.items(), deadline=deadline):
+            if not state["valid"]:
+                continue
+            rows = self.tables[table]
+            if any(column not in row["properties"]["data"] or (
+                    row["properties"]["data"][column] is not None and row["id"] not in state["rows"])
+                   for row in checked(rows, deadline=deadline)):
+                continue
+            _, collation = self._column_semantics(table, column)
+            groups, raw_groups = {}, {}
+            null_ids = []
+            order = {}
+            for index, row in enumerate(checked(rows, deadline=deadline)):
+                identity = row["id"]
+                order[identity] = index
+                value = row["properties"]["data"][column]
+                if value is None:
+                    null_ids.append(identity)
+                    continue
+                key = self._attribute_value_key(value, collation)
+                group = groups.setdefault(key, {"value": value, "ids": []})
+                group["ids"].append(identity)
+                raw_key = json.dumps(value, ensure_ascii=False, allow_nan=False)
+                raw_groups.setdefault(raw_key, {"value": value, "ids": []})["ids"].append(identity)
+            self.attribute_indexes[table, column] = {
+                "groups": groups, "raw_groups": raw_groups, "null_ids": null_ids, "order": order,
+                "storage_kinds": sorted(state["kinds"]), "row_count": len(rows),
+            }
+
+    @staticmethod
+    def _attribute_value_key(value, collation):
+        # Same storage-class ordering/equality as _compare_collated. Numeric
+        # int/float/bool keys compare together; text remains distinct.
+        rank = 0 if value is None else 1 if isinstance(value, (int, float)) else 2
+        return rank, _collation_key(value, collation)
+
+    def _root_access(self, q: dict):
+        table = q["root"]["table"]
+        scan = self.tables.get(table, ())
+        choices = []
+        values_examined = 0
+        for item in q.get("filters", []):
+            alias, column = item["column"].split(".", 1)
+            index = self.attribute_indexes.get((table, column)) if alias == "t0" else None
+            if index is None:
+                continue
+            affinity, collation = self._column_semantics(table, column)
+            op = item["op"]
+            identities = set()
+            if op == "is_null":
+                identities.update(index["null_ids"])
+            elif op in ("eq", "in"):
+                values = item["value"] if op == "in" else [item["value"]]
+                for value in values:
+                    if value is None:
+                        continue
+                    values_examined += 1
+                    key = self._attribute_value_key(_apply_affinity(value, affinity), collation)
+                    identities.update(index["groups"].get(key, {}).get("ids", ()))
+            else:
+                # Range, contains and non-NULL predicates inspect distinct
+                # indexed values, then use their postings rather than rows.
+                groups = index["raw_groups"] if op == "contains" else index["groups"]
+                for group in checked(groups.values(), deadline=self.overall_deadline):
+                    values_examined += 1
+                    env = {"t0": {"properties": {"data": {column: group["value"]}}}}
+                    if _matches(env, item, affinity, collation):
+                        identities.update(group["ids"])
+            self._check()
+            choices.append((identities, column, op, index))
+        if choices:
+            identities = set.intersection(*(choice[0] for choice in choices))
+            order = choices[0][3]["order"]
+            roots = [self.nodes[identity] for identity in sorted(identities, key=order.__getitem__)]
+        else:
+            roots = scan
+        self.last_execution_stats = {
+            "physical_plan": {"root_access": "attribute_index" if choices else "table_scan", "root_table": table,
+                "attribute_paths": [{"column": column, "operator": op, "storage_kinds": index["storage_kinds"]}
+                                    for _, column, op, index in choices]},
+            "source_rows_total": len(scan), "source_rows_examined": len(roots),
+            "attribute_index_hits": len(choices), "attribute_values_examined": values_examined,
+        }
+        return roots
+
     def _column_semantics(self, table: str, column: str) -> tuple[str, str]:
         spec = self.schema.get(table, {})
-        # CSV type labels are descriptive, not SQLite DDL. Raw CSV/inline
+        # CSV/TXT type labels are descriptive, not SQLite DDL. Raw text/inline
         # scalar storage classes must remain unchanged in graph and oracle.
         affinity = _affinity(spec.get("column_types", {}).get(column, "")) if spec.get("create_sql") or spec.get("sqlite_affinity") else "BLOB"
         return affinity, spec.get("column_collations", {}).get(column, "BINARY").upper()
 
     def _check(self, rows: list | None = None) -> None:
         _check_overall_deadline(self.overall_deadline)
-        if rows is not None and len(rows) > MAX_INTERMEDIATE_ROWS:
-            raise QueryLimitError(f"Query exceeds {MAX_INTERMEDIATE_ROWS} intermediate/result rows")
+        if rows is not None and len(rows) > self.max_intermediate_rows:
+            raise QueryLimitError(f"Query exceeds {self.max_intermediate_rows} intermediate/result rows")
         if time.perf_counter() > self.deadline:
-            raise QueryLimitError(f"Graph query exceeded {QUERY_TIMEOUT_SECONDS:g} seconds")
+            raise QueryLimitError(f"Graph query exceeded {self.query_timeout_seconds:g} seconds")
 
     def _join(self, rows: list[dict], join: dict) -> list[dict]:
         out = []
@@ -589,8 +774,8 @@ class GraphExecutor:
             node = env.get(join["from"])
             ids = () if node is None else neighbors.get(node["id"], ())
             if ids:
-                if len(out) + len(ids) > MAX_INTERMEDIATE_ROWS:
-                    raise QueryLimitError(f"Query exceeds {MAX_INTERMEDIATE_ROWS} intermediate rows")
+                if len(out) + len(ids) > self.max_intermediate_rows:
+                    raise QueryLimitError(f"Query exceeds {self.max_intermediate_rows} intermediate rows")
                 out.extend(dict(env, **{join["alias"]: self.nodes[n]}) for n in ids)
             elif join["kind"] == "left":
                 out.append(dict(env, **{join["alias"]: None}))
@@ -601,8 +786,10 @@ class GraphExecutor:
 
     def execute(self, q: dict, *, deadline: float | None = None) -> list[list]:
         self.overall_deadline = deadline
-        self.deadline = _query_deadline(deadline)
-        rows = [{"t0": node} for node in self.tables.get(q["root"]["table"], ())]
+        self.deadline = _query_deadline(deadline, self.query_timeout_seconds)
+        # Root-only filters commute with every supported inner/left join. Keep
+        # the full filters below as a semantic recheck after the indexed access.
+        rows = [{"t0": node} for node in self._root_access(q)]
         self._check(rows)
         aliases = {"t0": q["root"]["table"], **{j["alias"]: j["table"] for j in q["joins"]}}
 
@@ -632,8 +819,8 @@ class GraphExecutor:
                 start = env.get(chain[0]["from"])
                 paths = () if start is None else shortcuts.get(start["id"], ())
                 if paths:
-                    if len(out) + len(paths) > MAX_INTERMEDIATE_ROWS:
-                        raise QueryLimitError(f"Query exceeds {MAX_INTERMEDIATE_ROWS} intermediate rows")
+                    if len(out) + len(paths) > self.max_intermediate_rows:
+                        raise QueryLimitError(f"Query exceeds {self.max_intermediate_rows} intermediate rows")
                     self.materialized_hits += 1
                     for ids in paths:
                         out.append(dict(env, **{join["alias"]: self.nodes[ids[i + 1]] for i, join in enumerate(chain)}))
@@ -745,11 +932,13 @@ def _equal_results(actual: list, expected: list, q: dict, output_collations: dic
 
 
 def evaluate_workload(source: Any, graph: dict, queries: list[dict], repeats: int = 3,
-                      *, deadline: float | None = None) -> dict:
+                      *, deadline: float | None = None, min_query_seconds: float = 0.003) -> dict:
     """Compare graph answers with source-only SQLite answers for frozen plans.
 
     ``accuracy`` is [0, 1]; latency_ms is the sum of per-query median graph
-    execution times. Index preparation and SQLite oracle times are separate.
+    execution times. Each measured sample averages a bounded, adaptive number
+    of executions after one warmup; samples target min_query_seconds. Index
+    preparation and SQLite oracle times are separate.
     Result previews are bounded; complete results are always compared. ``deadline``
     is an optional absolute ``time.monotonic()`` construction budget. Exceeding
     it raises TimeoutError, so an expired build cannot publish a partial success.
@@ -758,12 +947,17 @@ def evaluate_workload(source: Any, graph: dict, queries: list[dict], repeats: in
         raise ValueError("deadline must be a finite monotonic timestamp or None")
     _check_overall_deadline(deadline)
     _bound(repeats, 1, 20, "repeats")
+    if (isinstance(min_query_seconds, bool) or not isinstance(min_query_seconds, (int, float))
+            or not math.isfinite(min_query_seconds) or not 0 <= min_query_seconds <= 1):
+        raise ValueError("min_query_seconds must be a finite number between 0 and 1")
     queries = validate_queries(source, queries)
+    max_intermediate_rows, query_timeout_seconds = _query_resource_limits(source)
     _check_overall_deadline(deadline)
     started = time.perf_counter()
     executor_error = None
     try:
-        executor = GraphExecutor(graph, deadline=deadline)
+        executor = GraphExecutor(graph, deadline=deadline, max_intermediate_rows=max_intermediate_rows,
+                                 query_timeout_seconds=query_timeout_seconds)
     except ConstructionBudgetExceeded:
         raise
     except Exception as exc:
@@ -779,16 +973,16 @@ def evaluate_workload(source: Any, graph: dict, queries: list[dict], repeats: in
             sql, params = _compile_sql(q, source)
             began = time.perf_counter()
             oracle_error, expected = None, []
-            query_deadline = _query_deadline(deadline)
+            query_deadline = _query_deadline(deadline, query_timeout_seconds)
             db.set_progress_handler(lambda: int(time.perf_counter() > query_deadline), 1000)
             try:
                 cursor = db.execute(sql, params)
-                expected = [list(row) for row in cursor.fetchmany(MAX_INTERMEDIATE_ROWS + 1)]
-                if len(expected) > MAX_INTERMEDIATE_ROWS:
-                    raise QueryLimitError(f"Oracle exceeds {MAX_INTERMEDIATE_ROWS} result rows")
+                expected = [list(row) for row in cursor.fetchmany(max_intermediate_rows + 1)]
+                if len(expected) > max_intermediate_rows:
+                    raise QueryLimitError(f"Oracle exceeds {max_intermediate_rows} result rows")
                 _check_overall_deadline(deadline)
                 if time.perf_counter() > query_deadline:
-                    raise QueryLimitError(f"Oracle query exceeded {QUERY_TIMEOUT_SECONDS:g} seconds")
+                    raise QueryLimitError(f"Oracle query exceeded {query_timeout_seconds:g} seconds")
             except (sqlite3.Error, QueryLimitError, OverflowError) as exc:
                 _check_overall_deadline(deadline)
                 expected = []
@@ -796,15 +990,36 @@ def evaluate_workload(source: Any, graph: dict, queries: list[dict], repeats: in
             finally:
                 db.set_progress_handler(None, 0)
             oracle_ms = (time.perf_counter() - began) * 1000
-            durations, actual, error = [], [], oracle_error or executor_error
+            durations, iterations, actual, error = [], [], [], oracle_error or executor_error
+            warmup_runs, physical_stats = 0, {}
             hits_before = 0 if executor is None else executor.materialized_hits
             if executor is not None and oracle_error is None:
                 try:
+                    actual = executor.execute(q, deadline=deadline)
+                    warmup_runs = 1
+                    # Keep the legacy materialized-path counter scoped to timed
+                    # runs; the warmup is reported separately.
+                    hits_before = executor.materialized_hits
                     for _ in range(repeats):
                         _check_overall_deadline(deadline)
                         began = time.perf_counter()
-                        actual = executor.execute(q, deadline=deadline)
-                        durations.append((time.perf_counter() - began) * 1000)
+                        count, batch, elapsed = 0, 1, 0.0
+                        while count < MAX_BENCHMARK_INNER_ITERATIONS:
+                            for _ in range(min(batch, MAX_BENCHMARK_INNER_ITERATIONS - count)):
+                                _check_overall_deadline(deadline)
+                                actual = executor.execute(q, deadline=deadline)
+                                count += 1
+                            elapsed = time.perf_counter() - began
+                            if elapsed >= min_query_seconds or count >= MAX_BENCHMARK_INNER_ITERATIONS:
+                                break
+                            # Grow the next batch from observed throughput, with
+                            # a doubling limit and a hard cap even if the clock
+                            # resolution is too coarse for the current query.
+                            needed = math.ceil(count * (min_query_seconds - elapsed) / elapsed) if elapsed > 0 else count
+                            batch = max(1, min(count * 2, needed))
+                        durations.append(elapsed * 1000 / count)
+                        iterations.append(count)
+                    physical_stats = copy.deepcopy(executor.last_execution_stats)
                 except TimeoutError:
                     raise
                 except Exception as exc:
@@ -818,9 +1033,13 @@ def evaluate_workload(source: Any, graph: dict, queries: list[dict], repeats: in
             correct = error is None and _equal_results(actual, expected, q, collations)
             results.append({"id": q["id"], "question": q["question"], "correct": correct,
                             "latency_ms": statistics.median(durations) if durations else 0.0,
+                            "latency_samples_ms": durations, "timing_iterations": iterations,
+                            "measured_query_runs": sum(iterations), "warmup_runs": warmup_runs,
+                            "min_query_seconds": min_query_seconds,
                             "oracle_latency_ms": oracle_ms, "expected_count": len(expected),
                             "actual_count": len(actual), "expected_preview": expected[:20],
                             "actual_preview": actual[:20], "error": error,
+                            **physical_stats,
                             "materialized_path_hits": 0 if executor is None else executor.materialized_hits - hits_before})
     finally:
         db.close()
@@ -829,6 +1048,8 @@ def evaluate_workload(source: Any, graph: dict, queries: list[dict], repeats: in
     return {"accuracy": correct / len(results), "correct": correct, "total": len(results),
             "latency_ms": sum(r["latency_ms"] for r in results), "preparation_ms": preparation_ms,
             "oracle_latency_ms": sum(r["oracle_latency_ms"] for r in results), "repeats": repeats,
+            "min_query_seconds": min_query_seconds,
+            "max_inner_iterations": MAX_BENCHMARK_INNER_ITERATIONS,
             "results": results}
 
 

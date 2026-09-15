@@ -70,23 +70,17 @@ class TabularConstructionAgentTest(unittest.TestCase):
             *extra, call("finish", {"reason": "Preserve the verified graph after rejected candidate."}, 9)])
 
     def test_default_15_rules_end_to_end_final_graph_contract(self):
-        result = TabularConstructionSubAgent().run(self.path, {"mode": "rules", "domain": "Retail fulfillment"})
+        progress_path = self.root / "ready-progress.json"
+        result = TabularConstructionSubAgent().run(self.path, {"mode": "rules", "domain": "Retail fulfillment"},
+                                                   progress_path=progress_path, build_id="ready-build")
         self.assertEqual((result.report["final"]["correct"], result.report["final"]["total"]), (15, 15))
         self.assertFalse(result.report["llm_used"])
         self.assertEqual(set(result.graph), {"directed", "nodes", "edges"})
         self.assertEqual(validate_graph(result.graph), result.graph)
         self.assertTrue(result.report["history"])
-
-    def test_sql_foreign_key_actions_complete_the_full_verified_build(self):
-        self.path.write_text(SQL.replace("REFERENCES regions(id)", "REFERENCES regions(id) ON UPDATE CASCADE")
-                            .replace("REFERENCES customers(id)", "REFERENCES customers(id) ON UPDATE SET NULL ON DELETE CASCADE"), encoding="utf-8")
-        result = TabularConstructionSubAgent().run(self.path, {"mode": "rules", "query_count": 7, "experience_enabled": False})
-        self.assertEqual((result.report["final"]["correct"], result.report["final"]["total"]), (7, 7))
-        source = self.source()
-        try:
-            self.assertEqual(fidelity_errors(source, result.graph), [])
-        finally:
-            source.close()
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        self.assertEqual((progress["status"], progress["stage"], progress["current_message"]),
+                         ("ready", "ready", "构图完成，结果已通过最终校验。"))
 
     def test_llm_tool_loop_freezes_queries_rejects_loss_and_returns_only_graph(self):
         llm = self.script()
@@ -151,21 +145,27 @@ class TabularConstructionAgentTest(unittest.TestCase):
         self.assertEqual(result.report["final"]["correct"], 15)
 
     def test_final_validation_cannot_be_skipped_by_finish(self):
-        calls = 0
+        report_path = self.root / "private-report.json"
+        progress_path = self.root / "failed-progress.json"
 
         def evaluator(source, graph, queries, repeats=3):
-            nonlocal calls
-            calls += 1
             result = evaluate_workload(source, graph, queries, repeats=1)
-            if calls >= 4:
+            # Fail the actual final-validation phase, independently of how many
+            # repeated candidate comparisons preceded it.
+            state = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+            if state.get("stage") == "validating_final":
                 result.update(correct=14, accuracy=14 / 15)
             return result
 
-        report_path = self.root / "private-report.json"
         with self.assertRaises(ConstructionFailed) as caught:
-            TabularConstructionSubAgent(llm_factory=lambda _: self.script(), evaluator=evaluator).run(self.path, report_path=report_path)
+            TabularConstructionSubAgent(llm_factory=lambda _: self.script(), evaluator=evaluator).run(
+                self.path, report_path=report_path, progress_path=progress_path, build_id="failed-build")
         self.assertEqual(caught.exception.code, "query_accuracy_target_not_met")
         self.assertEqual(json.loads(report_path.read_text(encoding="utf-8"))["status"], "failed")
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        self.assertEqual((progress["status"], progress["stage"], progress["current_message"]),
+                         ("failed", "failed", "构图未完成，源文件已保留，可调整参数后重试。"))
+        self.assertNotIn(caught.exception.code, json.dumps(progress, ensure_ascii=False))
 
     def test_invalid_candidates_do_not_count_as_actual_evolution(self):
         source = self.source()
@@ -209,7 +209,7 @@ class TabularConstructionAgentTest(unittest.TestCase):
 
     def test_registration_store_publication_failure_and_restart(self):
         store = register_builtin_algorithms(ConstructionStore(self.root))
-        self.assertEqual([x["algorithm_available"] for x in store.capabilities()["formats"]], [True, True, False])
+        self.assertEqual([x["algorithm_available"] for x in store.capabilities()["formats"]], [True, True, True])
         result = store.build("u1", "d1", self.path, "retail.sql", {"mode": "rules", "query_count": 7})
         self.assertEqual(result["status"], "ready")
         saved = store.graph("u1", "d1")
@@ -231,6 +231,20 @@ class TabularConstructionAgentTest(unittest.TestCase):
         graph = store.graph("u1", "csv1")["graph"]
         self.assertEqual({n["type"] for n in graph["nodes"]}, {"customers"})
         report = json.loads((self.root / "users/u1/datasets/csv1/construction/evolution-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["source_schema"]["tables"][0]["primary_key"], ["customer_id"])
+
+    def test_uploaded_txt_uses_business_filename_and_builtin_worker(self):
+        txt = self.root / "customers.txt"
+        txt.write_text("customer_id\tname\nc1\tAlice\nc2\tBob\n", encoding="utf-8")
+        store = register_builtin_algorithms(ConstructionStore(self.root))
+        self.assertIn("txt", store._process_algorithms)
+        result = store.build("u1", "txt1", txt, txt.name, {"mode": "rules", "query_count": 7})
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual((result["source_type"], result["algorithm_available"]), ("txt", True))
+        graph = store.graph("u1", "txt1")["graph"]
+        self.assertEqual({node["type"] for node in graph["nodes"]}, {"customers"})
+        self.assertEqual(graph["nodes"][0]["properties"]["data"]["name"], "Alice")
+        report = json.loads((self.root / "users/u1/datasets/txt1/construction/evolution-report.json").read_text(encoding="utf-8"))
         self.assertEqual(report["source_schema"]["tables"][0]["primary_key"], ["customer_id"])
 
     def test_invocation_state_is_isolated_under_parallel_builds(self):

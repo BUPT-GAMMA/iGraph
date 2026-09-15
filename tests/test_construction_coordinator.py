@@ -105,6 +105,44 @@ def test_disconnect_retains_task_and_ready_reuse_does_not_need_capacity(tmp_path
     asyncio.run(scenario())
 
 
+def test_active_status_reads_the_small_public_progress_sidecar(tmp_path):
+    async def scenario():
+        store, source = ConstructionStore(tmp_path), source_file(tmp_path)
+        start, release = threading.Event(), threading.Event()
+        def slow(*_args):
+            start.set()
+            assert release.wait(5)
+            return GRAPH
+        store.register_algorithm("csv", slow)
+        owner = ConstructionCoordinator(store)
+        request = asyncio.create_task(owner.build("alice", "progress", source, "people.csv"))
+        try:
+            await entered(start)
+            attempt = owner.active["alice", "progress"]
+            directory = store._directory("alice", "progress")
+            atomic_json(directory / "construction-progress.json", {
+                "version": "construction_progress.v1", "build_id": attempt.build_id,
+                "status": "running", "stage": "evolving", "current_message": "Agent 正在验收候选。",
+                "elapsed_seconds": 8, "metrics": {"iterations": 2, "evaluated_candidates": 1},
+                "events": [{"id": "stage:evolving", "kind": "stage", "stage": "evolving",
+                            "message": "Agent 正在尝试候选图结构。"}],
+                "queries": [{"must_not_leak": True}],
+            })
+            status = await owner.status("alice", "progress")
+            assert status["status"] == "building"
+            assert status["message"] == "Agent 正在验收候选。"
+            assert status["progress"]["metrics"] == {"iterations": 2, "evaluated_candidates": 1}
+            assert "queries" not in status["progress"]
+            (directory / "construction-progress.json").write_text("{", encoding="utf-8")
+            fallback = await owner.status("alice", "progress")
+            assert fallback["status"] == "building" and "progress" not in fallback
+        finally:
+            release.set()
+            await request
+            await owner.close()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "true", "", " 2"])
 def test_invalid_capacity_fails_at_creation(tmp_path, value):
     with pytest.raises(ValueError, match="GRAPH_CONSTRUCTION_CONCURRENCY"):
@@ -239,9 +277,38 @@ def test_builtin_csv_uses_managed_process_and_preserves_source_name(tmp_path):
             graph = store.graph("alice", "csv")["graph"]
             assert graph["nodes"][0]["type"] == "people"
             assert graph["nodes"][0]["properties"]["data"]["name"] == "Alice"
+            assert result["progress"]["version"] == "construction_progress.v1"
+            assert any(event.get("outcome") == "ready" for event in result["progress"]["events"])
+            public_sidecar = json.loads((store._directory("alice", "csv") / "construction-progress.json").read_text())
+            assert not ({"queries", "source_schema", "history", "tool_trace", "domain_profile"} & public_sidecar.keys())
             assert list((owner.root / "workers").glob("*.identity.json"))
             assert not list((owner.root / "attempts").glob("*.json"))
             assert not list((tmp_path / "users/alice/datasets/csv/construction/.builds").iterdir())
+        finally:
+            await owner.close()
+    asyncio.run(scenario())
+
+
+def test_builtin_txt_uses_managed_process_and_preserves_source_name(tmp_path):
+    async def scenario():
+        source = tmp_path / "people.txt"
+        source.write_text("id\tname\n1\tAlice\n2\tBob\n", encoding="utf-8")
+        store = register_builtin_algorithms(ConstructionStore(tmp_path))
+        owner = ConstructionCoordinator(store)
+        try:
+            result = await owner.build(
+                "alice", "txt", source, "people.txt",
+                {"mode": "rules", "query_count": 1, "benchmark_repeats": 1, "experience_enabled": False},
+            )
+            assert result["status"] == "ready", result
+            assert result["source_type"] == "txt" and result["algorithm_available"] is True
+            graph = store.graph("alice", "txt")["graph"]
+            assert len(graph["nodes"]) == 2 and graph["edges"] == []
+            assert {node["type"] for node in graph["nodes"]} == {"people"}
+            assert graph["nodes"][0]["properties"]["data"]["name"] == "Alice"
+            assert any(event.get("outcome") == "ready" for event in result["progress"]["events"])
+            assert list((owner.root / "workers").glob("*.identity.json"))
+            assert not list((owner.root / "attempts").glob("*.json"))
         finally:
             await owner.close()
     asyncio.run(scenario())

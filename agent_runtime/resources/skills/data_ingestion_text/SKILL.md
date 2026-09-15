@@ -14,7 +14,8 @@ metadata:
 
 # 文本数据导入
 
-SQL、CSV、TXT 上传文件属于数据集构图流程，优先读取 `graph_construction` Skill。
+SQL、CSV、TXT 上传文件属于数据集构图流程，优先读取 `graph_construction` Skill。上传的普通 TXT
+需要识别实体和关系时，使用其中显式的 `txt_mode=entities`；不要复制文件内容到内联文本工具。
 ready 数据集可直接复用保存图；构图算法尚未接入时必须明确告知，不调用下述旧上传处理流程，
 也不得复制源文件内容到内联文本/三元组工具绕过该限制。
 
@@ -22,13 +23,13 @@ ready 数据集可直接复用保存图；构图算法尚未接入时必须明�
 
 | 用户输入类型 | 推荐工具 |
 |------------|---------|
-| SQL、CSV、TXT 上传文件 | `graph_construction` — 检查数据集状态并复用保存图 |
+| SQL、CSV、TXT 上传文件 | `graph_construction` — 检查数据集状态；普通 TXT 语义抽取选 `entities` |
 | 其他已支持上传文件 | `load_graph_from_upload` — 自动检测格式 |
 | 用户直接粘贴的内联文本 | `load_graph_from_text(text=...)` |
 | 用户直接给出的三元组（JSON / 手填） | `load_graph_from_triples` |
 | 其他已支持结构化表格 | 转至 data_ingestion_table skill |
 
-**关键原则：SQL/CSV/TXT 使用数据集构图；其他已支持上传文件才使用 `load_graph_from_upload`，不要把文件内容复制到 `text`。**
+**关键原则：SQL/CSV/TXT 使用数据集构图；普通 TXT 的 `entities` 会把全文分块发送给构图 LLM，必须告知用户且结果需人工复核。其他已支持上传文件才使用 `load_graph_from_upload`，不要把文件内容复制到 `text`。**
 
 ---
 

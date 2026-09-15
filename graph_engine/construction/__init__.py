@@ -9,7 +9,7 @@ def register_builtin_algorithms(store):
     from graph_engine.construction.agent import TabularConstructionSubAgent
 
     # The callable creates all mutable state per invocation, including its LLM.
-    for kind in ("csv", "sql"):
+    for kind in ("csv", "sql", "txt"):
         store.register_algorithm(kind, TabularConstructionSubAgent(data_root=store.root))
         store._process_algorithms.add(kind)
     return store
