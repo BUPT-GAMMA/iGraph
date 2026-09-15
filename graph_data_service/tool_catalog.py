@@ -1124,7 +1124,7 @@ GRAPH_TOOLS: List[dict] = [
             "- 用户问某节点特征时，highlights.nodes 中填入该节点\n\n"
             "参数:\n"
             "- node_names(可选): 指定节点列表；为空则返回全图。\n"
-            "- include_community(可选): 是否包含社区信息，默认 false。\n"
+            "- include_community(可选): 是否包含社区信息，默认 true；仅在用户要求关闭社区着色时设为 false。\n"
             "- max_nodes(可选): 返回的最大节点数，默认 800。超出时生成确定性的智能概览，\n"
             "  保留高亮、节点类型与社区代表，优先高连接度节点并补齐代表间路径；\n"
             "  结果中含 truncated=true、total_nodes 与 overview 字段。\n"
@@ -1150,8 +1150,8 @@ GRAPH_TOOLS: List[dict] = [
                 },
                 "include_community": {
                     "type": "boolean",
-                    "description": "是否包含社区信息（默认 false）",
-                    "default": False,
+                    "description": "是否包含社区信息（默认 true，仅在用户要求关闭社区着色时设为 false）",
+                    "default": True,
                 },
                 "max_nodes": {
                     "type": "integer",

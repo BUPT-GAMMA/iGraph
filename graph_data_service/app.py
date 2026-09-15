@@ -2974,7 +2974,7 @@ class GraphDataService:
                     return self.do_visualize_subgraph(
                         session_id,
                         list(node_names) if isinstance(node_names, list) else None,
-                        bool(arguments.get("include_community", False)),
+                        bool(arguments.get("include_community", True)),
                         arguments.get("highlights"),
                         max_nodes=arguments.get("max_nodes"),
                         user_id=user_id,
@@ -3199,7 +3199,7 @@ class GraphDataService:
             node_names = arguments.get("node_names")
             if node_names is not None:
                 node_names = list(node_names)
-            include_community = bool(arguments.get("include_community", False))
+            include_community = bool(arguments.get("include_community", True))
             highlights = arguments.get("highlights")
             max_nodes = arguments.get("max_nodes")
             return self.do_visualize_subgraph(session_id, node_names, include_community, highlights, max_nodes=max_nodes, user_id=user_id)
