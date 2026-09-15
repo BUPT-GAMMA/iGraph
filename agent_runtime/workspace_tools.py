@@ -20,6 +20,8 @@ from typing import Any
 
 from agno.run import RunContext
 from agent_runtime.execution_scope import current_scope
+from agent_runtime.graph_progress import emit_job_progress
+from agent_runtime.workspace_env import build_environment, environment_python_path
 from workspace_storage import workspace_root_for
 
 
@@ -733,7 +735,33 @@ def create_workspace_tools() -> list[Any]:
             return {"success": False, "error": "artifact 元数据保存失败"}
         return {"success": True, "artifact": artifact, **artifact}
 
+    async def workspace_env_ensure(packages: list[str], run_context: RunContext) -> dict[str, Any]:
+        """Prepare a Python environment for uploaded code, then report its interpreter.
+
+        Give plain PyPI names with optional versions, e.g. ["torch==2.0.1",
+        "numpy"]. Git refs, URLs and local paths are refused. Installation runs
+        on the server with network access and replaces any previous environment
+        for this session; the result is read-only inside workspace_bash.
+        Run the code with the returned relative interpreter path, for example
+        "Environment/venv/bin/python Uploaded/script.py". Large packages can
+        take minutes on first use and are cached for later sessions.
+        """
+        scope = current_scope.get()
+        if scope is not None:
+            scope.check()
+        mode = _sandbox_mode()
+        try:
+            root = workspace_root(run_context)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), **_sandbox_fields(mode)}
+        result = await build_environment(
+            root, packages, user_id=str(run_context.user_id),
+            on_progress=emit_job_progress,
+        )
+        return {**result, **_sandbox_fields(mode)}
+
     workspace_list.__name__ = "workspace_list"
     workspace_bash.__name__ = "workspace_bash"
     workspace_publish.__name__ = "workspace_publish"
-    return [workspace_list, workspace_bash, workspace_publish]
+    workspace_env_ensure.__name__ = "workspace_env_ensure"
+    return [workspace_list, workspace_bash, workspace_publish, workspace_env_ensure]
