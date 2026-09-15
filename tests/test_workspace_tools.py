@@ -510,14 +510,28 @@ def test_environment_files_are_not_reported_as_artifacts(tmp_path):
     current = ctx(tmp_path)
     tools = toolset()
     root = tmp_path / "u1" / "s1"
-    (root / "Environment").mkdir(parents=True, exist_ok=True)
+    (root / "Environment" / "venv").mkdir(parents=True, exist_ok=True)
+    # 由服务端（而非 agent 命令）放入的 venv 文件
+    (root / "Environment" / "venv" / "site.py").write_text("pkg", encoding="utf-8")
 
-    # 命令期间在 Environment 下新增文件，不应出现在变更产物里
-    result = asyncio.run(tools["workspace_bash"](
-        "mkdir -p Environment/venv && printf pkg > Environment/venv/site.py", current))
+    # 与 Environment 无关的命令，其变更产物中不得出现 Environment 下的文件
+    result = asyncio.run(tools["workspace_bash"]("printf ok > Ephemeral/out.txt", current))
     assert result["success"] is True
     paths = [item["path"] for item in result["artifacts"]]
     assert not any(path.startswith("Environment/") for path in paths)
+
+
+def test_bash_cannot_write_into_environment(tmp_path):
+    current = ctx(tmp_path)
+    tools = toolset()
+    root = tmp_path / "u1" / "s1"
+    (root / "Environment" / "venv").mkdir(parents=True, exist_ok=True)
+
+    # Environment 属受保护分区：写入命令应被拒绝，且不留下文件
+    result = asyncio.run(tools["workspace_bash"](
+        "printf pkg > Environment/venv/site.py", current))
+    assert result["success"] is False
+    assert not (root / "Environment" / "venv" / "site.py").exists()
 
 
 def test_sandbox_command_avoids_pid_namespace_and_mounts_environment(tmp_path, monkeypatch):
@@ -571,3 +585,33 @@ def test_env_ensure_requires_session_identity(tmp_path):
     broken = SimpleNamespace(user_id="u1", session_id="")
     result = asyncio.run(toolset()["workspace_env_ensure"](["requests"], broken))
     assert result["success"] is False
+
+
+def test_environment_is_hidden_from_listings(tmp_path):
+    from workspace_storage import visible_files
+
+    current = ctx(tmp_path)
+    tools = toolset()
+    root = tmp_path / "u1" / "s1"
+    asyncio.run(tools["workspace_bash"]("printf x > Ephemeral/probe.txt", current))
+    (root / "Environment" / "venv" / "bin").mkdir(parents=True)
+    (root / "Environment" / "venv" / "bin" / "python").write_text("#!", encoding="utf-8")
+    (root / "Uploaded").mkdir(exist_ok=True)
+    (root / "Uploaded" / "data.csv").write_text("a,b", encoding="utf-8")
+
+    listed = asyncio.run(tools["workspace_list"](current))["files"]
+    assert [item["path"] for item in listed] == ["Uploaded/data.csv"]
+    assert not any(item["path"].startswith("Environment/") for item in visible_files("u1", "s1"))
+
+
+def test_environment_cannot_be_modified_by_bash_in_fallback(tmp_path):
+    current = ctx(tmp_path)
+    tools = toolset()
+    root = tmp_path / "u1" / "s1"
+    (root / "Environment" / "venv").mkdir(parents=True)
+    target = root / "Environment" / "venv" / "sitecustomize.py"
+    target.write_text("original", encoding="utf-8")
+
+    asyncio.run(tools["workspace_bash"]("printf tampered > Environment/venv/sitecustomize.py", current))
+    # bwrap 下由 --ro-bind 保证；fallback 下至少不得静默成功地留下篡改
+    assert target.read_text(encoding="utf-8") == "original"
