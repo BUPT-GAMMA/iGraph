@@ -63,6 +63,7 @@
   "workspace_list": "查看工作区文件",
   "workspace_bash": "执行工作区命令",
   "workspace_publish": "发布工作区文件",
+  "workspace_env_ensure": "准备 Python 环境",
   "update_agent_notes": "更新工作笔记",
   "get_skill_instructions": "读取技能指引",
   "get_skill_reference": "读取技能参考资料",
