@@ -97,3 +97,41 @@ class GraphComputeSmartOverviewTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_component_proportions_do_not_create_isolated_representatives():
+    graph = nx.path_graph(900)
+    graph.add_edges_from((i, i + 1) for i in range(900, 1000, 2))
+    result = select_smart_overview(graph, graph.nodes, max_nodes=180)
+    sample = graph.subgraph(result.nodes)
+    sizes = sorted(map(len, nx.connected_components(sample)), reverse=True)
+    assert len(sample) == 180
+    assert 158 <= sizes[0] <= 166
+    assert 1 not in sizes
+    assert len(sizes) > 1
+
+
+def test_true_isolates_keep_proportional_types():
+    graph = nx.empty_graph(1000)
+    types = {i: 'A' if i < 750 else 'B' for i in graph}
+    result = select_smart_overview(graph, graph.nodes, max_nodes=100, node_types=types)
+    assert sum(types[n] == 'A' for n in result.nodes) == 75
+    assert sum(types[n] == 'B' for n in result.nodes) == 25
+
+
+def test_dense_edge_cap_preserves_bridges():
+    graph = nx.Graph()
+    for offset in range(0, 80, 20):
+        graph.add_edges_from((a, b) for a in range(offset, offset + 20) for b in range(a + 1, offset + 20))
+    graph.add_edges_from([(19, 20), (39, 40), (59, 60)])
+    names = {i: str(i) for i in graph}
+    gd = GraphData(num_nodes=80, edge_index=np.asarray(list(graph.edges), dtype=np.int64).T,
+                   id2node=names, node2id={v: k for k, v in names.items()}, directed=False)
+    compute = GraphCompute()
+    compute._MAX_VIZ_EDGES = 90
+    result = compute.visualize_subgraph(gd.to_networkx(), gd)
+    sample = nx.Graph()
+    sample.add_nodes_from(n['id'] for n in result['nodes'])
+    sample.add_edges_from((e['src'], e['dst']) for e in result['edges'])
+    assert len(result['edges']) == 90
+    assert nx.is_connected(sample)

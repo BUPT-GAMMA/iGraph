@@ -1603,6 +1603,18 @@ class GraphCompute:
             return (left, right) if left_key <= right_key else (right, left)
 
         protected_pairs = set()
+        # Reserve a spanning forest before dense/parallel edges can consume the
+        # edge budget. Preserve real topology without inventing relationships.
+        if available_display_edges > edge_cap:
+            undirected = display_graph.to_undirected(as_view=True)
+            seen = set()
+            for root in sorted(target_nodes, key=lambda n: (type(n).__name__, repr(n))):
+                if root in seen:
+                    continue
+                seen.add(root)
+                for left, right in nx.bfs_edges(undirected, root, sort_neighbors=lambda values: sorted(values, key=lambda n: (type(n).__name__, repr(n)))):
+                    seen.add(right)
+                    protected_pairs.add(undirected_pair(left, right))
         if overview_selection is not None:
             for path in overview_selection.connector_paths:
                 protected_pairs.update(undirected_pair(left, right) for left, right in zip(path, path[1:]))
