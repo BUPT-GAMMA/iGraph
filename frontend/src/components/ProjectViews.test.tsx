@@ -1,8 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Dataset, Project } from '../types';
+import type { Project } from '../types';
 import { DeleteProjectDialog, ProjectDialog } from './ProjectDialogs';
-import { ProjectWorkspace } from './ProjectWorkspace';
 import { TopBar } from './TopBar';
 
 afterEach(cleanup);
@@ -58,53 +57,7 @@ describe('project dialogs', () => {
   });
 });
 
-describe('project workspace and top bar', () => {
-  it('renders empty and populated datasets and forwards dataset actions', () => {
-    const callbacks = {
-      onUpload: vi.fn(),
-      onSetDefault: vi.fn(),
-      onRename: vi.fn(),
-      onDelete: vi.fn(),
-    };
-    const datasets: Dataset[] = [
-      { dataset_id: 'dataset-1', project_id: project.project_id, name: 'Cora', original_filename: 'cora.pt', file_type: 'pt', status: 'ready', is_default: true, metadata: { num_nodes: 1000, num_edges: 2000 } },
-      { dataset_id: 'dataset-2', project_id: project.project_id, name: 'Notes', original_filename: 'notes.csv', file_type: 'csv', status: 'processing' },
-    ];
-    const { container, rerender } = render(<ProjectWorkspace project={project} datasets={[]} {...callbacks} />);
-
-    expect(screen.getByText('还没有数据集')).toBeTruthy();
-    expect(screen.queryByText('上传第一个数据集后，它会自动成为项目默认数据集。')).toBeNull();
-    expect(screen.queryByText('未设置默认数据集')).toBeNull();
-    expect(screen.queryByText('项目中的会话可选择这些数据源，并保持各自的运行时状态。')).toBeNull();
-    rerender(<ProjectWorkspace project={project} datasets={datasets} {...callbacks} />);
-    expect(screen.getByText('1,000 个节点 · 2,000 条边')).toBeTruthy();
-    expect(screen.getByText('notes.csv')).toBeTruthy();
-    expect(screen.queryByText('已设置默认数据集')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: '设为默认' }));
-    fireEvent.click(screen.getAllByTitle('重命名')[1]);
-    fireEvent.click(screen.getAllByTitle('删除')[1]);
-    expect(callbacks.onSetDefault).toHaveBeenCalledWith(datasets[1]);
-    expect(callbacks.onRename).toHaveBeenCalledWith(datasets[1]);
-    expect(callbacks.onDelete).toHaveBeenCalledWith(datasets[1]);
-
-    const file = new File(['a,b'], 'graph.csv', { type: 'text/csv' });
-    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
-    expect(callbacks.onUpload).toHaveBeenCalledWith(file);
-  });
-
-  it('omits project fallback copy and disables actions while busy', () => {
-    const defaultProject = { ...project, description: '', conversation_count: 0 };
-    const dataset: Dataset = { dataset_id: 'dataset-1', project_id: project.project_id, name: 'Cora', original_filename: 'cora.pt', file_type: 'pt', status: 'ready' };
-    render(<ProjectWorkspace project={defaultProject} datasets={[dataset]} busy onUpload={vi.fn()} onSetDefault={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()} />);
-
-    expect(screen.queryByText('集中管理这个项目中的图分析会话。')).toBeNull();
-    expect(screen.queryByText('项目工作区')).toBeNull();
-    expect((screen.getByRole('button', { name: /添加数据集/ }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: '设为默认' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTitle('重命名') as HTMLButtonElement).disabled).toBe(true);
-  });
-
+describe('top bar', () => {
   it('opens the mobile navigation from the top bar', () => {
     const onMenu = vi.fn();
     render(<TopBar onMenu={onMenu} />);

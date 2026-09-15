@@ -300,9 +300,8 @@ describe('actual App recovery', () => {
       .mockResolvedValue({ projects: [] });
     vi.mocked(listSessions).mockReset().mockResolvedValue({ sessions: [] });
     vi.mocked(listProjectConversations).mockReset().mockImplementationOnce(() => oldConversations);
-    window.history.replaceState({}, '', '/');
+    window.history.replaceState({}, '', '/?project=old-project');
     const { container } = render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Old Account Project' }));
     await waitFor(() => expect(listProjectConversations).toHaveBeenCalledOnce());
 
     fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));

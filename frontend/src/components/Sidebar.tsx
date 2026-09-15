@@ -39,9 +39,9 @@ type Props = {
   onNew: () => void;
   onNewProject: () => void;
   onNewInProject: (id: string) => void;
+  onProjectDatasets: (id: string) => void;
   onEditProject: (project: Project) => void;
   onDeleteProject: (project: Project) => void;
-  onSelectProject: (id: string) => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   collapsed: boolean;
@@ -59,7 +59,7 @@ function runStatusLabel(status?: string) {
   return '';
 }
 
-export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onEditProject, onDeleteProject, onSelectProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
   const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
   useEffect(() => {
@@ -189,13 +189,6 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
     });
   }
 
-  function openProject(projectId: string) {
-    setExpandedProjects(current => current.has(projectId) ? current : new Set([...current, projectId]));
-    setMenuProjectId(null);
-    onSelectProject(projectId);
-    onCloseMobile();
-  }
-
   function createTaskFromContext() {
     if (!userId) {
       setAccountMenuOpen(true);
@@ -239,17 +232,17 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
             const projectSessions = orderSessions(sessions.filter(session => session.project_id === project.project_id));
             return <div className={`project-tree-node ${expanded ? 'expanded' : ''}`} key={project.project_id}>
               <div className={`project-row ${activeProjectId === project.project_id ? 'selected' : ''}`}>
-                <button className="project-disclosure" onClick={() => toggleProject(project.project_id)} aria-label={`${expanded ? '收起' : '展开'} ${project.name}`} aria-expanded={expanded}><Icon name="chevron" size={13} /></button>
-                <button className="project-row-main" onClick={() => openProject(project.project_id)} title={project.name}><span className="project-row-icon"><Icon name={expanded ? 'folder-open' : 'folder'} size={17} /></span><strong>{project.name}</strong></button>
+                <button className="project-row-main" onClick={() => { closeProjectMenu(); toggleProject(project.project_id); }} aria-expanded={expanded} title={project.name}><span className="project-row-icon"><Icon name={expanded ? 'folder-open' : 'folder'} size={17} /></span><strong>{project.name}</strong></button>
+                <button className="project-inline-action" onClick={() => { closeProjectMenu(); onProjectDatasets(project.project_id); onCloseMobile(); }} title="项目数据集" aria-label={`${project.name} 项目数据集`}><Icon name="database" size={15} /></button>
                 <button className="project-inline-action" onClick={event => toggleProjectMenu(project, event.currentTarget)} title="项目操作" aria-label={`${project.name} 项目操作`} aria-haspopup="menu" aria-expanded={menuProjectId === project.project_id}><Icon name="more" size={20} /></button>
                 <button className="project-inline-action" onClick={() => { onNewInProject(project.project_id); onCloseMobile(); }} title={`在 ${project.name} 中新建会话`} aria-label={`在 ${project.name} 中新建会话`}><Icon name="plus" size={15} /></button>
               </div>
-              {expanded && <div className="project-session-list">
+              <div className="project-session-collapse" aria-hidden={!expanded} {...(!expanded ? { inert: '' } : {})}><div className="project-session-clip"><div className="project-session-list">
                 {projectSessions.length === 0 ? <div className="project-tree-empty">暂无会话</div> : projectSessions.map(session => <div className={`project-session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id}>
                   <button className="project-session-main" onClick={() => { onSelect(session.session_id); onCloseMobile(); }} title={sessionTitle(session)}><Icon name="file" size={13} />{runStatusLabel(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={runStatusLabel(runStatuses[session.session_id])} />}<span>{sessionTitle(session)}</span></button>
                   {pinButton(session)}<button className="project-session-delete" onClick={() => onDelete(session.session_id)} title="删除会话" aria-label="删除会话"><Icon name="trash" size={12} /></button>
                 </div>)}
-              </div>}
+              </div></div></div>
             </div>;
           })}
         </div>

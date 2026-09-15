@@ -39,7 +39,7 @@ it('shows confirming at 100%, allows removal, and exposes failed-file retry', ()
 });
 const sidebar = { projects: [], sessions: [{ session_id: '1', title: 'One' }, { session_id: '2', title: 'Two' }], userId: 'a', dark: false,
   onTheme: noop, onMemory: noop, onSkills: noop, onCreateGraph: noop, mobileOpen: false, onCloseMobile: noop, onNew: noop, onNewProject: noop,
-  onNewInProject: noop, onEditProject: noop, onDeleteProject: noop, onSelectProject: noop, onSelect: noop, onDelete: noop, collapsed: false, onCollapse: noop };
+  onNewInProject: noop, onProjectDatasets: noop, onEditProject: noop, onDeleteProject: noop, onSelect: noop, onDelete: noop, collapsed: false, onCollapse: noop };
 it('pins inside the existing group, persists, and separates accounts', () => {
   const { container, rerender } = render(<Sidebar {...sidebar} />);
   fireEvent.click(screen.getByRole('button', { name: '置顶 Two' }));
