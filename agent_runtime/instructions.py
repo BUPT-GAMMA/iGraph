@@ -59,11 +59,12 @@ def instructions_for(*, reasoning_mode: str, planning_mode: str) -> list[str]:
         "和 Environment（只读 Python 环境）。"
         "workspace_list 查看文件；workspace_bash 使用相对路径执行受限命令，代码和中间输出写入 Ephemeral；"
         "workspace_publish 将中间文件发布为可下载的版本化产物。"
-        "沙箱内只有标准库且无网络：用户代码需要第三方依赖时，先用 workspace_env_ensure "
+        "沙箱内无网络，默认解释器只带运行时自身依赖，没有 numpy、pandas、torch 等科学计算库："
+        "用户代码需要某个包或特定版本时，先用 workspace_env_ensure "
         "声明 PyPI 包名与版本（如 torch==2.0.1），再用它返回的解释器路径运行，"
         "例如 Environment/venv/bin/python Uploaded/script.py；首次安装大型依赖可能需要几分钟。"
         "工作区工具不替代图引擎和构图审批。"
-        "沙箱不可用时说明限制并继续使用图具，不绕过沙箱。避免反复执行相同参数或连续重试失败工具。"
+        "沙箱不可用时说明限制并继续使用图工具，不绕过沙箱。避免反复执行相同参数或连续重试失败工具。"
         "需要记录工作进度时使用 update_agent_notes，仅更新工作笔记；项目、数据集和执行状态由服务管理。"
     )]
     if reasoning_mode == "staged":
