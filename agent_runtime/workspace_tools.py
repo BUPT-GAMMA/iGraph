@@ -514,13 +514,14 @@ def create_workspace_tools() -> list[Any]:
         Each call starts a fresh shell at the workspace root; use relative paths.
         Uploaded, Derived and Environment are read-only. Write intermediate files
         to Ephemeral, then use workspace_publish to deliver them as user-visible
-        artifacts. Only the standard library is importable by default; when
-        uploaded code needs third-party packages, call workspace_env_ensure first
-        and then run it with the interpreter it returns, e.g.
-        "Environment/venv/bin/python Uploaded/script.py". There is no network
-        here. Prefer head/sed or bounded Python reads for large files. Results
-        contain exit_code, bounded output, output_truncated and changed file
-        metadata. Commands have a server-configured timeout and inherit no
+        artifacts. The default interpreter carries only the runtime's own
+        dependencies, so scientific packages such as numpy, pandas or torch are
+        absent; when uploaded code needs a package or a specific version, call
+        workspace_env_ensure first and run it with the interpreter that returns,
+        e.g. "Environment/venv/bin/python Uploaded/script.py". There is no
+        network here. Prefer head/sed or bounded Python reads for large files.
+        Results contain exit_code, bounded output, output_truncated and changed
+        file metadata. Commands have a server-configured timeout and inherit no
         provider secrets.
         """
         mode = _sandbox_mode()
