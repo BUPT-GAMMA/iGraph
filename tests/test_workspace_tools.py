@@ -470,3 +470,19 @@ def test_workspace_bash_reads_progressive_chunks(tmp_path):
     assert first["output"] == "abc\n"
     assert second["output"] == "def\n"
     assert not first["output_truncated"] and not second["output_truncated"]
+
+
+def test_environment_zone_exists_and_survives_bash(tmp_path):
+    current = ctx(tmp_path)
+    tools = toolset()
+    root = tmp_path / "u1" / "s1"
+    # 分区目录随工作区初始化一并建出
+    asyncio.run(tools["workspace_bash"]("printf x > Ephemeral/probe.txt", current))
+    assert (root / "Environment").is_dir()
+
+    # 放在 Environment 下的文件不得被 _relocate_new_root_files 搬进 Ephemeral
+    (root / "Environment" / "venv").mkdir(parents=True)
+    (root / "Environment" / "venv" / "marker.txt").write_text("kept", encoding="utf-8")
+    asyncio.run(tools["workspace_bash"]("printf y > Ephemeral/again.txt", current))
+    assert (root / "Environment" / "venv" / "marker.txt").read_text() == "kept"
+    assert not (root / "Ephemeral" / "Environment").exists()
