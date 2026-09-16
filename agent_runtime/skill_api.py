@@ -20,22 +20,11 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from agent_runtime.config import AgentRuntimeConfig
-from agent_runtime.skills_runtime import bundled_skills_path
-import backend.data_paths as _dp
-
-
-def user_skills_path(config: AgentRuntimeConfig, user_id: str):  # noqa: ARG001
-    """Per-user approved skills directory.
-
-    Delegates to data_paths so skill_api and SkillManager/SkillRegistry all
-    operate on the same physical directory regardless of AgentRuntimeConfig.
-    """
-    return _dp.user_skills_dir(user_id)
-
-
-def candidate_skills_path(config: AgentRuntimeConfig, user_id: str):  # noqa: ARG001
-    """Per-user review-queue directory (same layout as SkillManager)."""
-    return _dp.user_review_queue_dir(user_id)
+from agent_runtime.skills_runtime import (
+    bundled_skills_path,
+    candidate_skills_path,
+    user_skills_path,
+)
 
 
 _NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")

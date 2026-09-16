@@ -13,7 +13,8 @@ from agent_runtime.skills_runtime import candidate_skills_path, user_skills_path
 
 
 @pytest.fixture()
-def skill_client(tmp_path: Path):
+def skill_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("IGRAPH_DATA_ROOT", str(tmp_path / "data"))
     config = AgentRuntimeConfig(
         host="127.0.0.1",
         port=0,
@@ -205,7 +206,7 @@ def test_private_delete_removes_both_user_skill_roots(skill_client) -> None:
 
     response = client.delete("/internal/skills/users/target/all", headers=_headers("service"))
     assert response.status_code == 200
-    assert len(response.json()["removed"]) == 2
+    assert response.json()["removed"] == [str(user_skills_path(config, "target"))]
     assert not user_skills_path(config, "target").exists()
     assert not candidate_skills_path(config, "target").exists()
     assert client.delete("/internal/skills/users/target/all").status_code == 401
