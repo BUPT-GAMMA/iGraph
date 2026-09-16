@@ -444,6 +444,6 @@ function MLTab({ hasProject, messages, liveTools, projectRuns, sessionId, loadin
 
 function ArtifactsTab({ messages }: { messages: Message[] }) {
   const reports = messages.flatMap(message => message.reports || []);
-  if (!reports.length) return <div className="tab-placeholder"><Icon name="file" size={22} /><strong>分析产物</strong><span>当前会话还没有分析报告或导出产物。</span></div>;
+  if (!reports.length) return null;
   return <div className="tab-content"><div className="tab-title"><strong>分析产物</strong><span>{reports.length} 份报告</span></div><div className="workspace-list">{reports.map((report, index) => { const type = String(report.intent || report.type || '分析'); return <div className="workspace-list-row" key={`${String(report.id || report.title || 'report')}-${index}`}><div className="workspace-list-icon"><Icon name="file" size={15} /></div><div><strong>{String(report.title || report.name || `分析报告 ${index + 1}`)}</strong><span>{type === 'analysis' ? '分析' : type}</span></div></div>; })}</div></div>;
 }

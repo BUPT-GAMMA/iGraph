@@ -216,14 +216,25 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
         return {"success": True, "skills": rows}
 
     @router.get("/{name}")
-    def get_skill(name: str, request: Request):
+    def get_skill(name: str, request: Request, source: str = "all"):
         uid = _user_id(request)
         normalized = _safe_name(name)
-        candidates = [
-            (bundled_skills_path(config) / normalized, "bundled"),
-            (user_skills_path(config, uid) / normalized, "user"),
-            (candidate_skills_path(config, uid) / normalized, "review_queue"),
-        ]
+        roots = {
+            "bundled": (bundled_skills_path(config), "bundled"),
+            "user": (user_skills_path(config, uid), "user"),
+            "review_queue": (candidate_skills_path(config, uid), "review_queue"),
+        }
+        if source == "all":
+            candidates = [
+                (bundled_skills_path(config), "bundled"),
+                (user_skills_path(config, uid), "user"),
+                (candidate_skills_path(config, uid), "review_queue"),
+            ]
+        elif source in roots:
+            candidates = [roots[source]]
+        else:
+            raise HTTPException(status_code=400, detail="Invalid Skill source")
+        candidates = [(root / normalized, skill_source) for root, skill_source in candidates]
         for skill_dir, source in candidates:
             skill_file = skill_dir / "SKILL.md"
             if skill_file.is_file():
@@ -283,6 +294,10 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
     @router.delete("/{name}")
     def delete_skill(name: str, request: Request, source: str = "user", reason: str = ""):
         uid = _user_id(request)
+        if source == "bundled":
+            raise HTTPException(status_code=403, detail="Bundled Skill cannot be deleted")
+        if source not in {"user", "review_queue"}:
+            raise HTTPException(status_code=400, detail="Invalid Skill source")
         root = user_skills_path(config, uid) if source == "user" else candidate_skills_path(config, uid)
         skill_dir = root / _safe_name(name)
         if not skill_dir.is_dir():

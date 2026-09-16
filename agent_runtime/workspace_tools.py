@@ -22,6 +22,7 @@ from agno.run import RunContext
 from agent_runtime.execution_scope import current_scope
 from agent_runtime.graph_progress import emit_job_progress
 from agent_runtime.workspace_env import build_environment, environment_python_path
+from agent_runtime.workspace_process import process_group_filter
 from workspace_storage import workspace_root_for
 
 
@@ -325,17 +326,20 @@ def workspace_sandbox_startup_check() -> None:
             raise RuntimeError("workspace sandbox unavailable: bubblewrap disappeared during startup check")
         argv, env = sandbox
         try:
-            completed = subprocess.run(
-                argv,
-                cwd=root,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=5,
-                check=False,
-                text=True,
-            )
+            with process_group_filter() as filter_fd:
+                completed = subprocess.run(
+                    [argv[0], "--seccomp", str(filter_fd), *argv[1:]],
+                    cwd=root,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=False,
+                    text=True,
+                    pass_fds=(filter_fd,),
+                    start_new_session=True,
+                )
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError(
                 f"workspace sandbox unavailable: rootless bubblewrap probe failed ({exc})"
@@ -381,17 +385,23 @@ def _sandbox_command(root: Path, command: str) -> tuple[list[str], dict[str, str
     bwrap = shutil.which("bwrap")
     if not bwrap:
         return None
-    # Namespaces are listed explicitly rather than via --unshare-all: a PID
-    # namespace combined with mounting proc is refused inside a container
-    # ("Can't mount proc on /proc"), while every other namespace works. The
-    # network namespace stays unshared, so sandboxed code has no network.
+    # Rootless GPU containers cannot mount proc in a nested PID namespace.
+    # Keep the runtime's process group; seccomp prevents descendants detaching.
     args = [bwrap, "--unshare-user", "--unshare-ipc", "--unshare-uts",
             "--unshare-cgroup", "--unshare-net",
-            "--die-with-parent", "--new-session", "--tmpfs", "/"]
+            "--die-with-parent", "--tmpfs", "/"]
     for source, target in (("/usr", "/usr"), ("/bin", "/bin"), ("/lib", "/lib"), ("/lib64", "/lib64"), ("/usr/local", "/usr/local")):
         if Path(source).exists():
             args.extend(["--ro-bind", source, target])
     args.extend(["--proc", "/proc", "--dev", "/dev", "--bind", str(root), "/workspace"])
+    # Expose only NVIDIA devices already granted to the container, retaining
+    # the sandbox's private /dev and network namespace.
+    for device in sorted(Path("/dev").glob("nvidia*")):
+        if device.is_char_device():
+            args.extend(["--dev-bind", str(device), str(device)])
+    for source in ("/etc/ld.so.cache", "/proc/driver/nvidia"):
+        if Path(source).exists():
+            args.extend(["--ro-bind", source, source])
     args.extend(["--ro-bind", str(root / "Uploaded"), "/workspace/Uploaded"])
     args.extend(["--bind", str(root / "Ephemeral"), "/workspace/Ephemeral"])
     args.extend(["--ro-bind", str(root / "Derived"), "/workspace/Derived"])
@@ -514,12 +524,17 @@ def create_workspace_tools() -> list[Any]:
         Each call starts a fresh shell at the workspace root; use relative paths.
         Uploaded, Derived and Environment are read-only. Write intermediate files
         to Ephemeral, then use workspace_publish to deliver them as user-visible
-        artifacts. The default interpreter carries only the runtime's own
-        dependencies, so scientific packages such as numpy, pandas or torch are
-        absent; when uploaded code needs a package or a specific version, call
+        artifacts. The default interpreter includes the server-compatible CUDA
+        numpy, scipy, networkx, torch, torchvision and torch-geometric stack,
+        shared by all sessions, so run code directly with
+        "python Uploaded/script.py". When uploaded code needs extra packages, call
         workspace_env_ensure first and run it with the interpreter that returns,
         e.g. "Environment/venv/bin/python Uploaded/script.py". There is no
-        network here. Prefer head/sed or bounded Python reads for large files.
+        network here. Probe torch.cuda.is_available() before GPU execution.
+        Session environments inherit the shared Torch/CUDA stack; never replace
+        it or install another Torch version. If CUDA is unavailable, memory is insufficient or a
+        driver mismatch, report the failure and stop; do not claim success.
+        Prefer head/sed or bounded Python reads for large files.
         Results contain exit_code, bounded output, output_truncated and changed
         file metadata. Commands have a server-configured timeout and inherit no
         provider secrets.
@@ -586,15 +601,30 @@ def create_workspace_tools() -> list[Any]:
         logger.info("workspace.exec session_id=%s command_sha256=%s", run_context.session_id, hashlib.sha256(str(command).encode()).hexdigest())
         proc: asyncio.subprocess.Process | None = None
         try:
-            spawning = asyncio.create_task(asyncio.create_subprocess_exec(
-                *argv,
-                cwd=root,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-            ))
+            async def spawn():
+                options = dict(cwd=root, env=env, stdout=asyncio.subprocess.PIPE,
+                               stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                if mode == "bwrap":
+                    with process_group_filter() as filter_fd:
+                        return await asyncio.create_subprocess_exec(
+                            argv[0], "--seccomp", str(filter_fd), *argv[1:],
+                            pass_fds=(filter_fd,), **options)
+                return await asyncio.create_subprocess_exec(*argv, **options)
+
+            spawning = asyncio.create_task(spawn())
             proc = await asyncio.shield(spawning)
+
+            async def reap_group():
+                # Process.wait() also waits for inherited pipes to close.
+                # Kill background children as soon as the main process exits.
+                while proc.returncode is None:
+                    await asyncio.sleep(0.02)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+            reaper = asyncio.create_task(reap_group())
             async def drain_output():
                 tail = bytearray()
                 total = 0
@@ -603,6 +633,7 @@ def create_workspace_tools() -> list[Any]:
                     tail.extend(chunk)
                     if len(tail) > output_limit:
                         del tail[:-output_limit]
+                await reaper
                 await proc.wait()
                 return bytes(tail), total > output_limit
             reader = asyncio.create_task(drain_output())
@@ -745,8 +776,10 @@ def create_workspace_tools() -> list[Any]:
     async def workspace_env_ensure(packages: list[str], run_context: RunContext) -> dict[str, Any]:
         """Prepare a Python environment for uploaded code, then report its interpreter.
 
-        Give plain PyPI names with optional versions, e.g. ["torch==2.0.1",
-        "numpy"]. Git refs, URLs and local paths are refused. Installation runs
+        Give extra PyPI packages with optional versions, e.g. ["pandas"].
+        The environment inherits the preinstalled shared Torch/CUDA stack;
+        requests conflicting with its fixed versions fail. Do not reinstall Torch.
+        Git refs, URLs and local paths are refused. Installation runs
         on the server with network access and replaces any previous environment
         for this session; the result is read-only inside workspace_bash.
         Run the code with the returned relative interpreter path, for example

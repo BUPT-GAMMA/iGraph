@@ -110,9 +110,24 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
     finally { setSkillBusy(false); }
   }
 
+  async function deleteSkill(skill: SkillItem) {
+    if (skillBusy || !skill.name || !['user', 'review_queue'].includes(skill.source || '')
+      || !window.confirm(`确认删除上传的技能“${skill.name}”吗？`)) return;
+    setSkillBusy(true); setError('');
+    try {
+      const source = skill.source as 'user' | 'review_queue';
+      const response = await apiFetch(`/api/skills/${encodeURIComponent(skill.name)}?source=${source}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : '技能删除失败');
+      setSkills(current => current.filter(item => !(item.name === skill.name && item.source === skill.source)));
+      setSelectedSkill(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '技能删除失败'); }
+    finally { setSkillBusy(false); }
+  }
+
   return <DrawerShell ariaLabel="记忆与技能" className="management" onClose={onClose}>{requestClose => <><div className="drawer-head"><strong>记忆与技能</strong><button className="plain-icon" onClick={requestClose} aria-label="关闭管理面板"><Icon name="close" size={17} /></button></div><SlidingTabs ariaLabel="管理内容" className="management-tabs" indicatorClassName="management-tab-indicator" options={[{ value: 'memory', label: <>记忆 <span>{memories.length || ''}</span></> }, { value: 'skills', label: <>技能 <span>{skills.length || ''}</span></> }]} value={tab} onChange={changeTab} /><div className="management-search">{tab === 'skills' && <label className="skill-upload">{uploading ? '上传中…' : '上传技能 ZIP'}<input aria-label="上传技能 ZIP" type="file" accept=".zip" hidden disabled={uploading} onChange={event => { const file = event.target.files?.[0]; if (file) void uploadSkill(file); event.currentTarget.value = ''; }} /></label>}<Icon name="search" size={14} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder={tab === 'memory' ? '搜索记忆内容' : '搜索技能'} /></div>{error ? <div className="management-error">{error}</div> : loading ? <div className="drawer-empty">正在读取...</div> : tab === 'memory' ? <div className="management-list">{filteredMemories.length ? filteredMemories.map((item, index) => <div className="memory-row" key={item.memory_id || index}><div className="management-icon"><Icon name="spark" size={15} /></div><div><strong>{item.key || '未命名记忆'}</strong><span>{item.value || '暂无内容'}</span><small>{metadataLabel(item.category || item.scope, '事实')}</small></div><button className="plain-icon danger-icon" onClick={() => deleteMemory(item)} aria-label="删除记忆"><Icon name="trash" size={14} /></button></div>) : <div className="drawer-empty">暂无匹配的记忆</div>}</div> : <div className="management-list skill-grid">{filteredSkills.length ? visibleSkills.map((item, index) => <button className="skill-row" key={`${item.name || 'skill'}-${index}`} onClick={() => setSelectedSkill(item)}><div className="management-icon"><Icon name="cube" size={15} /></div><div><strong>{item.name || '未命名技能'}</strong><span>{item.description || '暂无描述'}</span><small>{metadataLabel(item.source, '未知来源')}{item.risk_level ? ` · ${metadataLabel(item.risk_level, '')}` : ''}</small></div><Icon name="chevron" size={14} /></button>) : <div className="drawer-empty">暂无匹配的技能</div>}</div>}{tab === 'skills' && !loading && skillPageCount > 1 ? <nav className="skill-pagination" aria-label="技能分页">
     <button type="button" disabled={currentPage <= 1} onClick={() => setSkillPage(currentPage - 1)}>上一页</button>
     <span>{currentPage} / {skillPageCount}</span>
     <button type="button" disabled={currentPage >= skillPageCount} onClick={() => setSkillPage(currentPage + 1)}>下一页</button>
-  </nav> : null}{selectedSkill ? <SkillDetails closeLabel="关闭技能详情" summary={metadataLabel(selectedSkill.source, '未知来源') + (selectedSkill.status ? ' · ' + metadataLabel(selectedSkill.status, '') : '')} skill={selectedSkill} onClose={() => setSelectedSkill(null)}>{selectedSkill.source === 'review_queue' ? <><button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'approve')}>批准</button><button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'reject')}>拒绝</button></> : null}</SkillDetails> : null}</>}</DrawerShell>;
+  </nav> : null}{selectedSkill ? <SkillDetails closeLabel="关闭技能详情" summary={metadataLabel(selectedSkill.source, '未知来源') + (selectedSkill.status ? ' · ' + metadataLabel(selectedSkill.status, '') : '')} skill={selectedSkill} onClose={() => setSelectedSkill(null)}>{selectedSkill.source === 'review_queue' ? <><button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'approve')}>批准</button><button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'reject')}>拒绝</button></> : null}{selectedSkill.source === 'user' || selectedSkill.source === 'review_queue' ? <button disabled={skillBusy} onClick={() => void deleteSkill(selectedSkill)}>删除技能</button> : null}</SkillDetails> : null}</>}</DrawerShell>;
 }

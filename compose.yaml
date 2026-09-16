@@ -45,6 +45,8 @@ services:
     networks:
       - backplane
     shm_size: ${GRAPH_DATA_SHM_SIZE:-1gb}
+    devices:
+      - "nvidia.com/gpu=all"
     restart: unless-stopped
 
   graph-engine-mcp:
@@ -106,6 +108,8 @@ services:
     # refuses that, which forces the workspace into unisolated fallback mode.
     security_opt:
       - seccomp:unconfined
+    devices:
+      - "nvidia.com/gpu=all"
     restart: unless-stopped
 
   backend:
