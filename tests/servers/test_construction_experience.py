@@ -171,8 +171,11 @@ class DomainExperienceTest(unittest.TestCase):
 
     def test_parallel_writes_are_atomic_and_parallel_same_run_is_idempotent(self):
         self.store.retrieve("commerce", CONTEXT)  # Initialize before write contention.
+        stores = [self.store, DomainExperienceStore(self.path), DomainExperienceStore(self.path)]
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda index: self.record(f"parallel-{index}", f"source-{index}"), range(12)))
+            results = list(pool.map(lambda index: stores[index % len(stores)].record_run(
+                f"parallel-{index}", f"source-{index}", "commerce", copy.deepcopy(CONTEXT), [observation()],
+                final_correct=True), range(12)))
         self.assertTrue(all(result["stored"] for result in results), results)
         self.assertEqual(self.store.retrieve("commerce", CONTEXT)[0]["independent_sources"], 12)
         with ThreadPoolExecutor(max_workers=4) as pool:
