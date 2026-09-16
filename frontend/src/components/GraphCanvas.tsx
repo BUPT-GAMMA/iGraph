@@ -5,6 +5,7 @@ import type { GraphPreview, PreviewNode } from '../graphPreview';
 import { degreeRadius } from '../graphPreview';
 import { labelBudget } from '../graphLabels';
 import { communityColor, DEFAULT_HIGHLIGHT_COLORS, highlightEdgePairs, highlightedEdgeColor, paddedHullPath, schemaEdgeLabel } from '../graphAppearance';
+import { useI18n } from '../i18n';
 
 type Props = {
   active: boolean; schema?: boolean; preview: GraphPreview; directed?: boolean; highlights: Highlight[]; communities: Map<string, string>;
@@ -14,6 +15,7 @@ type Props = {
 };
 type Node = PreviewNode & d3.SimulationNodeDatum;
 export function GraphCanvas(props: Props) {
+  const { t } = useI18n();
   const ref = useRef<SVGSVGElement>(null);
   const latest = useRef(props); latest.current = props;
   const controller = useRef<{ paint: () => void; fit: () => void; focus: () => void; resizeNodes: () => void }>();
@@ -55,16 +57,16 @@ export function GraphCanvas(props: Props) {
     const hulls = visibleHighlights.filter(h => h.type === 'subgraph').map(h => ({ h, path: viewport.append('path').attr('class', 'graph-subgraph-hull').attr('fill', h.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('stroke', h.color || DEFAULT_HIGHLIGHT_COLORS.subgraph) }));
     const link = viewport.append('g').selectAll('path').data(edges).join('path').attr('class', 'graph-link').attr('fill', 'none')
       .classed('graph-schema-link', Boolean(p.schema))
-      .attr('aria-label', edge => p.schema ? schemaEdgeLabel(edge.raw) : null)
+      .attr('aria-label', edge => p.schema ? schemaEdgeLabel(edge.raw, false, t) : null)
       .attr('marker-end', p.directed ? `url(#${marker})` : null)
       .style('stroke', edge => highlightedEdgeColor(pathPairs, edge.source, edge.target, p.directed) || highlightedEdgeColor(subPairs, edge.source, edge.target, p.directed) || null)
       .classed('is-path-highlight', e => Boolean(highlightedEdgeColor(pathPairs, e.source, e.target, p.directed)))
       .classed('is-subgraph-highlight', e => !highlightedEdgeColor(pathPairs, e.source, e.target, p.directed) && Boolean(highlightedEdgeColor(subPairs, e.source, e.target, p.directed)));
     const relationshipLabels = p.schema ? viewport.append('g').selectAll('text').data(edges).join('text')
-      .attr('class', 'graph-schema-edge-label').text(edge => schemaEdgeLabel(edge.raw, true))
-      .attr('aria-label', edge => schemaEdgeLabel(edge.raw)) : null;
+      .attr('class', 'graph-schema-edge-label').text(edge => schemaEdgeLabel(edge.raw, true, t))
+      .attr('aria-label', edge => schemaEdgeLabel(edge.raw, false, t)) : null;
     const node = viewport.append('g').selectAll<SVGGElement, Node>('g').data(nodes).join('g').attr('class', 'graph-node').attr('data-node-id', n => n.id)
-      .attr('tabindex', 0).attr('role', 'button').attr('aria-label', n => `${n.label ?? n.id}，${n.degreeLabel} ${n.degree}`);
+      .attr('tabindex', 0).attr('role', 'button').attr('aria-label', n => t(`${n.label ?? n.id}, ${n.degreeLabel} ${n.degree}`, `${n.label ?? n.id}，${n.degreeLabel} ${n.degree}`));
     const circles = node.append('circle').attr('class', 'graph-node-dot').attr('fill', n => communityColor(p.communities.get(n.id)))
       .style('stroke', n => nodeColors.get(n.id) || null).classed('is-highlighted', n => nodeColors.has(n.id));
     const halos = node.append('circle').attr('class', 'graph-node-halo').attr('fill', n => nodeColors.get(n.id) || DEFAULT_HIGHLIGHT_COLORS.node).attr('opacity', .18);
@@ -240,10 +242,12 @@ export function GraphCanvas(props: Props) {
     }); observer?.observe(host);
     return () => { disposed = true; simulation.stop(); observer?.disconnect(); cancelAnimationFrame(frame); svg.on('.zoom', null).on('.clear', null); controller.current = undefined;
       positions.current = new Map(nodes.map(n => [n.id, { x: n.x || 0, y: n.y || 0 }])); };
-  }, [signature, props.layout, props.layoutVersion, props.active, marker]);
+  }, [signature, props.layout, props.layoutVersion, props.active, marker, t]);
   useEffect(() => { controller.current?.paint(); }, [props.selected, props.labels, props.edgeWidth, props.preview.matches]);
   useEffect(() => { controller.current?.resizeNodes(); }, [props.sizeMode]);
   useEffect(() => { if (props.fitVersion) controller.current?.fit(); }, [props.fitVersion]);
   useEffect(() => { controller.current?.focus(); }, [props.focusId]);
-  return <svg ref={ref} aria-label={props.schema ? "Graph Schema 画布，可拖动平移并使用滚轮缩放" : "图谱画布，可拖动平移并使用滚轮缩放"} />;
+  return <svg ref={ref} aria-label={props.schema
+    ? t('Graph Schema canvas. Drag to pan and use the mouse wheel to zoom.', 'Graph Schema 画布，可拖动平移并使用滚轮缩放')
+    : t('Graph canvas. Drag to pan and use the mouse wheel to zoom.', '图谱画布，可拖动平移并使用滚轮缩放')} />;
 }

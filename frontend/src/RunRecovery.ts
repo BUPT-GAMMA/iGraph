@@ -5,6 +5,7 @@ import type { ActiveRun, AttachmentRef, FeedbackRequest, StreamBatch } from './t
 import { RunConnectionManager } from './RunConnectionManager';
 import type { RunConnection } from './RunConnectionManager';
 import { recordRecovery } from './recoveryTelemetry';
+import { tr } from './i18n';
 
 type Options = {
   controlEnabled?: boolean;
@@ -91,20 +92,20 @@ export class RunRecovery {
       onBatch: (incoming: StreamBatch) => {
         if (!valid()) return;
         const batch = { ...incoming, session_id: incoming.session_id || sessionId, run_id: incoming.run_id || runId };
-        if (batch.session_id !== sessionId || (runId && batch.run_id && runId !== batch.run_id)) throw new RecoveryRequired('事件身份不匹配');
+        if (batch.session_id !== sessionId || (runId && batch.run_id && runId !== batch.run_id)) throw new RecoveryRequired(tr('Event identity mismatch', '事件身份不匹配'));
         runId = batch.run_id || runId;
         if (runId) o.manager.updateRunId(sessionId, generation, runId);
         if (runId) dispatch({ type: 'SET_RUN_ID', sessionId, generation, runId });
         legacy ||= batch.protocol_version === 1;
-        if (batch.events.some(event => event.type === 'stream_recovery_required')) throw new RecoveryRequired('事件回放不连续');
-        if (operation === 'resume' && legacy) throw new RecoveryRequired('V1 通过快照恢复');
+        if (batch.events.some(event => event.type === 'stream_recovery_required')) throw new RecoveryRequired(tr('Event replay is not continuous', '事件回放不连续'));
+        if (operation === 'resume' && legacy) throw new RecoveryRequired(tr('V1 recovers through a snapshot', 'V1 通过快照恢复'));
         if (shadow!.activeRun?.snapshotOnly) {
           if (batch.events.some(event => event.type === 'feedback_accepted')) o.accepted(sessionId);
-          throw new RecoveryRequired('继续同步完整快照');
+          throw new RecoveryRequired(tr('Continue by synchronizing a full snapshot', '继续同步完整快照'));
         }
         const next = applyBatch(shadow!, generation, batch);
         dispatch({ type: 'APPLY_BATCH', sessionId, generation, batch });
-        if (next.activeRun?.recoveryRequired) throw new RecoveryRequired('事件回放不连续');
+        if (next.activeRun?.recoveryRequired) throw new RecoveryRequired(tr('Event replay is not continuous', '事件回放不连续'));
         shadow = next;
         if (runId) o.accepted(sessionId);
         if (operation === 'start' && runId && start && !start.replaceRunId && !sentAttachmentsCleared) {
@@ -196,7 +197,7 @@ export class RunRecovery {
 
   private stop(connection: RunConnection, error: unknown) {
     this.options.dispatch({ type: 'SET_RECEPTION', sessionId: connection.sessionId, generation: connection.generation,
-      reception: 'idle', synchronized: false, error: error instanceof Error ? error.message : '恢复已停止，请核对会话权限' });
+      reception: 'idle', synchronized: false, error: error instanceof Error ? error.message : tr('Recovery stopped. Check your conversation permissions.', '恢复已停止，请核对会话权限') });
     this.options.manager.release(connection.sessionId, connection.generation);
   }
 
@@ -290,8 +291,8 @@ export class RunRecovery {
         if (!this.valid(connection, identity) || o.manager.isCancelling(sessionId)) return;
         // Runs created before control registration retain snapshot-based recovery.
         if (control && control.registration_status === 'registered') {
-          if (control.run_id !== connection.runId) throw new RecoveryRequired('控制身份不匹配');
-          if (control.revision < (o.view(sessionId)?.activeRun?.controlRevision || 0)) throw new RecoveryRequired('控制版本过期');
+          if (control.run_id !== connection.runId) throw new RecoveryRequired(tr('Control identity mismatch', '控制身份不匹配'));
+          if (control.revision < (o.view(sessionId)?.activeRun?.controlRevision || 0)) throw new RecoveryRequired(tr('Control revision is outdated', '控制版本过期'));
           o.dispatch({ type: 'APPLY_CONTROL', sessionId, generation, control });
           if (control.execution_stopped && control.terminal_persisted &&
             (control.can_send || (control.active_run && control.active_run.run_id !== connection.runId))) {
@@ -313,7 +314,7 @@ export class RunRecovery {
       }
       const snapshot = await o.manager.query(sessionId, generation, signal => getRunSnapshot(sessionId, connection.runId!, signal));
       if (!this.valid(connection, identity)) return;
-      if (snapshot.session_id !== sessionId || snapshot.run_id !== connection.runId) throw new RecoveryRequired('快照身份不匹配');
+      if (snapshot.session_id !== sessionId || snapshot.run_id !== connection.runId) throw new RecoveryRequired(tr('Snapshot identity mismatch', '快照身份不匹配'));
       if (snapshot.snapshot_complete) {
         const run = o.view(sessionId)?.activeRun;
         if (snapshot.status === 'paused' && run?.feedbackSubmission && run.feedbackSubmission.callId === snapshot.pending_feedback?.call_id) {
