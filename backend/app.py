@@ -22,7 +22,7 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
-from workspace_storage import visible_files, derived_file, save_upload
+from workspace_storage import delete_user_workspaces, delete_workspace, visible_files, derived_file, save_upload
 from runtime_observability import RequestLoggingMiddleware
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
@@ -1237,6 +1237,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 await graph.request("DELETE", f"/construction/{item.dataset_id}", headers={**service_headers(user_id), **scope_headers(item.project_id)})
         project_datasets.delete_user(user_id)
         projects.delete_user(user_id)
+        try:
+            await asyncio.to_thread(delete_user_workspaces, user_id)
+        except Exception:
+            logging.getLogger(__name__).warning('user_workspace_cleanup_failed user_id=%s', user_id, exc_info=True)
         return {"success": users.delete(user_id), "user_id": user_id}
 
     async def get_session(session_id: str, request: Request, user_id: str) -> dict:
@@ -1746,6 +1750,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=headers,
             params={"type": "agent", "user_id": user_id},
         )
+        try:
+            await asyncio.to_thread(delete_workspace, user_id, session_id)
+        except Exception:
+            logging.getLogger(__name__).warning('workspace_cleanup_failed session_id=%s', session_id, exc_info=True)
 
     @app.get("/api/projects")
     async def list_projects(request: Request):
