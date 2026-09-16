@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.skill_api import create_skill_router
-from agent_runtime.skills_runtime import candidate_skills_path, user_skills_path
+from agent_runtime.skills_runtime import bundled_skills_path, candidate_skills_path, user_skills_path
 
 
 @pytest.fixture()
@@ -226,6 +226,28 @@ def test_skill_zip_upload_enters_review_queue_and_keeps_resources(skill_client):
     assert (root / "references/help.txt").read_text() == "reference"
     assert not (user_skills_path(config, "alice") / "graph-reader").exists()
     assert "name: graph-reader" in (root / "SKILL.md").read_text()
+
+    deleted = client.delete(
+        "/internal/skills/graph-reader",
+        headers=_headers(),
+        params={"source": "review_queue"},
+    )
+    assert deleted.status_code == 200
+    assert not root.exists()
+
+
+def test_bundled_skill_cannot_be_deleted(skill_client):
+    client, config = skill_client
+    bundled = bundled_skills_path(config) / "data-ingestion-table"
+    assert (bundled / "SKILL.md").is_file()
+
+    response = client.delete(
+        "/internal/skills/data-ingestion-table",
+        headers=_headers(),
+        params={"source": "bundled"},
+    )
+    assert response.status_code == 403
+    assert (bundled / "SKILL.md").is_file()
 
 @pytest.mark.parametrize("path", ["../escape", "graph-reader/../../escape", "graph-reader" + chr(92) + ".." + chr(92) + "escape"])
 def test_skill_zip_rejects_traversal(skill_client, path):

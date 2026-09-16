@@ -300,6 +300,67 @@ def test_uploaded_python_cannot_access_external_path_in_bwrap(tmp_path, monkeypa
     assert not Path("/tmp/igraph-workspace-escape").exists()
 
 
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="Linux bubblewrap sandbox integration")
+@pytest.mark.parametrize("termination", ["timeout", "cancel", "exit"])
+def test_bwrap_termination_stops_children(tmp_path, monkeypatch, termination):
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "bwrap")
+    monkeypatch.setenv("IGRAPH_WORKSPACE_EXEC_TIMEOUT_SECONDS", "0.3" if termination == "timeout" else "5")
+    current = ctx(tmp_path)
+    from agent_runtime.workspace_tools import workspace_root
+
+    root = workspace_root(current)
+    (root / "Uploaded/probe.py").write_text(
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "subprocess.Popen([sys.executable, '-c', "
+        "\"import time; from pathlib import Path; time.sleep(1); Path('Ephemeral/orphan').touch()\"], "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "Path('Ephemeral/started').touch()\n"
+        + ("time.sleep(2)\n" if termination != "exit" else ""),
+        encoding="utf-8",
+    )
+
+    async def exercise():
+        task = asyncio.create_task(toolset()["workspace_bash"]("python3 Uploaded/probe.py", current))
+        for _ in range(100):
+            if (root / "Ephemeral/started").exists() or task.done():
+                break
+            await asyncio.sleep(0.01)
+        assert (root / "Ephemeral/started").exists(), "sandbox must execute the probe"
+        if termination == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            result = await task
+            assert result["status"] == ("timeout" if termination == "timeout" else "completed")
+            if termination == "exit":
+                assert result["success"]
+        await asyncio.sleep(1.2)
+        assert not (root / "Ephemeral/orphan").exists()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="Linux bubblewrap sandbox integration")
+@pytest.mark.parametrize("escape", ["os.setsid()", "os.setpgid(0, 0)"])
+def test_bwrap_blocks_process_group_escape(tmp_path, monkeypatch, escape):
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "bwrap")
+    current = ctx(tmp_path)
+    from agent_runtime.workspace_tools import workspace_root
+
+    root = workspace_root(current)
+    (root / "Uploaded/probe.py").write_text(
+        "import subprocess, sys\n"
+        f"result = subprocess.run([sys.executable, '-c', 'import os; {escape}'])\n"
+        "assert result.returncode != 0, 'child escaped the process group'\n",
+        encoding="utf-8",
+    )
+    result = asyncio.run(toolset()["workspace_bash"]("python3 Uploaded/probe.py", current))
+    assert result["success"], result
+    assert "Operation not permitted" in result["output"]
+
+
 def test_fallback_exception_restores_uploaded_and_derived(tmp_path, monkeypatch):
     current = ctx(tmp_path)
     root = tmp_path / "u1" / "s1"
@@ -534,7 +595,7 @@ def test_bash_cannot_write_into_environment(tmp_path):
     assert not (root / "Environment" / "venv" / "site.py").exists()
 
 
-def test_sandbox_command_avoids_pid_namespace_and_mounts_environment(tmp_path, monkeypatch):
+def test_sandbox_command_preserves_process_group_and_mounts_environment(tmp_path, monkeypatch):
     from agent_runtime.workspace_tools import _sandbox_command, _ensure_layout
 
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
@@ -542,9 +603,9 @@ def test_sandbox_command_avoids_pid_namespace_and_mounts_environment(tmp_path, m
     _ensure_layout(root)
     argv, _env = _sandbox_command(root, "echo hi")
 
-    # 容器内 PID namespace 配合 proc 挂载会被内核拒绝
     assert "--unshare-all" not in argv
     assert "--unshare-pid" not in argv
+    assert "--new-session" not in argv
     for flag in ("--unshare-user", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup", "--unshare-net"):
         assert flag in argv, flag
     assert "--proc" in argv
@@ -553,6 +614,41 @@ def test_sandbox_command_avoids_pid_namespace_and_mounts_environment(tmp_path, m
     assert f"--ro-bind {root / 'Environment'} /workspace/Environment" in joined
     # 网络仍然隔离：不得出现 share-net
     assert "--share-net" not in argv
+
+
+def test_sandbox_exposes_only_granted_nvidia_character_devices(tmp_path, monkeypatch):
+    from agent_runtime.workspace_tools import _sandbox_command, _ensure_layout
+
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/bwrap")
+    real_glob = Path.glob
+
+    class Device:
+        def __init__(self, path, character):
+            self.path, self.character = path, character
+
+        def __str__(self):
+            return self.path
+
+        def __lt__(self, other):
+            return self.path < other.path
+
+        def is_char_device(self):
+            return self.character
+
+    def glob(path, pattern):
+        if str(path) == "/dev" and pattern == "nvidia*":
+            return iter([Device("/dev/nvidia0", True), Device("/dev/nvidiactl", True),
+                         Device("/dev/nvidia-uvm", True), Device("/dev/nvidia-caps", False)])
+        return real_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", glob)
+    root = tmp_path / "ws"
+    _ensure_layout(root)
+    argv, _ = _sandbox_command(root, "true")
+    devices = [argv[i + 1:i + 3] for i, arg in enumerate(argv) if arg == "--dev-bind"]
+    assert devices == [[value, value] for value in ("/dev/nvidia-uvm", "/dev/nvidia0", "/dev/nvidiactl")]
+    assert "--unshare-net" in argv
+    assert ["/dev", "/dev"] not in devices
 
 
 def test_env_ensure_rejects_non_pypi_sources(tmp_path):
@@ -628,3 +724,16 @@ def test_tool_descriptions_mention_environment_workflow():
     text = " ".join(instructions_for(reasoning_mode="direct", planning_mode="auto"))
     assert "Environment" in text
     assert "workspace_env_ensure" in text
+
+
+def test_tool_descriptions_explain_shared_cuda_runtime():
+    from agent_runtime.instructions import instructions_for
+
+    bash_doc = toolset()["workspace_bash"].__doc__ or ""
+    text = " ".join(instructions_for(reasoning_mode="direct", planning_mode="auto"))
+    assert "CUDA" in bash_doc
+    assert "GPU" in bash_doc
+    assert "shared" in bash_doc
+    assert "CUDA" in text
+    assert "GPU" in text
+    assert "共享" in text

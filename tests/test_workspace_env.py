@@ -56,8 +56,63 @@ def test_rejects_non_string_entries():
 
 
 import asyncio
+import os
+import sys
 
 from agent_runtime.workspace_env import build_environment, environment_python_path
+
+
+@pytest.mark.parametrize("termination", ["timeout", "cancel"])
+def test_installer_termination_stops_process_group(tmp_path, termination):
+    from agent_runtime.workspace_env import _run
+
+    async def exercise():
+        code = (
+            "import subprocess, sys, time\nfrom pathlib import Path\n"
+            "subprocess.Popen([sys.executable, '-c', "
+            "\"import time; from pathlib import Path; time.sleep(1); Path('orphan').touch()\"])\n"
+            "Path('started').touch()\ntime.sleep(2)\n"
+        )
+        task = asyncio.create_task(_run([sys.executable, "-c", code], cwd=tmp_path,
+                                       env=dict(os.environ), timeout=0.3 if termination == "timeout" else 5))
+        for _ in range(100):
+            if (tmp_path / "started").exists():
+                break
+            await asyncio.sleep(0.01)
+        assert (tmp_path / "started").exists()
+        if termination == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            assert (await task)[0] == 124
+        await asyncio.sleep(1.2)
+        assert not (tmp_path / "orphan").exists()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("stage", ["create", "install"])
+def test_cancelled_build_removes_incomplete_environment(tmp_path, monkeypatch, stage):
+    from agent_runtime import workspace_env
+
+    monkeypatch.setattr(workspace_env, "_uv_binary", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(workspace_env, "_cache_dir", lambda _: tmp_path / "cache")
+    venv = tmp_path / "Environment/venv"
+    calls = 0
+
+    async def run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        venv.mkdir(parents=True, exist_ok=True)
+        if calls == (1 if stage == "create" else 2):
+            raise asyncio.CancelledError
+        return 0, ""
+
+    monkeypatch.setattr(workspace_env, "_run", run)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(build_environment(tmp_path, ["humanize"], user_id="audit"))
+    assert not venv.exists()
 
 
 def test_environment_python_path_is_workspace_relative():
@@ -105,3 +160,33 @@ def test_failed_build_leaves_no_usable_venv(tmp_path):
     assert result["success"] is False
     # 失败必须清理，避免后续调用误用残缺环境
     assert not (tmp_path / "Environment" / "venv").exists()
+
+
+def test_extra_packages_inherit_and_preserve_shared_compute(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from agent_runtime import workspace_env
+
+    monkeypatch.setattr(workspace_env, "distributions", lambda: [
+        SimpleNamespace(metadata={"Name": "torch"}, version="2.14.0+cu130"),
+        SimpleNamespace(metadata={"Name": "nvidia_cudnn_cu13"}, version="9.24.0.43"),
+        SimpleNamespace(metadata={"Name": "cuda-toolkit"}, version="13.0.3.0"),
+        SimpleNamespace(metadata={"Name": "pandas"}, version="3.0.0"),
+    ])
+    monkeypatch.setattr(workspace_env, "_uv_binary", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(workspace_env, "_cache_dir", lambda _: tmp_path / "cache")
+    calls = []
+
+    async def run(argv, **kwargs):
+        calls.append(argv)
+        return 0, ""
+
+    monkeypatch.setattr(workspace_env, "_run", run)
+    result = asyncio.run(build_environment(tmp_path, ["pandas"], user_id="u1"))
+    assert result["success"]
+    assert "--system-site-packages" in calls[0]
+    assert calls[1][1:4] == ["-m", "pip", "install"]
+    constraint_path = calls[1][calls[1].index("--constraint") + 1]
+    from pathlib import Path
+    assert set(Path(constraint_path).read_text().splitlines()) == {
+        "torch==2.14.0+cu130", "nvidia-cudnn-cu13==9.24.0.43", "cuda-toolkit==13.0.3.0",
+    }

@@ -6,8 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app
 
 WORKDIR /app
+COPY deploy/requirements/compute-gpu.txt /tmp/compute-gpu.txt
+RUN --mount=type=cache,id=igraph-pip,target=/root/.cache/pip,sharing=locked \
+    PIP_DEFAULT_TIMEOUT=120 python -m pip install -r /tmp/compute-gpu.txt
 COPY deploy/requirements/graph-data.txt /tmp/requirements.txt
-RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN --mount=type=cache,id=igraph-pip,target=/root/.cache/pip,sharing=locked \
+    PIP_DEFAULT_TIMEOUT=120 python -m pip install -r /tmp/requirements.txt -c /tmp/compute-gpu.txt
 
 COPY . /app
 
