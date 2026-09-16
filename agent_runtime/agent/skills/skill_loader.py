@@ -59,11 +59,25 @@ def build_skills_system_prompt(
     intent: str | None = None,
     protocol: str | None = None,
     registry: SkillRegistry | None = None,
+    user_id: str = "",
     char_limit: int = 2000,
 ) -> str:
-    """Build a compact skill index; full bodies are loaded with skill_view."""
+    """Build a compact skill index; full bodies are loaded with skill_view.
+
+    Pass ``user_id`` so that per-user skills are included alongside bundled
+    ones.  Without it the registry only sees globally-shared skills.
+    """
     names = _tool_names(tool_specs)
-    registry = registry or SkillRegistry()
+    if registry is None:
+        from agent_runtime.agent.skills.paths import (
+            bundled_skills_dir as _bundled,
+            per_user_skills_dir,
+            user_skills_dir as _global,
+        )
+        skill_dirs = [_bundled(), _global()]
+        if user_id:
+            skill_dirs.append(per_user_skills_dir(user_id))
+        registry = SkillRegistry(skill_dirs)
     active = [
         spec
         for spec in registry.discover()

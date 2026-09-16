@@ -97,6 +97,8 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
 
   async function skillAction(name: string, action: 'approve' | 'reject') {
     if (skillBusy) return;
+    // Guard: only skills in review_queue can be approved or rejected.
+    if (selectedSkill?.source !== 'review_queue') return;
     setSkillBusy(true); setError('');
     try {
       const response = await apiFetch('/api/skills/' + encodeURIComponent(name) + '/' + action,

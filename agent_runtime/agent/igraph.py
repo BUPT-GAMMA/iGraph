@@ -239,6 +239,7 @@ class IGraph:
             protocol=self._protocol,
             provider_gateway=self._provider_gateway,
             logger=self.logger,
+            user_id=self.user_id,
         )
         self._plan_solver = PlanSolver(
             context_manager=self.context_manager,
