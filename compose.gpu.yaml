@@ -1,0 +1,14 @@
+# Opt in to the CUDA compute stack and NVIDIA CDI devices on GPU hosts.
+services:
+  graph-engine-api:
+    build:
+      args:
+        COMPUTE_REQUIREMENTS: deploy/requirements/compute-gpu.txt
+    devices:
+      - "nvidia.com/gpu=all"
+  agent-runtime:
+    build:
+      args:
+        COMPUTE_REQUIREMENTS: deploy/requirements/compute-gpu.txt
+    devices:
+      - "nvidia.com/gpu=all"

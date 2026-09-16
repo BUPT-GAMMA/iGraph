@@ -140,3 +140,31 @@ def test_accepted_deletion_survives_restart_and_retries_unconfirmed_native_delet
             db.close()
             store.engine.dispose()
     asyncio.run(scenario())
+
+
+def test_session_deletion_removes_workspace_directory(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setenv("IGRAPH_DATA_ROOT", str(tmp_path / "data"))
+        monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+        from workspace_storage import workspace_root_for
+        root = workspace_root_for("alice", "s")
+        (root / "Uploaded" / "data.csv").write_text("a", encoding="utf-8")
+        db = SqliteDb(db_file=str(tmp_path / "native.db"))
+        db.upsert_session(AgentSession(session_id="s", agent_id="igraph-agent", user_id="alice", runs=[],
+                                      created_at=int(time.time()), updated_at=int(time.time())))
+        store = ExecutionStore(create_engine(f"sqlite:///{tmp_path}/control.db"))
+        store.migrate()
+        controller = ExecutionController(db, store, RunCancellationManager())
+        async def deleted_graph(*_):
+            pass
+        controller._delete_graph_session = deleted_graph
+        try:
+            await controller.request_session_deletion("alice", "s")
+            await eventually(lambda: ready(store.session_deletion("alice", "s")["state"]["delete_status"] == "deleted"))
+            assert not root.exists()
+            assert db.get_session(session_id="s", user_id="alice") is None
+        finally:
+            await controller.close()
+            db.close()
+            store.engine.dispose()
+    asyncio.run(scenario())

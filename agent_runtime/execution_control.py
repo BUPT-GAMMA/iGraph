@@ -21,6 +21,7 @@ from agent_runtime.cancellation_compat import cancel_saved_pause
 from agent_runtime.execution_scope import RunCancellationManager, RunScope
 from agent_runtime.execution_store import ControlError, ExecutionStore, TERMINAL
 from agent_runtime.native_persistence import NativePersistence
+from workspace_storage import delete_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,12 @@ class ExecutionController(ProjectDeletionMixin):
                     await self.call(self.db.delete_session, session_id=sid, user_id=uid)
                 if await self.call(self.db.get_session, session_id=sid, user_id=uid) is not None:
                     raise RuntimeError('SESSION_DELETE_NOT_PERSISTED')
+                try:
+                    await self.call(delete_workspace, uid, sid)
+                except Exception:
+                    # A left-behind workspace must not wedge session deletion;
+                    # the directory is unreachable once the session is gone.
+                    logger.warning('workspace_cleanup_failed session_id=%s', sid, exc_info=True)
                 await self.call(self.store.finish_session_deletion, uid, sid)
                 return
             except asyncio.CancelledError:

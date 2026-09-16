@@ -2,5 +2,6 @@
 # module-specific requirement file under deploy/requirements/.
 -r deploy/requirements/backend.txt
 -r deploy/requirements/agent-runtime.txt
+-r deploy/requirements/compute-cpu.txt
 -r deploy/requirements/graph-data.txt
 -r deploy/requirements/mcp.txt

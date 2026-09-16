@@ -22,6 +22,7 @@ from agno.run import RunContext
 from agent_runtime.execution_scope import current_scope
 from agent_runtime.graph_progress import emit_job_progress
 from agent_runtime.workspace_env import build_environment, environment_python_path
+from agent_runtime.workspace_process import process_group_filter
 from workspace_storage import workspace_root_for
 
 
@@ -254,25 +255,84 @@ def _restore_protected(root: Path, before: dict[str, bytes | None]) -> None:
         path.write_bytes(expected)
 
 
+_MASKED_ZONES = ("Uploaded", "Derived", "Environment")
+_MASK_ALLOWED_ABSOLUTE = {"/dev/null", "/dev/stdout", "/dev/stderr"}
+# Commands that are dangerous when any later operand touches a protected zone.
+_ZONE_SENSITIVE_COMMANDS = {"rm", "mv", "rmdir", "unlink", "chmod", "chown", "touch", "truncate", "shred"}
+# Commands that write to a destination operand (reads from protected zones stay allowed).
+_DESTINATION_WRITE_COMMANDS = {"cp", "tee", "dd", "ln", "install", "rsync"}
+_SEGMENT_SEPARATORS = frozenset(";&|(){}")
+_ASSIGNMENT_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _shell_segments(command: str) -> list[list[str]] | None:
+    """Split a command into pipeline segments; None when quoting is malformed."""
+
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|(){}")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(char in _SEGMENT_SEPARATORS for char in token):
+            if segments[-1]:
+                segments.append([])
+            continue
+        segments[-1].append(token)
+    return [segment for segment in segments if segment]
+
+
+def _destination_operands(cmd: str, rest: list[str]) -> list[str]:
+    if cmd == "dd":
+        return [token[3:] for token in rest if token.startswith("of=")]
+    operands = [token for token in rest if not token.startswith("-")]
+    if cmd == "tee":
+        return operands
+    return operands[-1:] if operands else []
+
+
+def _segments_reject(segments: list[list[str]]) -> bool:
+    for segment in segments:
+        while segment and _ASSIGNMENT_PREFIX.match(segment[0]):
+            segment = segment[1:]
+        if not segment:
+            continue
+        for token in segment:
+            if token.startswith("/") and token not in _MASK_ALLOWED_ABSOLUTE:
+                return True
+            if ".." in Path(token).parts:
+                return True
+            if any(char.isspace() for char in token):
+                # A quoted sub-command (bash -c '...', sh -c '...') is analysed
+                # with the same rules; unparseable quoting is left to the sandbox.
+                nested = _shell_segments(token)
+                if nested is not None and _segments_reject(nested):
+                    return True
+        cmd, rest = segment[0], segment[1:]
+        if cmd in _ZONE_SENSITIVE_COMMANDS:
+            if any(zone in value for value in rest for zone in _MASKED_ZONES):
+                return True
+        if cmd in _DESTINATION_WRITE_COMMANDS:
+            if any(zone in dest for dest in _destination_operands(cmd, rest) for zone in _MASKED_ZONES):
+                return True
+        for index, token in enumerate(segment):
+            if token in {">", ">>", "1>", "1>>", "2>", "2>>"}:
+                if any(zone in value for value in segment[index + 1 :] for zone in _MASKED_ZONES):
+                    return True
+            if ">" in token and any(zone in token for zone in _MASKED_ZONES):
+                return True
+    return False
+
+
 def _command_rejects_workspace_mutation(command: str) -> bool:
     """Catch masked shell errors before execution (bubblewrap catches the rest)."""
 
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
+    segments = _shell_segments(command)
+    if segments is None:
         return True
-    if any(token.startswith("/") or ".." in Path(token).parts for token in tokens if token):
-        return True
-    for index, token in enumerate(tokens):
-        if token in {"rm", "mv", "rmdir", "unlink", "chmod", "chown", "touch", "truncate"}:
-            if any(zone in value for value in tokens[index + 1 :] for zone in ("Uploaded", "Environment")):
-                return True
-        if token in {">", ">>", "1>", "1>>", "2>", "2>>"}:
-            if any(zone in value for value in tokens[index + 1 :] for zone in ("Uploaded", "Environment")):
-                return True
-        if ">" in token and ("Uploaded" in token or "Environment" in token):
-            return True
-    return False
+    return _segments_reject(segments)
 
 
 def _sandbox_required_environment() -> bool:
@@ -325,17 +385,20 @@ def workspace_sandbox_startup_check() -> None:
             raise RuntimeError("workspace sandbox unavailable: bubblewrap disappeared during startup check")
         argv, env = sandbox
         try:
-            completed = subprocess.run(
-                argv,
-                cwd=root,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=5,
-                check=False,
-                text=True,
-            )
+            with process_group_filter() as filter_fd:
+                completed = subprocess.run(
+                    [argv[0], "--seccomp", str(filter_fd), *argv[1:]],
+                    cwd=root,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                    check=False,
+                    text=True,
+                    pass_fds=(filter_fd,),
+                    start_new_session=True,
+                )
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError(
                 f"workspace sandbox unavailable: rootless bubblewrap probe failed ({exc})"
@@ -381,17 +444,23 @@ def _sandbox_command(root: Path, command: str) -> tuple[list[str], dict[str, str
     bwrap = shutil.which("bwrap")
     if not bwrap:
         return None
-    # Namespaces are listed explicitly rather than via --unshare-all: a PID
-    # namespace combined with mounting proc is refused inside a container
-    # ("Can't mount proc on /proc"), while every other namespace works. The
-    # network namespace stays unshared, so sandboxed code has no network.
+    # Rootless GPU containers cannot mount proc in a nested PID namespace.
+    # Keep the runtime's process group; seccomp prevents descendants detaching.
     args = [bwrap, "--unshare-user", "--unshare-ipc", "--unshare-uts",
             "--unshare-cgroup", "--unshare-net",
-            "--die-with-parent", "--new-session", "--tmpfs", "/"]
+            "--die-with-parent", "--tmpfs", "/"]
     for source, target in (("/usr", "/usr"), ("/bin", "/bin"), ("/lib", "/lib"), ("/lib64", "/lib64"), ("/usr/local", "/usr/local")):
         if Path(source).exists():
             args.extend(["--ro-bind", source, target])
     args.extend(["--proc", "/proc", "--dev", "/dev", "--bind", str(root), "/workspace"])
+    # Expose only NVIDIA devices already granted to the container, retaining
+    # the sandbox's private /dev and network namespace.
+    for device in sorted(Path("/dev").glob("nvidia*")):
+        if device.is_char_device():
+            args.extend(["--dev-bind", str(device), str(device)])
+    for source in ("/etc/ld.so.cache", "/proc/driver/nvidia"):
+        if Path(source).exists():
+            args.extend(["--ro-bind", source, source])
     args.extend(["--ro-bind", str(root / "Uploaded"), "/workspace/Uploaded"])
     args.extend(["--bind", str(root / "Ephemeral"), "/workspace/Ephemeral"])
     args.extend(["--ro-bind", str(root / "Derived"), "/workspace/Derived"])
@@ -440,11 +509,12 @@ def _sanitize_output(value: str, root: Path) -> str:
     return value.replace(str(root), "/workspace")
 
 
-def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, list[str]]:
     after = _iter_files(root)
     created: list[dict[str, Any]] = []
     modified: list[dict[str, Any]] = []
     protected_changed = False
+    protected_new: list[str] = []
     for key in sorted(set(after) | set(before)):
         if after.get(key) == before.get(key):
             continue
@@ -452,6 +522,8 @@ def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tu
         zone = _zone(relative)
         if zone in _PROTECTED_ZONES:
             protected_changed = True
+            if key not in before:
+                protected_new.append(key)
             continue
         path = root / relative
         if key not in after or not path.is_file() or path.is_symlink():
@@ -461,7 +533,7 @@ def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tu
         except OSError:
             continue
         (created if key not in before else modified).append(item)
-    return created, modified, protected_changed
+    return created, modified, protected_changed, protected_new
 
 
 def _relocate_new_root_files(root: Path, before: dict[str, tuple[str, int, str]]) -> None:
@@ -514,12 +586,17 @@ def create_workspace_tools() -> list[Any]:
         Each call starts a fresh shell at the workspace root; use relative paths.
         Uploaded, Derived and Environment are read-only. Write intermediate files
         to Ephemeral, then use workspace_publish to deliver them as user-visible
-        artifacts. The default interpreter carries only the runtime's own
-        dependencies, so scientific packages such as numpy, pandas or torch are
-        absent; when uploaded code needs a package or a specific version, call
+        artifacts. The default interpreter includes the deployment's shared
+        numpy, scipy, networkx, torch, torchvision and torch-geometric stack,
+        shared by all sessions, so run code directly with
+        "python Uploaded/script.py". When uploaded code needs extra packages, call
         workspace_env_ensure first and run it with the interpreter that returns,
         e.g. "Environment/venv/bin/python Uploaded/script.py". There is no
-        network here. Prefer head/sed or bounded Python reads for large files.
+        network here. Probe torch.cuda.is_available() before GPU execution.
+        Session environments inherit the shared compute stack; never replace
+        it or install another Torch version. If CUDA is unavailable, memory is insufficient or a
+        driver mismatch, report the failure and stop; do not claim success.
+        Prefer head/sed or bounded Python reads for large files.
         Results contain exit_code, bounded output, output_truncated and changed
         file metadata. Commands have a server-configured timeout and inherit no
         provider secrets.
@@ -586,15 +663,30 @@ def create_workspace_tools() -> list[Any]:
         logger.info("workspace.exec session_id=%s command_sha256=%s", run_context.session_id, hashlib.sha256(str(command).encode()).hexdigest())
         proc: asyncio.subprocess.Process | None = None
         try:
-            spawning = asyncio.create_task(asyncio.create_subprocess_exec(
-                *argv,
-                cwd=root,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-            ))
+            async def spawn():
+                options = dict(cwd=root, env=env, stdout=asyncio.subprocess.PIPE,
+                               stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                if mode == "bwrap":
+                    with process_group_filter() as filter_fd:
+                        return await asyncio.create_subprocess_exec(
+                            argv[0], "--seccomp", str(filter_fd), *argv[1:],
+                            pass_fds=(filter_fd,), **options)
+                return await asyncio.create_subprocess_exec(*argv, **options)
+
+            spawning = asyncio.create_task(spawn())
             proc = await asyncio.shield(spawning)
+
+            async def reap_group():
+                # Process.wait() also waits for inherited pipes to close.
+                # Kill background children as soon as the main process exits.
+                while proc.returncode is None:
+                    await asyncio.sleep(0.02)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+            reaper = asyncio.create_task(reap_group())
             async def drain_output():
                 tail = bytearray()
                 total = 0
@@ -603,6 +695,7 @@ def create_workspace_tools() -> list[Any]:
                     tail.extend(chunk)
                     if len(tail) > output_limit:
                         del tail[:-output_limit]
+                await reaper
                 await proc.wait()
                 return bytes(tail), total > output_limit
             reader = asyncio.create_task(drain_output())
@@ -616,7 +709,7 @@ def create_workspace_tools() -> list[Any]:
                 output_bytes, was_truncated = await reader
                 restore_protected()
                 _relocate_new_root_files(root, before)
-                created, modified, _ = _changed_metadata(root, before)
+                created, modified, _, _ = _changed_metadata(root, before)
                 output_text = _sanitize_output(output_bytes.decode(errors="replace"), root)
                 output_truncated = was_truncated or len(output_text.encode()) > output_limit
                 if output_truncated:
@@ -658,10 +751,18 @@ def create_workspace_tools() -> list[Any]:
             restore_protected()
             return {**empty, "status": "failed", "error": "受控命令执行失败"}
         _relocate_new_root_files(root, before)
-        created, modified, protected_changed = _changed_metadata(root, before)
+        created, modified, protected_changed, protected_new = _changed_metadata(root, before)
         protected_changed = protected_changed and mode == "fallback"
         if protected_changed:
             restore_protected()
+            if protected_new:
+                # _restore_protected deliberately leaves files created after the
+                # snapshot (concurrent publish/upload), so a fallback command can
+                # still smuggle new files into read-only zones. Surface them.
+                logger.warning(
+                    "workspace.exec protected_zone_new_files session_id=%s files=%s",
+                    run_context.session_id, sorted(protected_new),
+                )
         output_text = _sanitize_output(output_bytes.decode(errors="replace"), root)
         output_truncated = was_truncated or len(output_text.encode()) > output_limit
         if output_truncated:
@@ -745,8 +846,10 @@ def create_workspace_tools() -> list[Any]:
     async def workspace_env_ensure(packages: list[str], run_context: RunContext) -> dict[str, Any]:
         """Prepare a Python environment for uploaded code, then report its interpreter.
 
-        Give plain PyPI names with optional versions, e.g. ["torch==2.0.1",
-        "numpy"]. Git refs, URLs and local paths are refused. Installation runs
+        Give extra PyPI packages with optional versions, e.g. ["pandas"].
+        The environment inherits the preinstalled shared compute stack;
+        requests conflicting with its fixed versions fail. Do not reinstall Torch.
+        Git refs, URLs and local paths are refused. Installation runs
         on the server with network access and replaces any previous environment
         for this session; the result is read-only inside workspace_bash.
         Run the code with the returned relative interpreter path, for example
