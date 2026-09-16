@@ -26,7 +26,16 @@ from .node_classification import (
 from .pre_train import PRETRAIN_METHODS_REQUIRE_MODEL, PreTrainTask
 
 
-GRAPH_CLASSIFICATION_MODELS = {"GCN", "GAT", "SAGE"}
+GRAPH_CLASSIFICATION_MODELS = {
+    "APPNP",
+    "GCN",
+    "GAT",
+    "GATV2",
+    "GIN",
+    "SAGE",
+    "TRANSFORMER",
+    "GEN",
+}
 
 
 def validate_train_request(

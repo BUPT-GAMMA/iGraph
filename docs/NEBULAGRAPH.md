@@ -41,7 +41,8 @@ docker compose ps -a
 ```bash
 GRAPH_STORAGE_BACKEND=nebula
 NEBULA_ENABLED=1
-NEBULA_HOSTS=127.0.0.1:9669
+# 根目录 Docker Compose 启动 Graph Engine 时使用
+NEBULA_HOSTS=host.docker.internal:9669
 NEBULA_USER=root
 NEBULA_PASSWORD=nebula
 NEBULA_SPACE=igraph
@@ -68,6 +69,11 @@ NEBULA_MAX_MATERIALIZE_EDGES=200000
 NEBULA_SEARCH_CANDIDATE_NODES=2000
 NEBULA_SEARCH_CANDIDATE_EDGES=10000
 ```
+
+如果 Graph Engine 直接运行在宿主机而不是容器中，将 `NEBULA_HOSTS` 改为
+`127.0.0.1:9669`。根目录 Compose 为 Linux Docker 配置了
+`host.docker.internal:host-gateway` 映射；NebulaGraph 的宿主机端口仍应仅暴露在
+可信开发环境中。
 
 首次写图会幂等创建 Space、`igraph_graph`、`igraph_entity`、
 `igraph_relation` 和 `graph_key` 索引。NebulaGraph DDL 与索引传播是异步的，服务会在

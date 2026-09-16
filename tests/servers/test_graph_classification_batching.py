@@ -218,7 +218,7 @@ class GraphClassificationBatchingTest(unittest.TestCase):
         self.assertTrue(torch.is_floating_point(node_features))
         self.assertFalse(encoder.uses_edge_features)
 
-        for model_name in ("GCN", "GAT", "SAGE"):
+        for model_name in ("GCN", "GAT", "SAGE", "GIN", "APPNP"):
             with self.subTest(model=model_name):
                 backbone = build_backbone(
                     model_name,

@@ -974,6 +974,134 @@ GRAPH_TOOLS: List[dict] = [
         "category": "compute",
     },
     {
+        "name": "graph_structure_analysis",
+        "description": (
+            "图结构判定与遍历工具。支持树/森林/DAG/AT-free/锦标赛/二部图判定，"
+            "BFS/DFS 树、字典序及全部拓扑序、平面性检查、竞赛得分序列和 Weisfeiler-Lehman 图哈希。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "is_tree", "is_forest", "is_directed_acyclic_graph",
+                        "bfs_tree", "dfs_tree", "lexicographical_topological_sort",
+                        "all_topological_sorts", "is_at_free", "check_planarity",
+                        "is_tournament", "score_sequence", "is_bipartite",
+                        "weisfeiler_lehman_graph_hash",
+                    ],
+                },
+                "source": {"type": "string", "description": "BFS/DFS 的起点。"},
+                "depth_limit": {"type": "integer", "minimum": 0, "description": "BFS/DFS 最大深度。"},
+                "iterations": {"type": "integer", "minimum": 1, "default": 3, "description": "WL 哈希迭代次数。"},
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["method"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "connectivity_analysis",
+        "description": (
+            "高级连通性分析。支持点/边连通度、最小点割/边割、割点、桥、局部桥、"
+            "点双连通边分量、桥分量和有向图强连通缩点图。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "node_connectivity", "edge_connectivity", "minimum_node_cut",
+                        "minimum_edge_cut", "articulation_points", "bridges", "local_bridges",
+                        "biconnected_component_edges", "bridge_components", "condensation",
+                    ],
+                },
+                "source": {"type": "string", "description": "局部连通度/割集起点；与 target 同时提供。"},
+                "target": {"type": "string", "description": "局部连通度/割集终点；与 source 同时提供。"},
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["method"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "tree_dag_analysis",
+        "description": (
+            "树、DAG 与支配关系分析。支持最大/随机生成树、最近公共祖先、即时支配点、"
+            "支配边界、DAG 最长路、反链、非周期性以及 collider/v-structure 检测。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "maximum_spanning_tree", "random_spanning_tree", "lowest_common_ancestor",
+                        "immediate_dominators", "dominance_frontiers", "dag_longest_path",
+                        "dag_longest_path_length", "antichains", "is_aperiodic", "colliders",
+                        "v_structures",
+                    ],
+                },
+                "source": {"type": "string", "description": "支配关系分析的起点。"},
+                "node1": {"type": "string", "description": "最近公共祖先的第一个节点。"},
+                "node2": {"type": "string", "description": "最近公共祖先的第二个节点。"},
+                "seed": {"type": "integer", "default": 42, "description": "随机生成树种子。"},
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["method"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "matching_coloring_analysis",
+        "description": "匹配、边覆盖和图着色工具，支持最大/最小权匹配、极大匹配、最小边覆盖、匹配校验、贪心着色与均衡着色。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "max_weight_matching", "min_weight_matching", "maximal_matching",
+                        "min_edge_cover", "is_matching", "greedy_color", "equitable_color",
+                    ],
+                },
+                "edges": {"type": "array", "items": {"type": ["array", "object"]}, "description": "is_matching 待校验边集。"},
+                "maxcardinality": {"type": "boolean", "default": False, "description": "最大权匹配是否优先最大基数。"},
+                "strategy": {"type": "string", "default": "largest_first", "description": "greedy_color 的 NetworkX 着色策略。"},
+                "num_colors": {"type": "integer", "minimum": 1, "description": "equitable_color 颜色数。"},
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["method"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "distance_measures",
+        "description": (
+            "扩展距离与结构度量。支持中心/边缘/离心率、Wiener 指数、全局/局部效率、"
+            "平均邻居度、平均度连通性、富俱乐部系数、互惠性、流层级、重心、Estrada 指数和围长。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": [
+                        "center", "periphery", "eccentricity", "wiener_index",
+                        "global_efficiency", "local_efficiency", "average_neighbor_degree",
+                        "average_degree_connectivity", "rich_club_coefficient", "reciprocity",
+                        "flow_hierarchy", "barycenter", "estrada_index", "girth",
+                    ],
+                },
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["metric"],
+        },
+        "category": "compute",
+    },
+    {
         "name": "list_datasets",
         "description": "列出所有已注册数据集。",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
@@ -1326,8 +1454,21 @@ _GNN_ALGO_CONFIG_SCHEMA: dict = {
         "dropout": {"type": "number", "description": "dropout 比例。", "default": 0.2},
         "gat_heads": {
             "type": "integer",
-            "description": "GAT 多头数，仅 model=GAT 时生效。",
+            "description": "注意力头数，仅 model=GAT/GATV2/TRANSFORMER 时生效。",
             "default": 2,
+        },
+        "appnp_k": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "APPNP 的传播迭代次数，仅 model=APPNP 时生效。",
+            "default": 10,
+        },
+        "appnp_alpha": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "description": "APPNP 的 teleport/保留概率，仅 model=APPNP 时生效。",
+            "default": 0.1,
         },
         "use_residual_connection": {
             "type": "boolean",
@@ -1678,7 +1819,10 @@ GRAPH_ML_TOOLS: List[dict] = [
                     ],
                     "description": "任务类型",
                 },
-                "model": {"type": "string", "description": "模型名称（可选）"},
+                "model": {
+                    "type": "string",
+                    "description": "模型名称（可选）。GNN 主干支持 APPNP、GCN、GAT、GATV2、GEN、GIN、SAGE、TRANSFORMER。",
+                },
                 "method": {"type": "string", "description": "训练方法（可选）"},
                 "graph_version": {"type": "integer", "description": "图版本（可选）"},
                 "upstream_model_id": {"type": "string", "description": "上游模型 ID（可选）"},
