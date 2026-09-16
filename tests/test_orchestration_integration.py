@@ -195,6 +195,24 @@ def test_workspace_file_list_hides_upload_token_prefix(tmp_path, monkeypatch):
     assert by_path["Uploaded/" + "a" * 32 + "_orders.csv"]["name"] == "orders.csv"
     assert by_path["Uploaded/ordinary_name.csv"]["name"] == "ordinary_name.csv"
 
+
+def test_delete_workspace_removes_only_the_target_scope(tmp_path, monkeypatch):
+    from workspace_storage import delete_user_workspaces, delete_workspace, save_upload
+
+    monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    save_upload("u", "s1", "a" * 32, "orders.csv", b"data")
+    save_upload("u", "s2", "b" * 32, "keep.csv", b"data")
+    save_upload("other", "s1", "c" * 32, "other.csv", b"data")
+
+    assert delete_workspace("u", "s1") is True
+    assert not (tmp_path / "workspace" / "u" / "s1").exists()
+    assert (tmp_path / "workspace" / "u" / "s2").exists()
+    assert delete_workspace("u", "s1") is False
+    assert delete_user_workspaces("u") is True
+    assert not (tmp_path / "workspace" / "u").exists()
+    assert (tmp_path / "workspace" / "other" / "s1").exists()
+    assert delete_user_workspaces("u") is False
+
 def test_workspace_cancel_stops_subprocess_group(tmp_path, monkeypatch):
     monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")

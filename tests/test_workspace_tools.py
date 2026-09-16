@@ -737,3 +737,47 @@ def test_tool_descriptions_explain_shared_cuda_runtime():
     assert "CUDA" in text
     assert "GPU" in text
     assert "共享" in text
+
+
+def test_mask_allows_dev_null_and_reads_from_protected_zones():
+    from agent_runtime.workspace_tools import _command_rejects_workspace_mutation as masked
+
+    assert masked("python3 Ephemeral/job.py > /dev/null 2>&1") is False
+    assert masked("cat Uploaded/input.csv | head -5") is False
+    assert masked("cp Uploaded/a.csv Ephemeral/") is False
+
+
+def test_mask_rejects_protected_writes_destinations_and_nested_shells():
+    from agent_runtime.workspace_tools import _command_rejects_workspace_mutation as masked
+
+    assert masked("cp Ephemeral/a.csv Uploaded/") is True
+    assert masked("printf x | tee Uploaded/a.csv") is True
+    assert masked("dd if=Ephemeral/a of=Environment/x") is True
+    assert masked("ln -s Ephemeral/a Uploaded/link") is True
+    assert masked("rm Derived/report.md") is True
+    assert masked("printf x > Derived/report.md") is True
+    assert masked("HOME=Ephemeral rm Uploaded/x") is True
+    assert masked("bash -c 'rm Uploaded/x'") is True
+    assert masked("echo ok && cp x Uploaded/") is True
+    assert masked("printf 'unclosed") is True
+
+
+def test_fallback_exec_warns_on_smuggled_protected_file(tmp_path, caplog):
+    # The mask cannot see filesystem writes made from inside an interpreter.
+    # Fallback mode must fail the run and leave an audit trail for the file it
+    # deliberately did not remove (concurrent publish/upload keeps priority).
+    current = ctx(tmp_path)
+    tools = toolset()
+    root = tmp_path / "u1" / "s1"
+    (root / "Ephemeral").mkdir(parents=True, exist_ok=True)
+    (root / "Ephemeral" / "smuggle.py").write_text(
+        "from pathlib import Path\nPath('Uploaded/contraband.txt').write_text('planted')\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING", logger="igraph"):
+        result = asyncio.run(tools["workspace_bash"]("python3 Ephemeral/smuggle.py", current))
+
+    assert result["success"] is False
+    assert result["error"] == "不能修改 Uploaded 或 Derived 文件"
+    assert "protected_zone_new_files" in caplog.text

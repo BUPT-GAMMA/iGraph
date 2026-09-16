@@ -255,25 +255,84 @@ def _restore_protected(root: Path, before: dict[str, bytes | None]) -> None:
         path.write_bytes(expected)
 
 
+_MASKED_ZONES = ("Uploaded", "Derived", "Environment")
+_MASK_ALLOWED_ABSOLUTE = {"/dev/null", "/dev/stdout", "/dev/stderr"}
+# Commands that are dangerous when any later operand touches a protected zone.
+_ZONE_SENSITIVE_COMMANDS = {"rm", "mv", "rmdir", "unlink", "chmod", "chown", "touch", "truncate", "shred"}
+# Commands that write to a destination operand (reads from protected zones stay allowed).
+_DESTINATION_WRITE_COMMANDS = {"cp", "tee", "dd", "ln", "install", "rsync"}
+_SEGMENT_SEPARATORS = frozenset(";&|(){}")
+_ASSIGNMENT_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _shell_segments(command: str) -> list[list[str]] | None:
+    """Split a command into pipeline segments; None when quoting is malformed."""
+
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|(){}")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(char in _SEGMENT_SEPARATORS for char in token):
+            if segments[-1]:
+                segments.append([])
+            continue
+        segments[-1].append(token)
+    return [segment for segment in segments if segment]
+
+
+def _destination_operands(cmd: str, rest: list[str]) -> list[str]:
+    if cmd == "dd":
+        return [token[3:] for token in rest if token.startswith("of=")]
+    operands = [token for token in rest if not token.startswith("-")]
+    if cmd == "tee":
+        return operands
+    return operands[-1:] if operands else []
+
+
+def _segments_reject(segments: list[list[str]]) -> bool:
+    for segment in segments:
+        while segment and _ASSIGNMENT_PREFIX.match(segment[0]):
+            segment = segment[1:]
+        if not segment:
+            continue
+        for token in segment:
+            if token.startswith("/") and token not in _MASK_ALLOWED_ABSOLUTE:
+                return True
+            if ".." in Path(token).parts:
+                return True
+            if any(char.isspace() for char in token):
+                # A quoted sub-command (bash -c '...', sh -c '...') is analysed
+                # with the same rules; unparseable quoting is left to the sandbox.
+                nested = _shell_segments(token)
+                if nested is not None and _segments_reject(nested):
+                    return True
+        cmd, rest = segment[0], segment[1:]
+        if cmd in _ZONE_SENSITIVE_COMMANDS:
+            if any(zone in value for value in rest for zone in _MASKED_ZONES):
+                return True
+        if cmd in _DESTINATION_WRITE_COMMANDS:
+            if any(zone in dest for dest in _destination_operands(cmd, rest) for zone in _MASKED_ZONES):
+                return True
+        for index, token in enumerate(segment):
+            if token in {">", ">>", "1>", "1>>", "2>", "2>>"}:
+                if any(zone in value for value in segment[index + 1 :] for zone in _MASKED_ZONES):
+                    return True
+            if ">" in token and any(zone in token for zone in _MASKED_ZONES):
+                return True
+    return False
+
+
 def _command_rejects_workspace_mutation(command: str) -> bool:
     """Catch masked shell errors before execution (bubblewrap catches the rest)."""
 
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
+    segments = _shell_segments(command)
+    if segments is None:
         return True
-    if any(token.startswith("/") or ".." in Path(token).parts for token in tokens if token):
-        return True
-    for index, token in enumerate(tokens):
-        if token in {"rm", "mv", "rmdir", "unlink", "chmod", "chown", "touch", "truncate"}:
-            if any(zone in value for value in tokens[index + 1 :] for zone in ("Uploaded", "Environment")):
-                return True
-        if token in {">", ">>", "1>", "1>>", "2>", "2>>"}:
-            if any(zone in value for value in tokens[index + 1 :] for zone in ("Uploaded", "Environment")):
-                return True
-        if ">" in token and ("Uploaded" in token or "Environment" in token):
-            return True
-    return False
+    return _segments_reject(segments)
 
 
 def _sandbox_required_environment() -> bool:
@@ -450,11 +509,12 @@ def _sanitize_output(value: str, root: Path) -> str:
     return value.replace(str(root), "/workspace")
 
 
-def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, list[str]]:
     after = _iter_files(root)
     created: list[dict[str, Any]] = []
     modified: list[dict[str, Any]] = []
     protected_changed = False
+    protected_new: list[str] = []
     for key in sorted(set(after) | set(before)):
         if after.get(key) == before.get(key):
             continue
@@ -462,6 +522,8 @@ def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tu
         zone = _zone(relative)
         if zone in _PROTECTED_ZONES:
             protected_changed = True
+            if key not in before:
+                protected_new.append(key)
             continue
         path = root / relative
         if key not in after or not path.is_file() or path.is_symlink():
@@ -471,7 +533,7 @@ def _changed_metadata(root: Path, before: dict[str, tuple[str, int, str]]) -> tu
         except OSError:
             continue
         (created if key not in before else modified).append(item)
-    return created, modified, protected_changed
+    return created, modified, protected_changed, protected_new
 
 
 def _relocate_new_root_files(root: Path, before: dict[str, tuple[str, int, str]]) -> None:
@@ -647,7 +709,7 @@ def create_workspace_tools() -> list[Any]:
                 output_bytes, was_truncated = await reader
                 restore_protected()
                 _relocate_new_root_files(root, before)
-                created, modified, _ = _changed_metadata(root, before)
+                created, modified, _, _ = _changed_metadata(root, before)
                 output_text = _sanitize_output(output_bytes.decode(errors="replace"), root)
                 output_truncated = was_truncated or len(output_text.encode()) > output_limit
                 if output_truncated:
@@ -689,10 +751,18 @@ def create_workspace_tools() -> list[Any]:
             restore_protected()
             return {**empty, "status": "failed", "error": "受控命令执行失败"}
         _relocate_new_root_files(root, before)
-        created, modified, protected_changed = _changed_metadata(root, before)
+        created, modified, protected_changed, protected_new = _changed_metadata(root, before)
         protected_changed = protected_changed and mode == "fallback"
         if protected_changed:
             restore_protected()
+            if protected_new:
+                # _restore_protected deliberately leaves files created after the
+                # snapshot (concurrent publish/upload), so a fallback command can
+                # still smuggle new files into read-only zones. Surface them.
+                logger.warning(
+                    "workspace.exec protected_zone_new_files session_id=%s files=%s",
+                    run_context.session_id, sorted(protected_new),
+                )
         output_text = _sanitize_output(output_bytes.decode(errors="replace"), root)
         output_truncated = was_truncated or len(output_text.encode()) > output_limit
         if output_truncated:

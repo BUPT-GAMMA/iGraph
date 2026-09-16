@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -33,30 +34,71 @@ def _ensure_layout(root: Path) -> None:
         zone_path.mkdir(parents=True, exist_ok=True)
 
 
-def workspace_root_for(user_id: object, session_id: object) -> Path:
-    """Return and initialise the isolated root for one user/session pair."""
+def _workspace_base() -> Path:
+    configured = Path(os.getenv("IGRAPH_WORKSPACE_ROOT", "").strip() or (data_root() / "workspaces"))
+    return (configured if configured.is_absolute() else Path(__file__).resolve().parent / configured).resolve()
 
+
+def _workspace_root(user_id: object, session_id: object, *, create: bool) -> Path:
     if not str(user_id or "").strip():
         raise ValueError("当前 Run 缺少 user_id")
     user = _safe_component(user_id, "anonymous")
     session = _safe_component(session_id, "")
     if not str(session_id or "").strip():
         raise ValueError("当前 Run 缺少 session_id")
-    configured = Path(os.getenv("IGRAPH_WORKSPACE_ROOT", "").strip() or (data_root() / "workspaces"))
-    base = (configured if configured.is_absolute() else Path(__file__).resolve().parent / configured).resolve()
+    base = _workspace_base()
     user_dir = base / user
     if user_dir.is_symlink():
         raise ValueError("工作区身份目录不能是符号链接")
-    user_dir.mkdir(parents=True, exist_ok=True)
     root = user_dir / session
     if root.is_symlink():
         raise ValueError("工作区身份目录不能是符号链接")
+    if not create:
+        if root.exists():
+            root = root.resolve()
+            if root != base and base not in root.parents:
+                raise ValueError("工作区身份目录必须位于配置的工作区根内")
+        return root
+    user_dir.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
     root = root.resolve()
     if root != base and base not in root.parents:
         raise ValueError("工作区身份目录必须位于配置的工作区根内")
     _ensure_layout(root)
     return root
+
+
+def workspace_root_for(user_id: object, session_id: object) -> Path:
+    """Return and initialise the isolated root for one user/session pair."""
+    return _workspace_root(user_id, session_id, create=True)
+
+
+def delete_workspace(user_id: object, session_id: object) -> bool:
+    """Remove one session workspace. Returns True when a directory was removed."""
+
+    root = _workspace_root(user_id, session_id, create=False)
+    existed = root.exists()
+    if existed:
+        shutil.rmtree(root)
+    try:
+        root.parent.rmdir()
+    except OSError:
+        pass
+    return existed
+
+
+def delete_user_workspaces(user_id: object) -> bool:
+    """Remove every session workspace of one user. Returns True when removed."""
+
+    if not str(user_id or "").strip():
+        raise ValueError("缺少 user_id")
+    user_dir = _workspace_base() / _safe_component(user_id, "anonymous")
+    if user_dir.is_symlink():
+        raise ValueError("工作区身份目录不能是符号链接")
+    if not user_dir.exists():
+        return False
+    shutil.rmtree(user_dir)
+    return True
 
 
 
