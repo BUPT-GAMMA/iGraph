@@ -137,12 +137,47 @@ Graph Engine 的 HTTP/MCP 是同一代码模块的两个协议适配器；Postgr
 |---|---|---|
 | Backend | `deploy/requirements/backend.txt` | FastAPI、Uvicorn、Pydantic、HTTPX、python-multipart |
 | Agent Runtime | `deploy/requirements/agent-runtime.txt` | `agno[os,mcp,openai,postgres,pgvector,opentelemetry]==2.9.0`、psycopg、SQLAlchemy、pgvector |
+| Agent / Graph 共用计算栈 | `deploy/requirements/compute-cpu.txt` / `compute-gpu.txt` | 默认 CPU；可选 PyTorch 2.14.0 + CUDA 13.0、PyG、NumPy、SciPy、NetworkX |
 | Graph Engine HTTP | `deploy/requirements/graph-data.txt` | FastAPI、OpenAI SDK、NetworkX、iGraph、Leiden、Nebula、PyTorch/PyG |
 | Graph Engine MCP | `deploy/requirements/mcp.txt` | FastMCP、MCP、HTTPX |
 | Frontend | `frontend/Dockerfile` | Nginx；页面依赖 D3、Marked、KaTeX、Mermaid、Tailwind CDN |
 
-根目录 `requirements.txt` 是一次性开发环境的依赖合集；生产镜像使用上述拆分清单，防止
-Backend/Agent Runtime 被动安装 PyTorch 等 Graph Engine 重依赖。
+根目录 `requirements.txt` 是一次性开发环境的依赖合集；Agent Runtime 和 Graph Engine 镜像
+预装同版本的计算栈，Backend/MCP 使用各自的轻量依赖。
+
+工作区默认 Python 可直接运行 Torch。所有 Agent session 共用镜像中的计算栈；
+`workspace_env_ensure` 创建继承系统包的会话环境，仅为额外依赖安装包。与共享计算栈
+版本冲突的依赖安装会失败，不支持 session 单独切换 Torch 版本。基础 Compose 使用 CPU
+计算栈，适用于没有 NVIDIA 设备的本机与 CI。
+
+GPU 主机使用 `compose.gpu.yaml` 显式启用 CUDA 计算栈与 NVIDIA CDI 设备：
+
+```bash
+docker compose -f compose.yaml -f compose.gpu.yaml build graph-engine-api agent-runtime
+docker compose -f compose.yaml -f compose.gpu.yaml up -d
+```
+
+该配置需要支持 CDI（`nvidia.com/gpu=all`）的 Docker 和 NVIDIA Container Toolkit；
+验证配置为 RTX 5090、驱动 580.173.02。
+沙箱保留网络及文件隔离，并传入容器已获授权的 NVIDIA 设备。GPU 为服务器共享资源，
+目前没有 session 级显存配额或 GPU 调度，显存不足时 Agent 应报告失败。
+
+重启或重建容器不会下载 Torch。普通应用代码更新复用计算依赖镜像层；修改计算依赖、
+基础镜像或清除构建缓存才需要重装。BuildKit 的 pip 下载缓存可用于再次构建。
+
+## 源码热更新开发
+
+基础镜像构建一次后，启动挂载源码的 Python 服务：
+
+```bash
+docker compose -f compose.yaml -f compose.dev.yaml up -d backend
+npm --prefix frontend run dev
+```
+
+前端访问 `http://localhost:21108`，Vite 将 API 转发到本机 `21109`。
+前端修改即时更新；Python 服务修改会自动重载，正在执行的任务可能中断。
+若之前启动了静态前端容器，先执行 `docker compose stop frontend` 释放 `21108`。
+普通代码修改无需重新构建镜像，依赖或 Dockerfile 变化后再构建对应服务。
 
 ## 旧数据迁移
 

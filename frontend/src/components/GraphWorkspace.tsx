@@ -515,6 +515,6 @@ function ArtifactsTab({ messages }: { messages: Message[] }) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
   const reports = messages.flatMap(message => message.reports || []);
-  if (!reports.length) return <div className="tab-placeholder"><Icon name="file" size={22} /><strong>{t('Artifacts', '分析产物')}</strong><span>{t('This conversation has no analysis reports or exported artifacts yet.', '当前会话还没有分析报告或导出产物。')}</span></div>;
+  if (!reports.length) return null;
   return <div className="tab-content"><div className="tab-title"><strong>{t('Artifacts', '分析产物')}</strong><span>{t(`${reports.length.toLocaleString(locale)} reports`, `${reports.length.toLocaleString(locale)} 份报告`)}</span></div><div className="workspace-list">{reports.map((report, index) => { const type = String(report.intent || report.type || 'analysis'); return <div className="workspace-list-row" key={`${String(report.id || report.title || 'report')}-${index}`}><div className="workspace-list-icon"><Icon name="file" size={15} /></div><div><strong>{String(report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`))}</strong><span>{type === 'analysis' ? t('Analysis', '分析') : type}</span></div></div>; })}</div></div>;
 }

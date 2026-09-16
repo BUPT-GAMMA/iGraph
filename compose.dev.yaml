@@ -1,0 +1,30 @@
+# Keep dependencies in images; mount service sources for automatic reload.
+# Start backend and its dependencies only; Vite runs on the host at :21108.
+x-source-mounts: &source-mounts
+  - ./agent_runtime:/app/agent_runtime:ro
+  - ./backend:/app/backend:ro
+  - ./graph_engine:/app/graph_engine:ro
+  - ./graph_data_service:/app/graph_data_service:ro
+  - ./mcp_service:/app/mcp_service:ro
+  - ./config:/app/config:ro
+  - ./construction_access.py:/app/construction_access.py:ro
+  - ./execution_protocol.py:/app/execution_protocol.py:ro
+  - ./execution_lifecycle.py:/app/execution_lifecycle.py:ro
+  - ./workspace_storage.py:/app/workspace_storage.py:ro
+  - ./runtime_observability.py:/app/runtime_observability.py:ro
+
+services:
+  graph-engine-api:
+    volumes: *source-mounts
+    command: [python, -m, uvicorn, "graph_engine.api:app", --host, "0.0.0.0", --port, "21111", --reload, --reload-dir, /app]
+  graph-engine-mcp:
+    volumes: *source-mounts
+    command: [python, -m, uvicorn, "mcp_service.server:mcp.http_app", --factory, --host, "0.0.0.0", --port, "21110", --reload, --reload-dir, /app]
+  agent-runtime:
+    volumes: *source-mounts
+    command: [python, -m, uvicorn, "agent_runtime.os_app:app", --host, "0.0.0.0", --port, "21112", --reload, --reload-dir, /app]
+  backend:
+    volumes: *source-mounts
+    ports:
+      - "127.0.0.1:21109:21109"
+    command: [python, -m, uvicorn, "backend.app:app", --host, "0.0.0.0", --port, "21109", --reload, --reload-dir, /app]

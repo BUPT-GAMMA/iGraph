@@ -1,13 +1,19 @@
 ARG PYTHON_IMAGE=python:3.12-slim
 FROM ${PYTHON_IMAGE}
 
+ARG COMPUTE_REQUIREMENTS=deploy/requirements/compute-cpu.txt
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
 WORKDIR /app
+COPY ${COMPUTE_REQUIREMENTS} /tmp/compute.txt
+RUN --mount=type=cache,id=igraph-pip,target=/root/.cache/pip,sharing=locked \
+    PIP_DEFAULT_TIMEOUT=120 python -m pip install -r /tmp/compute.txt
 COPY deploy/requirements/graph-data.txt /tmp/requirements.txt
-RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN --mount=type=cache,id=igraph-pip,target=/root/.cache/pip,sharing=locked \
+    PIP_DEFAULT_TIMEOUT=120 python -m pip install -r /tmp/requirements.txt -c /tmp/compute.txt
 
 COPY . /app
 

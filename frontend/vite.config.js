@@ -15,8 +15,9 @@ export default defineConfig({
         },
     },
     server: {
-        port: 5173,
-        proxy: { '/api': 'http://127.0.0.1:1109' },
+        port: 21108,
+        strictPort: true,
+        proxy: { '/api': 'http://127.0.0.1:21109' },
     },
     build: { outDir: 'dist', emptyOutDir: true },
 });

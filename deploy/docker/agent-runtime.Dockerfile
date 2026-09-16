@@ -1,6 +1,8 @@
 ARG PYTHON_IMAGE=python:3.12-slim
 FROM ${PYTHON_IMAGE}
 
+ARG COMPUTE_REQUIREMENTS=deploy/requirements/compute-cpu.txt
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
@@ -8,14 +10,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap bash && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY ${COMPUTE_REQUIREMENTS} /tmp/compute.txt
+RUN --mount=type=cache,id=igraph-pip,target=/root/.cache/pip,sharing=locked \
+    PIP_DEFAULT_TIMEOUT=120 python -m pip install -r /tmp/compute.txt
 COPY deploy/requirements/agent-runtime.txt /tmp/requirements.txt
 # uv provisions per-session virtual environments for uploaded code. It runs
 # outside the bubblewrap sandbox, where network access is available.
-RUN python -m pip install --no-cache-dir uv && python -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN --mount=type=cache,id=igraph-pip,target=/root/.cache/pip,sharing=locked \
+    PIP_DEFAULT_TIMEOUT=120 python -m pip install uv -r /tmp/requirements.txt -c /tmp/compute.txt
 COPY agent_runtime /app/agent_runtime
 # Skill and memory paths share Backend's canonical data-root resolver.
 COPY backend/__init__.py backend/data_paths.py /app/backend/
-# Shared execution policies are standard-library-only; no graph compute stack.
+# Only the graph engine's shared execution policies are needed here.
 COPY graph_engine/__init__.py graph_engine/tool_execution.py /app/graph_engine/
 COPY execution_protocol.py construction_access.py /app/
 COPY execution_lifecycle.py workspace_storage.py runtime_observability.py /app/

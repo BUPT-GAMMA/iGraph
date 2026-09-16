@@ -6,7 +6,7 @@
   "type": "module",
   "engines": { "node": ">=22.12.0" },
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
+    "dev": "vite --config vite.config.ts --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

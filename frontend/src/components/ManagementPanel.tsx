@@ -113,6 +113,21 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
     finally { setSkillBusy(false); }
   }
 
+  async function deleteSkill(skill: SkillItem) {
+    if (skillBusy || !skill.name || !['user', 'review_queue'].includes(skill.source || '')
+      || !window.confirm(t(`Delete uploaded skill “${skill.name}”?`, `确认删除上传的技能“${skill.name}”吗？`))) return;
+    setSkillBusy(true); setError('');
+    try {
+      const source = skill.source as 'user' | 'review_queue';
+      const response = await apiFetch(`/api/skills/${encodeURIComponent(skill.name)}?source=${source}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : t('Failed to delete skill', '技能删除失败'));
+      setSkills(current => current.filter(item => !(item.name === skill.name && item.source === skill.source)));
+      setSelectedSkill(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : t('Failed to delete skill', '技能删除失败')); }
+    finally { setSkillBusy(false); }
+  }
+
   const panelTitle = t('Memory and skills', '记忆与技能');
   return <DrawerShell ariaLabel={panelTitle} className="management" onClose={onClose}>{requestClose => <>
     <div className="drawer-head">
@@ -164,6 +179,7 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
     >{selectedSkill.source === 'review_queue' ? <>
       <button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'approve')}>{t('Approve', '批准')}</button>
       <button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'reject')}>{t('Reject', '拒绝')}</button>
-    </> : null}</SkillDetails> : null}
+    </> : null}{selectedSkill.source === 'user' || selectedSkill.source === 'review_queue' ?
+      <button disabled={skillBusy} onClick={() => void deleteSkill(selectedSkill)}>{t('Delete skill', '删除技能')}</button> : null}</SkillDetails> : null}
   </>}</DrawerShell>;
 }
