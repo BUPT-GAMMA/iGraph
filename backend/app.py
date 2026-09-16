@@ -1798,7 +1798,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def create_project_dataset(
         request: Request,
         project_id: str | None = None,
-        file: UploadFile = File(...),
+        file: UploadFile | None = File(None),
+        files: list[UploadFile] | None = File(None),
+        csv_schema: str = Form(""),
         name: str = Form(""),
         set_as_default: bool = Form(False),
         session_id: str = Form(""),
@@ -1812,19 +1814,48 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             target_session = await get_session(normalized_session_id, request, user.user_id)
             if session_project_id(target_session, user.user_id) != project_id:
                 raise HTTPException(status_code=400, detail="只能为当前项目中的会话激活数据集")
-        filename = file.filename or "dataset.bin"
-        content = await file.read()
-        if not content:
-            raise HTTPException(status_code=400, detail="数据集文件不能为空")
+        selected_files = list(files or [])
+        if file is not None:
+            selected_files.insert(0, file)
+        if not selected_files:
+            raise HTTPException(status_code=400, detail={"code": "DATASET_FILE_REQUIRED", "message": "请选择数据集文件"})
+        if len(selected_files) > 128:
+            raise HTTPException(status_code=422, detail={"code": "CSV_BUNDLE_FILE_COUNT", "message": "一次最多上传 128 个 CSV 文件"})
         if project_id:
             project_or_404(project_id, user.user_id)
-        dataset = project_datasets.create(
-            project_id=project_id,
-            user_id=user.user_id,
-            name=name or Path(filename).stem,
-            original_filename=filename,
-            content=content,
-        )
+        if len(selected_files) > 1 or csv_schema.strip():
+            if any(Path(item.filename or "").suffix.lower() != ".csv" for item in selected_files):
+                raise HTTPException(status_code=422, detail={"code": "CSV_BUNDLE_FILE_TYPE", "message": "多文件构图只接受 CSV 文件"})
+            try:
+                schema = json.loads(csv_schema)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=422, detail={"code": "CSV_BUNDLE_SCHEMA", "message": "CSV 表结构配置不是有效 JSON"}) from exc
+            bundle_name = name.strip() or (Path(selected_files[0].filename or "csv-bundle").stem + f" 等 {len(selected_files)} 张表")
+            try:
+                dataset = project_datasets.create_csv_bundle(
+                    project_id=project_id,
+                    user_id=user.user_id,
+                    name=bundle_name,
+                    original_filename=(re.sub(r"[^A-Za-z0-9._-]+", "_", bundle_name).strip("._") or "csv-bundle") + ".csv",
+                    files=[(Path(item.filename or "").name, item.file) for item in selected_files],
+                    schema=schema,
+                )
+            except ValueError as exc:
+                code = str(exc) if str(exc).startswith("CSV_BUNDLE_") else "CSV_BUNDLE_SCHEMA"
+                raise HTTPException(status_code=422, detail={"code": code, "message": "CSV 文件、表名或 PK/FK 配置无效"}) from exc
+        else:
+            uploaded = selected_files[0]
+            filename = uploaded.filename or "dataset.bin"
+            content = await uploaded.read()
+            if not content:
+                raise HTTPException(status_code=400, detail="数据集文件不能为空")
+            dataset = project_datasets.create(
+                project_id=project_id,
+                user_id=user.user_id,
+                name=name or Path(filename).stem,
+                original_filename=filename,
+                content=content,
+            )
         previous_default_dataset_id = default_dataset_id
         if dataset.status == "ready" and project and (project.default_dataset_id is None or set_as_default):
             project = projects.set_default_dataset(project_id, user.user_id, dataset.dataset_id) or project
@@ -1953,9 +1984,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return await list_project_datasets(request)
 
     @app.post("/api/personal-datasets")
-    async def create_personal_dataset(request: Request, file: UploadFile = File(...),
-                                      name: str = Form(""), session_id: str = Form("")):
-        return await create_project_dataset(request, file=file, name=name, session_id=session_id,
+    async def create_personal_dataset(request: Request, file: UploadFile | None = File(None),
+                                      files: list[UploadFile] | None = File(None),
+                                      csv_schema: str = Form(""), name: str = Form(""),
+                                      session_id: str = Form("")):
+        return await create_project_dataset(request, file=file, files=files, csv_schema=csv_schema,
+                                            name=name, session_id=session_id,
                                             set_as_default=False)
 
     @app.patch("/api/personal-datasets/{dataset_id}")

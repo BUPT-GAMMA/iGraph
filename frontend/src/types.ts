@@ -175,6 +175,23 @@ export type Dataset = {
   updated_at?: string;
 };
 
+export type CsvForeignKey = {
+  columns: string[];
+  ref_table: string;
+  ref_columns: string[];
+};
+export type CsvBundleTableSchema = {
+  file_name: string;
+  name: string;
+  columns: string[];
+  primary_key: string[];
+  foreign_keys: CsvForeignKey[];
+};
+export type CsvBundleSchema = {
+  version: 'csv_bundle.v1';
+  tables: CsvBundleTableSchema[];
+};
+
 export type ConstructionState = {
   dataset_id: string;
   build_id?: string | null;

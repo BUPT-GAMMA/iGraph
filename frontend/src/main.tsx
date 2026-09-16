@@ -3,7 +3,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent a
 import { createRoot } from 'react-dom/client';
 import { readComposerDraft, writeComposerDraft, clearComposerDraft } from './composerDrafts';
 import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
-import type { ActiveRun, AttachmentRef, ConstructionState, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, ToolCall } from './types';
+import type { ActiveRun, AttachmentRef, ConstructionState, CsvBundleSchema, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
 import { RunCancellation } from './RunCancellation';
@@ -1745,12 +1745,12 @@ function App() {
       else setBusy(false);
     }
   }
-  async function addConstructionDataset(file: File) {
+  async function addConstructionDataset(file: File | File[], schema?: CsvBundleSchema, name?: string) {
     const identity = identityRef.current;
     setBusy(true);
     setWorkspaceError('');
     try {
-      const response = await uploadProjectDataset(null, file);
+      const response = await uploadProjectDataset(null, file, undefined, schema, name);
       if (identityRef.current !== identity) return;
       updateProjectDatasets(null, current => [
         ...current.filter(item => item.dataset_id !== response.dataset.dataset_id),

@@ -18,6 +18,7 @@ import math
 import re
 import sqlite3
 import time
+import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -358,6 +359,86 @@ def _load_csv(data: bytes, path: Path, options: dict, limits: ResourceLimits) ->
     delimiter = _delimiter(options.get("delimiter", ","), "CSV")
     columns, rows = _delimited_rows(content, delimiter, "CSV", limits.max_source_rows)
     return _string_table_source(path, options, limits, columns, rows)
+
+
+def _load_csv_bundle(path: Path, options: dict, limits: ResourceLimits) -> RelationalSource:
+    """Load a server-authored collection of CSV tables and retained PK/FK metadata."""
+    if any(key in options for key in ("tables", "primary_key", "foreign_keys")):
+        raise SourceError("CSV bundle keys and relationships are defined by its retained manifest.")
+    delimiter = _delimiter(options.get("delimiter", ","), "CSV")
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos if not info.is_dir()]
+            if len(names) != len(set(names)) or "manifest.json" not in names:
+                raise SourceError("CSV bundle contains duplicate entries or has no manifest.")
+            if any(info.flag_bits & 0x1 for info in infos):
+                raise SourceError("Encrypted CSV bundle entries are unsupported.")
+            if any(info.file_size > limits.max_source_bytes for info in infos):
+                raise SourceError(f"CSV bundle entry exceeds the {limits.max_source_bytes}-byte limit.")
+            if sum(info.file_size for info in infos) > limits.max_source_bytes:
+                raise SourceError(f"CSV bundle exceeds the {limits.max_source_bytes}-byte uncompressed limit.")
+            manifest_info = archive.getinfo("manifest.json")
+            if manifest_info.file_size > 1024 * 1024:
+                raise SourceError("CSV bundle manifest is too large.")
+            try:
+                manifest = json.loads(archive.read(manifest_info).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SourceError("CSV bundle manifest must be valid UTF-8 JSON.") from exc
+            definitions = manifest.get("tables") if isinstance(manifest, dict) else None
+            if (not isinstance(manifest, dict) or manifest.get("version") != "csv_bundle.v1"
+                    or not isinstance(definitions, list) or not 1 <= len(definitions) <= 128):
+                raise SourceError("CSV bundle manifest version or table list is invalid.")
+            expected_entries = {"manifest.json"}
+            source = RelationalSource({}, options.get("domain", ""), resource_limits=limits)
+            remaining = limits.max_source_rows
+            for definition in definitions:
+                allowed = {"file_name", "entry", "name", "columns", "primary_key", "foreign_keys"}
+                if not isinstance(definition, dict) or set(definition) != allowed:
+                    raise SourceError("CSV bundle table definitions are invalid.")
+                entry = definition.get("entry")
+                if (not isinstance(entry, str) or not entry.startswith("tables/") or "\\" in entry
+                        or any(part in {"", ".", ".."} for part in entry.split("/")) or entry not in names):
+                    raise SourceError("CSV bundle table entry is invalid.")
+                expected_entries.add(entry)
+                name = _name(definition.get("name"), "Table name")
+                if name in source.tables:
+                    raise SourceError(f"Duplicate table name {name!r}.")
+                with archive.open(entry, "r") as binary:
+                    text = io.TextIOWrapper(binary, encoding="utf-8-sig", newline="")
+                    try:
+                        reader = csv.reader(text, delimiter=delimiter, strict=True)
+                        columns = next(reader, None)
+                        if columns is None:
+                            raise SourceError(f"CSV table {name!r} is empty and has no header.")
+                        _names(columns, f"CSV table {name!r} headers")
+                        declared_columns = definition.get("columns")
+                        if declared_columns != columns:
+                            raise SourceError(f"CSV table {name!r} headers changed after schema configuration.")
+                        rows = []
+                        for line, cells in enumerate(checked(reader), 2):
+                            if len(cells) != len(columns):
+                                raise SourceError(f"CSV table {name!r} row {line} has {len(cells)} cells; expected {len(columns)}.")
+                            rows.append(dict(zip(columns, cells)))
+                            remaining -= 1
+                            if remaining < 0:
+                                raise SourceError(f"The source exceeds the {limits.max_source_rows}-row limit.")
+                    except UnicodeDecodeError as exc:
+                        raise SourceError(f"CSV table {name!r} must use UTF-8 encoding.") from exc
+                    except csv.Error as exc:
+                        raise SourceError(f"Invalid CSV table {name!r}: {exc}") from exc
+                table = Table(name, columns, rows, column_types={column: "TEXT" for column in columns},
+                              column_collations={column: "BINARY" for column in columns})
+                configured_primary_key = _names(definition["primary_key"], "primary_key", empty=True)
+                table.primary_key = configured_primary_key or _infer_primary_key(table)
+                table.foreign_keys = _foreign_keys(definition["foreign_keys"])
+                source.tables[name] = table
+            if set(names) != expected_entries:
+                raise SourceError("CSV bundle contains unlisted files.")
+            _validate_source(source, limits.max_source_rows, csv_mode=True)
+            return source
+    except zipfile.BadZipFile as exc:
+        raise SourceError("CSV bundle archive is invalid.") from exc
 
 
 def _infer_txt_delimiter(content: str, max_rows: int) -> str | None:
@@ -781,6 +862,8 @@ def load_source(path: Path, options: dict | None = None) -> RelationalSource:
     # image file-backed and read-only instead of copying it through that API.
     with path.open("rb") as handle:
         header = handle.read(16)
+    if path.suffix.lower() == ".csv" and zipfile.is_zipfile(path):
+        return _load_csv_bundle(path, options, limits)
     direct_sqlite = (options.get("resource_profile") == "full_scale"
                      and path.suffix.lower() == ".sql" and header == b"SQLite format 3\x00")
     data = None
