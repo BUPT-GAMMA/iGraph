@@ -385,8 +385,10 @@ class ContextManager:
         protocol: str = "text",
         provider_gateway=None,
         logger=None,
+        user_id: str = "",
     ) -> None:
         self.session_id = session_id
+        self.user_id = str(user_id or "").strip()
         self.reasoning_mode = reasoning_mode
         self.protocol = protocol
         self.messages: List[dict] = [
@@ -444,6 +446,7 @@ class ContextManager:
             skill_source_tools,
             graph_state=graph_state,
             intent=intent,
+            user_id=self.user_id,
         )
         working = working_messages if working_messages is not None else self.messages
         return self._driver.build_model_messages(

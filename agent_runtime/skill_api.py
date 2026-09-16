@@ -20,11 +20,22 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from agent_runtime.config import AgentRuntimeConfig
-from agent_runtime.skills_runtime import (
-    bundled_skills_path,
-    candidate_skills_path,
-    user_skills_path,
-)
+from agent_runtime.skills_runtime import bundled_skills_path
+import backend.data_paths as _dp
+
+
+def user_skills_path(config: AgentRuntimeConfig, user_id: str):  # noqa: ARG001
+    """Per-user approved skills directory.
+
+    Delegates to data_paths so skill_api and SkillManager/SkillRegistry all
+    operate on the same physical directory regardless of AgentRuntimeConfig.
+    """
+    return _dp.user_skills_dir(user_id)
+
+
+def candidate_skills_path(config: AgentRuntimeConfig, user_id: str):  # noqa: ARG001
+    """Per-user review-queue directory (same layout as SkillManager)."""
+    return _dp.user_review_queue_dir(user_id)
 
 
 _NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -170,7 +181,13 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
         if len(skill_files) != 1:
             raise HTTPException(status_code=400, detail="压缩包必须且只能包含一个 SKILL.md")
         root = Path(skill_files[0].filename).parent
-        name = _safe_name(root.name or Path(file.filename or "skill").stem)
+        # Derive the skill name strictly from the directory name inside the zip.
+        # Never fall back to the client-supplied filename — that lets the uploader
+        # influence the resulting path on disk.
+        dir_name = root.name
+        if not dir_name:
+            raise HTTPException(status_code=400, detail="压缩包内 SKILL.md 必须放在一个命名子目录下")
+        name = _safe_name(dir_name)
         target = candidate_skills_path(config, uid) / name
         if target.exists():
             raise HTTPException(status_code=409, detail="Skill 已存在")
@@ -244,15 +261,25 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
 
     @router.delete("/users/{target_user_id}/all")
     def delete_user_skills(target_user_id: str, request: Request):
-        # This route is private to Backend; consuming the request identity keeps
-        # accidental anonymous calls out when the service is exposed directly.
+        # This route is internal-only; the caller must present a valid service
+        # token via X-Service-Token to prevent lateral deletion of other users'
+        # skills when the runtime is inadvertently reachable from the outside.
         _user_id(request)
+        service_token = request.headers.get("X-Service-Token", "").strip()
+        expected = str(getattr(config, "internal_service_token", "") or "").strip()
+        if expected and service_token != expected:
+            raise HTTPException(status_code=403, detail="forbidden: internal route requires service token")
+        # Sanitise target_user_id to guard against path-traversal variants
+        # that survive _user_component (e.g. "...", ". .").
+        cleaned = target_user_id.strip()
+        if not cleaned or cleaned in {".", ".."} or cleaned.startswith("/") or ".." in cleaned.split("/"):
+            raise HTTPException(status_code=400, detail="invalid user id")
         removed: list[str] = []
-        for root in (user_skills_path(config, target_user_id), candidate_skills_path(config, target_user_id)):
+        for root in (user_skills_path(config, cleaned), candidate_skills_path(config, cleaned)):
             if root.is_dir():
                 shutil.rmtree(root)
                 removed.append(str(root))
-        return {"success": True, "user_id": target_user_id, "removed": removed}
+        return {"success": True, "user_id": cleaned, "removed": removed}
 
     @router.put("/{name}")
     def update_skill(name: str, req: SkillUpdate, request: Request):
