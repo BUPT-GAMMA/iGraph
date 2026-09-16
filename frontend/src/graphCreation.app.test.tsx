@@ -63,8 +63,11 @@ describe('actual App graph creation destination', () => {
     await screen.findByText('还没有可构图的数据源');
     const file = new File(['from,to\na,b'], 'orders.csv', { type: 'text/csv' });
     fireEvent.change(container.querySelector('.create-graph-workspace input[type="file"]')!, { target: { files: [file] } });
+    const submit = await screen.findByRole('button', { name: '上传 1 张表' });
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(submit);
 
-    await waitFor(() => expect(mocks.uploadDataset).toHaveBeenCalledWith(null, file));
+    await waitFor(() => expect(mocks.uploadDataset).toHaveBeenCalledWith(null, [file], undefined, expect.objectContaining({ version: 'csv_bundle.v1' }), 'orders'));
     expect(screen.getByRole('region', { name: '构图编辑器' })).toBeTruthy();
   });
 });

@@ -1,0 +1,5 @@
+order_id,customer_id,order_date,status
+O1001,C001,2026-09-01,paid
+O1002,C002,2026-09-02,shipped
+O1003,C001,2026-09-03,created
+O1004,C003,2026-09-04,paid

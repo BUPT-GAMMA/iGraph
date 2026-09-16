@@ -1863,6 +1863,40 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .create-graph-empty p { margin: 7px 0 15px; font-size: 12px; }
 .create-graph-other-sources { margin-top: 13px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; border-radius: 8px; color: #64748b; background: #f8fafc; font-size: 11px; }
 
+.csv-bundle-backdrop { position: fixed; inset: 0; z-index: 1400; padding: 24px; display: grid; place-items: center; background: rgb(15 23 42 / 46%); backdrop-filter: blur(3px); }
+.csv-bundle-dialog { width: min(1040px, 100%); max-height: calc(100dvh - 48px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #dbe3ef; border-radius: 15px; background: #fff; box-shadow: 0 26px 80px rgb(15 23 42 / 24%); }
+.csv-bundle-dialog > header, .csv-bundle-dialog > footer { flex: 0 0 auto; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-color: #e2e8f0; }
+.csv-bundle-dialog > header { border-bottom: 1px solid #e2e8f0; }
+.csv-bundle-dialog > header span { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.csv-bundle-dialog > header h2 { margin: 3px 0 0; color: #1e293b; font-size: 19px; }
+.csv-bundle-dialog > header button { width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 7px; color: #64748b; background: transparent; }
+.csv-bundle-dialog > footer { justify-content: flex-end; border-top: 1px solid #e2e8f0; }
+.csv-bundle-body { min-height: 0; padding: 18px 20px 24px; overflow-y: auto; background: #f8fafc; }
+.csv-bundle-name { max-width: 520px; display: grid; gap: 6px; color: #475569; font-size: 12px; font-weight: 600; }
+.csv-bundle-name input, .csv-table-head input, .csv-fk-row select { min-height: 34px; padding: 6px 9px; border: 1px solid #cbd5e1; border-radius: 6px; color: #1e293b; background: #fff; }
+.csv-bundle-help { margin: 10px 0 16px; color: #64748b; font-size: 12px; line-height: 1.65; }
+.csv-bundle-loading { padding: 36px; color: #64748b; text-align: center; }
+.csv-bundle-error { margin: 10px 0; padding: 9px 11px; border: 1px solid #fecaca; border-radius: 7px; color: #b42318; background: #fff1f0; font-size: 12px; }
+.csv-table-card { margin-top: 12px; padding: 15px; border: 1px solid #dbe3ef; border-radius: 10px; background: #fff; }
+.csv-table-head { display: flex; align-items: end; justify-content: space-between; gap: 18px; }
+.csv-table-head > div { min-width: 0; display: grid; gap: 3px; }
+.csv-table-head > div strong { overflow: hidden; color: #27364d; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.csv-table-head small, .csv-no-fk { color: #8490a1; font-size: 10px; }
+.csv-table-head label { width: min(330px, 48%); display: grid; gap: 4px; color: #64748b; font-size: 10px; }
+.csv-table-card fieldset { margin: 14px 0; padding: 10px 11px; border: 1px solid #e2e8f0; border-radius: 8px; }
+.csv-table-card legend { padding: 0 5px; color: #475569; font-size: 11px; font-weight: 650; }
+.csv-table-card legend small { color: #94a3b8; font-weight: 400; }
+.csv-column-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.csv-column-options label { padding: 5px 7px; display: inline-flex; align-items: center; gap: 5px; border-radius: 5px; color: #475569; background: #f1f5f9; font-size: 10px; }
+.csv-fk-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.csv-fk-heading strong { color: #334155; font-size: 12px; }
+.csv-fk-heading button { min-height: 30px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; }
+.csv-fk-row { margin-top: 8px; display: grid; grid-template-columns: minmax(130px, 1fr) auto minmax(125px, .8fr) minmax(130px, 1fr) 30px; align-items: end; gap: 8px; }
+.csv-fk-row > label { display: grid; gap: 4px; color: #64748b; font-size: 10px; }
+.csv-fk-row select[multiple] { min-height: 62px; }
+.csv-fk-row > span { align-self: center; color: var(--accent); }
+.csv-fk-row > button { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #fecaca; border-radius: 6px; color: #b42318; background: #fff; }
+
 [data-theme="dark"] .sidebar-create-graph button { color: #cbd5e1; border-color: #334155; background: rgb(24 34 53 / 78%); }
 [data-theme="dark"] .sidebar-create-graph button:hover, [data-theme="dark"] .sidebar-create-graph button.active { color: var(--accent-strong); border-color: var(--accent-border); background: var(--accent-soft); }
 [data-theme="dark"] .create-graph-workspace { background: #151f30; }
@@ -1874,6 +1908,12 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 [data-theme="dark"] .create-graph-flow strong { color: #e2e8f0; }
 [data-theme="dark"] .create-graph-flow small { color: #94a3b8; }
 [data-theme="dark"] .create-graph-empty, [data-theme="dark"] .create-graph-other-sources { border-color: #334155; background: #182235; }
+[data-theme="dark"] .csv-bundle-dialog, [data-theme="dark"] .csv-table-card { border-color: #334155; background: #182235; }
+[data-theme="dark"] .csv-bundle-dialog > header, [data-theme="dark"] .csv-bundle-dialog > footer, [data-theme="dark"] .csv-table-card fieldset { border-color: #334155; }
+[data-theme="dark"] .csv-bundle-body { background: #111827; }
+[data-theme="dark"] .csv-bundle-dialog > header h2, [data-theme="dark"] .csv-table-head strong, [data-theme="dark"] .csv-fk-heading strong { color: #e2e8f0; }
+[data-theme="dark"] .csv-bundle-name input, [data-theme="dark"] .csv-table-head input, [data-theme="dark"] .csv-fk-row select { color: #e2e8f0; border-color: #475569; background: #111827; }
+[data-theme="dark"] .csv-column-options label { color: #cbd5e1; background: #243044; }
 
 @media (max-width: 1050px) {
   .create-graph-intro { grid-template-columns: 1fr; gap: 28px; }
@@ -1890,6 +1930,12 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
   .create-graph-flow > svg { justify-self: center; transform: rotate(90deg); }
   .create-graph-flow > div { min-height: 105px; }
   .create-graph-source-grid { grid-template-columns: 1fr; }
+  .csv-bundle-backdrop { padding: 0; }
+  .csv-bundle-dialog { max-height: 100dvh; height: 100dvh; border-radius: 0; }
+  .csv-table-head { align-items: stretch; flex-direction: column; }
+  .csv-table-head label { width: 100%; }
+  .csv-fk-row { grid-template-columns: 1fr; }
+  .csv-fk-row > span { display: none; }
 }
 
 /* Keep the list mounted so both expansion and collapse can animate. */

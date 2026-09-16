@@ -1,6 +1,8 @@
 """Source fidelity, key semantics, and isolation of untrusted SQL imports."""
 import sqlite3
 import copy
+import json
+import zipfile
 from contextlib import closing
 from unittest.mock import patch
 
@@ -102,6 +104,43 @@ def test_csv_exact_strings_inline_tables_and_stable_primary_key(tmp_path):
     assert table.rows[0] == {"id": "001", "person_id": "A", "amount": "1.20"}
     assert row_id(table, table.rows[0], 0) == row_id(table, table.rows[0], 100)
     assert not source.warnings
+
+
+def test_csv_bundle_loads_multiple_tables_and_declared_pk_fk(tmp_path):
+    path = tmp_path / "retail.csv"
+    manifest = {"version": "csv_bundle.v1", "tables": [
+        {"file_name": "customers.csv", "entry": "tables/000-customers.csv", "name": "customers",
+         "columns": ["customer_id", "name"], "primary_key": ["customer_id"], "foreign_keys": []},
+        {"file_name": "orders.csv", "entry": "tables/001-orders.csv", "name": "orders",
+         "columns": ["order_id", "customer_id", "amount"], "primary_key": ["order_id"],
+         "foreign_keys": [{"columns": ["customer_id"], "ref_table": "customers", "ref_columns": ["customer_id"]}]},
+    ]}
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        archive.writestr("tables/000-customers.csv", "customer_id,name\nc1,Alice\nc2,Bob\n")
+        archive.writestr("tables/001-orders.csv", "order_id,customer_id,amount\no1,c1,9.50\no2,c2,3.00\n")
+    source = load_source(path)
+    try:
+        assert list(source.tables) == ["customers", "orders"]
+        assert source.tables["customers"].primary_key == ["customer_id"]
+        assert source.tables["orders"].foreign_keys[0].ref_table == "customers"
+        graph = initial_graph(source)
+        assert len(graph["nodes"]) == 4
+        assert len(graph["edges"]) == 2
+    finally:
+        source.close()
+
+
+def test_csv_header_starting_with_pk_is_not_treated_as_bundle(tmp_path):
+    path = tmp_path / "plain.csv"
+    path.write_text("PK_ID,value\n1,alpha\n2,beta\n", encoding="utf-8")
+
+    source = load_source(path)
+    try:
+        assert source.tables["plain"].columns == ["PK_ID", "value"]
+        assert len(initial_graph(source)["nodes"]) == 2
+    finally:
+        source.close()
 
 
 def test_txt_auto_detects_tabular_delimiter_and_preserves_quoted_multiline_values(tmp_path):

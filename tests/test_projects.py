@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -688,6 +689,27 @@ def test_personal_datasets_are_reusable_explicit_and_scope_isolated(client):
     assert client.patch('/api/personal-datasets/' + dataset['dataset_id'], headers=headers(), json={'name': 'Renamed'}).json()['dataset']['name'] == 'Renamed'
     assert client.delete('/api/personal-datasets/' + dataset['dataset_id'], headers=headers()).status_code == 200
     assert FakeServiceClient.runtime_sessions[selected['session_id']]['session_state']['active_dataset_id'] is None
+
+
+def test_personal_multi_csv_upload_retains_one_pk_fk_bundle(client):
+    schema = {"version": "csv_bundle.v1", "tables": [
+        {"file_name": "customers.csv", "name": "customers", "columns": ["id", "name"],
+         "primary_key": ["id"], "foreign_keys": []},
+        {"file_name": "orders.csv", "name": "orders", "columns": ["id", "customer_id"],
+         "primary_key": ["id"], "foreign_keys": [
+             {"columns": ["customer_id"], "ref_table": "customers", "ref_columns": ["id"]}]},
+    ]}
+    response = client.post('/api/personal-datasets', headers=headers(), data={
+        'name': 'Retail CSV', 'csv_schema': json.dumps(schema),
+    }, files=[
+        ('files', ('customers.csv', io.BytesIO(b'id,name\nc1,Alice\n'), 'text/csv')),
+        ('files', ('orders.csv', io.BytesIO(b'id,customer_id\no1,c1\n'), 'text/csv')),
+    ])
+    assert response.status_code == 200, response.text
+    dataset = response.json()['dataset']
+    assert dataset['file_type'] == 'csv' and dataset['status'] == 'source_ready'
+    assert dataset['metadata']['csv_bundle']['source_files'] == ['customers.csv', 'orders.csv']
+    assert dataset['metadata']['csv_bundle']['tables'][1]['foreign_keys'][0]['ref_table'] == 'customers'
 
 
 def test_general_migration_preserves_sources_state_and_named_user_projects(client, tmp_path):

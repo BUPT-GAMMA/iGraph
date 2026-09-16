@@ -1,6 +1,6 @@
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
-import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
 import { currentLanguage, tr } from './i18n';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -197,9 +197,14 @@ function datasetScopeUrl(projectId: string | null) {
 export async function listProjectDatasets(projectId: string | null, signal?: AbortSignal) {
   return json<{ success?: boolean; project_id: string | null; default_dataset_id?: string | null; datasets?: Dataset[] }>(datasetScopeUrl(projectId), { signal });
 }
-export async function uploadProjectDataset(projectId: string | null, file: File, sessionId?: string) {
+export async function uploadProjectDataset(projectId: string | null, file: File | File[], sessionId?: string, csvSchema?: CsvBundleSchema, name?: string) {
   const body = new FormData();
-  body.append('file', file);
+  const selected = Array.isArray(file) ? file : [file];
+  if (csvSchema) {
+    selected.forEach(item => body.append('files', item));
+    body.append('csv_schema', JSON.stringify(csvSchema));
+    if (name) body.append('name', name);
+  } else if (selected[0]) body.append('file', selected[0]);
   if (sessionId) body.append('session_id', sessionId);
   return json<{ success?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(datasetScopeUrl(projectId), { method: 'POST', body });
 }

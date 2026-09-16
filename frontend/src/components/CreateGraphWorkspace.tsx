@@ -1,15 +1,16 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getConstructionState } from '../api';
 import { useI18n } from '../i18n';
 import type { Translate } from '../i18n';
-import type { ConstructionState, Dataset } from '../types';
+import type { ConstructionState, CsvBundleSchema, Dataset } from '../types';
 import { constructionStatus, supportsConstruction } from '../construction';
 import { Icon } from './Icon';
+import { CsvBundleDialog } from './CsvBundleDialog';
 
 type Props = {
   datasets: Dataset[];
   busy?: boolean;
-  onUpload: (file: File) => void;
+  onUpload: (file: File | File[], schema?: CsvBundleSchema, name?: string) => void;
   onConstruct: (dataset: Dataset) => void;
   onStateChange?: (dataset: Dataset, state: ConstructionState) => void;
 };
@@ -48,6 +49,8 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
   const { language, t } = useI18n();
   const formatNumber = (value: number) => value.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US');
   const inputRef = useRef<HTMLInputElement>(null);
+  const [csvFiles, setCsvFiles] = useState<File[] | null>(null);
+  const [selectionError, setSelectionError] = useState('');
   const stateCallback = useRef(onStateChange);
   stateCallback.current = onStateChange;
   const constructible = datasets.filter(supportsConstruction);
@@ -71,6 +74,17 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
   }, [monitorSignature]);
 
   function chooseFile() { inputRef.current?.click(); }
+  function selected(files: FileList | null) {
+    const chosen = Array.from(files || []);
+    if (!chosen.length) return;
+    if (chosen.length === 1 && !chosen[0].name.toLowerCase().endsWith('.csv')) {
+      setSelectionError(''); onUpload(chosen[0]); return;
+    }
+    if (chosen.every(file => file.name.toLowerCase().endsWith('.csv'))) {
+      setSelectionError(''); setCsvFiles(chosen); return;
+    }
+    setSelectionError(t('Multiple-file graph construction accepts CSV files only.', '多文件构图只能同时选择 CSV 文件。'));
+  }
 
   return <div className="create-graph-workspace">
     <header className="create-graph-header">
@@ -78,7 +92,7 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
         <span className="context-icon"><Icon name="graph" size={23} /></span>
         <div><span>{t('CREATE YOUR GRAPH', '创建你的图')}</span><h1>{t('Graph Construction Workspace', '构图工作台')}</h1><p>{t('Upload source files to build, inspect, and optimize reusable graph data.', '上传源文件，构建、检查并优化可复用的图数据。')}</p></div>
       </div>
-      <input ref={inputRef} type="file" hidden accept=".sql,.csv,.txt" onChange={event => { const file = event.currentTarget.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
+      <input ref={inputRef} type="file" hidden multiple accept=".sql,.csv,.txt" onChange={event => { selected(event.currentTarget.files); event.currentTarget.value = ''; }} />
       <button className="primary-command create-graph-upload-button" onClick={chooseFile} disabled={busy}><Icon name="upload" size={16} /> {t('Upload source', '上传数据源')}</button>
     </header>
 
@@ -87,7 +101,8 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
         <div className="create-graph-intro-copy">
           <span className="create-graph-kicker">{t('Start with structured data', '从结构化数据开始')}</span>
           <h2 id="create-graph-intro-title">{t('Turn a data source into an analysis-ready graph', '把数据源变成可以分析的图')}</h2>
-          <p>{t('Choose an existing source file or upload a new SQL, CSV, or TXT file. The result is saved in your personal datasets, independent of the current conversation, so you can return and refine it at any time.', '选择已有源文件，或上传新的 SQL、CSV、TXT。构图结果保存在个人数据集中，不依赖当前会话，可随时回来继续优化。')}</p>
+          <p>{t('Choose an existing source, upload SQL or TXT, or select several CSV tables and configure their primary and foreign keys. The result is saved in your personal datasets.', '选择已有数据源，上传 SQL、TXT，或一次选择多张 CSV 表并配置主外键。构图结果会保存在个人数据集中。')}</p>
+          {selectionError && <div className="csv-bundle-error" role="alert">{selectionError}</div>}
           <button className="primary-command" onClick={chooseFile} disabled={busy}><Icon name="plus" size={16} /> {t('Choose source file', '选择源文件')}</button>
         </div>
         <div className="create-graph-flow" aria-label={t('Graph construction workflow', '构图流程')}>
@@ -106,10 +121,11 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
           <div className="create-graph-source-copy"><div><strong title={dataset.name}>{dataset.name}</strong><span>{sourceType(dataset)}</span></div><p>{sourceSummary(dataset, t, formatNumber)}</p></div>
           <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${dataset.name}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>
         </article>)}</div> : <div className="create-graph-empty">
-          <span><Icon name="graph" size={34} /></span><strong>{t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong><p>{t('Upload a SQL, CSV, or TXT file to open it directly in the graph editor.', '上传 SQL、CSV 或 TXT 文件后，会直接进入构图编辑器。')}</p><button className="secondary-command" onClick={chooseFile} disabled={busy}>{t('Upload your first source', '上传第一个数据源')}</button>
+          <span><Icon name="graph" size={34} /></span><strong>{t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong><p>{t('Upload SQL/TXT or select one or more CSV tables to configure PK/FK relationships.', '上传 SQL/TXT，或选择一张、多张 CSV 表配置 PK/FK 关系。')}</p><button className="secondary-command" onClick={chooseFile} disabled={busy}>{t('Upload your first source', '上传第一个数据源')}</button>
         </div>}
         {otherDatasets.length > 0 && <div className="create-graph-other-sources"><Icon name="database" size={15} /><span>{t(`${formatNumber(otherDatasets.length)} existing graph ${otherDatasets.length === 1 ? 'dataset is' : 'datasets are'} ready to use directly in analysis tasks without construction.`, `另有 ${formatNumber(otherDatasets.length)} 个现成图数据集无需构图，可在分析任务中直接使用。`)}</span></div>}
       </section>
     </div>
+    {csvFiles && <CsvBundleDialog files={csvFiles} onCancel={() => setCsvFiles(null)} onSubmit={(files, schema, name) => { setCsvFiles(null); onUpload(files, schema, name); }} />}
   </div>;
 }

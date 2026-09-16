@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Dataset } from '../types';
 
@@ -21,6 +21,7 @@ describe('create graph workspace', () => {
     expect(screen.getByRole('heading', { name: '构图工作台' })).toBeTruthy();
     expect(screen.getByText('还没有可构图的数据源')).toBeTruthy();
     expect(container.querySelector('input[type="file"]')?.getAttribute('accept')).toBe('.sql,.csv,.txt');
+    expect(container.querySelector('input[type="file"]')?.hasAttribute('multiple')).toBe(true);
   });
 
   it('opens constructible sources and explains ready graph datasets separately', () => {
@@ -65,12 +66,33 @@ describe('create graph workspace', () => {
   it('forwards the selected source file and disables actions while busy', () => {
     const onUpload = vi.fn();
     const { container, rerender } = render(<CreateGraphWorkspace datasets={datasets} onUpload={onUpload} onConstruct={vi.fn()} />);
-    const file = new File(['from,to\na,b'], 'graph.csv', { type: 'text/csv' });
+    const file = new File(['CREATE TABLE graph(id INTEGER PRIMARY KEY);'], 'graph.sql', { type: 'text/plain' });
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
     expect(onUpload).toHaveBeenCalledWith(file);
 
     rerender(<CreateGraphWorkspace datasets={datasets} busy onUpload={onUpload} onConstruct={vi.fn()} />);
     expect((screen.getByRole('button', { name: '上传数据源' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '构图 订单源数据' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('collects multiple CSV files and submits one PK/FK schema', async () => {
+    const onUpload = vi.fn();
+    const { container } = render(<CreateGraphWorkspace datasets={[]} onUpload={onUpload} onConstruct={vi.fn()} />);
+    const customers = new File(['customer_id,name\nc1,Alice\n'], 'customers.csv', { type: 'text/csv' });
+    const orders = new File(['order_id,customer_id\no1,c1\n'], 'orders.csv', { type: 'text/csv' });
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [customers, orders] } });
+    expect(await screen.findByRole('heading', { name: '配置主键与外键' })).toBeTruthy();
+    expect((screen.getByLabelText('数据集名称') as HTMLInputElement).value).toBe('customers and 1 more table');
+    const submit = await screen.findByRole('button', { name: '上传 2 张表' });
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(submit);
+    expect(onUpload).toHaveBeenCalledOnce();
+    const [files, schema] = onUpload.mock.calls[0];
+    expect(files).toEqual([customers, orders]);
+    expect(schema.version).toBe('csv_bundle.v1');
+    expect(schema.tables.map((table: { name: string }) => table.name)).toEqual(['customers', 'orders']);
+    expect(schema.tables[1].foreign_keys).toEqual([{
+      columns: ['customer_id'], ref_table: 'customers', ref_columns: ['customer_id'],
+    }]);
   });
 });

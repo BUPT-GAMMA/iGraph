@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -153,6 +154,132 @@ class ProjectDatasetDirectory:
                 shutil.rmtree(dataset_dir, ignore_errors=True)
                 raise
             return record
+
+    def create_csv_bundle(
+        self,
+        *,
+        project_id: str | None,
+        user_id: str,
+        name: str,
+        original_filename: str,
+        files: list[tuple[str, Any]],
+        schema: dict[str, Any],
+    ) -> ProjectDatasetRecord:
+        """Persist several CSV files as one server-authored construction source.
+
+        The archive is an internal transport format, while the public dataset
+        remains a CSV construction source.  Only the retained manifest can name
+        archive members, so build options never accept arbitrary server paths.
+        """
+        if not 1 <= len(files) <= 128:
+            raise ValueError("CSV_BUNDLE_FILE_COUNT")
+        if not isinstance(schema, dict) or schema.get("version") != "csv_bundle.v1":
+            raise ValueError("CSV_BUNDLE_SCHEMA")
+        definitions = schema.get("tables")
+        if not isinstance(definitions, list) or len(definitions) != len(files):
+            raise ValueError("CSV_BUNDLE_SCHEMA")
+
+        uploaded: dict[str, tuple[str, Any]] = {}
+        for filename, stream in files:
+            clean = Path(str(filename or "")).name
+            if clean != filename or Path(clean).suffix.lower() != ".csv":
+                raise ValueError("CSV_BUNDLE_FILE_TYPE")
+            key = clean.casefold()
+            if key in uploaded:
+                raise ValueError("CSV_BUNDLE_DUPLICATE_FILE")
+            uploaded[key] = (clean, stream)
+
+        normalized_tables: list[dict[str, Any]] = []
+        seen_tables: set[str] = set()
+        referenced_files: set[str] = set()
+        for index, definition in enumerate(definitions):
+            if not isinstance(definition, dict):
+                raise ValueError("CSV_BUNDLE_SCHEMA")
+            file_name = Path(str(definition.get("file_name") or "")).name
+            file_key = file_name.casefold()
+            if file_key not in uploaded or file_key in referenced_files:
+                raise ValueError("CSV_BUNDLE_SCHEMA")
+            table_name = str(definition.get("name") or "").strip()
+            if not table_name or len(table_name) > 1024 or "\x00" in table_name:
+                raise ValueError("CSV_BUNDLE_TABLE_NAME")
+            if table_name in seen_tables:
+                raise ValueError("CSV_BUNDLE_DUPLICATE_TABLE")
+            seen_tables.add(table_name)
+            referenced_files.add(file_key)
+            primary_key = definition.get("primary_key", [])
+            foreign_keys = definition.get("foreign_keys", [])
+            columns = definition.get("columns", [])
+            if (not isinstance(columns, list) or not all(isinstance(value, str) and value for value in columns)
+                    or not isinstance(primary_key, list) or not all(isinstance(value, str) and value for value in primary_key)
+                    or not isinstance(foreign_keys, list)):
+                raise ValueError("CSV_BUNDLE_SCHEMA")
+            safe_member = self._safe_filename(file_name)
+            normalized_tables.append({
+                "file_name": file_name,
+                "entry": f"tables/{index:03d}-{safe_member}",
+                "name": table_name,
+                "columns": columns,
+                "primary_key": primary_key,
+                "foreign_keys": foreign_keys,
+            })
+        if referenced_files != set(uploaded):
+            raise ValueError("CSV_BUNDLE_SCHEMA")
+
+        with self._lock:
+            records = self._load()
+            dataset_id = str(uuid.uuid4())
+            scope_dir = project_id or ("personal-" + uuid.uuid5(uuid.NAMESPACE_URL, user_id).hex)
+            dataset_dir = self.storage_root / scope_dir / "datasets" / dataset_id
+            dataset_dir.mkdir(parents=True, exist_ok=False)
+            safe_name = self._safe_filename(original_filename)
+            if Path(safe_name).suffix.lower() != ".csv":
+                safe_name = (Path(safe_name).stem or "csv-bundle") + ".csv"
+            source_path = dataset_dir / safe_name
+            fd, tmp_name = tempfile.mkstemp(prefix="source-", dir=str(dataset_dir))
+            os.close(fd)
+            try:
+                manifest = {"version": "csv_bundle.v1", "tables": normalized_tables}
+                with zipfile.ZipFile(tmp_name, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+                    archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, separators=(",", ":")))
+                    for table in normalized_tables:
+                        _, stream = uploaded[table["file_name"].casefold()]
+                        if hasattr(stream, "seek"):
+                            stream.seek(0)
+                        with archive.open(table["entry"], "w", force_zip64=True) as target:
+                            shutil.copyfileobj(stream, target, length=1024 * 1024)
+                os.replace(tmp_name, source_path)
+                now = time.time()
+                record = ProjectDatasetRecord(
+                    dataset_id=dataset_id,
+                    project_id=project_id,
+                    user_id=user_id,
+                    name=name.strip() or Path(safe_name).stem or "CSV bundle",
+                    original_filename=Path(original_filename).name or safe_name,
+                    storage_path=str(source_path.resolve()),
+                    file_type="csv",
+                    status="source_ready",
+                    created_at=now,
+                    updated_at=now,
+                    metadata={
+                        "construction": {"status": "not_built", "revision": 0, "source_type": "csv"},
+                        "dataset_kind": "construction_source",
+                        "csv_bundle": {
+                            "version": "csv_bundle.v1",
+                            "source_files": [table["file_name"] for table in normalized_tables],
+                            "tables": [{key: table[key] for key in ("name", "columns", "primary_key", "foreign_keys")}
+                                       for table in normalized_tables],
+                            "total_bytes": source_path.stat().st_size,
+                        },
+                    },
+                )
+                records[dataset_id] = record
+                self._write(records)
+                return record
+            except Exception:
+                if os.path.exists(tmp_name):
+                    os.unlink(tmp_name)
+                shutil.rmtree(dataset_dir, ignore_errors=True)
+                raise
 
     def update(
         self,
