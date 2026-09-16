@@ -305,31 +305,104 @@ def _stream_event_frame(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-# AgentOS does not persist the metadata form field sent with each run, so
-# the only record of the original user message and attached filenames is the
-# injected run_input string produced by _message_with_attachments().
-_ATTACHMENT_BLOCK_MARKER = "\n\n[附件文件]\n"
+# AgentOS does not persist the metadata form field sent with each run. Keep a
+# versioned, self-delimiting copy of attachment references in run_input so a
+# restored turn can still be edited without losing its upload identity.
+_ATTACHMENT_BLOCK_START = "\n\n[附件文件:iGraph-v2]\n"
+_ATTACHMENT_METADATA_MARKER = "\n[附件引用:iGraph-v2]\n"
+_ATTACHMENT_BLOCK_END = "\n[/附件文件:iGraph-v2]"
+_ATTACHMENT_BLOCK_HEADER = "以下文件已上传并注册到当前会话：\n"
+_ATTACHMENT_BLOCK_FOOTER = "\n用户说‘这个文件/图数据’时即指上述附件；不要要求用户再次上传。"
+_LEGACY_ATTACHMENT_BLOCK_MARKER = "\n\n[附件文件]\n"
 
 
 def _parse_run_input(text: str) -> "tuple[str, list[dict]]":
-    """Split the injected attachment context block out of a run_input string.
+    """Return the user-authored text and recoverable attachment references."""
 
-    Returns (clean_user_text, attachments) where each attachment dict carries
-    filename; file_token is left as an empty string because it is not stored
-    in the run record and is only needed for re-upload, not for display.
-    """
-    idx = text.find(_ATTACHMENT_BLOCK_MARKER)
-    if idx < 0:
+    idx = text.rfind(_ATTACHMENT_BLOCK_START)
+    if idx >= 0 and text.endswith(_ATTACHMENT_BLOCK_END):
+        block = text[idx + len(_ATTACHMENT_BLOCK_START) : -len(_ATTACHMENT_BLOCK_END)]
+        marker = block.rfind(_ATTACHMENT_METADATA_MARKER)
+        human_context = block[:marker] if marker >= 0 else ""
+        if (marker >= 0 and human_context.startswith(_ATTACHMENT_BLOCK_HEADER)
+                and human_context.endswith(_ATTACHMENT_BLOCK_FOOTER)):
+            try:
+                payload = json.loads(block[marker + len(_ATTACHMENT_METADATA_MARKER) :])
+            except (TypeError, ValueError):
+                payload = None
+            values = payload.get("attachments") if isinstance(payload, dict) else None
+            if isinstance(values, list) and values:
+                attachments = []
+                for value in values:
+                    if not isinstance(value, dict):
+                        attachments = []
+                        break
+                    filename = value.get("filename")
+                    file_token = value.get("file_token")
+                    if not isinstance(filename, str) or not filename or not isinstance(file_token, str) or not file_token:
+                        attachments = []
+                        break
+                    attachments.append({"file_token": file_token, "filename": filename})
+                if attachments:
+                    return text[:idx], attachments
+
+    # Runs created before v2 contain only a human-readable block. Require its
+    # complete fixed framing so ordinary user text containing "[附件文件]" is
+    # not mistaken for injected context.
+    idx = text.rfind(_LEGACY_ATTACHMENT_BLOCK_MARKER)
+    if idx < 0 or not text.endswith(_ATTACHMENT_BLOCK_FOOTER):
         return text, []
-    clean = text[:idx]
-    block = text[idx + len(_ATTACHMENT_BLOCK_MARKER):]
+    block = text[idx + len(_LEGACY_ATTACHMENT_BLOCK_MARKER) : -len(_ATTACHMENT_BLOCK_FOOTER)]
+    if not block.startswith(_ATTACHMENT_BLOCK_HEADER):
+        return text, []
+    lines = block[len(_ATTACHMENT_BLOCK_HEADER) :].splitlines()
     attachments: list[dict] = []
-    for line in block.splitlines():
-        line = line.strip()
-        if line.startswith("- ") and "（" in line:
-            filename = line[2 : line.index("（")]
-            attachments.append({"file_token": "", "filename": filename})
-    return clean, attachments
+    for line in lines:
+        value = line.strip()
+        if not value.startswith("- "):
+            return text, []
+        filename, separator, hint = value[2:].rpartition("（")
+        if not separator or not filename or not hint.endswith("）"):
+            return text, []
+        attachments.append({"file_token": "", "filename": filename})
+    return (text[:idx], attachments) if attachments else (text, [])
+
+
+def _restore_attachment_tokens(
+    attachments: list[AttachmentRef] | None,
+    *,
+    user_id: str,
+    session_id: str,
+) -> list[AttachmentRef]:
+    """Rebind display-only legacy attachments to one uploaded session file."""
+
+    values = list(attachments or [])
+    if not any(not item.file_token.strip() for item in values):
+        return values
+    by_filename: dict[str, list[str]] = {}
+    for item in visible_files(user_id, session_id):
+        if item.get("zone") != "Uploaded":
+            continue
+        stored_name = Path(str(item.get("path") or "")).name
+        file_token, separator, filename = stored_name.partition("_")
+        if separator and file_token and filename:
+            by_filename.setdefault(filename, []).append(file_token)
+    restored: list[AttachmentRef] = []
+    for item in values:
+        if item.file_token.strip():
+            restored.append(item)
+            continue
+        filename = str(item.filename or "")
+        matches = by_filename.get(filename, [])
+        if len(matches) != 1:
+            message = (
+                f"无法唯一定位历史附件“{filename}”，请重新上传后再修改消息"
+                if len(matches) > 1
+                else f"历史附件“{filename}”已失效，请重新上传后再修改消息"
+            )
+            raise HTTPException(409, {"code": "ATTACHMENT_REFERENCE_EXPIRED", "message": message})
+        restored.append(item.model_copy(update={"file_token": matches[0]}))
+    return restored
 
 
 def _run_input_text(run: dict) -> str:
@@ -829,11 +902,12 @@ def _dataset_view(dataset: ProjectDatasetRecord | None) -> dict[str, Any] | None
 
 
 def _message_with_attachments(req: ChatReq) -> str:
-    names = [item.filename for item in (req.attachments or []) if item.filename]
-    if not names:
+    attachments = [item for item in (req.attachments or []) if item.filename]
+    if not attachments:
         return req.message
     hints: list[str] = []
-    for name in names:
+    for attachment in attachments:
+        name = str(attachment.filename)
         suffix = Path(name).suffix.lower()
         if suffix in {".sql", ".csv", ".txt"}:
             hint = "源文件已保存到数据集；从 data_state.construction_sources 获取 dataset_id，检查构图状态。算法待接入时引导用户使用数据集旁的构图按钮，不调用旧上传构图工具"
@@ -844,11 +918,21 @@ def _message_with_attachments(req: ChatReq) -> str:
         else:
             hint = "根据文件格式选择上传文件加载工具"
         hints.append(f"- {name}（{hint}）")
+    references = {
+        "attachments": [
+            {"file_token": item.file_token, "filename": item.filename}
+            for item in attachments
+        ]
+    }
     return (
         req.message
-        + "\n\n[附件文件]\n以下文件已上传并注册到当前会话：\n"
+        + _ATTACHMENT_BLOCK_START
+        + _ATTACHMENT_BLOCK_HEADER
         + "\n".join(hints)
-        + "\n用户说‘这个文件/图数据’时即指上述附件；不要要求用户再次上传。"
+        + _ATTACHMENT_BLOCK_FOOTER
+        + _ATTACHMENT_METADATA_MARKER
+        + json.dumps(references, ensure_ascii=False, separators=(",", ":"))
+        + _ATTACHMENT_BLOCK_END
     )
 
 
@@ -2482,6 +2566,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def run_form(session_id: str, req: ChatReq, request: Request) -> tuple[dict, dict[str, str], str]:
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
+        req = req.model_copy(update={"attachments": _restore_attachment_tokens(
+            req.attachments, user_id=user.user_id, session_id=session_id,
+        ) or None})
         if req.replace_run_id and not controls_enabled():
             raise HTTPException(409, {"code": "EDIT_UNAVAILABLE", "message": "当前服务不支持替换对话，请更新服务后重试"})
         if req.replace_run_id and (req.regenerate or req.regenerate_of):
@@ -2580,6 +2667,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             raise HTTPException(422, {"code": "INVALID_EDIT_REQUEST", "message": "修改后的提示词不能为空"})
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
+        req = req.model_copy(update={"attachments": _restore_attachment_tokens(
+            req.attachments, user_id=user.user_id, session_id=session_id,
+        ) or None})
         start_id = str(req.start_request_id or uuid.uuid4())
         state = _state(session)
         content = {"request": req.model_dump(mode='json', exclude={'start_request_id'}),

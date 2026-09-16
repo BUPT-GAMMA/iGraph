@@ -814,6 +814,33 @@ def test_workspace_upload_preserves_dataset_registration_and_download_ownership(
     assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt", headers=headers()).content == b"public report"
     assert client.get(f"/api/sessions/{sid}/workspace/derived/%2E%2E%2FEphemeral%2Fprivate.txt", headers=headers()).status_code == 404
 
+
+def test_chat_rebinds_legacy_empty_attachment_token_before_agent_run(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    monkeypatch.setenv("IGRAPH_RUN_CANCEL_ENABLED", "false")
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    uploaded = client.post(
+        f"/api/sessions/{sid}/upload",
+        headers=headers(),
+        files={"file": ("交易记录（2026年9月）.csv", b"a,b\n1,2\n")},
+    ).json()
+
+    response = client.post(
+        f"/api/sessions/{sid}/chat/stream",
+        headers=headers(),
+        json={"message": "重新分析", "attachments": [{
+            "file_token": "", "filename": "交易记录（2026年9月）.csv",
+        }]},
+    )
+
+    assert response.status_code == 200
+    form = FakeServiceClient.runtime_stream_calls[-1]["data"]
+    metadata = json.loads(form["metadata"])["igraph_turn"]["attachments"]
+    assert metadata == [{"file_token": uploaded["file_token"], "filename": "交易记录（2026年9月）.csv"}]
+    clean, attachments = backend_app._parse_run_input(form["message"])
+    assert clean == "重新分析"
+    assert attachments == metadata
+
 def test_workspace_upload_size_limit_rejects_before_ingest(client, monkeypatch):
     monkeypatch.setenv("IGRAPH_MAX_UPLOAD_BYTES", "3")
     sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
@@ -850,6 +877,63 @@ def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata():
     messages = backend_app._messages_from_runs([run])
     assert [message["content"] for message in messages] == ["question", "answer"]
     assert messages[-1]["regenerate_of"] is None
+
+
+def test_attachment_context_round_trips_tokens_without_stripping_user_markers():
+    message = "请解释下面的界面文本：\n\n[附件文件]\n这段内容属于用户正文"
+    request = backend_app.ChatReq(message=message, attachments=[
+        backend_app.AttachmentRef(file_token="token-2026", filename="交易记录（2026年9月）.csv"),
+    ])
+
+    run_input = backend_app._message_with_attachments(request)
+    clean, attachments = backend_app._parse_run_input(run_input)
+
+    assert clean == message
+    assert attachments == [{"file_token": "token-2026", "filename": "交易记录（2026年9月）.csv"}]
+    projected = backend_app._messages_from_runs([{
+        "run_id": "attachment-run", "status": "completed", "run_input": run_input, "content": "完成",
+    }])
+    assert projected[0]["content"] == message
+    assert projected[0]["attachments"] == attachments
+
+
+def test_plain_user_attachment_marker_is_never_treated_as_injected_context():
+    message = "刷新后出现了：\n\n[附件文件]\n- graph.csv（这只是用户引用的文本）"
+    assert backend_app._parse_run_input(message) == (message, [])
+    assert backend_app._run_input_text({"run_input": message}) == message
+
+
+def test_legacy_attachment_context_preserves_fullwidth_parentheses_in_filename():
+    message = "分析历史附件"
+    run_input = (
+        message
+        + backend_app._LEGACY_ATTACHMENT_BLOCK_MARKER
+        + backend_app._ATTACHMENT_BLOCK_HEADER
+        + "- 交易记录（2026年9月）.csv（使用 load_graph_from_upload 自动检测并加载）"
+        + backend_app._ATTACHMENT_BLOCK_FOOTER
+    )
+
+    assert backend_app._parse_run_input(run_input) == (
+        message,
+        [{"file_token": "", "filename": "交易记录（2026年9月）.csv"}],
+    )
+
+
+def test_legacy_attachment_token_is_restored_only_from_a_unique_session_upload(tmp_path, monkeypatch):
+    from workspace_storage import save_upload
+
+    monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    save_upload("admin", "session-a", "original-token", "交易记录（2026年9月）.csv", b"source")
+    legacy = [backend_app.AttachmentRef(file_token="", filename="交易记录（2026年9月）.csv")]
+
+    restored = backend_app._restore_attachment_tokens(legacy, user_id="admin", session_id="session-a")
+    assert restored[0].file_token == "original-token"
+
+    save_upload("admin", "session-a", "duplicate-token", "交易记录（2026年9月）.csv", b"duplicate")
+    with pytest.raises(HTTPException) as ambiguous:
+        backend_app._restore_attachment_tokens(legacy, user_id="admin", session_id="session-a")
+    assert ambiguous.value.status_code == 409
+    assert ambiguous.value.detail["code"] == "ATTACHMENT_REFERENCE_EXPIRED"
 
 
 def test_event_only_history_retains_background_training_controls():
