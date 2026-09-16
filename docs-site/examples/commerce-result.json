@@ -1,0 +1,491 @@
+{
+  "version": "igraph_docs_commerce_example.v1",
+  "execution": "actual_offline_rules",
+  "executed_on": "2026-09-10",
+  "python_version": "3.12.14",
+  "llm_used": false,
+  "measurement_backend": "in-process property-graph executor",
+  "source_tables": [
+    {
+      "table": "regions",
+      "rows": 2
+    },
+    {
+      "table": "customers",
+      "rows": 3
+    },
+    {
+      "table": "orders",
+      "rows": 5
+    }
+  ],
+  "acceptance": {
+    "min_speedup": 0.05,
+    "benchmark_repeats": 5,
+    "expected_query_runs": 100,
+    "cost_formula": "latency_ms + preparation_ms / expected_query_runs"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "status": "ready",
+      "mode": "rules",
+      "llm_used": false,
+      "workload_origin": "deterministic_rules",
+      "query_count": 15,
+      "workload_coverage": [
+        "aggregation",
+        "data_quality",
+        "grouping",
+        "multi_hop",
+        "optional_relationship",
+        "ordering",
+        "relationship",
+        "value_filter"
+      ],
+      "initial_size": {
+        "edges": 6,
+        "nodes": 10
+      },
+      "final_size": {
+        "edges": 6,
+        "nodes": 10
+      },
+      "final_query_correct": 15,
+      "final_query_total": 15,
+      "accepted_candidates": 0,
+      "attempted_candidates": 1,
+      "history": [
+        {
+          "tool": "materialize_join",
+          "arguments": {
+            "path": [
+              {
+                "columns": [
+                  "region_id"
+                ],
+                "direction": "reverse",
+                "ref_columns": [
+                  "id"
+                ],
+                "ref_table": "regions",
+                "table": "customers"
+              },
+              {
+                "columns": [
+                  "customer_id"
+                ],
+                "direction": "reverse",
+                "ref_columns": [
+                  "id"
+                ],
+                "ref_table": "customers",
+                "table": "orders"
+              }
+            ]
+          },
+          "accepted": false,
+          "reason": "no_measured_improvement",
+          "previous_cost_ms": 0.14372899579029763,
+          "candidate_cost_ms": 0.14599099551560357,
+          "strategy": {
+            "pattern": {
+              "affected_table_count": 3,
+              "fanout_bucket": "few",
+              "fk_arity": 1,
+              "join_hops": 2,
+              "query_family": "reverse_join",
+              "relationship_shape": "chain",
+              "row_count_bucket": "tiny"
+            },
+            "strategy_id": "materialize_join"
+          },
+          "query_correct": 15,
+          "query_total": 15,
+          "materialized_path_hits": [
+            {
+              "query_id": "q003",
+              "hits": 10
+            },
+            {
+              "query_id": "q009",
+              "hits": 10
+            }
+          ]
+        }
+      ],
+      "retrieved_evidence": [],
+      "candidate_priorities": [
+        {
+          "tool": "materialize_join",
+          "strategy_id": "materialize_join",
+          "pattern": {
+            "affected_table_count": 3,
+            "fanout_bucket": "few",
+            "fk_arity": 1,
+            "join_hops": 2,
+            "query_family": "reverse_join",
+            "relationship_shape": "chain",
+            "row_count_bucket": "tiny"
+          },
+          "priority": 0.4
+        },
+        {
+          "tool": "optimize_graph",
+          "strategy_id": "extract_property_node",
+          "pattern": {
+            "affected_table_count": 1,
+            "property_kind": "text",
+            "query_family": "filter",
+            "relationship_shape": "attribute",
+            "repeated_value_ratio": 0.0,
+            "row_count_bucket": "tiny"
+          },
+          "priority": 0.3
+        }
+      ],
+      "policy_after": [
+        {
+          "accepted": 0,
+          "confidence_status": "cautioned",
+          "context_similarity": 1.0,
+          "gain_samples": 1,
+          "independent_sources": 1,
+          "mean_gain": -0.015738,
+          "no_gain": 1,
+          "pattern": {
+            "affected_table_count": 3,
+            "fanout_bucket": "few",
+            "fk_arity": 1,
+            "join_hops": 2,
+            "query_family": "reverse_join",
+            "relationship_shape": "chain",
+            "row_count_bucket": "tiny"
+          },
+          "policy_score": -0.087268,
+          "strategy_id": "materialize_join",
+          "trials": 1,
+          "unsafe": 0
+        }
+      ],
+      "selected_query_results": [
+        {
+          "id": "q003",
+          "correct": true,
+          "expected_count": 1,
+          "actual_count": 1,
+          "expected_preview": [
+            [
+              3
+            ]
+          ],
+          "actual_preview": [
+            [
+              3
+            ]
+          ]
+        },
+        {
+          "id": "q005",
+          "correct": true,
+          "expected_count": 1,
+          "actual_count": 1,
+          "expected_preview": [
+            [
+              430.0
+            ]
+          ],
+          "actual_preview": [
+            [
+              430.0
+            ]
+          ]
+        },
+        {
+          "id": "q010",
+          "correct": true,
+          "expected_count": 3,
+          "actual_count": 3,
+          "expected_preview": [
+            [
+              10,
+              1,
+              "East"
+            ],
+            [
+              11,
+              2,
+              "North"
+            ],
+            [
+              12,
+              null,
+              null
+            ]
+          ],
+          "actual_preview": [
+            [
+              10,
+              1,
+              "East"
+            ],
+            [
+              11,
+              2,
+              "North"
+            ],
+            [
+              12,
+              null,
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "status": "ready",
+      "mode": "rules",
+      "llm_used": false,
+      "workload_origin": "deterministic_rules",
+      "query_count": 15,
+      "workload_coverage": [
+        "aggregation",
+        "data_quality",
+        "grouping",
+        "multi_hop",
+        "optional_relationship",
+        "ordering",
+        "relationship",
+        "value_filter"
+      ],
+      "initial_size": {
+        "edges": 6,
+        "nodes": 10
+      },
+      "final_size": {
+        "edges": 6,
+        "nodes": 10
+      },
+      "final_query_correct": 15,
+      "final_query_total": 15,
+      "accepted_candidates": 0,
+      "attempted_candidates": 1,
+      "history": [
+        {
+          "tool": "materialize_join",
+          "arguments": {
+            "path": [
+              {
+                "columns": [
+                  "region_id"
+                ],
+                "direction": "reverse",
+                "ref_columns": [
+                  "id"
+                ],
+                "ref_table": "regions",
+                "table": "customers"
+              },
+              {
+                "columns": [
+                  "customer_id"
+                ],
+                "direction": "reverse",
+                "ref_columns": [
+                  "id"
+                ],
+                "ref_table": "customers",
+                "table": "orders"
+              }
+            ]
+          },
+          "accepted": false,
+          "reason": "no_measured_improvement",
+          "previous_cost_ms": 0.15235000653774478,
+          "candidate_cost_ms": 0.15256700440659188,
+          "strategy": {
+            "pattern": {
+              "affected_table_count": 3,
+              "fanout_bucket": "few",
+              "fk_arity": 1,
+              "join_hops": 2,
+              "query_family": "reverse_join",
+              "relationship_shape": "chain",
+              "row_count_bucket": "tiny"
+            },
+            "strategy_id": "materialize_join"
+          },
+          "query_correct": 15,
+          "query_total": 15,
+          "materialized_path_hits": [
+            {
+              "query_id": "q003",
+              "hits": 10
+            },
+            {
+              "query_id": "q009",
+              "hits": 10
+            }
+          ]
+        }
+      ],
+      "retrieved_evidence": [
+        {
+          "accepted": 0,
+          "confidence_status": "cautioned",
+          "context_similarity": 1.0,
+          "gain_samples": 1,
+          "independent_sources": 1,
+          "mean_gain": -0.015738,
+          "no_gain": 1,
+          "pattern": {
+            "affected_table_count": 3,
+            "fanout_bucket": "few",
+            "fk_arity": 1,
+            "join_hops": 2,
+            "query_family": "reverse_join",
+            "relationship_shape": "chain",
+            "row_count_bucket": "tiny"
+          },
+          "policy_score": -0.087268,
+          "strategy_id": "materialize_join",
+          "trials": 1,
+          "unsafe": 0
+        }
+      ],
+      "candidate_priorities": [
+        {
+          "tool": "materialize_join",
+          "strategy_id": "materialize_join",
+          "pattern": {
+            "affected_table_count": 3,
+            "fanout_bucket": "few",
+            "fk_arity": 1,
+            "join_hops": 2,
+            "query_family": "reverse_join",
+            "relationship_shape": "chain",
+            "row_count_bucket": "tiny"
+          },
+          "priority": 0.3695
+        },
+        {
+          "tool": "optimize_graph",
+          "strategy_id": "extract_property_node",
+          "pattern": {
+            "affected_table_count": 1,
+            "property_kind": "text",
+            "query_family": "filter",
+            "relationship_shape": "attribute",
+            "repeated_value_ratio": 0.0,
+            "row_count_bucket": "tiny"
+          },
+          "priority": 0.3
+        }
+      ],
+      "policy_after": [
+        {
+          "accepted": 0,
+          "confidence_status": "cautioned",
+          "context_similarity": 1.0,
+          "gain_samples": 1,
+          "independent_sources": 1,
+          "mean_gain": -0.001424,
+          "no_gain": 1,
+          "pattern": {
+            "affected_table_count": 3,
+            "fanout_bucket": "few",
+            "fk_arity": 1,
+            "join_hops": 2,
+            "query_family": "reverse_join",
+            "relationship_shape": "chain",
+            "row_count_bucket": "tiny"
+          },
+          "policy_score": -0.083689,
+          "strategy_id": "materialize_join",
+          "trials": 1,
+          "unsafe": 0
+        }
+      ],
+      "selected_query_results": [
+        {
+          "id": "q003",
+          "correct": true,
+          "expected_count": 1,
+          "actual_count": 1,
+          "expected_preview": [
+            [
+              3
+            ]
+          ],
+          "actual_preview": [
+            [
+              3
+            ]
+          ]
+        },
+        {
+          "id": "q005",
+          "correct": true,
+          "expected_count": 1,
+          "actual_count": 1,
+          "expected_preview": [
+            [
+              430.0
+            ]
+          ],
+          "actual_preview": [
+            [
+              430.0
+            ]
+          ]
+        },
+        {
+          "id": "q010",
+          "correct": true,
+          "expected_count": 3,
+          "actual_count": 3,
+          "expected_preview": [
+            [
+              10,
+              1,
+              "East"
+            ],
+            [
+              11,
+              2,
+              "North"
+            ],
+            [
+              12,
+              null,
+              null
+            ]
+          ],
+          "actual_preview": [
+            [
+              10,
+              1,
+              "East"
+            ],
+            [
+              11,
+              2,
+              "North"
+            ],
+            [
+              12,
+              null,
+              null
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "interpretation": {
+    "zh": "两次均为真实离线 rules 执行；完整冻结查询全部通过，但路径候选没有达到成本改善阈值。第二轮检索负反馈，重复同源数据不增加独立来源数。计时和接受决策可能随机器与负载变化；这里没有 LLM 规划、生产 NebulaGraph 基准或自动改写 SKILL.md。",
+    "en": "Both runs are actual offline rules executions. Every frozen query passed, but the path candidate did not meet the cost improvement threshold. Run 2 retrieved negative feedback; repeating the same source did not add an independent source. Timings and acceptance decisions may vary by machine and load. This is not LLM planning, a production NebulaGraph benchmark, or automatic SKILL.md rewriting."
+  }
+}

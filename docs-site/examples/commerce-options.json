@@ -1,0 +1,14 @@
+{
+  "mode": "rules",
+  "domain": "Commerce order fulfillment and regional sales analysis",
+  "domain_category": "commerce",
+  "query_count": 15,
+  "max_iterations": 3,
+  "benchmark_repeats": 5,
+  "expected_query_runs": 100,
+  "min_speedup": 0.05,
+  "max_graph_growth": 3.0,
+  "max_seconds": 60,
+  "experience_enabled": true,
+  "experience_top_k": 8
+}

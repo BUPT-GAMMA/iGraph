@@ -1,0 +1,20 @@
+{
+  "name": "igraph-docs",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/serve.mjs",
+    "check": "node scripts/check.mjs",
+    "preview": "wrangler dev",
+    "deploy": "npm run build && npm run check && wrangler deploy",
+    "deploy:check": "npm run build && npm run check && wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "4.130.0"
+  }
+}
