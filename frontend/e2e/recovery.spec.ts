@@ -1,7 +1,10 @@
 import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('igraph_user_id', 'e2e-user'));
+  await page.addInitScript(() => {
+    localStorage.setItem('igraph-language', 'zh');
+    localStorage.setItem('igraph_user_id', 'e2e-user');
+  });
 });
 
 test('recovery: dropped stream restores exact output once and never resends the question', async ({ page, request }) => {

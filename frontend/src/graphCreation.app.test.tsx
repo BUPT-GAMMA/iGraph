@@ -39,7 +39,7 @@ afterEach(cleanup);
 describe('actual App graph creation destination', () => {
   it('opens the independent workbench from the permanent sidebar entry', async () => {
     render(<App />);
-    const entry = await screen.findByRole('button', { name: 'create your graph' });
+    const entry = await screen.findByRole('button', { name: '创建你的图' });
     fireEvent.click(entry);
 
     await waitFor(() => expect(mocks.listDatasets).toHaveBeenCalledWith(null));
@@ -59,7 +59,7 @@ describe('actual App graph creation destination', () => {
   it('uploads into personal scope and opens the embedded editor immediately', async () => {
     mocks.listDatasets.mockResolvedValue({ datasets: [], default_dataset_id: null });
     const { container } = render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'create your graph' }));
+    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
     await screen.findByText('还没有可构图的数据源');
     const file = new File(['from,to\na,b'], 'orders.csv', { type: 'text/csv' });
     fireEvent.change(container.querySelector('.create-graph-workspace input[type="file"]')!, { target: { files: [file] } });
