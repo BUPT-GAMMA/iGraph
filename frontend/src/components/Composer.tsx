@@ -215,7 +215,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
       <div className="composer-toolbar">
         <input ref={inputRef} type="file" hidden accept=".sql,.txt,.csv,.edgelist,.dat,.json,.xlsx,.pdf,.pt,.npz,.py,.md,.zip,.yaml,.yml,.js,.tsv" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
         <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title="上传图文件" aria-label="上传图文件" disabled={disabled || runtimeControlsDisabled}><Icon name="plus" size={20} /></button>
-        <button className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={onDataset} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? `当前数据集：${activeDatasetName}` : '选择项目数据集'}><Icon name="database" size={12} /><span>{activeDatasetName || '数据集'}</span></button>
+        <button className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={() => onDataset()} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? `当前数据集：${activeDatasetName}` : '选择项目数据集'}><Icon name="database" size={12} /><span>{activeDatasetName || '数据集'}</span></button>
         <div ref={modelPickerRef} className={`composer-model ${modelOpen ? 'is-open' : ''}`}>
           <button type="button" className="composer-model-trigger" onClick={() => setModelOpen(current => !current)} disabled={disabled || loading || runtimeControlsDisabled || modelOptions.length === 0} aria-label="选择模型" aria-expanded={modelOpen}>
             <span className="composer-model-icon"><ModelProviderIcon modelId={model} size={13} /></span>
