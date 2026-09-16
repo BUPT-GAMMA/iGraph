@@ -1,6 +1,7 @@
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import { currentLanguage, tr } from './i18n';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
@@ -30,13 +31,14 @@ export function bindRequestAccount(userId: string) {
 
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
+  if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
   if (!headers.has('X-User-ID')) {
     const storedUserId = getUserId();
     const userId = requestAccount?.userId ?? storedUserId;
     // A storage event can arrive after a click. Never send the old workspace's
     // content with an identity read from another tab; keep the header pinned.
     if (userId !== storedUserId) {
-      throw new ApiError(409, '账户已在其他标签页切换，请等待同步后重试', null, null, null, 'ACCOUNT_CHANGED');
+      throw new ApiError(409, tr('The account changed in another tab. Wait for it to sync, then try again.', '账户已在其他标签页切换，请等待同步后重试'), null, null, null, 'ACCOUNT_CHANGED');
     }
     if (userId) headers.set('X-User-ID', userId);
   }
@@ -76,12 +78,17 @@ export class ApiError extends Error {
       ? detail.map(item => {
           if (!item || typeof item !== 'object') return String(item);
           const location = Array.isArray(item.loc) ? item.loc.filter((part: unknown) => part !== 'body').join('.') : '';
-          return `${location ? `${location}: ` : ''}${String(item.msg || item.message || '参数无效')}`;
-        }).filter(Boolean).join('；')
+          return `${location ? `${location}: ` : ''}${String(item.msg || item.message || tr('Invalid parameter', '参数无效'))}`;
+        }).filter(Boolean).join(tr('; ', '；'))
       : '';
     const message = typeof detail === 'string'
       ? detail
-      : validationMessage || ({ JOB_IDEMPOTENCY_CONFLICT: '数据加载操作编号冲突，请重试；若持续出现，请联系维护者', EDIT_TARGET_CHANGED: '最新一轮已变化，请刷新后重试', EDIT_TARGET_NOT_FINISHED: '请等待本轮结束后再修改', EDIT_UNAVAILABLE: '当前服务暂不支持修改对话' } as Record<string, string>)[body?.code] || String(body?.message || body?.error || `请求失败 (${status})`);
+      : validationMessage || ({
+        JOB_IDEMPOTENCY_CONFLICT: tr('The data-loading operation ID conflicts with another request. Try again, or contact an administrator if this continues.', '数据加载操作编号冲突，请重试；若持续出现，请联系维护者'),
+        EDIT_TARGET_CHANGED: tr('The latest turn changed. Refresh and try again.', '最新一轮已变化，请刷新后重试'),
+        EDIT_TARGET_NOT_FINISHED: tr('Wait for the current turn to finish before editing it.', '请等待本轮结束后再修改'),
+        EDIT_UNAVAILABLE: tr('Conversation editing is not available on this server.', '当前服务暂不支持修改对话'),
+      } as Record<string, string>)[body?.code] || String(body?.message || body?.error || tr(`Request failed (${status})`, `请求失败 (${status})`));
     const error = new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
     if (retryAfter) {
       const seconds = Number(retryAfter);
@@ -220,14 +227,14 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
   const account = requestAccount;
   const identity = account?.userId ?? getUserId();
   const accountChanged = () => identity !== getUserId() || (account !== undefined && account !== requestAccount);
-  const accountError = () => new ApiError(409, '账户已切换，请重新选择文件', null, null, null, 'ACCOUNT_CHANGED');
+  const accountError = () => new ApiError(409, tr('The account changed. Select the file again.', '账户已切换，请重新选择文件'), null, null, null, 'ACCOUNT_CHANGED');
   if (accountChanged()) throw accountError();
   const result = onProgress
     ? await new Promise<UploadResult>((resolve, reject) => {
-      if (signal?.aborted) { reject(new DOMException('上传已取消', 'AbortError')); return; }
+      if (signal?.aborted) { reject(new DOMException(tr('Upload cancelled', '上传已取消'), 'AbortError')); return; }
       const xhr = new XMLHttpRequest();
       let settled = false;
-      const abort = () => { xhr.abort(); finish(new DOMException('上传已取消', 'AbortError')); };
+      const abort = () => { xhr.abort(); finish(new DOMException(tr('Upload cancelled', '上传已取消'), 'AbortError')); };
       function finish(error?: Error, data?: UploadResult) {
         if (settled) return;
         settled = true;
@@ -236,6 +243,7 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
       }
       xhr.open('POST', `${API_BASE}${path}`);
       if (identity) xhr.setRequestHeader('X-User-ID', identity);
+      xhr.setRequestHeader('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
       xhr.upload.onprogress = event => {
         if (accountChanged()) { finish(accountError()); xhr.abort(); return; }
         if (!settled && event.lengthComputable && event.total > 0) onProgress(Math.min(100, Math.round(event.loaded / event.total * 100)));
@@ -244,16 +252,16 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
         if (accountChanged()) { finish(accountError()); return; }
         let data: UploadResult;
         try { data = JSON.parse(xhr.responseText); }
-        catch { finish(new ApiError(xhr.status, '上传响应无效，请重试')); return; }
+        catch { finish(new ApiError(xhr.status, tr('The upload response was invalid. Try again.', '上传响应无效，请重试'))); return; }
         if (xhr.status < 200 || xhr.status >= 300) { finish(ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'))); return; }
-        if (data?.success !== true || typeof data.file_token !== 'string' || !data.file_token) { finish(new ApiError(xhr.status, '上传未成功，请重试')); return; }
+        if (data?.success !== true || typeof data.file_token !== 'string' || !data.file_token) { finish(new ApiError(xhr.status, tr('The upload did not complete. Try again.', '上传未成功，请重试'))); return; }
         finish(undefined, data);
       };
-      xhr.onerror = () => finish(new Error('上传失败，请检查网络后重试'));
-      xhr.ontimeout = () => finish(new Error('上传超时，请重试'));
-      xhr.onabort = () => finish(new DOMException('上传已取消', 'AbortError'));
+      xhr.onerror = () => finish(new Error(tr('Upload failed. Check your connection and try again.', '上传失败，请检查网络后重试')));
+      xhr.ontimeout = () => finish(new Error(tr('Upload timed out. Try again.', '上传超时，请重试')));
+      xhr.onabort = () => finish(new DOMException(tr('Upload cancelled', '上传已取消'), 'AbortError'));
       signal?.addEventListener('abort', abort, { once: true });
-      try { xhr.send(body); } catch (cause) { finish(cause instanceof Error ? cause : new Error('上传失败')); }
+      try { xhr.send(body); } catch (cause) { finish(cause instanceof Error ? cause : new Error(tr('Upload failed', '上传失败'))); }
     })
     : await json<UploadResult>(path, { method: 'POST', body, signal });
   if (accountChanged()) throw accountError();
@@ -299,8 +307,8 @@ export function parseGraphDataResponse(value: unknown): GraphData {
   if (isGraphData(value)) return value;
   const payload = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const message = payload.success === false
-    ? String(payload.error || '图谱可视化失败')
-    : '服务返回的图结构不完整';
+    ? String(payload.error || tr('Graph visualization failed', '图谱可视化失败'))
+    : tr('The server returned an incomplete graph structure', '服务返回的图结构不完整');
   throw new ApiError(502, message, value, null, null, 'INVALID_GRAPH_RESPONSE');
 }
 
@@ -314,11 +322,11 @@ export type StreamHandlers = {
 export class StreamProtocolError extends Error {}
 
 function deliverStreamPayload(payload: unknown, sessionId: string, handlers: StreamHandlers) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new StreamProtocolError('无效的流事件');
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new StreamProtocolError(tr('Invalid stream event', '无效的流事件'));
   const value = payload as Record<string, any>;
   if (value.protocol_version === 2 && Array.isArray(value.events)) {
     if (!value.events.every((event: unknown) => event && typeof event === 'object' && typeof (event as StreamEvent).type === 'string')
-      || (value.event_index != null && (!Number.isSafeInteger(value.event_index) || value.event_index < 0))) throw new StreamProtocolError('无效的 V2 事件批次');
+      || (value.event_index != null && (!Number.isSafeInteger(value.event_index) || value.event_index < 0))) throw new StreamProtocolError(tr('Invalid V2 event batch', '无效的 V2 事件批次'));
     const batch: StreamBatch = {
       protocol_version: 2,
       session_id: String(value.session_id || sessionId),
@@ -330,7 +338,7 @@ function deliverStreamPayload(payload: unknown, sessionId: string, handlers: Str
     else for (const event of batch.events) handlers.onEvent?.(event);
     return;
   }
-  if (value.protocol_version === 2 || typeof value.type !== 'string') throw new StreamProtocolError('无效的流事件');
+  if (value.protocol_version === 2 || typeof value.type !== 'string') throw new StreamProtocolError(tr('Invalid stream event', '无效的流事件'));
   const event = value as StreamEvent;
   if (handlers.onBatch) {
     handlers.onBatch({
@@ -350,17 +358,17 @@ export async function consumeSseResponse(response: Response, sessionId: string, 
     if (response.headers.get('X-iGraph-Feedback-Accepted') === 'false') error.feedbackAccepted = false;
     throw error;
   }
-  if (!response.body) throw new Error('服务器没有返回流式响应');
+  if (!response.body) throw new Error(tr('The server did not return a streaming response', '服务器没有返回流式响应'));
   handlers.onOpen?.();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const parser = createParser({
     onEvent: ({ data }) => {
       let payload: unknown;
-      try { payload = JSON.parse(data); } catch { throw new StreamProtocolError('流事件 JSON 无效'); }
+      try { payload = JSON.parse(data); } catch { throw new StreamProtocolError(tr('Invalid stream-event JSON', '流事件 JSON 无效')); }
       deliverStreamPayload(payload, sessionId, handlers);
     },
-    onError: error => { if (error.type === 'max-buffer-size-exceeded') throw new StreamProtocolError('流事件超过缓冲限制'); },
+    onError: error => { if (error.type === 'max-buffer-size-exceeded') throw new StreamProtocolError(tr('Stream event exceeded the buffer limit', '流事件超过缓冲限制')); },
     maxBufferSize: 16 * 1024 * 1024,
   });
   try {

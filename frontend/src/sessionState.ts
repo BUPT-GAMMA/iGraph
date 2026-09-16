@@ -2,6 +2,7 @@ import { editableLatestTurn } from './latestTurn';
 import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
 import type { RunSnapshot, RunControl } from './api';
+import { tr } from './i18n';
 
 export const PERSONAL_DRAFT_KEY = 'personal';
 export function draftScopeKey(projectId: string | null | undefined) { return projectId || PERSONAL_DRAFT_KEY; }
@@ -273,7 +274,7 @@ export function selectMessages(view?: SessionViewState | null): Message[] {
     // Native cancellation text also occurs in saved history, without an active run.
     const nativeCancellation = /^Run [a-z0-9_-]+ was cancelled\.?$/i.test(message.content.trim());
     if (nativeCancellation || (cancelled && !message.content.trim())) {
-      return { ...message, content: '已停止本轮对话', streaming: false };
+      return { ...message, content: tr('This conversation turn was stopped', '已停止本轮对话'), streaming: false };
     }
     return message;
   });
@@ -330,7 +331,7 @@ function normalizeFeedbackRequest(event: StreamEvent): FeedbackRequest | null {
     call_id: String(request.call_id ?? request.callId ?? request.tool_call_id ?? request.toolCallId ?? ''),
     tool_name: String(request.tool_name ?? request.toolName ?? request.proposed_tool ?? request.name ?? ''),
     proposed_args: proposedArgs && typeof proposedArgs === 'object' && !Array.isArray(proposedArgs) ? proposedArgs : {},
-    description: String(request.description ?? request.message ?? request.user_message ?? '该工具调用需要确认'),
+    description: String(request.description ?? request.message ?? request.user_message ?? tr('This tool call requires confirmation', '该工具调用需要确认')),
   };
 }
 
@@ -359,7 +360,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
   const eventName = String(event.type || event.event || '').toLowerCase();
   if (eventType === 'feedback_submit_error') {
     if (run.feedbackSubmission && event.decision_id && run.feedbackSubmission.decisionId !== event.decision_id) return { view, run };
-    const error = String(event.error || '确认提交失败，正在核对 Run 状态');
+    const error = String(event.error || tr('Confirmation submission failed; checking the run status', '确认提交失败，正在核对 Run 状态'));
     return { view: { ...view, error }, run: { ...run, error } };
   }
   if (eventType === 'feedback_accepted') {
@@ -541,7 +542,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
   }
 
   if (eventType === 'error') {
-    const error = String(event.error || '分析失败');
+    const error = String(event.error || tr('Analysis failed', '分析失败'));
     const cancelled = Boolean(event.cancelled || eventName.includes('cancel') || run.status === 'cancelled');
     const messageId = run.assistantMessageId || '';
     view = {

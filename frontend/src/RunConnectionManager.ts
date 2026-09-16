@@ -1,3 +1,5 @@
+import { tr } from './i18n';
+
 export type RunConnection = {
   sessionId: string;
   runId?: string;
@@ -133,14 +135,14 @@ export class RunConnectionManager {
   }
 
   query<T>(sessionId: string, generation: string, request: (signal: AbortSignal) => Promise<T>, timeoutMs = 15000, cancelling = false): Promise<T> {
-    if (this.isCancelling(sessionId) && !cancelling) return Promise.reject(new DOMException('取消核实优先', 'AbortError'));
+    if (this.isCancelling(sessionId) && !cancelling) return Promise.reject(new DOMException(tr('Cancellation verification takes priority', '取消核实优先'), 'AbortError'));
     const prior = this.controls.get(sessionId);
     if (prior?.generation === generation) return prior.promise as Promise<T>;
     this.cancelControl(sessionId);
     const controller = new AbortController();
     const signal = controller.signal;
     const deadline = this.clockTask(sessionId, 'deadline', { at: Date.now() + timeoutMs,
-      callback: () => controller.abort(new DOMException('恢复查询超时', 'TimeoutError')) });
+      callback: () => controller.abort(new DOMException(tr('Recovery request timed out', '恢复查询超时'), 'TimeoutError')) });
     const promise = Promise.race([
       Promise.resolve().then(() => { if (signal.aborted) throw signal.reason; return request(signal); }),
       new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })),

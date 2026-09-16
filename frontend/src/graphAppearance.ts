@@ -1,5 +1,7 @@
 import * as d3 from 'd3';
 import type { GraphData, Highlight } from './types';
+import { currentLanguage, tr } from './i18n';
+import type { Translate } from './i18n';
 const COMMUNITY_COLORS = ['#3b82f6', '#f97316', '#10b981', '#a855f7', '#eab308', '#ef4444', '#06b6d4', '#ec4899'];
 export const DEFAULT_HIGHLIGHT_COLORS: Record<string, string> = { node: 'var(--accent, #2563eb)', path: '#d97706', subgraph: '#7c3aed' };
 
@@ -63,12 +65,13 @@ function compactLabel(value: unknown, maxLength: number) {
   return `${label.slice(0, headLength)}…${label.slice(-(visibleLength - headLength))}`;
 }
 
-export function schemaEdgeLabel(edge: Record<string, unknown>, compact = false) {
+export function schemaEdgeLabel(edge: Record<string, unknown>, compact = false, translate: Translate = tr) {
   const properties = edge.properties && typeof edge.properties === 'object' && !Array.isArray(edge.properties)
     ? edge.properties as Record<string, unknown>
     : {};
-  const type = String(edge.type ?? edge.label ?? edge.relationship_type ?? '关系');
+  const type = String(edge.type ?? edge.label ?? edge.relationship_type ?? translate('Relationship', '关系'));
   const count = Number(edge.relationship_count ?? properties.relationship_count ?? edge.count ?? properties.count);
   const visibleType = compact ? compactLabel(type, /^fk_[0-9a-f]{20,}$/i.test(type) ? 14 : 18) : type;
-  return Number.isFinite(count) ? `${visibleType} · ${count.toLocaleString()}` : visibleType;
+  const locale = currentLanguage() === 'zh' ? 'zh-CN' : 'en-US';
+  return Number.isFinite(count) ? `${visibleType} · ${count.toLocaleString(locale)}` : visibleType;
 }

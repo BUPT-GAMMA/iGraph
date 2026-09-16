@@ -7,6 +7,7 @@ import { FileTypeIcon } from './FileTypeIcon';
 import { BrandLogo, Icon } from './Icon';
 import { ProcessTimeline } from './ProcessTimeline';
 import { fetchArtifact } from './WorkspaceFiles';
+import { useI18n, type Translate } from '../i18n';
 
 function formatBytes(size?: number) {
   if (!Number.isFinite(size) || (size as number) < 0) return '';
@@ -18,6 +19,7 @@ function formatBytes(size?: number) {
 
 /** Deliverables the agent published this turn, downloadable inline. */
 function ArtifactList({ artifacts, sessionId }: { artifacts: ArtifactRef[]; sessionId?: string }) {
+  const { t } = useI18n();
   const [downloading, setDownloading] = useState('');
   const [error, setError] = useState('');
   async function download(artifact: ArtifactRef) {
@@ -30,7 +32,7 @@ function ArtifactList({ artifacts, sessionId }: { artifacts: ArtifactRef[]; sess
       link.href = url; link.download = artifact.filename; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '文件下载失败');
+      setError(cause instanceof Error ? cause.message : t('File download failed', '文件下载失败'));
     } finally { setDownloading(''); }
   }
   return <div className="message-artifacts">
@@ -38,34 +40,34 @@ function ArtifactList({ artifacts, sessionId }: { artifacts: ArtifactRef[]; sess
       const size = formatBytes(artifact.size);
       return <button type="button" className="artifact-chip" key={artifact.path}
         disabled={!sessionId || Boolean(downloading)}
-        title={`下载 ${artifact.filename}`} aria-label={`下载 ${artifact.filename}`}
+        title={t(`Download ${artifact.filename}`, `下载 ${artifact.filename}`)} aria-label={t(`Download ${artifact.filename}`, `下载 ${artifact.filename}`)}
         onClick={() => void download(artifact)}>
         <FileTypeIcon filename={artifact.filename} />
         <span className="artifact-name">{artifact.filename}</span>
         {size ? <em>{size}</em> : null}
-        <span className="artifact-action">{downloading === artifact.path ? '下载中…' : '下载'}</span>
+        <span className="artifact-action">{downloading === artifact.path ? t('Downloading…', '下载中…') : t('Download', '下载')}</span>
       </button>;
     })}
     {error ? <p role="alert" className="artifact-error">{error}</p> : null}
   </div>;
 }
 
-function planCard(plan?: Plan | null) {
+function planCard(plan: Plan | null | undefined, t: Translate) {
   if (!plan?.steps?.length) return null;
   const done = plan.steps.filter(step => step.status === 'done' || step.status === 'completed').length;
-  return <div className="plan-card"><div className="card-heading"><strong>分析计划</strong><span>{done} / {plan.steps.length} 已完成</span></div>{plan.steps.map((step, index) => <div className="plan-step" key={`${step.step_id}-${index}`}><span className={step.status === 'running' ? 'step-dot running' : 'step-dot'}>{step.status === 'done' || step.status === 'completed' ? <Icon name="check" size={12} /> : index + 1}</span><span>{step.goal || step.result_summary || '分析步骤'}</span></div>)}</div>;
+  return <div className="plan-card"><div className="card-heading"><strong>{t('Analysis plan', '分析计划')}</strong><span>{t(`${done} / ${plan.steps.length} complete`, `${done} / ${plan.steps.length} 已完成`)}</span></div>{plan.steps.map((step, index) => <div className="plan-step" key={`${step.step_id}-${index}`}><span className={step.status === 'running' ? 'step-dot running' : 'step-dot'}>{step.status === 'done' || step.status === 'completed' ? <Icon name="check" size={12} /> : index + 1}</span><span>{step.goal || step.result_summary || t('Analysis step', '分析步骤')}</span></div>)}</div>;
 }
 
-function toolList(tools?: ToolCall[]) {
+function toolList(tools: ToolCall[] | undefined, t: Translate) {
   if (!tools?.length) return null;
   return <div className="tool-list">{tools.map((tool, index) => {
     const progress = tool.progress || {};
     const epoch = Number(progress.epoch);
     const epochs = Number(progress.epochs);
     const hasEpoch = Number.isFinite(epoch) && Number.isFinite(epochs) && epochs > 0;
-    const progressLabel = hasEpoch ? `轮次 ${epoch}/${epochs}` : progress.message;
-    const statusLabel = tool.done ? '已完成' : progressLabel ? String(progressLabel) : '运行中';
-    return <div className={`tool-row ${tool.done ? 'done' : 'running'}`} key={`${tool.tool}-${index}`} role="status" aria-label={`${tool.tool || 'graph_tool'}：${statusLabel}`} title={`${tool.tool || 'graph_tool'} · ${statusLabel}`}>
+    const progressLabel = hasEpoch ? t(`Epoch ${epoch}/${epochs}`, `轮次 ${epoch}/${epochs}`) : progress.message;
+    const statusLabel = tool.done ? t('Complete', '已完成') : progressLabel ? String(progressLabel) : t('Running', '运行中');
+    return <div className={`tool-row ${tool.done ? 'done' : 'running'}`} key={`${tool.tool}-${index}`} role="status" aria-label={`${tool.tool || 'graph_tool'}${t(': ', '：')}${statusLabel}`} title={`${tool.tool || 'graph_tool'} · ${statusLabel}`}>
       <span className={tool.done ? 'tool-state done' : 'tool-state'}>{tool.done ? <Icon name="check" size={12} /> : <span className="loader" />}</span>
       <span>{tool.tool || 'graph_tool'}</span>
       {progressLabel ? <span className="tool-progress-label">{String(progressLabel)}</span> : null}
@@ -176,6 +178,7 @@ function MarkdownContent({ content }: { content: string }) {
 function renderContent(content: string, role: Message['role']) { return role === 'assistant' ? <MarkdownContent content={content} /> : <span className="plain-content">{content}</span>; }
 
 function MessageCopyAction({ content, onEdit }: { content: string; onEdit?: () => void }) {
+  const { t } = useI18n();
   const [status, setStatus] = useState<'idle' | 'copied' | 'error'>('idle');
   const requestRef = useRef(0);
   const resetTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -204,16 +207,17 @@ function MessageCopyAction({ content, onEdit }: { content: string; onEdit?: () =
 
   return <div className={`message-actions${status === 'error' ? ' has-error' : ''}`}>
     <button type="button" className={`message-action${status === 'copied' ? ' is-copied' : ''}`}
-      aria-label={status === 'copied' ? '已复制' : '复制'} title={status === 'copied' ? '已复制' : '复制'}
+      aria-label={status === 'copied' ? t('Copied', '已复制') : t('Copy', '复制')} title={status === 'copied' ? t('Copied', '已复制') : t('Copy', '复制')}
       onClick={() => void copy()}>
       <Icon name={status === 'copied' ? 'check' : 'copy'} size={16} />
     </button>
-    {onEdit ? <button type="button" className="message-action" aria-label="修改提示词" title="修改提示词" onClick={onEdit}><Icon name="edit" size={16} /></button> : null}
-    {status === 'error' ? <span className="message-copy-error" role="alert">复制失败，请重试或手动选择文本</span> : null}
+    {onEdit ? <button type="button" className="message-action" aria-label={t('Edit prompt', '修改提示词')} title={t('Edit prompt', '修改提示词')} onClick={onEdit}><Icon name="edit" size={16} /></button> : null}
+    {status === 'error' ? <span className="message-copy-error" role="alert">{t('Copy failed. Try again or select the text manually.', '复制失败，请重试或手动选择文本')}</span> : null}
   </div>;
 }
 
 function PromptEditor({ message, onCancel, onSubmit }: { message: Message; onCancel: () => void; onSubmit: (content: string) => void }) {
+  const { t } = useI18n();
   const [value, setValue] = useState(message.content);
   const textarea = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
@@ -242,12 +246,12 @@ function PromptEditor({ message, onCancel, onSubmit }: { message: Message; onCan
   }, []);
   return <form className="prompt-editor" onSubmit={event => { event.preventDefault(); if (value.trim()) onSubmit(value.trim()); }}>
     {message.attachments?.length ? <div className="message-attachments">{message.attachments.map(file => <span key={file.file_token}><FileTypeIcon filename={file.filename} /> {file.filename}</span>)}</div> : null}
-    <textarea ref={textarea} aria-label="修改本轮提示词" value={value} onChange={event => setValue(event.target.value)} onKeyDown={event => {
+    <textarea ref={textarea} aria-label={t('Edit this prompt', '修改本轮提示词')} value={value} onChange={event => setValue(event.target.value)} onKeyDown={event => {
       if (event.nativeEvent.isComposing || event.keyCode === 229) return;
       if (event.key === 'Escape') { event.preventDefault(); onCancel(); }
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && value.trim()) { event.preventDefault(); onSubmit(value.trim()); }
     }} />
-    <div className="prompt-editor-actions"><button type="button" onClick={onCancel}>取消</button><button type="submit" disabled={!value.trim()} aria-label="发送修改后的提示词">发送</button></div>
+    <div className="prompt-editor-actions"><button type="button" onClick={onCancel}>{t('Cancel', '取消')}</button><button type="submit" disabled={!value.trim()} aria-label={t('Send edited prompt', '发送修改后的提示词')}>{t('Send', '发送')}</button></div>
   </form>;
 }
 
@@ -271,6 +275,7 @@ function isNearBottom(element: HTMLDivElement) {
 }
 
 export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
+  const { t } = useI18n();
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const latestTurn = editableLatestTurn(messages);
   const editableKey = onEditLatest && latestTurn && !inputProps.loading && !inputProps.uploading && !inputProps.disabled && !inputProps.sendBlocked
@@ -327,7 +332,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
 
   return <main className="chat-pane">
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>开始在 <span className="empty-project-name">{emptyProjectName}</span> 中图分析</> : '开始图分析'}</h1><p>粘贴图的边数据、上传文件，或直接用自然语言提问</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange('请检查当前图的结构和基本属性')}>检查图结构</button><button onClick={() => inputProps.onChange('请计算节点的度数并找出最大度节点')}>计算图节点度数</button><button onClick={() => inputProps.onChange('请帮我进行社区检测')}>进行社区检测</button></div> : null}</div> : messages.map((message, index) => {
+      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1><p>{t('Paste graph edges, upload a file, or ask in natural language', '粘贴图的边数据、上传文件，或直接用自然语言提问')}</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></div> : null}</div> : messages.map((message, index) => {
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
         const versions = isAssistant ? answerVersions(message, messages) : [message];
@@ -341,15 +346,15 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
         // Attachment chips sit above the user bubble so they read as separate
         // files rather than as part of the sent text.
         const attachmentChips = displayed.attachments?.length
-          ? <div className="message-attachments">{displayed.attachments.map(file => <span key={file.file_token || file.filename}><FileTypeIcon filename={file.filename} /> {file.filename || '附件'}</span>)}</div>
+          ? <div className="message-attachments">{displayed.attachments.map(file => <span key={file.file_token || file.filename}><FileTypeIcon filename={file.filename} /> {file.filename || t('Attachment', '附件')}</span>)}</div>
           : null;
-        const contents = <div className="message-content">{renderContent(displayed.content || (message.streaming ? '正在分析…' : ''), message.role)}</div>;
+        const contents = <div className="message-content">{renderContent(displayed.content || (message.streaming ? t('Analyzing…', '正在分析…') : ''), message.role)}</div>;
         return <div className={`message-row ${message.role}${isEditing ? ' is-editing' : ''}`} key={versionKey}>
           {isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}
           <div className="message-body">
-            <div className="message-label">{isAssistant ? (message.regenerate_of ? 'iGraph 助手 · 重新生成' : 'iGraph 助手') : '你'}</div>
-            {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools)) : null}
-            {isAssistant ? planCard(visiblePlan) : null}
+            <div className="message-label">{isAssistant ? (message.regenerate_of ? t('iGraph Assistant · Regenerated', 'iGraph 助手 · 重新生成') : t('iGraph Assistant', 'iGraph 助手')) : t('You', '你')}</div>
+            {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools, t)) : null}
+            {isAssistant ? planCard(visiblePlan, t) : null}
             {!isAssistant && !isEditing ? attachmentChips : null}
             {isEditing ? <PromptEditor message={message} onCancel={() => setEditingKey(null)} onSubmit={content => {
               if (latestTurn && onEditLatest) {
@@ -359,21 +364,21 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
               setEditingKey(null);
             }} /> : isAssistant ? contents : <div className="message-bubble">{contents}</div>}
             {isAssistant && displayed.artifacts?.length ? <ArtifactList artifacts={displayed.artifacts} sessionId={artifactSessionId} /> : null}
-            {displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> 查看图结果 <span>→</span></button> : null}
-            {versions.length > 1 && !message.streaming && !isLiveAssistant ? <nav className="answer-versions" aria-label="回答版本">
-              <button type="button" aria-label="上一个回答版本" disabled={versionIndex <= 0} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex - 1].run_id! }))}>‹</button>
-              <span>版本 {versionIndex + 1} / {versions.length}</span>
-              <button type="button" aria-label="下一个回答版本" disabled={versionIndex >= versions.length - 1} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex + 1].run_id! }))}>›</button>
+            {displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> {t('View graph result', '查看图结果')} <span>→</span></button> : null}
+            {versions.length > 1 && !message.streaming && !isLiveAssistant ? <nav className="answer-versions" aria-label={t('Answer versions', '回答版本')}>
+              <button type="button" aria-label={t('Previous answer version', '上一个回答版本')} disabled={versionIndex <= 0} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex - 1].run_id! }))}>‹</button>
+              <span>{t(`Version ${versionIndex + 1} / ${versions.length}`, `版本 ${versionIndex + 1} / ${versions.length}`)}</span>
+              <button type="button" aria-label={t('Next answer version', '下一个回答版本')} disabled={versionIndex >= versions.length - 1} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex + 1].run_id! }))}>›</button>
             </nav> : null}
             {displayed.content && !isEditing ? <MessageCopyAction content={displayed.content}
               onEdit={editableKey && message === latestTurn?.user ? () => setEditingKey(editableKey) : undefined} /> : null}
           </div>
         </div>;
       })}
-      {inputProps.loading && liveAssistantIndex < 0 && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{toolList(runTools)}{planCard(plan)}</div> : null}
-      {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> 当前图已加载 · 在右侧工作台查看</button> : null}
+      {inputProps.loading && liveAssistantIndex < 0 && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{toolList(runTools, t)}{planCard(plan, t)}</div> : null}
+      {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> {t('Current graph loaded · View it in the workspace on the right', '当前图已加载 · 在右侧工作台查看')}</button> : null}
     </div>
-    {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label="滚动到最新消息" title="滚动到最新消息"><Icon name="chevron" size={18} /></button></div> : null}
+    {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label={t('Jump to latest message', '滚动到最新消息')} title={t('Jump to latest message', '滚动到最新消息')}><Icon name="chevron" size={18} /></button></div> : null}
     <ConversationInputArea {...inputProps} onSend={() => {
       // Follow an explicit send, not message IDs replaced by persisted snapshots.
       scrollToLatest('auto');

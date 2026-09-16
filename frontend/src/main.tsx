@@ -23,6 +23,7 @@ import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { parseWorkspaceRoute, writeWorkspaceRoute } from './navigation';
 import { migrateGeneralDraft, readRecoveredDrafts, recoveredDraftsKey } from './draftMigration';
+import { I18nProvider, tr, useI18n } from './i18n';
 import './styles.css';
 
 type GraphTab = 'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts';
@@ -67,14 +68,15 @@ function storedWidth(key: string, fallback: number, minimum: number, maximum: nu
 }
 
 function ColumnDivider({ side, value, minimum, maximum, onPointerDown, onNudge, onReset }: { side: ResizeSide; value: number; minimum: number; maximum: number; onPointerDown: (side: ResizeSide, event: ReactPointerEvent<HTMLDivElement>) => void; onNudge: (side: ResizeSide, delta: number) => void; onReset: (side: ResizeSide) => void }) {
-  const label = side === 'sidebar' ? '调整左侧栏宽度' : '调整图工作台宽度';
+  const { t } = useI18n();
+  const label = side === 'sidebar' ? t('Resize sidebar', '调整左侧栏宽度') : t('Resize graph workspace', '调整图工作台宽度');
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
     const direction = event.key === 'ArrowRight' ? 1 : -1;
     onNudge(side, side === 'sidebar' ? direction * 16 : direction * -16);
   }
-  return <div className={`column-divider column-divider-${side}`} role="separator" aria-label={label} aria-orientation="vertical" aria-valuemin={minimum} aria-valuemax={maximum} aria-valuenow={Math.round(value)} tabIndex={0} title={`${label}，双击恢复默认宽度`} onPointerDown={event => onPointerDown(side, event)} onKeyDown={onKeyDown} onDoubleClick={() => onReset(side)}><span /></div>;
+  return <div className={`column-divider column-divider-${side}`} role="separator" aria-label={label} aria-orientation="vertical" aria-valuemin={minimum} aria-valuemax={maximum} aria-valuenow={Math.round(value)} tabIndex={0} title={t(`${label}; double-click to restore the default width`, `${label}，双击恢复默认宽度`)} onPointerDown={event => onPointerDown(side, event)} onKeyDown={onKeyDown} onDoubleClick={() => onReset(side)}><span /></div>;
 }
 
 function normalizeMessages(input: unknown): Message[] {
@@ -146,9 +148,9 @@ function serializableDraft(draft: NewConversationDraft): NewConversationDraft {
       filename: attachment.filename,
       fileToken: attachment.fileToken,
       status: attachment.fileToken ? 'uploaded' : 'needs_reselect',
-      error: attachment.fileToken ? undefined : '刷新后需要重新选择文件',
+      error: attachment.fileToken ? undefined : tr('Select the file again after refreshing', '刷新后需要重新选择文件'),
     })),
-    error: draft.phase === 'editing' || draft.phase === 'failed' ? draft.error : '创建流程被页面刷新中断，请重试',
+    error: draft.phase === 'editing' || draft.phase === 'failed' ? draft.error : tr('The creation flow was interrupted by a refresh. Try again.', '创建流程被页面刷新中断，请重试'),
   };
 }
 
@@ -170,6 +172,7 @@ function readPendingFirstTurn(userId: string, sessionId: string): PendingFirstTu
 }
 
 function App() {
+  const { t } = useI18n();
   const [userId, setUser] = useState(getUserId() || (demoMode ? 'demo' : ''));
   const [loginValue, setLoginValue] = useState(getUserId());
   const [loginError, setLoginError] = useState('');
@@ -291,18 +294,18 @@ function App() {
   const bottomInteraction = selectBottomInteraction(activeView);
   const sendBlockedReason = activeDraft && activeDraft.phase !== 'editing' && activeDraft.phase !== 'failed'
     ? activeDraft.phase === 'creating_session'
-      ? '正在创建会话，请稍候'
+      ? t('Creating conversation…', '正在创建会话，请稍候')
       : activeDraft.phase === 'uploading'
-        ? '正在上传附件，请稍候'
-        : '正在启动任务，请稍候'
+        ? t('Uploading attachments…', '正在上传附件，请稍候')
+        : t('Starting task…', '正在启动任务，请稍候')
     : runGate.reason === 'preparing'
-      ? '正在准备会话或附件，请稍候'
+      ? t('Preparing the conversation or attachments…', '正在准备会话或附件，请稍候')
       : runGate.reason === 'awaiting_feedback'
-    ? '请先批准或拒绝当前待确认操作；草稿和附件会继续保留'
+    ? t('Approve or reject the pending operation first; your draft and attachments will be kept', '请先批准或拒绝当前待确认操作；草稿和附件会继续保留')
     : runGate.reason === 'submitting_feedback'
-      ? '确认正在提交并核对状态；草稿和附件会继续保留'
+      ? t('Submitting the confirmation and checking status; your draft and attachments will be kept', '确认正在提交并核对状态；草稿和附件会继续保留')
       : runGate.reason
-        ? '当前会话已有活动任务，完成后可发送下一条消息'
+        ? t('This conversation has an active task. You can send another message when it finishes.', '当前会话已有活动任务，完成后可发送下一条消息')
         : undefined;
   const loading = Boolean(activeDraft && !['editing', 'failed'].includes(activeDraft.phase))
     || Boolean(activeView?.activeRun && ['preparing', 'starting', 'streaming', 'reconnecting'].includes(activeView.activeRun.status));
@@ -429,7 +432,7 @@ function App() {
       const response = await listProjectDatasets(null);
       if (identityRef.current === identity) updateProjectDatasets(null, response.datasets || []);
     } catch (cause: any) {
-      if (identityRef.current === identity) setWorkspaceError(cause.message || '个人构图数据源加载失败');
+      if (identityRef.current === identity) setWorkspaceError(cause.message || tr('Could not load personal graph-construction sources', '个人构图数据源加载失败'));
     } finally {
       if (identityRef.current === identity) setBusy(false);
     }
@@ -489,7 +492,7 @@ function App() {
       if (unsupported) {
         dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: unsupported });
       } else {
-        const message = cause.message || '图谱加载失败';
+        const message = cause.message || tr('Could not load the graph', '图谱加载失败');
         const currentGraph = conversationRef.current.viewsBySessionId[sessionId]?.graph;
         retainedCurrentGraph = Boolean(preserveCurrent && currentGraph?.status === 'ready');
         if (!retainedCurrentGraph) {
@@ -534,7 +537,7 @@ function App() {
     const listedSession = source.find(item => item.session_id === id);
     const restoreComposer = !conversationRef.current.viewsBySessionId[id];
     if (!listedSession && !allowUnlisted) {
-      showWorkspaceHome(true, true, '该会话不存在或已被删除');
+      showWorkspaceHome(true, true, t('This conversation does not exist or was deleted', '该会话不存在或已被删除'));
       return;
     }
     if (id === conversationRef.current.activeSessionId && !createGraphOpen && listedSession) return;
@@ -610,7 +613,7 @@ function App() {
             pendingAttachments: pendingFirstTurn.pendingAttachments.map(attachment => ({
               ...attachment,
               status: 'needs_reselect',
-              error: '刷新后需要重新选择文件',
+              error: tr('Select the file again after refreshing', '刷新后需要重新选择文件'),
             })),
           },
         });
@@ -648,9 +651,9 @@ function App() {
         dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
         cancellationRef.current?.forget(id);
         setSessions(current => current.filter(item => item.session_id !== id));
-        if (conversationRef.current.activeSessionId === id) showWorkspaceHome(true, true, '该会话不存在或已被删除');
+        if (conversationRef.current.activeSessionId === id) showWorkspaceHome(true, true, tr('This conversation does not exist or was deleted', '该会话不存在或已被删除'));
       } else if (!requestWasAborted(cause) && hydrationVersionsRef.current.get(id) === requestVersion) {
-        dispatchConversation({ type: 'HYDRATE_FAILED', sessionId: id, requestVersion, error: cause.message || '会话切换失败' });
+        dispatchConversation({ type: 'HYDRATE_FAILED', sessionId: id, requestVersion, error: cause.message || tr('Could not switch conversations', '会话切换失败') });
       }
     } finally {
       controller.signal.removeEventListener('abort', cancelQuery);
@@ -665,7 +668,7 @@ function App() {
     if (busy || stale()) return;
     const project = source.find(item => item.project_id === id);
     if (!project) {
-      showWorkspaceHome(true, true, '该项目不存在或已被删除');
+      showWorkspaceHome(true, true, tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
       return;
     }
     setCreateGraphOpen(false);
@@ -685,8 +688,8 @@ function App() {
       if (stale()) return;
       if (cause instanceof ApiError && cause.status === 404) {
         setProjects(current => current.filter(item => item.project_id !== id));
-        showWorkspaceHome(true, true, '该项目不存在或已被删除');
-      } else setWorkspaceError(cause.message || '项目加载失败');
+        showWorkspaceHome(true, true, tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
+      } else setWorkspaceError(cause.message || tr('Could not load the project', '项目加载失败'));
     }
     finally { if (!accountIsStale(identity, accountEpoch)) setBusy(false); }
   };
@@ -713,7 +716,7 @@ function App() {
       await showCreateGraphWorkspace(false);
     } else if (route.kind === 'new-session') {
       const project = nextProjects.find(item => item.project_id === route.projectId);
-      if (route.projectId && !project) showWorkspaceHome(true, true, '该项目不存在或已被删除');
+      if (route.projectId && !project) showWorkspaceHome(true, true, tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
       else {
         const storedDraft = readStoredDraft(identity, route.projectId);
         const materialized = storedDraft && nextSessions.find(session => session.session_id === storedDraft.draftId);
@@ -725,7 +728,7 @@ function App() {
       }
     } else if (route.kind === 'project') {
       if (nextProjects.some(project => project.project_id === route.id)) await openProjectDraft(route.id, nextProjects);
-      else showWorkspaceHome(true, true, '该项目不存在或已被删除');
+      else showWorkspaceHome(true, true, t('This project does not exist or was deleted', '该项目不存在或已被删除'));
     } else if (route.kind === 'session') {
       await selectSession(route.id, nextSessions, false, true);
     } else showWorkspaceHome(false);
@@ -761,12 +764,12 @@ function App() {
     const stale = () => disposed || identityRef.current !== identity;
     validateUser(identity).then(response => {
       if (stale()) return;
-      if (response.valid === false) throw new Error('用户 ID 无效');
+      if (response.valid === false) throw new Error(tr('Invalid user ID', '用户 ID 无效'));
       const selectedModel = response.default_model || DEFAULT_MODEL;
       setDefaultModel(selectedModel);
       setAvailableModels(normalizedModels(response.available_models, selectedModel));
       return refresh(identity, stale);
-    }).catch((cause: any) => { if (!stale()) setWorkspaceError(cause.message || '无法加载会话'); });
+    }).catch((cause: any) => { if (!stale()) setWorkspaceError(cause.message || tr('Could not load conversations', '无法加载会话')); });
     return () => { disposed = true; };
   }, [userId]);
   useEffect(() => {
@@ -783,7 +786,7 @@ function App() {
         newTask(route.projectId, projects, false);
       } else if (route.kind === 'project' && projects.some(project => project.project_id === route.id)) {
         void openProjectDraft(route.id, projects);
-      } else showWorkspaceHome(true, true, '该项目不存在或已被删除');
+      } else showWorkspaceHome(true, true, t('This project does not exist or was deleted', '该项目不存在或已被删除'));
     }
     window.addEventListener('popstate', handleHistoryNavigation);
     return () => window.removeEventListener('popstate', handleHistoryNavigation);
@@ -1013,7 +1016,7 @@ function App() {
   }
 
   async function login() {
-    const value = loginValue.trim(); if (!value) return setLoginError('请输入用户 ID');
+    const value = loginValue.trim(); if (!value) return setLoginError(tr('Enter a user ID', '请输入用户 ID'));
     const accountEpoch = accountEpochRef.current;
     const storedUserId = getUserId();
     const stale = () => accountEpochRef.current !== accountEpoch || getUserId() !== storedUserId;
@@ -1021,7 +1024,7 @@ function App() {
     try {
       const response = await validateUser(value);
       if (stale()) return;
-      if (response.valid === false) throw new Error('用户 ID 无效');
+      if (response.valid === false) throw new Error(tr('Invalid user ID', '用户 ID 无效'));
       const selectedModel = response.default_model || DEFAULT_MODEL;
       setUserId(value);
       resetAccount(value);
@@ -1030,7 +1033,7 @@ function App() {
       setLoginValue(value);
       setLoginError('');
     } catch (cause: any) {
-      if (!stale()) setLoginError(cause.message || '登录失败');
+      if (!stale()) setLoginError(cause.message || tr('Sign-in failed', '登录失败'));
     } finally {
       if (accountEpochRef.current === accountEpoch) setLoginPending(false);
     }
@@ -1039,7 +1042,7 @@ function App() {
     const projectId = targetProjectId;
     const project = sourceProjects.find(item => item.project_id === projectId);
     if (projectId && !project) {
-      setWorkspaceError('该项目不存在或已被删除');
+      setWorkspaceError(tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
       return;
     }
     const existing = conversationRef.current.draftsByScope[draftScopeKey(projectId)] || readStoredDraft(userId, projectId);
@@ -1069,7 +1072,7 @@ function App() {
     const accountEpoch = accountEpochRef.current;
     const requestKey = `${accountEpoch}:${identity}:${id}`;
     if (deletionRequestsRef.current.has(requestKey)) return;
-    if (!window.confirm('确认删除这个分析任务吗？')) return;
+    if (!window.confirm(tr('Delete this analysis task?', '确认删除这个分析任务吗？'))) return;
     deletionRequestsRef.current.add(requestKey);
     const deleted = sessions.find(item => item.session_id === id);
     const preparation = preparationControllersRef.current.get(id);
@@ -1093,8 +1096,8 @@ function App() {
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
       const run = conversationRef.current.viewsBySessionId[id]?.activeRun;
-      if (preparation && run?.status === 'preparing') dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId: id, generation: run.generation, error: '删除任务失败，请重试' });
-      setWorkspaceError(cause.message || '删除任务失败');
+      if (preparation && run?.status === 'preparing') dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId: id, generation: run.generation, error: tr('Could not delete the task. Try again.', '删除任务失败，请重试') });
+      setWorkspaceError(cause.message || tr('Could not delete the task', '删除任务失败'));
     } finally {
       deletionRequestsRef.current.delete(requestKey);
     }
@@ -1165,7 +1168,7 @@ function App() {
         localId: attachment.localId,
         filename: attachment.filename,
         status: attachment.fileToken ? 'uploaded' : 'needs_reselect',
-        error: attachment.fileToken ? undefined : '刷新后需要重新选择文件',
+        error: attachment.fileToken ? undefined : tr('Select the file again after refreshing', '刷新后需要重新选择文件'),
       })),
       model: modelValue,
       projectId,
@@ -1203,7 +1206,7 @@ function App() {
         continue;
       }
       if (!pending.file) {
-        const errorMessage = `附件「${pending.filename}」需要重新选择后才能发送`;
+        const errorMessage = tr(`Select attachment “${pending.filename}” again before sending`, `附件「${pending.filename}」需要重新选择后才能发送`);
         dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'needs_reselect', error: errorMessage });
         dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: errorMessage });
         preparationControllersRef.current.delete(sessionId);
@@ -1227,7 +1230,7 @@ function App() {
         persistPendingFirstTurn(sessionId, pendingFirstTurnSnapshot(message, attachments, pendingAttachments, modelValue, projectId, activeDatasetId));
       } catch (cause: any) {
         if (stale() || conversationRef.current.viewsBySessionId[sessionId]?.activeRun?.generation !== generation || requestWasAborted(cause)) return;
-        const errorMessage = cause.message || `附件「${pending.filename}」上传失败`;
+        const errorMessage = cause.message || tr(`Could not upload attachment “${pending.filename}”`, `附件「${pending.filename}」上传失败`);
         dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: pending.localId, status: 'failed', error: errorMessage });
         dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: errorMessage });
         preparationControllersRef.current.delete(sessionId);
@@ -1250,7 +1253,7 @@ function App() {
       onDetached: () => dispatchConversation({ type: 'SET_RECEPTION', sessionId, generation, reception: 'capacity_suspended', synchronized: false }),
     });
     if (!connection) {
-      dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: '当前会话仍有连接正在收尾，请稍后重试' });
+      dispatchConversation({ type: 'PREPARE_RUN_FAILED', sessionId, generation, error: tr('A connection for this conversation is still closing. Try again shortly.', '当前会话仍有连接正在收尾，请稍后重试') });
       preparationControllersRef.current.delete(sessionId);
       return;
     }
@@ -1299,7 +1302,7 @@ function App() {
         session_id: response.session_id,
         project_id: resolvedProjectId,
         active_dataset_id: response.active_dataset_id,
-        title: response.title || message.slice(0, 36) || '新对话',
+        title: response.title || message.slice(0, 36) || tr('New conversation', '新对话'),
         preview: message,
         last_message: message,
         model: selectedModel,
@@ -1365,7 +1368,7 @@ function App() {
         type: 'PATCH_DRAFT',
         projectId,
         draftId: draft.draftId,
-        patch: { phase: 'failed', activeDatasetId, error: cause.message || '创建会话失败，请重试' },
+        patch: { phase: 'failed', activeDatasetId, error: cause.message || tr('Could not create the conversation. Try again.', '创建会话失败，请重试') },
       });
     } finally {
       if (draftCreationControllersRef.current.get(draftScopeKey(projectId)) === creationController) draftCreationControllersRef.current.delete(draftScopeKey(projectId));
@@ -1382,10 +1385,10 @@ function App() {
     const gate = selectRunGate(targetView);
     if (!gate.canStartRun) {
       const blockedMessage = gate.reason === 'awaiting_feedback'
-        ? '请先批准或拒绝当前待确认操作'
+        ? tr('Approve or reject the pending operation first', '请先批准或拒绝当前待确认操作')
         : gate.reason === 'submitting_feedback'
-          ? '确认正在提交，请等待状态核对完成'
-          : '当前会话已有活动任务，请等待其完成';
+          ? tr('The confirmation is being submitted. Wait for the status check to finish.', '确认正在提交，请等待状态核对完成')
+          : tr('This conversation has an active task. Wait for it to finish.', '当前会话已有活动任务，请等待其完成');
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: blockedMessage } });
       return;
     }
@@ -1408,7 +1411,7 @@ function App() {
       return;
     }
     if (edit && (!editEnabled || editableLatestTurn(selectMessages(targetView))?.assistant.run_id !== edit.replaceRunId)) {
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '最新一轮已变化，请刷新后重试' } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('The latest turn changed. Refresh and try again.', '最新一轮已变化，请刷新后重试') } });
       return;
     }
     const attachments = edit?.attachments ?? targetView?.attachments ?? [];
@@ -1431,7 +1434,7 @@ function App() {
     });
     if (!connection) {
       dispatchConversation({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: message, restoreAttachments: attachments });
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '当前会话仍有连接正在收尾，请稍后重试' } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('A connection for this conversation is still closing. Try again shortly.', '当前会话仍有连接正在收尾，请稍后重试') } });
       return;
     }
     void consumeRunConnection(sessionId, generation, connection, 'start', { message, attachments, replaceRunId: edit?.replaceRunId });
@@ -1444,9 +1447,9 @@ function App() {
     const pending = targetView?.activeRun?.feedback;
     const run = targetView?.activeRun;
     if (!gate.canSubmitFeedback || !pending) return;
-    if (!run?.runId) return dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '当前确认请求缺少 Run ID，无法继续' } });
+    if (!run?.runId) return dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('The confirmation request has no run ID and cannot continue', '当前确认请求缺少 Run ID，无法继续') } });
     const callId = String(pending.call_id || '');
-    if (!callId) return dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '当前确认请求缺少工具 Call ID，无法安全继续' } });
+    if (!callId) return dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('The confirmation request has no tool call ID and cannot continue safely', '当前确认请求缺少工具 Call ID，无法安全继续') } });
     if (connectionManagerRef.current.get(sessionId)) return;
     const generation = run.generation;
     const decisionId = crypto.randomUUID();
@@ -1497,7 +1500,7 @@ function App() {
         attachment: { file_token: uploaded.file_token, filename: uploaded.filename || attachment.filename } });
     } catch (cause) {
       if (stale()) return;
-      const error = cause instanceof Error ? cause.message : '上传失败，请重试';
+      const error = cause instanceof Error ? cause.message : tr('Upload failed. Try again.', '上传失败，请重试');
       dispatchConversation({ type: 'SET_PENDING_ATTACHMENT', sessionId, localId: attachment.localId, status: 'failed', error });
     } finally {
       if (uploadControllersRef.current.get(attachment.localId) === entry) {
@@ -1560,7 +1563,7 @@ function App() {
       const nextPendingAttachments = currentView.pendingAttachments.filter(item => item.localId !== attachmentId);
       dispatchConversation({ type: 'REMOVE_PENDING_ATTACHMENT', sessionId, localId: attachmentId });
       const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
-      if (pendingFirstTurn) persistPendingFirstTurn(sessionId, { ...pendingFirstTurn, pendingAttachments: nextPendingAttachments.map(item => ({ localId: item.localId, filename: item.filename, status: 'needs_reselect', error: '刷新后需要重新选择文件' })) });
+      if (pendingFirstTurn) persistPendingFirstTurn(sessionId, { ...pendingFirstTurn, pendingAttachments: nextPendingAttachments.map(item => ({ localId: item.localId, filename: item.filename, status: 'needs_reselect', error: tr('Select the file again after refreshing', '刷新后需要重新选择文件') })) });
       return;
     }
     const nextAttachments = (currentView?.attachments || []).filter(item => item.file_token !== attachmentId);
@@ -1579,7 +1582,7 @@ function App() {
     if (!activeSession || busy || nextModel === model) return;
     const sessionId = activeSession.session_id;
     if (selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能切换模型' } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('You cannot switch models until the active run finishes', '活动 Run 完成前不能切换模型') } });
       return;
     }
     const previousModel = model;
@@ -1596,7 +1599,7 @@ function App() {
       setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, model: selectedModel } : session));
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: previousModel, error: cause.message || '模型切换失败' } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: previousModel, error: cause.message || tr('Could not switch models', '模型切换失败') } });
     } finally {
       if (!accountIsStale(identity, accountEpoch)) setBusy(false);
     }
@@ -1626,7 +1629,7 @@ function App() {
     const projectId = targetProjectId ?? (draft ? draft.projectId : activeSession?.project_id || null);
     const sessionId = targetProjectId === undefined ? activeSession?.session_id : undefined;
     if (sessionId && selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能切换数据集' } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: t('You cannot switch datasets until the active run finishes', '活动 Run 完成前不能切换数据集') } });
       return;
     }
     setDatasetProjectId(targetProjectId);
@@ -1639,7 +1642,7 @@ function App() {
       updateProjectDatasets(projectId, response.datasets || []);
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
-      setWorkspaceError(cause.message || '数据集加载失败');
+      setWorkspaceError(cause.message || tr('Could not load datasets', '数据集加载失败'));
     }
   }
   async function chooseDataset(dataset: Dataset) {
@@ -1659,7 +1662,7 @@ function App() {
     if (!activeSession || dataset.dataset_id === activeView?.activeDatasetId) return setDatasetOpen(false);
     const sessionId = activeSession.session_id;
     if (selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能切换数据集' } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('You cannot switch datasets until the active run finishes', '活动 Run 完成前不能切换数据集') } });
       setDatasetOpen(false);
       return;
     }
@@ -1684,7 +1687,7 @@ function App() {
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
       dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: previousGraph });
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { selectedNode: previousSelected, error: cause.message || '数据集切换失败' } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { selectedNode: previousSelected, error: cause.message || tr('Could not switch datasets', '数据集切换失败') } });
     }
     finally {
       if (!accountIsStale(identity, accountEpoch)) setBusy(false);
@@ -1700,7 +1703,7 @@ function App() {
     const draftId = draft?.draftId;
     const sessionId = activateCurrentSession ? activeSession?.session_id : undefined;
     if (sessionId && selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: '活动 Run 完成前不能激活新数据集' } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('You cannot activate another dataset until the active run finishes', '活动 Run 完成前不能激活新数据集') } });
       return;
     }
     const targetView = sessionId ? conversationRef.current.viewsBySessionId[sessionId] : null;
@@ -1733,9 +1736,9 @@ function App() {
       if (stale()) return;
       if (sessionId && graphVersion !== undefined) {
         dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: previousGraph });
-        dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { selectedNode: previousSelected, error: cause.message || '项目数据集上传失败' } });
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { selectedNode: previousSelected, error: cause.message || tr('Could not upload the project dataset', '项目数据集上传失败') } });
       }
-      else setWorkspaceError(cause.message || '项目数据集上传失败');
+      else setWorkspaceError(cause.message || tr('Could not upload the project dataset', '项目数据集上传失败'));
     } finally {
       if (accountIsStale(identity, accountEpoch)) return;
       if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } });
@@ -1754,9 +1757,9 @@ function App() {
         response.dataset,
       ]);
       if (supportsConstruction(response.dataset)) openConstruction(response.dataset);
-      else setWorkspaceError('此文件已保存，但当前格式不能用于构图。请上传 SQL、CSV 或 TXT 文件。');
+      else setWorkspaceError(tr('The file was saved, but its format cannot be used to construct a graph. Upload a SQL, CSV, or TXT file.', '此文件已保存，但当前格式不能用于构图。请上传 SQL、CSV 或 TXT 文件。'));
     } catch (cause: any) {
-      if (identityRef.current === identity) setWorkspaceError(cause.message || '构图数据源上传失败');
+      if (identityRef.current === identity) setWorkspaceError(cause.message || tr('Could not upload the graph-construction source', '构图数据源上传失败'));
     } finally {
       if (identityRef.current === identity) setBusy(false);
     }
@@ -1804,7 +1807,7 @@ function App() {
     }
     const sessionId = current.activeSessionId;
     if (!sessionId) return;
-    if (selectRunGate(current.viewsBySessionId[sessionId]).blocksSessionMutation) throw new Error('当前任务完成后才能切换数据集；构图结果已经保存。');
+    if (selectRunGate(current.viewsBySessionId[sessionId]).blocksSessionMutation) throw new Error(tr('You can switch datasets after the current task finishes. The constructed graph has been saved.', '当前任务完成后才能切换数据集；构图结果已经保存。'));
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
     await setSessionDataset(sessionId, dataset.dataset_id);
@@ -1812,12 +1815,12 @@ function App() {
     dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { activeDatasetId: dataset.dataset_id } });
     const loaded = await refreshSessionGraph(sessionId, {}, true);
     if (accountIsStale(identity, accountEpoch)) return;
-    if (!loaded) throw new Error('数据集已选中，但图预览加载失败，请稍后重试。');
+    if (!loaded) throw new Error(tr('The dataset was selected, but its graph preview could not be loaded. Try again shortly.', '数据集已选中，但图预览加载失败，请稍后重试。'));
     setSessions(previous => previous.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: dataset.dataset_id, has_graph: true } : session));
     setGraphOpen(true); setGraphTab('Graph');
   }
   async function renameDataset(dataset: Dataset) {
-    const name = window.prompt('数据集名称', dataset.name)?.trim();
+    const name = window.prompt(tr('Dataset name', '数据集名称'), dataset.name)?.trim();
     if (!name || name === dataset.name) return;
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
@@ -1827,11 +1830,11 @@ function App() {
       updateProjectDatasets(dataset.project_id, current => current.map(item => item.dataset_id === dataset.dataset_id ? { ...item, ...response.dataset } : item));
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
-      setWorkspaceError(cause.message || '数据集重命名失败');
+      setWorkspaceError(cause.message || tr('Could not rename the dataset', '数据集重命名失败'));
     }
   }
   async function removeDataset(dataset: Dataset) {
-    if (!window.confirm(`确认删除数据集「${dataset.name}」吗？`)) return;
+    if (!window.confirm(tr(`Delete dataset “${dataset.name}”?`, `确认删除数据集「${dataset.name}」吗？`))) return;
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
     try {
@@ -1847,7 +1850,7 @@ function App() {
       }
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
-      setWorkspaceError(cause.message || '数据集删除失败');
+      setWorkspaceError(cause.message || tr('Could not delete the dataset', '数据集删除失败'));
     }
   }
   async function expandNode(node: Record<string, unknown>) {
@@ -1890,12 +1893,12 @@ function App() {
             ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={() => void openDatasets()} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
             ? <ChatPaneWithState artifactSessionId={activeSession.session_id} onEditLatest={editEnabled ? (message: Message, runId: string, content: string) => void send({ message: content, attachments: message.attachments || [], replaceRunId: runId }) : undefined} conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
-            : <div className={`workspace-home ${userId ? '' : 'signed-out'}`}><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{userId ? '开始新的图分析' : '探索图数据，从一个问题开始'}</h1><p>{userId ? '选择左侧已有会话，或创建一个新任务。' : '点击左下角头像登录，你的项目、会话与分析结果会在这里保持同步。'}</p>{userId ? <button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> 新建任务</button> : null}</div></div>}
+            : <div className={`workspace-home ${userId ? '' : 'signed-out'}`}><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{userId ? t('Start a new graph analysis', '开始新的图分析') : t('Explore graph data, starting with a question', '探索图数据，从一个问题开始')}</h1><p>{userId ? t('Select an existing conversation on the left, or create a new task.', '选择左侧已有会话，或创建一个新任务。') : t('Select the avatar in the lower-left corner to sign in. Your projects, conversations, and analysis results will stay synchronized here.', '点击左下角头像登录，你的项目、会话与分析结果会在这里保持同步。')}</p>{userId ? <button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> {t('New task', '新建任务')}</button> : null}</div></div>}
         </>}
       </div>
-      {activeSession && !createGraphOpen && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : '构图'} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
+      {activeSession && !createGraphOpen && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : t('Build graph', '构图')} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
     </div>
-    {activeDraft && !activeDraft.projectId && recoveredDrafts.length > 0 && <div className="recovered-draft-notice" role="status"><button className="text-button" onClick={recoverOldDraft}>恢复升级前草稿（{recoveredDrafts.length}）</button></div>}
+    {activeDraft && !activeDraft.projectId && recoveredDrafts.length > 0 && <div className="recovered-draft-notice" role="status"><button className="text-button" onClick={recoverOldDraft}>{t(`Restore pre-upgrade drafts (${recoveredDrafts.length})`, `恢复升级前草稿（${recoveredDrafts.length}）`)}</button></div>}
     {datasetOpen && <DatasetPanel onConstruct={openConstruction} datasets={panelDatasets} projectName={panelProject?.name} activeDatasetId={panelMatchesConversation ? activeDatasetId : null} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, panelMatchesConversation && Boolean(activeSession), datasetProjectId)} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
     {constructionDataset && !createGraphOpen && <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onUse={activeSession || activeDraft ? useConstructedDataset : undefined} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
@@ -1905,20 +1908,21 @@ function App() {
 }
 
 function ChatPaneWithState(props: any) {
+  const { t } = useI18n();
   const summary = props.cancellation
-    ? props.cancellation === 'unconfirmed' ? '停止请求尚未确认' : props.cancellation === 'confirmed' ? '任务已结束'
-      : props.cancellation === 'saving' ? '已停止，正在保存结果' : '正在停止…'
+    ? props.cancellation === 'unconfirmed' ? t('Stop is not confirmed', '停止请求尚未确认') : props.cancellation === 'confirmed' ? t('Task ended', '任务已结束')
+      : props.cancellation === 'saving' ? t('Stopped · saving results', '已停止，正在保存结果') : t('Stopping…', '正在停止…')
     : props.runGateReason === 'awaiting_feedback'
-    ? '等待确认：请先批准或拒绝当前操作'
+    ? t('Waiting for confirmation: approve or reject the current operation', '等待确认：请先批准或拒绝当前操作')
     : props.runGateReason === 'submitting_feedback'
-      ? <><span className="loader" /> 正在提交确认并核对状态</>
+      ? <><span className="loader" /> {t('Submitting confirmation and checking status', '正在提交确认并核对状态')}</>
       : props.loading
-        ? <><span className="loader" /> 助手正在分析图</>
+        ? <><span className="loader" /> {t('The assistant is analyzing the graph', '助手正在分析图')}</>
         : props.hasGraph
-          ? <><span className="status-dot" /> 图分析就绪</>
+          ? <><span className="status-dot" /> {t('Graph analysis ready', '图分析就绪')}</>
           : null;
   const planProgress = props.plan?.steps?.length
-    ? <span className="run-count">{props.plan.steps.filter((step: any) => step.status === 'done').length}/{props.plan.steps.length} 步</span>
+    ? <span className="run-count">{t(`${props.plan.steps.filter((step: any) => step.status === 'done').length}/${props.plan.steps.length} steps`, `${props.plan.steps.filter((step: any) => step.status === 'done').length}/${props.plan.steps.length} 步`)}</span>
     : null;
   return <div className="chat-pane-shell">
     {(summary || planProgress) && <div className="run-summary">{summary}{planProgress}</div>}
@@ -1928,4 +1932,4 @@ function ChatPaneWithState(props: any) {
 
 export default App;
 
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(<I18nProvider><App /></I18nProvider>);
