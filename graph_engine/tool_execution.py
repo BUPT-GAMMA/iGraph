@@ -48,6 +48,8 @@ GRAPH_READ_TOOLS = frozenset({
     "node_centrality", "graph_connectivity", "find_cycles", "maximum_cycle",
     "topological_sort", "degree_analysis", "link_prediction_score",
     "path_analysis", "clique_analysis", "reachability", "global_metrics",
+    "graph_structure_analysis", "connectivity_analysis", "tree_dag_analysis",
+    "matching_coloring_analysis", "distance_measures",
     "visualize_subgraph", "create_analysis_report",
 })
 

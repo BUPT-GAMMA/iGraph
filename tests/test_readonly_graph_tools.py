@@ -45,6 +45,11 @@ class ReadonlyGraphToolTests(unittest.TestCase):
             "clique_analysis": {"method": "find_cliques"},
             "reachability": {"method": "descendants", "node": "A"},
             "global_metrics": {"metric": "density"},
+            "graph_structure_analysis": {"method": "is_directed_acyclic_graph"},
+            "connectivity_analysis": {"method": "articulation_points"},
+            "tree_dag_analysis": {"method": "dag_longest_path"},
+            "matching_coloring_analysis": {"method": "max_weight_matching"},
+            "distance_measures": {"metric": "center"},
         }
         self.assertEqual(set(arguments), NX_TOOL_NAMES)
         for tool, args in arguments.items():
