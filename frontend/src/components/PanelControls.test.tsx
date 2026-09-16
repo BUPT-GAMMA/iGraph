@@ -42,14 +42,14 @@ describe('docked panel controls', () => {
     const onCloseMobile = vi.fn();
     const { rerender } = render(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} onCloseMobile={onCloseMobile} collapsed={false} onCollapse={noop} />);
 
-    const entry = screen.getByRole('button', { name: 'create your graph' });
+    const entry = screen.getByRole('button', { name: '创建你的图' });
     expect(entry.getAttribute('aria-current')).toBeNull();
     fireEvent.click(entry);
     expect(onCreateGraph).toHaveBeenCalledOnce();
     expect(onCloseMobile).toHaveBeenCalledOnce();
 
     rerender(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} createGraphActive collapsed={false} onCollapse={noop} />);
-    expect(screen.getByRole('button', { name: 'create your graph' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: '创建你的图' }).getAttribute('aria-current')).toBe('page');
   });
 
   it('removes the legacy sidebar version label and keeps a functional toggle', () => {

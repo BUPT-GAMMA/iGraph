@@ -1,5 +1,9 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('igraph-language', 'zh'));
+});
+
 test('shows the workspace before login and authenticates from the avatar menu', async ({ page }) => {
   await page.goto('/');
 
