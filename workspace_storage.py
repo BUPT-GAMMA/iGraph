@@ -8,6 +8,7 @@ from pathlib import Path
 
 _ZONES = ("Uploaded", "Ephemeral", "Derived", "Environment")
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_-]")
+_UPLOADED_FILENAME = re.compile(r"^[0-9a-f]{32}_(?P<name>.+)$")
 
 def data_root() -> Path:
     configured = Path(os.getenv("IGRAPH_DATA_ROOT", "").strip() or os.getenv("GRAPHAGENT_DATA_ROOT", "").strip() or "data")
@@ -70,7 +71,12 @@ def visible_files(user_id, session_id):
                 path = base / name
                 if name.startswith(".") or path.is_symlink() or not path.is_file():
                     continue
-                files.append({"path": path.relative_to(root).as_posix(), "name": name,
+                display_name = name
+                if zone == "Uploaded":
+                    match = _UPLOADED_FILENAME.match(name)
+                    if match:
+                        display_name = match.group("name")
+                files.append({"path": path.relative_to(root).as_posix(), "name": display_name,
                     "zone": zone, "size": path.stat().st_size, "downloadable": zone == "Derived"})
     return files
 

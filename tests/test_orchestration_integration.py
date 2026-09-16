@@ -181,6 +181,20 @@ def test_workspace_uses_shared_data_root_and_confines_downloads(tmp_path, monkey
     assert [item["path"] for item in visible_files("u", "s")] == ["Derived/visible.txt"]
     assert visible_files("other-user", "s") == []
 
+
+def test_workspace_file_list_hides_upload_token_prefix(tmp_path, monkeypatch):
+    from workspace_storage import save_upload
+
+    monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    save_upload("u", "s", "a" * 32, "orders.csv", b"data")
+    root = workspace_root_for("u", "s")
+    (root / "Uploaded" / "ordinary_name.csv").write_text("data")
+
+    files = visible_files("u", "s")
+    by_path = {item["path"]: item for item in files}
+    assert by_path["Uploaded/" + "a" * 32 + "_orders.csv"]["name"] == "orders.csv"
+    assert by_path["Uploaded/ordinary_name.csv"]["name"] == "ordinary_name.csv"
+
 def test_workspace_cancel_stops_subprocess_group(tmp_path, monkeypatch):
     monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "fallback")
