@@ -16,6 +16,8 @@ import hashlib
 import json
 import math
 import sqlite3
+import threading
+import weakref
 from collections import defaultdict
 from contextlib import closing
 from pathlib import Path
@@ -35,6 +37,20 @@ MAX_EVIDENCE = 2048
 MAX_PATTERNS = 256
 MAX_RECENT_RUNS = 4096
 MAX_OBSERVATIONS = 100
+
+_WRITE_LOCKS = weakref.WeakValueDictionary()
+_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _write_lock(path):
+    key = str(path.expanduser().resolve())
+    with _WRITE_LOCKS_GUARD:
+        lock = _WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _WRITE_LOCKS[key] = lock
+        return lock
+
 
 _CONTEXT_COUNTS = {"table_count": 128, "row_count": 200_000, "column_count": 32_768,
                    "fk_count": 16_384, "query_count": 100, "max_join_hops": 3}
@@ -208,7 +224,8 @@ class DomainExperienceStore:
     Retrieval errors propagate so callers distinguish unavailable storage from
     a cold start; writes return a structured ``stored=False`` result on storage
     contention/unavailability. Invalid structural input is rejected explicitly.
-    No operation waits more than a short SQLite busy timeout for a writer lock.
+    Same-process writers for one database are serialized before entering SQLite;
+    cross-process contention uses the short SQLite busy timeout.
     """
 
     def __init__(self, path, *, timeout_seconds=0.15):
@@ -217,6 +234,7 @@ class DomainExperienceStore:
             raise ExperienceError("SQLite timeout must be between zero and half a second.")
         self.path = Path(path)
         self.timeout_seconds = timeout
+        self._write_lock = _write_lock(self.path)
 
     def _connect(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -269,41 +287,42 @@ class DomainExperienceStore:
         eligible = normalized if final_correct else [item for item in normalized if item["outcome"] == "unsafe"]
         payload_hash = _digest(_json({"source": source_hash, "domain": domain_hash, "context": normalized_context,
                                       "observations": normalized, "final_correct": final_correct}))
-        try:
-            with closing(self._connect()) as db:
-                db.execute("BEGIN IMMEDIATE")
-                try:
-                    previous = db.execute("SELECT payload_hash FROM experience_runs WHERE run_hash=?", (run_hash,)).fetchone()
-                    if previous is not None:
-                        if previous[0] != payload_hash:
-                            raise ExperienceError("run_id was already recorded with different evidence.")
+        with self._write_lock:
+            try:
+                with closing(self._connect()) as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    try:
+                        previous = db.execute("SELECT payload_hash FROM experience_runs WHERE run_hash=?", (run_hash,)).fetchone()
+                        if previous is not None:
+                            if previous[0] != payload_hash:
+                                raise ExperienceError("run_id was already recorded with different evidence.")
+                            db.rollback()
+                            return {"stored": False, "duplicate": True, "status": "duplicate", "evidence_count": 0}
+                        cursor = db.execute("INSERT INTO experience_runs(run_hash,payload_hash) VALUES(?,?)", (run_hash, payload_hash))
+                        sequence = cursor.lastrowid
+                        for item in eligible:
+                            pattern_json = _json(item["pattern"])
+                            pattern_hash = _digest(_json([item["strategy_id"], item["pattern"]]))
+                            db.execute("""INSERT INTO experience_patterns(domain_hash,pattern_hash,strategy_id,pattern_json,last_sequence)
+                                VALUES(?,?,?,?,?) ON CONFLICT(domain_hash,pattern_hash) DO UPDATE SET last_sequence=excluded.last_sequence""",
+                                       (domain_hash, pattern_hash, item["strategy_id"], pattern_json, sequence))
+                            db.execute("""INSERT INTO experience_evidence(domain_hash,pattern_hash,source_hash,run_sequence,
+                                context_json,outcome,relative_gain,query_correct,query_total) VALUES(?,?,?,?,?,?,?,?,?)
+                                ON CONFLICT(domain_hash,pattern_hash,source_hash) DO UPDATE SET
+                                run_sequence=excluded.run_sequence, context_json=excluded.context_json, outcome=excluded.outcome,
+                                relative_gain=excluded.relative_gain, query_correct=excluded.query_correct, query_total=excluded.query_total""",
+                                       (domain_hash, pattern_hash, source_hash, sequence, _json(normalized_context), item["outcome"],
+                                        item["relative_gain"], item["query_correct"], item["query_total"]))
+                        self._prune(db)
+                        db.commit()
+                        return {"stored": True, "duplicate": False, "status": "recorded", "evidence_count": len(eligible),
+                                "skipped_count": len(normalized) - len(eligible)}
+                    except BaseException:
                         db.rollback()
-                        return {"stored": False, "duplicate": True, "status": "duplicate", "evidence_count": 0}
-                    cursor = db.execute("INSERT INTO experience_runs(run_hash,payload_hash) VALUES(?,?)", (run_hash, payload_hash))
-                    sequence = cursor.lastrowid
-                    for item in eligible:
-                        pattern_json = _json(item["pattern"])
-                        pattern_hash = _digest(_json([item["strategy_id"], item["pattern"]]))
-                        db.execute("""INSERT INTO experience_patterns(domain_hash,pattern_hash,strategy_id,pattern_json,last_sequence)
-                            VALUES(?,?,?,?,?) ON CONFLICT(domain_hash,pattern_hash) DO UPDATE SET last_sequence=excluded.last_sequence""",
-                                   (domain_hash, pattern_hash, item["strategy_id"], pattern_json, sequence))
-                        db.execute("""INSERT INTO experience_evidence(domain_hash,pattern_hash,source_hash,run_sequence,
-                            context_json,outcome,relative_gain,query_correct,query_total) VALUES(?,?,?,?,?,?,?,?,?)
-                            ON CONFLICT(domain_hash,pattern_hash,source_hash) DO UPDATE SET
-                            run_sequence=excluded.run_sequence, context_json=excluded.context_json, outcome=excluded.outcome,
-                            relative_gain=excluded.relative_gain, query_correct=excluded.query_correct, query_total=excluded.query_total""",
-                                   (domain_hash, pattern_hash, source_hash, sequence, _json(normalized_context), item["outcome"],
-                                    item["relative_gain"], item["query_correct"], item["query_total"]))
-                    self._prune(db)
-                    db.commit()
-                    return {"stored": True, "duplicate": False, "status": "recorded", "evidence_count": len(eligible),
-                            "skipped_count": len(normalized) - len(eligible)}
-                except BaseException:
-                    db.rollback()
-                    raise
-        except (sqlite3.Error, OSError) as exc:
-            busy = isinstance(exc, sqlite3.OperationalError) and ("locked" in str(exc).lower() or "busy" in str(exc).lower())
-            return {"stored": False, "duplicate": False, "status": "busy" if busy else "unavailable", "evidence_count": 0}
+                        raise
+            except (sqlite3.Error, OSError) as exc:
+                busy = isinstance(exc, sqlite3.OperationalError) and ("locked" in str(exc).lower() or "busy" in str(exc).lower())
+                return {"stored": False, "duplicate": False, "status": "busy" if busy else "unavailable", "evidence_count": 0}
 
     def retrieve(self, domain_key, context, limit=8):
         domain_hash = _identity(domain_key)
