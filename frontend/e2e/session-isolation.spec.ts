@@ -226,7 +226,8 @@ test('graph collections degrade safely and recover when switching back to a sing
   await page.getByRole('tab', { name: '机器学习' }).click();
   await expect(page.locator('.tab-placeholder strong')).toHaveText('图机器学习');
   await page.getByRole('tab', { name: '分析产物' }).click();
-  await expect(page.locator('.tab-placeholder strong')).toHaveText('分析产物');
+  await expect(page.getByRole('region', { name: '会话文件' })).toBeVisible();
+  await expect(page.getByText('暂无上传文件或已发布产物')).toBeVisible();
 
   await page.reload();
   await expect(page.getByText('非独立图，无法直接可视化')).toBeVisible();

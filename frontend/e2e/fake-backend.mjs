@@ -174,6 +174,8 @@ const server = http.createServer(async (request, response) => {
       dataset_view: datasetView(body.active_dataset_id || null),
     });
   }
+  const workspaceFiles = /^\/api\/sessions\/([^/]+)\/workspace\/files$/.exec(url.pathname);
+  if (workspaceFiles && request.method === 'GET') return json(response, 200, { success: true, files: [] });
   const feedback = /^\/api\/sessions\/([^/]+)\/feedback\/stream$/.exec(url.pathname);
   if (feedback) {
     feedbackRequests.set(feedback[1], (feedbackRequests.get(feedback[1]) || 0) + 1);
