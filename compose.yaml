@@ -40,6 +40,8 @@ services:
       GRAPH_ML_ARTIFACT_ROOT: /data/graph_engine/artifacts
     volumes:
       - igraph-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     expose:
       - "21111"
     networks:

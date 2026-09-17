@@ -80,7 +80,7 @@ class GraphClassificationTrainingTest(unittest.TestCase):
                 store,
                 _BoundDatasetStore(bundle),
             )
-            for backbone in ("GCN", "GAT", "SAGE"):
+            for backbone in ("GCN", "GAT", "SAGE", "GIN", "APPNP"):
                 progress = []
                 with self.subTest(backbone=backbone):
                     result = trainer.train(

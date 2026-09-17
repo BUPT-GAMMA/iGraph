@@ -227,14 +227,23 @@ class GraphClassifierTest(unittest.TestCase):
                 self.assertTrue(all(not parameter.is_cuda for parameter in rebuilt.parameters()))
 
     def test_invalid_model_parameters_and_batches_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "仅支持 GCN/GAT/SAGE"):
-            GraphClassifier("GIN", node_vocab_size=4, num_tasks=1)
+        with self.assertRaisesRegex(ValueError, "仅支持"):
+            GraphClassifier("RGCN", node_vocab_size=4, num_tasks=1)
         with self.assertRaisesRegex(ValueError, "num_tasks 必须是正整数"):
             GraphClassifier("GCN", node_vocab_size=4, num_tasks=0)
         with self.assertRaisesRegex(ValueError, "num_layers 必须大于等于 2"):
             GraphClassifier("GCN", node_vocab_size=4, num_tasks=1, num_layers=1)
         with self.assertRaisesRegex(ValueError, "0 <= dropout < 1"):
             GraphClassifier("GCN", node_vocab_size=4, num_tasks=1, dropout=1.0)
+        with self.assertRaisesRegex(ValueError, "appnp_k 必须是正整数"):
+            GraphClassifier("APPNP", node_vocab_size=4, num_tasks=1, appnp_k=0)
+        with self.assertRaisesRegex(ValueError, "0 < appnp_alpha <= 1"):
+            GraphClassifier(
+                "APPNP",
+                node_vocab_size=4,
+                num_tasks=1,
+                appnp_alpha=0.0,
+            )
 
         model = GraphClassifier("GCN", node_vocab_size=4, num_tasks=1)
         with self.assertRaisesRegex(ValueError, "必须是 PyG Batch"):

@@ -31,6 +31,8 @@ class GraphClassifier(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.2,
         gat_heads: int = 2,
+        appnp_k: int = 10,
+        appnp_alpha: float = 0.1,
         use_residual_connection: bool = False,
         use_normalization: bool = False,
         norm_pos: str = "post",
@@ -54,6 +56,8 @@ class GraphClassifier(nn.Module):
             raise ValueError("num_layers 必须大于等于 2")
         self.dropout = _require_dropout(dropout)
         self.gat_heads = _require_positive_int(gat_heads, "gat_heads")
+        self.appnp_k = _require_positive_int(appnp_k, "appnp_k")
+        self.appnp_alpha = _require_appnp_alpha(appnp_alpha)
         if not isinstance(use_residual_connection, bool):
             raise ValueError("use_residual_connection 必须是布尔值")
         if not isinstance(use_normalization, bool):
@@ -82,6 +86,8 @@ class GraphClassifier(nn.Module):
             num_layers=self.num_layers,
             dropout=self.dropout,
             gat_heads=self.gat_heads,
+            appnp_k=self.appnp_k,
+            appnp_alpha=self.appnp_alpha,
             use_residual_connection=self.use_residual_connection,
             use_normalization=self.use_normalization,
             norm_pos=self.norm_pos,
@@ -153,6 +159,8 @@ class GraphClassifier(nn.Module):
             "num_layers": self.num_layers,
             "dropout": self.dropout,
             "gat_heads": self.gat_heads,
+            "appnp_k": self.appnp_k,
+            "appnp_alpha": self.appnp_alpha,
             "use_residual_connection": self.use_residual_connection,
             "use_normalization": self.use_normalization,
             "norm_pos": self.norm_pos,
@@ -197,8 +205,22 @@ def build_graph_classifier(
 
 def _normalize_backbone_name(value: str) -> str:
     name = str(value or "").strip().upper()
-    if name not in {"GCN", "GAT", "SAGE"}:
-        raise ValueError(f"图分类 backbone 仅支持 GCN/GAT/SAGE，收到: {value}")
+    supported = {
+        "APPNP",
+        "GCN",
+        "GAT",
+        "GATV2",
+        "GIN",
+        "SAGE",
+        "TRANSFORMER",
+        "GEN",
+    }
+    if name not in supported:
+        raise ValueError(
+            "图分类 backbone 仅支持 "
+            + "/".join(sorted(supported))
+            + f"，收到: {value}"
+        )
     return name
 
 
@@ -214,6 +236,15 @@ def _require_dropout(value: float) -> float:
     normalized = float(value)
     if normalized < 0.0 or normalized >= 1.0:
         raise ValueError("dropout 必须满足 0 <= dropout < 1")
+    return normalized
+
+
+def _require_appnp_alpha(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError("appnp_alpha 必须是数值")
+    normalized = float(value)
+    if not 0.0 < normalized <= 1.0:
+        raise ValueError("appnp_alpha 必须满足 0 < appnp_alpha <= 1")
     return normalized
 
 
