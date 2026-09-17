@@ -9,6 +9,7 @@ from pathlib import Path
 
 from agno.skills import LocalSkills, Skills
 
+import backend.data_paths as _dp
 from agent_runtime.config import AgentRuntimeConfig
 
 
@@ -18,13 +19,6 @@ def bundled_skills_source_path() -> Path:
 
 def _canonical_name(value: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]+", "-", value.strip().lower())).strip("-")
-
-
-def _user_component(value: str) -> str:
-    cleaned = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "_", str(value or "").strip()).rstrip(" .")
-    if not cleaned or cleaned in {".", ".."}:
-        return "_"
-    return cleaned
 
 
 @lru_cache(maxsize=4)
@@ -57,11 +51,15 @@ def bundled_skills_path(config: AgentRuntimeConfig | None = None) -> Path:
 
 
 def user_skills_path(config: AgentRuntimeConfig, user_id: str) -> Path:
-    return config.skills_root / "users" / _user_component(user_id)
+    """Return the canonical approved-Skill directory for a user."""
+    del config
+    return _dp.user_skills_dir(user_id)
 
 
 def candidate_skills_path(config: AgentRuntimeConfig, user_id: str) -> Path:
-    return config.skills_root / "candidates" / _user_component(user_id)
+    """Return the canonical review-queue directory for a user."""
+    del config
+    return _dp.user_review_queue_dir(user_id)
 
 
 def build_skills(config: AgentRuntimeConfig, user_id: str) -> Skills:

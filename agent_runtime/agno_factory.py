@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
 from agno.agent import Agent, AgentFactory
@@ -12,10 +13,15 @@ from pydantic import BaseModel
 from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.custom_models import get_custom_model
 from agent_runtime.graph_tools import create_graph_tools
+from agent_runtime.workspace_tools import create_workspace_tools
+from agent_runtime.agent_notes import update_agent_notes
+from agent_runtime.loop_guard import loop_guard_tool_hook, loop_guard_post_hook
 from agent_runtime.instructions import instructions_for
 from agent_runtime.learning import create_learning_machine
 from agent_runtime.model_factory import allowed_model, create_model
 from agent_runtime.skills_runtime import build_skills
+from agent_runtime.cancellation_compat import ControlledAgent, cancellable_tool_hook
+from agent_runtime.construction_state import construction_tool_hook
 
 
 AGENT_ID = "igraph-agent"
@@ -40,6 +46,7 @@ def create_db(config: AgentRuntimeConfig) -> PostgresDb:
 def create_igraph_factory(
     config: AgentRuntimeConfig,
     db: PostgresDb,
+    execution_controller=None,
 ) -> AgentFactory:
     def build_agent(ctx: RequestContext) -> Agent:
         raw_input = ctx.input.model_dump() if hasattr(ctx.input, "model_dump") else (ctx.input or {})
@@ -55,12 +62,12 @@ def create_igraph_factory(
         except (PermissionError, ValueError) as exc:
             raise FactoryPermissionError(str(exc)) from exc
 
-        return Agent(
+        agent = (ControlledAgent if execution_controller else Agent)(
             id=AGENT_ID,
             name="iGraph Agent",
             model=create_model(model_id, config, custom_model),
             db=db,
-            tools=[create_graph_tools(config)],
+            tools=[create_graph_tools(config), *create_workspace_tools(), update_agent_notes],
             skills=build_skills(config, user_id),
             learning=create_learning_machine(config, planning_mode=options.planning_mode),
             instructions=instructions_for(
@@ -74,7 +81,17 @@ def create_igraph_factory(
             reasoning=options.reasoning_mode == "staged" or options.planning_mode == "always",
             stream_events=True,
             store_events=True,
+            events_to_skip=[],
+            checkpoint="tool-batch",
+            compress_tool_results=os.getenv("IGRAPH_COMPRESS_TOOL_RESULTS", "").lower() == "true",
+            enable_session_summaries=os.getenv("IGRAPH_SESSION_SUMMARIES", "").lower() == "true",
+            add_session_summary_to_context=True,
+            post_hooks=[loop_guard_post_hook],
+            tool_hooks=([cancellable_tool_hook] if execution_controller else []) + [loop_guard_tool_hook, construction_tool_hook],
         )
+        if execution_controller:
+            agent.execution_controller = execution_controller
+        return agent
 
     return AgentFactory(
         id=AGENT_ID,

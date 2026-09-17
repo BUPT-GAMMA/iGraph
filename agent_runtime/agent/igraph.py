@@ -93,6 +93,8 @@ _GRAPH_MUTATION_TOOLS = frozenset({
     "load_graph_from_text",
     "load_graph_from_triples",
     "load_dataset",
+    "load_constructed_graph",
+    "commit_graph_optimization",
     "load_graph_version",
     "discard_graph_version",
     "clear_graph",
@@ -237,6 +239,7 @@ class IGraph:
             protocol=self._protocol,
             provider_gateway=self._provider_gateway,
             logger=self.logger,
+            user_id=self.user_id,
         )
         self._plan_solver = PlanSolver(
             context_manager=self.context_manager,
@@ -767,6 +770,7 @@ class IGraph:
             "load_graph",
             "load_graph_from_upload",
             "load_dataset",
+            "load_constructed_graph",
             "load_graph_classification_graph",
             "load_graph_from_text",
             "load_graph_from_triples",

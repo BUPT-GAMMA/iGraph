@@ -1,5 +1,13 @@
+import { editableLatestTurn } from './latestTurn';
 import { isGraphData } from './types';
-import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, StreamBatch, StreamEvent, ToolCall } from './types';
+import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
+import type { RunSnapshot, RunControl } from './api';
+import { tr } from './i18n';
+
+export const PERSONAL_DRAFT_KEY = 'personal';
+export function draftScopeKey(projectId: string | null | undefined) { return projectId || PERSONAL_DRAFT_KEY; }
+
+export type ReceptionStatus = 'connecting' | 'receiving' | 'retrying' | 'user_paused' | 'capacity_suspended' | 'snapshot_sync' | 'idle';
 
 export type RunStatus =
   | 'idle'
@@ -8,20 +16,34 @@ export type RunStatus =
   | 'streaming'
   | 'awaiting_feedback'
   | 'submitting_feedback'
-  | 'reconnecting'
-  | 'detached'
   | 'completed'
   | 'failed'
   | 'cancelled';
 
 export type SessionRunState = {
   runId?: string;
+  startRequestId?: string;
+  cancelRequestId?: string;
+  cancellation?: 'requested' | 'stopping' | 'unconfirmed' | 'saving' | 'confirmed';
+  controlRevision?: number;
+  serverCanSend?: boolean;
+  nativeRunCreated?: boolean;
   generation: string;
   status: RunStatus;
-  lastEventIndex: number;
+  lastAppliedEventIndex: number;
+  reception?: ReceptionStatus;
+  synchronized?: boolean;
+  snapshotOnly?: boolean;
+  recoveryRequired?: boolean;
+  replay?: Pick<SessionViewState, 'messagesById' | 'messageOrder' | 'graph'>;
   assistantMessageId?: string;
+  submittedInput?: string;
+  editBackup?: { runId: string; messages: Message[] };
+  replaceRunId?: string;
   toolsById: Record<string, ToolCall>;
   toolOrder: string[];
+  processItems?: ProcessItem[];
+  pendingProcessText?: { content: string; sequence: number };
   plan: Plan | null;
   feedback: FeedbackRequest | null;
   feedbackSubmission?: {
@@ -34,6 +56,7 @@ export type SessionRunState = {
 
 export type SessionViewState = {
   sessionId: string;
+  replacedRunIds?: string[];
   hydration: 'unloaded' | 'loading' | 'ready' | 'failed';
   hydrationRequestVersion: number;
   messagesById: Record<string, Message>;
@@ -55,23 +78,25 @@ export type SessionViewState = {
 
 export type ConversationState = {
   activeSessionId: string | null;
-  activeDraftProjectId: string | null;
+  activeDraftKey: string | null;
   viewsBySessionId: Record<string, SessionViewState>;
-  draftsByProjectId: Record<string, NewConversationDraft>;
+  draftsByScope: Record<string, NewConversationDraft>;
 };
 
 export type ConversationAction =
+  | { type: 'RESET' }
   | { type: 'ENSURE_SESSION'; sessionId: string; model?: string; accessedAt?: number }
   | { type: 'SET_ACTIVE_SESSION'; sessionId: string | null; model?: string; accessedAt?: number }
   | { type: 'OPEN_DRAFT'; draft: NewConversationDraft }
-  | { type: 'PATCH_DRAFT'; projectId: string; draftId: string; patch: Partial<Pick<NewConversationDraft, 'phase' | 'text' | 'model' | 'activeDatasetId' | 'attachments' | 'error'>> }
-  | { type: 'REMOVE_DRAFT'; projectId: string; draftId?: string }
-  | { type: 'MATERIALIZE_DRAFT'; projectId: string; draftId: string; sessionId: string; generation: string; model: string; activeDatasetId?: string | null; datasetView?: DatasetView | null; accessedAt?: number }
+  | { type: 'PATCH_DRAFT'; projectId: string | null; draftId: string; patch: Partial<Pick<NewConversationDraft, 'phase' | 'text' | 'model' | 'activeDatasetId' | 'attachments' | 'error'>> }
+  | { type: 'REMOVE_DRAFT'; projectId: string | null; draftId?: string }
+  | { type: 'MATERIALIZE_DRAFT'; prepareRun?: boolean; projectId: string | null; draftId: string; sessionId: string; generation: string; model: string; activeDatasetId?: string | null; datasetView?: DatasetView | null; accessedAt?: number }
   | { type: 'HYDRATE_START'; sessionId: string; requestVersion: number }
   | {
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
       model: string; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
       activeRun?: ActiveRun | null; generation?: string; preserveMessages?: boolean;
+      control?: RunControl | null;
       datasetView?: DatasetView | null; hasGraph?: boolean;
     }
   | { type: 'HYDRATE_FAILED'; sessionId: string; requestVersion: number; error: string }
@@ -80,22 +105,32 @@ export type ConversationAction =
   | { type: 'BEGIN_RUN_PREPARATION'; sessionId: string; generation: string }
   | { type: 'START_PREPARED_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
   | { type: 'PREPARE_RUN_FAILED'; sessionId: string; generation: string; error: string }
-  | { type: 'SET_PENDING_ATTACHMENT'; sessionId: string; localId: string; status: DraftAttachment['status']; error?: string }
+  | { type: 'SET_PENDING_ATTACHMENT'; sessionId: string; localId: string; status: DraftAttachment['status']; error?: string; progress?: number }
   | { type: 'RESOLVE_PENDING_ATTACHMENT'; sessionId: string; localId: string; attachment: AttachmentRef }
   | { type: 'REMOVE_PENDING_ATTACHMENT'; sessionId: string; localId: string }
-  | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
+  | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message; replaceRunId?: string }
   | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string; restoreDraft?: string; restoreAttachments?: AttachmentRef[] }
   | { type: 'ADOPT_RUN'; sessionId: string; generation: string; activeRun: ActiveRun; feedback?: FeedbackRequest | null }
+  | { type: 'SET_RUN_ID'; sessionId: string; generation: string; runId: string; lastAppliedEventIndex?: number }
+  | { type: 'REQUEST_CANCEL'; sessionId: string; generation: string; cancelRequestId: string; startRequestId?: string; runId?: string }
+  | { type: 'CANCEL_UNCONFIRMED'; sessionId: string; generation: string }
+  | { type: 'APPLY_CONTROL'; sessionId: string; generation: string; control: RunControl }
+  | { type: 'MERGE_RUN_SNAPSHOT'; sessionId: string; snapshot: RunSnapshot }
   | { type: 'BEGIN_FEEDBACK_SUBMISSION'; sessionId: string; generation: string; runId: string; callId: string; decisionId: string; decision: 'approve' | 'reject' }
+  | { type: 'FEEDBACK_NOT_ACCEPTED'; sessionId: string; generation: string; decisionId: string }
   | { type: 'CLEAR_ACTIVE_RUN'; sessionId: string; generation: string }
   | { type: 'APPLY_BATCH'; sessionId: string; generation: string; batch: StreamBatch }
+  | { type: 'SET_RECEPTION'; sessionId: string; generation: string; reception: ReceptionStatus; synchronized?: boolean; snapshotOnly?: boolean; error?: string }
+  | { type: 'BEGIN_REPLAY'; sessionId: string; generation: string }
+  | { type: 'REPLAY_CAUGHT_UP'; sessionId: string; generation: string }
+  | { type: 'APPLY_SNAPSHOT'; sessionId: string; generation: string; snapshot: RunSnapshot }
   | { type: 'SET_RUN_STATUS'; sessionId: string; generation: string; status: RunStatus; error?: string }
   | { type: 'GRAPH_REQUEST_START'; sessionId: string; requestVersion: number; preserveCurrent?: boolean }
   | { type: 'GRAPH_REQUEST_SUCCESS'; sessionId: string; requestVersion: number; graph: GraphViewState }
   | { type: 'REMOVE_SESSION'; sessionId: string };
 
 export const SESSION_VIEW_CACHE_LIMIT = 12;
-const PROTECTED_RUN_STATUSES = new Set<RunStatus>(['preparing', 'starting', 'streaming', 'awaiting_feedback', 'submitting_feedback', 'reconnecting', 'detached']);
+const PROTECTED_RUN_STATUSES = new Set<RunStatus>(['preparing', 'starting', 'streaming', 'awaiting_feedback', 'submitting_feedback']);
 const TERMINAL_RUN_STATUSES = new Set<RunStatus>(['completed', 'failed', 'cancelled']);
 
 export type RunGateReason = 'preparing' | 'run_active' | 'awaiting_feedback' | 'submitting_feedback' | 'reconnecting' | 'detached' | null;
@@ -107,29 +142,29 @@ export type BottomInteraction =
 
 export function selectRunGate(view?: SessionViewState | null) {
   const status = view?.activeRun?.status;
-  const reason: RunGateReason = status === 'preparing'
+  const cancelPending = Boolean(view?.activeRun?.cancellation && view.activeRun.serverCanSend !== true);
+  const unverified = cancelPending || view?.activeRun?.serverCanSend === false || (view?.activeRun?.serverCanSend !== true && (view?.activeRun?.synchronized === false || view?.hydration === 'loading' || view?.hydration === 'failed'));
+  const reason: RunGateReason = unverified ? 'reconnecting' : status === 'preparing'
     ? 'preparing'
     : status === 'awaiting_feedback'
     ? 'awaiting_feedback'
     : status === 'submitting_feedback'
       ? 'submitting_feedback'
-      : status === 'reconnecting'
-        ? 'reconnecting'
-        : status === 'detached'
-          ? 'detached'
-          : status === 'starting' || status === 'streaming'
+      : status === 'starting' || status === 'streaming'
             ? 'run_active'
             : null;
   return {
     reason,
     canStartRun: reason === null,
-    canSubmitFeedback: status === 'awaiting_feedback' && Boolean(view?.activeRun?.feedback),
+    canSubmitFeedback: !unverified && status === 'awaiting_feedback' && Boolean(view?.activeRun?.feedback),
     blocksSessionMutation: reason !== null,
   };
 }
 
 export function selectBottomInteraction(view?: SessionViewState | null): BottomInteraction {
   const run = view?.activeRun;
+  if (run?.cancellation) return { kind: 'composer' };
+  if (run?.synchronized === false && (run.status === 'awaiting_feedback' || run.status === 'submitting_feedback')) return { kind: 'syncing_feedback', reason: 'session_hydration' };
   if (run?.status === 'awaiting_feedback' || run?.status === 'submitting_feedback') {
     if (!run.feedback) return { kind: 'syncing_feedback', reason: 'missing_feedback' };
     return {
@@ -142,7 +177,7 @@ export function selectBottomInteraction(view?: SessionViewState | null): BottomI
   return { kind: 'composer' };
 }
 
-export const initialConversationState: ConversationState = { activeSessionId: null, activeDraftProjectId: null, viewsBySessionId: {}, draftsByProjectId: {} };
+export const initialConversationState: ConversationState = { activeSessionId: null, activeDraftKey: null, viewsBySessionId: {}, draftsByScope: {} };
 
 export function createSessionView(sessionId: string, model = 'qwen3.6-plus', accessedAt = 0): SessionViewState {
   return {
@@ -179,6 +214,13 @@ function indexMessages(sessionId: string, messages: Message[]) {
     messageOrder.push(id);
   });
   return { messagesById, messageOrder };
+}
+
+function restoreEditedTurn(view: SessionViewState, backup: NonNullable<SessionRunState['editBackup']>): SessionViewState {
+  const restored = indexMessages(view.sessionId, backup.messages);
+  return { ...view, messagesById: { ...view.messagesById, ...restored.messagesById },
+    messageOrder: [...view.messageOrder.filter(id => !restored.messagesById[id]), ...restored.messageOrder],
+    replacedRunIds: view.replacedRunIds?.filter(id => id !== backup.runId) };
 }
 
 function normalizeGraph(graph: GraphSnapshot): GraphData | null {
@@ -224,7 +266,18 @@ function mergeRefreshedGraph(current: GraphData | null, next: GraphData): GraphD
 
 export function selectMessages(view?: SessionViewState | null): Message[] {
   if (!view) return [];
-  return view.messageOrder.map(id => view.messagesById[id]).filter(Boolean);
+  return view.messageOrder.map(id => view.messagesById[id]).filter(Boolean).map(message => {
+    if (message.role !== 'assistant') return message;
+    const run = view.activeRun;
+    const cancelled = message.run_status === 'cancelled' || (run?.status === 'cancelled' && (message.id === run.assistantMessageId
+      || Boolean(run.runId && message.run_id === run.runId)));
+    // Native cancellation text also occurs in saved history, without an active run.
+    const nativeCancellation = /^Run [a-z0-9_-]+ was cancelled\.?$/i.test(message.content.trim());
+    if (nativeCancellation || (cancelled && !message.content.trim())) {
+      return { ...message, content: tr('This conversation turn was stopped', '已停止本轮对话'), streaming: false };
+    }
+    return message;
+  });
 }
 
 export function selectRunTools(view?: SessionViewState | null): ToolCall[] {
@@ -278,7 +331,7 @@ function normalizeFeedbackRequest(event: StreamEvent): FeedbackRequest | null {
     call_id: String(request.call_id ?? request.callId ?? request.tool_call_id ?? request.toolCallId ?? ''),
     tool_name: String(request.tool_name ?? request.toolName ?? request.proposed_tool ?? request.name ?? ''),
     proposed_args: proposedArgs && typeof proposedArgs === 'object' && !Array.isArray(proposedArgs) ? proposedArgs : {},
-    description: String(request.description ?? request.message ?? request.user_message ?? '该工具调用需要确认'),
+    description: String(request.description ?? request.message ?? request.user_message ?? tr('This tool call requires confirmation', '该工具调用需要确认')),
   };
 }
 
@@ -295,12 +348,19 @@ function renameAssistantMessage(view: SessionViewState, run: SessionRunState, ne
   };
 }
 
+function bindRunMessages(view: SessionViewState, run: SessionRunState): SessionViewState {
+  if (!run.runId) return view;
+  const ids = new Set([`user:${run.generation}`, `assistant:${run.generation}`, run.assistantMessageId]);
+  return { ...view, messagesById: Object.fromEntries(Object.entries(view.messagesById).map(([id, message]) =>
+    [id, ids.has(id) ? { ...message, run_id: run.runId, ...(message.role === 'assistant' ? { run_status: run.status } : {}) } : message])) };
+}
+
 function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: StreamEvent): { view: SessionViewState; run: SessionRunState } {
   const eventType = String(event.type || '');
   const eventName = String(event.type || event.event || '').toLowerCase();
   if (eventType === 'feedback_submit_error') {
     if (run.feedbackSubmission && event.decision_id && run.feedbackSubmission.decisionId !== event.decision_id) return { view, run };
-    const error = String(event.error || '确认提交失败，正在核对 Run 状态');
+    const error = String(event.error || tr('Confirmation submission failed; checking the run status', '确认提交失败，正在核对 Run 状态'));
     return { view: { ...view, error }, run: { ...run, error } };
   }
   if (eventType === 'feedback_accepted') {
@@ -311,7 +371,10 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     };
   }
   if (eventType === 'stream_status') {
-    return { view, run: { ...run, status: run.status === 'reconnecting' ? 'streaming' : run.status } };
+    return { view, run };
+  }
+  if (eventType === 'run_continued') {
+    return { view, run: { ...run, status: 'streaming', feedback: null, feedbackSubmission: undefined } };
   }
 
   if (run.status === 'submitting_feedback') {
@@ -333,6 +396,20 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
       messageOrder: view.messageOrder.includes(requestedId) ? view.messageOrder : [...view.messageOrder, requestedId],
     };
     run = { ...run, status: 'streaming' };
+  }
+
+  if (eventType === 'token' && event.content) {
+    const pending = run.pendingProcessText;
+    run = { ...run, pendingProcessText: { content: (pending?.content || '') + String(event.content || ''),
+      sequence: pending?.sequence ?? Number(event.event_index ?? (run.processItems || []).length) } };
+  }
+  if (eventType === 'thinking' && event.content) {
+    const items = run.processItems || [];
+    const last = items[items.length - 1];
+    const content = String(event.content);
+    run = { ...run, processItems: last?.kind === 'reasoning'
+      ? [...items.slice(0, -1), { ...last, content: (last.content || '') + content }]
+      : [...items, { id: 'reasoning:' + String(event.event_index ?? items.length), kind: 'reasoning', sequence: Number(event.event_index ?? items.length), content }] };
   }
 
   if (eventType === 'tool_call') {
@@ -373,7 +450,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
         };
       } else {
         const progress = event.progress && typeof event.progress === 'object' ? event.progress as Record<string, unknown> : {};
-        const terminal = progress.kind === 'train_done' || progress.kind === 'train_early_stop';
+        const terminal = ['train_done', 'job_done', 'job_failed', 'job_cancelled'].includes(String(progress.kind || ''));
         run = {
           ...run,
           toolsById: {
@@ -385,7 +462,7 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     }
   }
 
-  if (eventType === 'plan_analyzing') run = { ...run, plan: { completed: false, steps: [] } };
+  if (eventType === 'plan_analyzing' && !run.plan) run = { ...run, plan: { completed: false, steps: [] } };
   if (eventType === 'plan_ready') run = { ...run, plan: { completed: false, steps: event.steps || [] } };
   if (eventType === 'plan_step') {
     const currentSteps = run.plan?.steps || [];
@@ -429,6 +506,19 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     };
   }
 
+  if (eventType === 'analysis_report' || (eventType === 'graph_visualize' && isGraphData(event.data))) {
+    const messageId = `assistant:${run.runId || run.generation}`;
+    const renamed = renameAssistantMessage(view, run, messageId);
+    view = renamed.view; run = renamed.run;
+    const message = view.messagesById[messageId] || { id: messageId, role: 'assistant' as const, content: '' };
+    const id = String(event.data?.report?.report_id || event.data?.report?.id || event.data?.id || `run-${run.runId}-${event.call_id || event.event_index}`);
+    const updated = eventType === 'graph_visualize'
+      ? { ...message, graphs: [...(message.graphs || []).filter(graph => graph.id !== id), { ...event.data, id }] }
+      : { ...message, reports: [...(message.reports || []).filter(report => String(report.report_id || report.id) !== id), { ...event.data?.report, id }] };
+    view = { ...view, messagesById: { ...view.messagesById, [messageId]: updated },
+      messageOrder: view.messageOrder.includes(messageId) ? view.messageOrder : [...view.messageOrder, messageId] };
+  }
+
   if (eventType === 'await_user_feedback' || eventName.includes('runpaused') || eventName.includes('confirmation_required')) {
     run = { ...run, feedback: normalizeFeedbackRequest(event), status: 'awaiting_feedback' };
     view = {
@@ -438,53 +528,109 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
   }
 
   if (eventType === 'done') {
-    const messageId = String(event.message_id || run.assistantMessageId || '');
+    const messageId = String(event.message_id || run.assistantMessageId || `assistant:${run.runId || run.generation}`);
+    const renamed = renameAssistantMessage(view, run, messageId);
+    view = renamed.view;
+    run = renamed.run;
     const current = messageId ? view.messagesById[messageId] : undefined;
-    const content = current?.content || String(event.content || '');
-    view = {
-      ...view,
-      messagesById: Object.fromEntries(Object.entries(view.messagesById).map(([id, message]) => [
-        id,
-        id === messageId ? { ...message, content, streaming: false } : { ...message, streaming: false },
-      ])),
-    };
-    run = { ...run, status: 'completed', feedback: null };
+    const content = typeof event.content === 'string' ? event.content : current?.content || '';
+    view = { ...view,
+      messagesById: { ...view.messagesById, [messageId]: { ...current, id: messageId, role: 'assistant', content, streaming: false,
+        tools: run.toolOrder.map(id => run.toolsById[id]), plan: run.plan } },
+      messageOrder: view.messageOrder.includes(messageId) ? view.messageOrder : [...view.messageOrder, messageId] };
+    run = { ...run, status: run.status === 'cancelled' ? 'cancelled' : 'completed', feedback: null };
   }
 
   if (eventType === 'error') {
-    const error = String(event.error || '分析失败');
+    const error = String(event.error || tr('Analysis failed', '分析失败'));
+    const cancelled = Boolean(event.cancelled || eventName.includes('cancel') || run.status === 'cancelled');
     const messageId = run.assistantMessageId || '';
     view = {
       ...view,
-      error,
+      error: cancelled ? undefined : error,
       messagesById: Object.fromEntries(Object.entries(view.messagesById).map(([id, message]) => [
         id,
-        id === messageId && !message.content ? { ...message, content: error, streaming: false } : { ...message, streaming: false },
+        !cancelled && id === messageId && !message.content ? { ...message, content: error, streaming: false } : { ...message, streaming: false },
       ])),
     };
-    run = { ...run, status: eventName.includes('cancel') ? 'cancelled' : 'failed', feedback: null, error };
+    run = { ...run, status: cancelled ? 'cancelled' : 'failed', feedback: null, error: cancelled ? undefined : error };
   }
 
+  let processItems = run.processItems || [];
+  if (eventType === 'tool_call') {
+    const callId = String(event.call_id || run.toolOrder[run.toolOrder.length - 1] || '');
+    if (!processItems.some(item => item.id === 'tool:' + callId)) {
+      if (run.pendingProcessText?.content) processItems = [...processItems, {
+        id: 'text:' + run.pendingProcessText.sequence, kind: 'text', ...run.pendingProcessText }];
+      processItems = [...processItems, { id: 'tool:' + callId, kind: 'tool',
+        sequence: Number(event.event_index ?? processItems.length), tool: run.toolsById[callId] }];
+      run = { ...run, pendingProcessText: undefined };
+    }
+  }
+  processItems = processItems.map(item => {
+    if (item.kind !== 'tool') return item;
+    const tool = run.toolsById[item.tool?.call_id || ''] || item.tool || {};
+    const result = tool.result as Record<string, unknown> | undefined;
+    const terminal = ['completed', 'failed', 'cancelled'].includes(run.status);
+    const failed = result?.success === false || result?.status === 'failed';
+    const cancelled = result?.status === 'cancelled' || (terminal && !tool.done && run.status === 'cancelled');
+    const status: ToolCall['status'] = cancelled ? 'cancelled' : failed ? 'failed' : tool.done ? 'completed' : terminal ? 'failed' : 'running';
+    return { ...item, tool: { ...tool, status, done: Boolean(tool.done || terminal) } };
+  });
+  run = { ...run, processItems };
+  const processMessageId = run.assistantMessageId;
+  if (processMessageId && view.messagesById[processMessageId] && processItems.length) {
+    view = { ...view, messagesById: { ...view.messagesById,
+      [processMessageId]: { ...view.messagesById[processMessageId], processItems } } };
+  }
   return { view, run };
 }
 
-function applyBatch(view: SessionViewState, generation: string, batch: StreamBatch): SessionViewState {
+function applicableEvent(event: StreamEvent) {
+  if (!event || typeof event.type !== 'string') return false;
+  if (event.type === 'token') return typeof event.content === 'string';
+  if (event.type === 'done') return !('content' in event) || typeof event.content === 'string';
+  if (event.type === 'plan_step') return event.step && typeof event.step === 'object' && event.step.step_id != null;
+  if (event.type === 'plan_ready') return Array.isArray(event.steps) && event.steps.every((step: any) => step && step.step_id != null);
+  if (event.type === 'analysis_report') return event.data?.report && typeof event.data.report === 'object' && !Array.isArray(event.data.report);
+  if (event.type === 'graph_visualize') return isGraphData(event.data);
+  return true; // Unrecognized extension events remain forward compatible.
+}
+
+export function applyBatch(view: SessionViewState, generation: string, batch: StreamBatch): SessionViewState {
   if (batch.session_id && batch.session_id !== view.sessionId) return view;
   let run = view.activeRun;
   if (!run || run.generation !== generation) return view;
   if (run.runId && batch.run_id && run.runId !== batch.run_id) return view;
   if (TERMINAL_RUN_STATUSES.has(run.status) && batch.events.every(event => event.type !== 'done' && event.type !== 'error')) return view;
   const eventIndex = batch.event_index == null ? null : Number(batch.event_index);
-  if (batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex) && eventIndex <= run.lastEventIndex) return view;
+  if (batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex) && eventIndex <= run.lastAppliedEventIndex) return view;
+  const control = batch.events.every(event => ['stream_status', 'stream_recovery_required', 'feedback_accepted', 'feedback_submit_error'].includes(event.type || ''));
+  if (run.recoveryRequired || run.snapshotOnly) return view;
+  if (batch.events.some(event => event.type === 'stream_recovery_required') || (!control && batch.protocol_version === 2 && (
+    !Number.isSafeInteger(eventIndex) || eventIndex !== run.lastAppliedEventIndex + 1
+    || batch.events.some(event => !applicableEvent(event))
+  ))) return { ...view, activeRun: { ...run, recoveryRequired: true, synchronized: false, reception: 'snapshot_sync' } };
+  const visible = view;
+  if (run.replay) view = { ...view, ...run.replay };
   run = { ...run, runId: batch.run_id || run.runId };
-  for (const event of batch.events) {
-    const applied = applyStreamEvent(view, run, event);
-    view = applied.view;
-    run = applied.run;
+  view = bindRunMessages(view, run);
+  const wasCancelled = run.status === 'cancelled';
+  try {
+    for (const event of batch.events) {
+      const applied = applyStreamEvent(view, run, event);
+      view = applied.view;
+      run = applied.run;
+    }
+  } catch {
+    return { ...visible, activeRun: { ...visible.activeRun!, recoveryRequired: true, synchronized: false, reception: 'snapshot_sync' } };
   }
-  if (batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex)) {
-    run = { ...run, lastEventIndex: eventIndex };
+  if (!control && batch.protocol_version === 2 && eventIndex != null && Number.isFinite(eventIndex)) {
+    run = { ...run, lastAppliedEventIndex: eventIndex };
   }
+  if (wasCancelled) run = { ...run, status: 'cancelled', feedback: null };
+  view = bindRunMessages(view, run);
+  if (run.replay) return { ...visible, activeRun: { ...run, replay: { messagesById: view.messagesById, messageOrder: view.messageOrder, graph: view.graph } } };
   return { ...view, activeRun: run };
 }
 
@@ -527,40 +673,41 @@ function graphStateAfterHydration(
 }
 
 export function conversationReducer(state: ConversationState, action: ConversationAction): ConversationState {
+  if (action.type === 'RESET') return initialConversationState;
   if (action.type === 'OPEN_DRAFT') {
-    const current = state.draftsByProjectId[action.draft.projectId];
+    const current = state.draftsByScope[draftScopeKey(action.draft.projectId)];
     const draft = current || action.draft;
     return {
       ...state,
       activeSessionId: null,
-      activeDraftProjectId: draft.projectId,
-      draftsByProjectId: current ? state.draftsByProjectId : { ...state.draftsByProjectId, [draft.projectId]: draft },
+      activeDraftKey: draftScopeKey(draft.projectId),
+      draftsByScope: current ? state.draftsByScope : { ...state.draftsByScope, [draftScopeKey(draft.projectId)]: draft },
     };
   }
   if (action.type === 'PATCH_DRAFT') {
-    const current = state.draftsByProjectId[action.projectId];
+    const current = state.draftsByScope[draftScopeKey(action.projectId)];
     if (!current || current.draftId !== action.draftId) return state;
     return {
       ...state,
-      draftsByProjectId: {
-        ...state.draftsByProjectId,
-        [action.projectId]: { ...current, ...action.patch },
+      draftsByScope: {
+        ...state.draftsByScope,
+        [draftScopeKey(action.projectId)]: { ...current, ...action.patch },
       },
     };
   }
   if (action.type === 'REMOVE_DRAFT') {
-    const current = state.draftsByProjectId[action.projectId];
+    const current = state.draftsByScope[draftScopeKey(action.projectId)];
     if (!current || (action.draftId && current.draftId !== action.draftId)) return state;
-    const draftsByProjectId = { ...state.draftsByProjectId };
-    delete draftsByProjectId[action.projectId];
+    const draftsByScope = { ...state.draftsByScope };
+    delete draftsByScope[draftScopeKey(action.projectId)];
     return {
       ...state,
-      activeDraftProjectId: state.activeDraftProjectId === action.projectId ? null : state.activeDraftProjectId,
-      draftsByProjectId,
+      activeDraftKey: state.activeDraftKey === draftScopeKey(action.projectId) ? null : state.activeDraftKey,
+      draftsByScope,
     };
   }
   if (action.type === 'MATERIALIZE_DRAFT') {
-    const draft = state.draftsByProjectId[action.projectId];
+    const draft = state.draftsByScope[draftScopeKey(action.projectId)];
     if (!draft || draft.draftId !== action.draftId) return state;
     const uploaded = draft.attachments
       .filter(item => Boolean(item.fileToken))
@@ -575,27 +722,28 @@ export function conversationReducer(state: ConversationState, action: Conversati
       pendingAttachments,
       activeDatasetId: action.activeDatasetId,
       graph: graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, false),
-      activeRun: {
+      activeRun: action.prepareRun === false ? null : {
         generation: action.generation,
+        startRequestId: action.generation,
         status: 'preparing',
-        lastEventIndex: -1,
+        lastAppliedEventIndex: -1,
         toolsById: {}, toolOrder: [], plan: null, feedback: null,
       },
     };
-    const draftsByProjectId = { ...state.draftsByProjectId };
-    delete draftsByProjectId[action.projectId];
-    const wasActive = state.activeDraftProjectId === action.projectId;
+    const draftsByScope = { ...state.draftsByScope };
+    delete draftsByScope[draftScopeKey(action.projectId)];
+    const wasActive = state.activeDraftKey === draftScopeKey(action.projectId);
     return evictViews({
       ...state,
       activeSessionId: wasActive ? action.sessionId : state.activeSessionId,
-      activeDraftProjectId: wasActive ? null : state.activeDraftProjectId,
-      draftsByProjectId,
+      activeDraftKey: wasActive ? null : state.activeDraftKey,
+      draftsByScope,
       viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view },
     });
   }
   if (action.type === 'ENSURE_SESSION' || action.type === 'SET_ACTIVE_SESSION') {
     const sessionId = action.sessionId;
-    if (sessionId === null) return { ...state, activeSessionId: null, activeDraftProjectId: null };
+    if (sessionId === null) return { ...state, activeSessionId: null, activeDraftKey: null };
     const current = state.viewsBySessionId[sessionId];
     const view = current
       ? { ...current, model: action.model || current.model, lastAccessedAt: action.accessedAt ?? current.lastAccessedAt }
@@ -603,7 +751,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
     return evictViews({
       ...state,
       activeSessionId: action.type === 'SET_ACTIVE_SESSION' ? sessionId : state.activeSessionId,
-      activeDraftProjectId: action.type === 'SET_ACTIVE_SESSION' ? null : state.activeDraftProjectId,
+      activeDraftKey: action.type === 'SET_ACTIVE_SESSION' ? null : state.activeDraftKey,
       viewsBySessionId: { ...state.viewsBySessionId, [sessionId]: view },
     });
   }
@@ -619,18 +767,20 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'HYDRATE_SUCCESS': {
       if (action.requestVersion !== view.hydrationRequestVersion) return state;
+      if (view.activeRun?.cancellation && view.activeRun.serverCanSend !== true) return state;
       const indexed = action.preserveMessages && view.messageOrder.length
         ? { messagesById: view.messagesById, messageOrder: view.messageOrder }
         : indexMessages(view.sessionId, action.messages);
       let activeRun = view.activeRun;
       if (action.activeRun) {
-        const status = action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'reconnecting';
+        const status = action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'streaming';
         if (!activeRun || activeRun.runId !== action.activeRun.run_id) {
           activeRun = {
             runId: action.activeRun.run_id,
             generation: action.generation || `resume:${action.activeRun.run_id}`,
             status,
-            lastEventIndex: Number(action.activeRun.last_event_index ?? -1),
+            lastAppliedEventIndex: -1,
+            reception: 'connecting', synchronized: false,
             assistantMessageId: `assistant:${action.activeRun.run_id}`,
             toolsById: {}, toolOrder: [], plan: null,
             feedback: action.feedback || null,
@@ -639,12 +789,18 @@ export function conversationReducer(state: ConversationState, action: Conversati
           activeRun = {
             ...activeRun,
             status,
-            lastEventIndex: Math.max(activeRun.lastEventIndex, Number(action.activeRun.last_event_index ?? -1)),
+            reception: 'connecting', synchronized: false,
+            lastAppliedEventIndex: activeRun.lastAppliedEventIndex,
             feedback: status === 'awaiting_feedback' ? action.feedback || activeRun.feedback : null,
             feedbackSubmission: undefined,
           };
         }
-      } else if (!activeRun || !PROTECTED_RUN_STATUSES.has(activeRun.status)) activeRun = null;
+      } else if (action.control?.run_id && !action.control.can_send) {
+        activeRun = { generation: action.generation || `resume:${action.control.run_id}`,
+          runId: action.control.run_id, startRequestId: action.control.start_request_id || undefined,
+          status: 'starting', lastAppliedEventIndex: -1, reception: 'idle', synchronized: true,
+          toolsById: {}, toolOrder: [], plan: null, feedback: null };
+      } else activeRun = null;
       const graph = graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, action.hasGraph);
       const latestGraph = action.preserveMessages ? null : latestMessageGraph(action.messages);
       const hydratedGraph: GraphViewState = latestGraph ? { status: 'ready', data: latestGraph } : graph;
@@ -678,8 +834,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
         error: undefined,
         activeRun: {
           generation: action.generation,
+          startRequestId: action.generation,
           status: 'preparing',
-          lastEventIndex: -1,
+          lastAppliedEventIndex: -1,
           toolsById: {}, toolOrder: [], plan: null, feedback: null,
         },
       };
@@ -695,6 +852,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
         activeRun: {
           ...preparingRun,
           status: 'starting',
+          submittedInput: action.userMessage.content,
           assistantMessageId: action.assistantMessage.id,
         },
       };
@@ -702,13 +860,14 @@ export function conversationReducer(state: ConversationState, action: Conversati
     }
     case 'PREPARE_RUN_FAILED':
       if (!view.activeRun || view.activeRun.generation !== action.generation || view.activeRun.status !== 'preparing') return state;
+      if (view.activeRun.cancellation) return state;
       view = { ...view, activeRun: null, error: action.error };
       break;
     case 'SET_PENDING_ATTACHMENT':
       view = {
         ...view,
         pendingAttachments: view.pendingAttachments.map(item => item.localId === action.localId
-          ? { ...item, status: action.status, error: action.error }
+          ? { ...item, status: action.status, error: action.error, progress: action.progress }
           : item),
       };
       break;
@@ -727,15 +886,31 @@ export function conversationReducer(state: ConversationState, action: Conversati
       break;
     case 'START_RUN': {
       if (PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle')) return state;
+      let editBackup: SessionRunState['editBackup'];
+      if (action.replaceRunId) {
+        const latest = editableLatestTurn(selectMessages(view));
+        if (latest?.assistant.run_id !== action.replaceRunId || !selectRunGate(view).canStartRun) return state;
+        const position = view.messageOrder.indexOf(latest.user.id!);
+        if (position < 0) return state;
+        const removedIds = view.messageOrder.slice(position);
+        editBackup = { runId: action.replaceRunId, messages: removedIds.map(id => view.messagesById[id]) };
+        view = { ...view, messageOrder: view.messageOrder.slice(0, position),
+          messagesById: Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !removedIds.includes(id))),
+          replacedRunIds: [...(view.replacedRunIds || []), action.replaceRunId] };
+      }
       view = appendMessages(view, [action.userMessage, action.assistantMessage]);
       view = {
         ...view,
-        draft: '',
+        draft: editBackup ? view.draft : '',
         error: undefined,
         activeRun: {
           generation: action.generation,
+          startRequestId: action.generation,
           status: 'starting',
-          lastEventIndex: -1,
+          submittedInput: action.userMessage.content,
+          editBackup,
+          replaceRunId: action.replaceRunId,
+          lastAppliedEventIndex: -1,
           assistantMessageId: action.assistantMessage.id,
           toolsById: {}, toolOrder: [], plan: null, feedback: null,
         },
@@ -744,6 +919,8 @@ export function conversationReducer(state: ConversationState, action: Conversati
     }
     case 'ROLLBACK_RUN_START': {
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
+      if (view.activeRun.cancellation) return state;
+      const backup = view.activeRun.editBackup;
       const removeIds = new Set([`user:${action.generation}`, `assistant:${action.generation}`]);
       const messagesById = { ...view.messagesById };
       for (const id of removeIds) delete messagesById[id];
@@ -751,13 +928,14 @@ export function conversationReducer(state: ConversationState, action: Conversati
         ...view,
         messagesById,
         messageOrder: view.messageOrder.filter(id => !removeIds.has(id)),
-        draft: view.draft.trim() ? view.draft : action.restoreDraft || view.draft,
+        draft: backup ? view.draft : view.draft.trim() ? view.draft : action.restoreDraft || view.draft,
         attachments: [
           ...view.attachments,
-          ...(action.restoreAttachments || []).filter(item => !view.attachments.some(current => current.file_token === item.file_token)),
+          ...(backup ? [] : action.restoreAttachments || []).filter(item => !view.attachments.some(current => current.file_token === item.file_token)),
         ],
         activeRun: null,
       };
+      if (backup) view = restoreEditedTurn(view, backup);
       break;
     }
     case 'ADOPT_RUN':
@@ -766,13 +944,89 @@ export function conversationReducer(state: ConversationState, action: Conversati
         activeRun: {
           runId: action.activeRun.run_id,
           generation: action.generation,
-          status: action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'reconnecting',
-          lastEventIndex: Number(action.activeRun.last_event_index ?? -1),
+          status: action.activeRun.status.toLowerCase() === 'paused' ? 'awaiting_feedback' : 'streaming',
+          lastAppliedEventIndex: -1,
+          reception: 'connecting', synchronized: false,
           assistantMessageId: `assistant:${action.activeRun.run_id}`,
           toolsById: {}, toolOrder: [], plan: null, feedback: action.feedback || null,
         },
       };
       break;
+    case 'SET_RUN_ID':
+      if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
+      if (view.activeRun.runId && view.activeRun.runId !== action.runId) return state;
+      view = {
+        ...view,
+        activeRun: {
+          ...view.activeRun,
+          runId: action.runId,
+        },
+      };
+      view = bindRunMessages(view, view.activeRun!);
+      break;
+    case 'REQUEST_CANCEL': {
+      let run = view.activeRun;
+      if (run && run.generation !== action.generation) return state;
+      run ||= { generation: action.generation, runId: action.runId, startRequestId: action.startRequestId,
+        status: 'preparing', lastAppliedEventIndex: -1, toolsById: {}, toolOrder: [], plan: null, feedback: null };
+      view = { ...view, activeRun: { ...run, cancelRequestId: action.cancelRequestId, cancellation: 'requested', serverCanSend: false } };
+      break;
+    }
+    case 'CANCEL_UNCONFIRMED':
+      if (view.activeRun?.generation !== action.generation) return state;
+      view = { ...view, activeRun: { ...view.activeRun, cancellation: 'unconfirmed' } };
+      break;
+    case 'APPLY_CONTROL': {
+      const run = view.activeRun;
+      const control = action.control;
+      if (!run || run.generation !== action.generation || (run.runId && control.run_id && run.runId !== control.run_id)) return state;
+      if (control.revision < (run.controlRevision || 0)) return state;
+      if (control.registration_status === 'not_seen') return state;
+      const safe = control.execution_stopped && control.terminal_persisted;
+      const status = control.run_status === 'cancelled' ? 'cancelled' : control.run_status === 'completed' ? 'completed'
+        : ['failed', 'error'].includes(control.run_status || '') ? 'failed' : run.status;
+      // A stopped ordinary send is still a visible conversation turn. Only failed
+      // admission or an edit that never replaced native history should roll back.
+      if (safe && control.native_run_created === false && (status !== 'cancelled' || run.replaceRunId)) {
+        const remove = new Set([`user:${run.generation}`, `assistant:${run.generation}`, ...view.messageOrder.filter(id => view.messagesById[id]?.run_id === run.runId)]);
+        view = { ...view, messagesById: Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !remove.has(id))),
+          messageOrder: view.messageOrder.filter(id => !remove.has(id)), draft: run.replaceRunId ? view.draft : view.draft || run.submittedInput || '',
+          pendingAttachments: view.pendingAttachments.map(item => item.status === 'uploading'
+            ? { ...item, status: item.file ? 'staged' : 'needs_reselect' } : item) };
+      }
+      if (safe && control.native_run_created === false && run.editBackup) {
+        view = restoreEditedTurn(view, run.editBackup);
+      }
+      view = { ...view, error: safe && status === 'cancelled' ? undefined : view.error,
+        activeRun: { ...run, runId: control.run_id || run.runId, controlRevision: control.revision,
+        nativeRunCreated: control.native_run_created ?? run.nativeRunCreated,
+        synchronized: safe && control.native_run_created === false ? true : run.synchronized,
+        replay: safe ? undefined : run.replay,
+        error: safe && status === 'cancelled' ? undefined : run.error,
+        editBackup: safe && control.native_run_created === false ? undefined : run.editBackup,
+        serverCanSend: safe && control.can_send, status: run.status === 'cancelled' ? 'cancelled' : status,
+        reception: safe ? 'idle' : run.reception,
+        cancellation: run.cancellation || control.cancel_status !== 'none' ? safe ? 'confirmed' : control.execution_stopped ? 'saving' : 'stopping' : undefined,
+        feedback: control.cancel_status !== 'none' ? null : run.feedback } };
+      view = bindRunMessages(view, view.activeRun!);
+      break;
+    }
+    case 'MERGE_RUN_SNAPSHOT': {
+      const snapshot = action.snapshot;
+      if (!snapshot.snapshot_complete || snapshot.session_id !== view.sessionId || view.replacedRunIds?.includes(snapshot.run_id)) return state;
+      const own = snapshot.messages.filter(message => message.run_id === snapshot.run_id
+        || message.id === `assistant:${snapshot.run_id}` || message.id === `user:${snapshot.run_id}`);
+      const indexed = indexMessages(view.sessionId, own);
+      const replacedIds = new Set(view.messageOrder.filter(id => view.messagesById[id]?.run_id === snapshot.run_id));
+      const position = view.messageOrder.findIndex(id => replacedIds.has(id));
+      const order = view.messageOrder.filter(id => !replacedIds.has(id));
+      order.splice(position < 0 ? order.length : position, 0, ...indexed.messageOrder.filter(id => !order.includes(id)));
+      // A late old-run snapshot only updates its messages. Draft, current graph
+      // version, newer messages and active execution remain untouched.
+      view = { ...view, messagesById: { ...Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !replacedIds.has(id))), ...indexed.messagesById },
+        messageOrder: order };
+      break;
+    }
     case 'BEGIN_FEEDBACK_SUBMISSION': {
       const run = view.activeRun;
       if (!run || run.generation !== action.generation || run.runId !== action.runId || run.status !== 'awaiting_feedback') return state;
@@ -794,9 +1048,66 @@ export function conversationReducer(state: ConversationState, action: Conversati
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
       view = { ...view, activeRun: null };
       break;
+    case 'FEEDBACK_NOT_ACCEPTED':
+      if (!view.activeRun || view.activeRun.generation !== action.generation || view.activeRun.feedbackSubmission?.decisionId !== action.decisionId) return state;
+      view = { ...view, activeRun: { ...view.activeRun, feedbackSubmission: undefined, synchronized: false } };
+      break;
     case 'APPLY_BATCH':
       view = applyBatch(view, action.generation, action.batch);
       break;
+    case 'SET_RECEPTION':
+      if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
+      // A late observer callback cannot restart an already confirmed empty run.
+      if (view.activeRun.nativeRunCreated === false && view.activeRun.cancellation === 'confirmed') return state;
+      view = { ...view, error: action.error ?? view.error, activeRun: { ...view.activeRun,
+        reception: action.reception, synchronized: action.synchronized ?? view.activeRun.synchronized,
+        snapshotOnly: action.snapshotOnly ?? view.activeRun.snapshotOnly } };
+      break;
+    case 'BEGIN_REPLAY': {
+      const run = view.activeRun;
+      if (!run || run.generation !== action.generation || run.snapshotOnly) return state;
+      const ids = new Set([run.assistantMessageId, `assistant:${run.runId}`]);
+      view = { ...view, activeRun: { ...run, lastAppliedEventIndex: -1, recoveryRequired: false, synchronized: false,
+        toolsById: {}, toolOrder: [], plan: null, feedback: null, processItems: [], pendingProcessText: undefined,
+        replay: { messagesById: Object.fromEntries(Object.entries(view.messagesById).filter(([id]) => !ids.has(id))),
+          messageOrder: view.messageOrder.filter(id => !ids.has(id)), graph: view.graph } } };
+      break;
+    }
+    case 'REPLAY_CAUGHT_UP': {
+      const run = view.activeRun;
+      if (!run || run.generation !== action.generation || run.recoveryRequired || run.snapshotOnly) return state;
+      view = { ...view, ...run.replay, error: undefined,
+        activeRun: { ...run, replay: undefined, synchronized: true, reception: TERMINAL_RUN_STATUSES.has(run.status) || run.status === 'awaiting_feedback' ? 'idle' : 'receiving' } };
+      break;
+    }
+    case 'APPLY_SNAPSHOT': {
+      const run = view.activeRun;
+      const snapshot = action.snapshot;
+      if (!run || run.generation !== action.generation || run.runId !== snapshot.run_id || snapshot.session_id !== view.sessionId || !snapshot.snapshot_complete) return state;
+      if (snapshot.control && snapshot.control.revision < (run.controlRevision || 0)) return state;
+      const active = snapshot.active_run;
+      const sameRun = active?.run_id === run.runId;
+      const status = run.status === 'cancelled' && (!active || sameRun) ? 'cancelled' : active ? (active.status === 'paused' ? 'awaiting_feedback' : 'streaming')
+        : snapshot.status === 'completed' ? 'completed' : snapshot.status === 'cancelled' ? 'cancelled' : 'failed';
+      const indexed = indexMessages(view.sessionId, snapshot.messages);
+      const assistant = indexed.messagesById[`assistant:${active?.run_id || run.runId}`];
+      const tools = assistant?.tools || [];
+      view = { ...view, ...indexed, error: undefined, hydration: 'ready',
+        graph: latestMessageGraph(snapshot.messages) ? { status: 'ready', data: latestMessageGraph(snapshot.messages)! } : view.graph,
+        activeRun: { ...run, editBackup: snapshot.messages.some(message => message.run_id === run.runId) ? undefined : run.editBackup, runId: active?.run_id || run.runId,
+          ...(active && !sameRun ? { serverCanSend: false, cancellation: undefined, cancelRequestId: undefined, controlRevision: 0, startRequestId: undefined } : {}),
+          generation: active && !sameRun ? `resume:${active.run_id}` : run.generation,
+          status: (!active || sameRun) && run.status === 'cancelled' ? 'cancelled' : status, reception: active && !sameRun ? 'connecting' : 'idle', synchronized: !active || sameRun,
+          snapshotOnly: sameRun && snapshot.resume_cursor == null,
+          recoveryRequired: false, replay: undefined,
+          lastAppliedEventIndex: sameRun && snapshot.resume_cursor != null ? snapshot.resume_cursor : -1,
+          assistantMessageId: `assistant:${active?.run_id || run.runId}`,
+          toolsById: Object.fromEntries(tools.map((tool, index) => [tool.call_id || `snapshot:${index}`, tool])),
+          toolOrder: tools.map((tool, index) => tool.call_id || `snapshot:${index}`), plan: assistant?.plan || null,
+          feedback: active?.status === 'paused' ? snapshot.pending_feedback : null, feedbackSubmission: undefined,
+        } };
+      break;
+    }
     case 'SET_RUN_STATUS':
       if (!view.activeRun || view.activeRun.generation !== action.generation) return state;
       if (TERMINAL_RUN_STATUSES.has(view.activeRun.status) && !TERMINAL_RUN_STATUSES.has(action.status)) return state;
@@ -837,5 +1148,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
       return { ...state, activeSessionId: state.activeSessionId === action.sessionId ? null : state.activeSessionId, viewsBySessionId };
     }
   }
-  return { ...state, viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view } };
+  const updated = { ...state, viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view } };
+  const control = action.type === 'APPLY_SNAPSHOT' ? action.snapshot.control : action.type === 'HYDRATE_SUCCESS' ? action.control : null;
+  if (control && view.activeRun) return conversationReducer(updated, { type: 'APPLY_CONTROL',
+    sessionId: action.sessionId, generation: view.activeRun.generation, control });
+  return updated;
 }

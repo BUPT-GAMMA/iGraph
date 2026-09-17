@@ -30,7 +30,7 @@ metadata:
 2. **调用可视化工具**：使用 `visualize_subgraph` 工具获取全图可视化数据。
 3. **构建 highlights 参数**：根据用户意图构建 `highlights` 参数（见下方统一格式）。
 4. **组合高亮**：如果用户同时要求多种高亮（如最短路径 + 社区），可同时指定 `paths`、`nodes`、`subgraphs`。
-5. **社区着色**：如需社区着色，设置 `include_community: true`。
+5. **社区着色**：默认启用（`include_community: true`），添加节点、路径或子图高亮时也保持启用；仅在用户要求关闭社区着色时设置为 `false`。
 
 ## Highlights 统一格式（Agent 输入格式）
 

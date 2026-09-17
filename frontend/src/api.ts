@@ -1,5 +1,7 @@
 import { isGraphData } from './types';
-import type { ActiveRun, AttachmentRef, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import { createParser } from 'eventsource-parser';
+import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import { currentLanguage, tr } from './i18n';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
@@ -18,17 +20,35 @@ export type CustomModel = {
 export function getUserId() { return localStorage.getItem(USER_KEY) || ''; }
 export function setUserId(value: string) { localStorage.setItem(USER_KEY, value); }
 
+let requestAccount: { userId: string } | undefined;
+
+/** Bind requests to the account rendered by the mounted workspace. */
+export function bindRequestAccount(userId: string) {
+  const account = { userId };
+  requestAccount = account;
+  return () => { if (requestAccount === account) requestAccount = undefined; };
+}
+
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
-  const userId = getUserId();
-  if (userId) headers.set('X-User-ID', userId);
+  if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
+  if (!headers.has('X-User-ID')) {
+    const storedUserId = getUserId();
+    const userId = requestAccount?.userId ?? storedUserId;
+    // A storage event can arrive after a click. Never send the old workspace's
+    // content with an identity read from another tab; keep the header pinned.
+    if (userId !== storedUserId) {
+      throw new ApiError(409, tr('The account changed in another tab. Wait for it to sync, then try again.', '账户已在其他标签页切换，请等待同步后重试'), null, null, null, 'ACCOUNT_CHANGED');
+    }
+    if (userId) headers.set('X-User-ID', userId);
+  }
   return fetch(`${API_BASE}${path}`, { ...options, headers });
 }
 
 async function json<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await apiFetch(path, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw ApiError.fromResponse(response.status, data);
+  if (!response.ok) throw ApiError.fromResponse(response.status, data, response.headers.get('Retry-After'));
   return data as T;
 }
 
@@ -38,6 +58,8 @@ export class ApiError extends Error {
   code?: string;
   activeRun?: ActiveRun | null;
   pendingFeedback?: FeedbackRequest | null;
+  retryAfterMs?: number;
+  feedbackAccepted?: boolean;
 
   constructor(status: number, message: string, detail?: unknown, activeRun?: ActiveRun | null, pendingFeedback?: FeedbackRequest | null, code?: string) {
     super(message);
@@ -49,13 +71,31 @@ export class ApiError extends Error {
     this.pendingFeedback = pendingFeedback;
   }
 
-  static fromResponse(status: number, data: any) {
+  static fromResponse(status: number, data: any, retryAfter?: string | null) {
     const detail = data?.detail ?? data?.error;
     const body = detail && typeof detail === 'object' ? detail : data;
+    const validationMessage = Array.isArray(detail)
+      ? detail.map(item => {
+          if (!item || typeof item !== 'object') return String(item);
+          const location = Array.isArray(item.loc) ? item.loc.filter((part: unknown) => part !== 'body').join('.') : '';
+          return `${location ? `${location}: ` : ''}${String(item.msg || item.message || tr('Invalid parameter', '参数无效'))}`;
+        }).filter(Boolean).join(tr('; ', '；'))
+      : '';
     const message = typeof detail === 'string'
       ? detail
-      : String(body?.message || body?.error || `请求失败 (${status})`);
-    return new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
+      : validationMessage || ({
+        JOB_IDEMPOTENCY_CONFLICT: tr('The data-loading operation ID conflicts with another request. Try again, or contact an administrator if this continues.', '数据加载操作编号冲突，请重试；若持续出现，请联系维护者'),
+        EDIT_TARGET_CHANGED: tr('The latest turn changed. Refresh and try again.', '最新一轮已变化，请刷新后重试'),
+        EDIT_TARGET_NOT_FINISHED: tr('Wait for the current turn to finish before editing it.', '请等待本轮结束后再修改'),
+        EDIT_UNAVAILABLE: tr('Conversation editing is not available on this server.', '当前服务暂不支持修改对话'),
+      } as Record<string, string>)[body?.code] || String(body?.message || body?.error || tr(`Request failed (${status})`, `请求失败 (${status})`));
+    const error = new ApiError(status, message, detail, body?.active_run || null, body?.pending_feedback || null, body?.code);
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
+      if (Number.isFinite(delay)) error.retryAfterMs = Math.max(0, delay);
+    }
+    return error;
   }
 }
 
@@ -84,12 +124,12 @@ export async function listSessions() { return json<{ success?: boolean; sessions
 export async function createSession(options: {
   clientSessionId?: string;
   model?: string;
-  projectId?: string;
+  projectId?: string | null;
   activeDatasetId?: string | null;
   initialMessagePreview?: string;
   signal?: AbortSignal;
 } = {}) {
-  return json<{ success?: boolean; session_id: string; reused?: boolean; project_id?: string; active_dataset_id?: string | null; dataset_view?: DatasetView | null; model?: string; title?: string }>('/api/sessions', {
+  return json<{ success?: boolean; session_id: string; reused?: boolean; project_id?: string | null; active_dataset_id?: string | null; dataset_view?: DatasetView | null; model?: string; title?: string }>('/api/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: options.signal,
     body: JSON.stringify({
       client_session_id: options.clientSessionId,
@@ -104,10 +144,11 @@ export async function createSession(options: {
 }
 export async function activateSession(id: string, signal?: AbortSignal) {
   return json<{
+    control?: RunControl | null;
     messages?: Message[];
     active_run?: ActiveRun | null;
     pending_feedback?: FeedbackRequest | null;
-    project_id?: string;
+    project_id?: string | null;
     active_dataset_id?: string | null;
     has_graph?: boolean;
     dataset_view?: DatasetView | null;
@@ -121,14 +162,13 @@ export async function updateSessionModel(id: string, model: string) {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }),
   });
 }
-export async function deleteSession(id: string) { return json<any>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
-export async function moveSession(id: string, projectId: string) {
-  return json<any>(`/api/sessions/${encodeURIComponent(id)}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: projectId }),
-  });
+export async function deleteSession(id: string) {
+  // 202 acknowledges durable stop-and-delete; server cleanup survives disconnect.
+  return json<{ success: boolean; delete_status?: 'requested' | 'deleted' }>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
+
 export async function getMessages(id: string, signal?: AbortSignal) { return json<{ messages?: Message[] }>(`/api/sessions/${encodeURIComponent(id)}/messages`, { signal }); }
-export async function listProjects() { return json<{ success?: boolean; projects?: Project[] }>('/api/projects'); }
+export async function listProjects() { return json<{ success?: boolean; projects?: Project[]; legacy_default_project_id?: string }>('/api/projects'); }
 export async function createProject(name: string, description = '') {
   return json<{ success?: boolean; project: Project }>('/api/projects', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, description }),
@@ -139,49 +179,131 @@ export async function updateProject(id: string, patch: { name?: string; descript
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
   });
 }
-export async function deleteProject(id: string, action: 'move_to_general' | 'delete' = 'move_to_general') {
-  return json<{ success?: boolean; affected_conversations: number; general_project_id: string }>(`/api/projects/${encodeURIComponent(id)}`, {
-    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation_action: action }),
+export async function deleteProject(id: string) {
+  return json<{ success?: boolean; project_id: string; delete_status: 'requested' | 'deleted' }>(`/api/projects/${encodeURIComponent(id)}`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation_action: 'delete' }),
   });
 }
+
 export async function listProjectConversations(id: string) {
   return json<{ success?: boolean; conversations?: Session[] }>(`/api/projects/${encodeURIComponent(id)}/conversations`);
 }
 export async function listProjectTrainingRuns(id: string, signal?: AbortSignal) {
   return json<{ success?: boolean; project_id: string; training_runs?: ProjectTrainingRun[]; has_running?: boolean }>(`/api/projects/${encodeURIComponent(id)}/training-runs`, { signal });
 }
-export async function listProjectDatasets(projectId: string, signal?: AbortSignal) {
-  return json<{ success?: boolean; project_id: string; default_dataset_id?: string | null; datasets?: Dataset[] }>(`/api/projects/${encodeURIComponent(projectId)}/datasets`, { signal });
+function datasetScopeUrl(projectId: string | null) {
+  return projectId ? `/api/projects/${encodeURIComponent(projectId)}/datasets` : '/api/personal-datasets';
 }
-export async function uploadProjectDataset(projectId: string, file: File, sessionId?: string) {
+export async function listProjectDatasets(projectId: string | null, signal?: AbortSignal) {
+  return json<{ success?: boolean; project_id: string | null; default_dataset_id?: string | null; datasets?: Dataset[] }>(datasetScopeUrl(projectId), { signal });
+}
+export async function uploadProjectDataset(projectId: string | null, file: File | File[], sessionId?: string, csvSchema?: CsvBundleSchema, name?: string) {
   const body = new FormData();
-  body.append('file', file);
+  const selected = Array.isArray(file) ? file : [file];
+  if (csvSchema) {
+    selected.forEach(item => body.append('files', item));
+    body.append('csv_schema', JSON.stringify(csvSchema));
+    if (name) body.append('name', name);
+  } else if (selected[0]) body.append('file', selected[0]);
   if (sessionId) body.append('session_id', sessionId);
-  return json<{ success?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(`/api/projects/${encodeURIComponent(projectId)}/datasets`, { method: 'POST', body });
+  return json<{ success?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(datasetScopeUrl(projectId), { method: 'POST', body });
 }
-export async function renameProjectDataset(projectId: string, datasetId: string, name: string) {
-  return json<{ success?: boolean; dataset: Dataset }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}`, {
+export async function renameProjectDataset(projectId: string | null, datasetId: string, name: string) {
+  return json<{ success?: boolean; dataset: Dataset }>(`${datasetScopeUrl(projectId)}/${encodeURIComponent(datasetId)}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
   });
 }
 export async function setDefaultProjectDataset(projectId: string, datasetId: string) {
   return json<{ success?: boolean; default_dataset_id: string }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}/set-default`, { method: 'POST' });
 }
-export async function deleteProjectDataset(projectId: string, datasetId: string) {
-  return json<{ success?: boolean; default_dataset_id?: string | null; cleared_conversations?: number }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/${encodeURIComponent(datasetId)}`, { method: 'DELETE' });
+export async function deleteProjectDataset(projectId: string | null, datasetId: string) {
+  return json<{ success?: boolean; default_dataset_id?: string | null; cleared_conversations?: number }>(`${datasetScopeUrl(projectId)}/${encodeURIComponent(datasetId)}`, { method: 'DELETE' });
 }
 export async function setSessionDataset(sessionId: string, datasetId: string | null) {
   return json<{ success?: boolean; session_id: string; project_id: string; active_dataset_id?: string | null; dataset_view?: DatasetView | null }>(`/api/sessions/${encodeURIComponent(sessionId)}/dataset`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active_dataset_id: datasetId }),
   });
 }
-export async function uploadFile(sessionId: string, file: File, signal?: AbortSignal) {
+export type UploadResult = { success: boolean; filename: string; file_token: string; dataset?: Dataset; construction_required?: boolean };
+
+export async function uploadFile(sessionId: string, file: File, signal?: AbortSignal, onProgress?: (percent: number) => void): Promise<UploadResult> {
   const body = new FormData(); body.append('file', file);
-  return json<{ success: boolean; filename: string; file_token: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/upload`, { method: 'POST', body, signal });
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/upload`;
+  const account = requestAccount;
+  const identity = account?.userId ?? getUserId();
+  const accountChanged = () => identity !== getUserId() || (account !== undefined && account !== requestAccount);
+  const accountError = () => new ApiError(409, tr('The account changed. Select the file again.', '账户已切换，请重新选择文件'), null, null, null, 'ACCOUNT_CHANGED');
+  if (accountChanged()) throw accountError();
+  const result = onProgress
+    ? await new Promise<UploadResult>((resolve, reject) => {
+      if (signal?.aborted) { reject(new DOMException(tr('Upload cancelled', '上传已取消'), 'AbortError')); return; }
+      const xhr = new XMLHttpRequest();
+      let settled = false;
+      const abort = () => { xhr.abort(); finish(new DOMException(tr('Upload cancelled', '上传已取消'), 'AbortError')); };
+      function finish(error?: Error, data?: UploadResult) {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', abort);
+        if (error) reject(error); else resolve(data!);
+      }
+      xhr.open('POST', `${API_BASE}${path}`);
+      if (identity) xhr.setRequestHeader('X-User-ID', identity);
+      xhr.setRequestHeader('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
+      xhr.upload.onprogress = event => {
+        if (accountChanged()) { finish(accountError()); xhr.abort(); return; }
+        if (!settled && event.lengthComputable && event.total > 0) onProgress(Math.min(100, Math.round(event.loaded / event.total * 100)));
+      };
+      xhr.onload = () => {
+        if (accountChanged()) { finish(accountError()); return; }
+        let data: UploadResult;
+        try { data = JSON.parse(xhr.responseText); }
+        catch { finish(new ApiError(xhr.status, tr('The upload response was invalid. Try again.', '上传响应无效，请重试'))); return; }
+        if (xhr.status < 200 || xhr.status >= 300) { finish(ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'))); return; }
+        if (data?.success !== true || typeof data.file_token !== 'string' || !data.file_token) { finish(new ApiError(xhr.status, tr('The upload did not complete. Try again.', '上传未成功，请重试'))); return; }
+        finish(undefined, data);
+      };
+      xhr.onerror = () => finish(new Error(tr('Upload failed. Check your connection and try again.', '上传失败，请检查网络后重试')));
+      xhr.ontimeout = () => finish(new Error(tr('Upload timed out. Try again.', '上传超时，请重试')));
+      xhr.onabort = () => finish(new DOMException(tr('Upload cancelled', '上传已取消'), 'AbortError'));
+      signal?.addEventListener('abort', abort, { once: true });
+      try { xhr.send(body); } catch (cause) { finish(cause instanceof Error ? cause : new Error(tr('Upload failed', '上传失败'))); }
+    })
+    : await json<UploadResult>(path, { method: 'POST', body, signal });
+  if (accountChanged()) throw accountError();
+  window.dispatchEvent(new CustomEvent('igraph:workspace-changed', { detail: { sessionId } }));
+  return result;
+}
+
+function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
+  return `${datasetScopeUrl(dataset.project_id)}/${encodeURIComponent(dataset.dataset_id)}/construction`;
+}
+export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
+  return json<ConstructionState>(constructionUrl(dataset), { signal });
+}
+export function buildDatasetGraph(dataset: Dataset, options: ConstructionBuildOptions = {}) {
+  return json<ConstructionState>(`${constructionUrl(dataset)}/build`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ options }),
+  });
+}
+export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
+  return json<ConstructionGraph>(`${constructionUrl(dataset)}/graph`, { signal });
+}
+export function getConstructionSchema(dataset: Dataset, signal?: AbortSignal) {
+  return json<ConstructionSchemaResponse>(`${constructionUrl(dataset)}/schema`, { signal });
+}
+export function previewConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[]) {
+  return json<ConstructionResult>(`${constructionUrl(dataset)}/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
+  });
+}
+export function commitConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[]) {
+  return json<ConstructionResult>(`${constructionUrl(dataset)}/commit`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
+  });
 }
 export async function visualizeGraph(sessionId: string, options: Record<string, unknown> = {}, signal?: AbortSignal): Promise<GraphData> {
   const value = await json<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/visualize`, {
-    method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ include_community: true, ...options }),
+    method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ include_community: true, max_nodes: 800, ...options }),
   });
   return parseGraphDataResponse(value);
 }
@@ -190,32 +312,38 @@ export function parseGraphDataResponse(value: unknown): GraphData {
   if (isGraphData(value)) return value;
   const payload = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const message = payload.success === false
-    ? String(payload.error || '图谱可视化失败')
-    : '服务返回的图结构不完整';
+    ? String(payload.error || tr('Graph visualization failed', '图谱可视化失败'))
+    : tr('The server returned an incomplete graph structure', '服务返回的图结构不完整');
   throw new ApiError(502, message, value, null, null, 'INVALID_GRAPH_RESPONSE');
 }
 
 export type StreamHandlers = {
   onOpen?: () => void;
+  onActivity?: () => void;
   onEvent?: (event: StreamEvent) => void;
   onBatch?: (batch: StreamBatch) => void;
 };
 
+export class StreamProtocolError extends Error {}
+
 function deliverStreamPayload(payload: unknown, sessionId: string, handlers: StreamHandlers) {
-  if (!payload || typeof payload !== 'object') return;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new StreamProtocolError(tr('Invalid stream event', '无效的流事件'));
   const value = payload as Record<string, any>;
   if (value.protocol_version === 2 && Array.isArray(value.events)) {
+    if (!value.events.every((event: unknown) => event && typeof event === 'object' && typeof (event as StreamEvent).type === 'string')
+      || (value.event_index != null && (!Number.isSafeInteger(value.event_index) || value.event_index < 0))) throw new StreamProtocolError(tr('Invalid V2 event batch', '无效的 V2 事件批次'));
     const batch: StreamBatch = {
       protocol_version: 2,
       session_id: String(value.session_id || sessionId),
       run_id: String(value.run_id || ''),
       event_index: value.event_index != null && Number.isFinite(Number(value.event_index)) ? Number(value.event_index) : null,
-      events: value.events.filter((event: unknown): event is StreamEvent => Boolean(event && typeof event === 'object')),
+      events: value.events,
     };
     if (handlers.onBatch) handlers.onBatch(batch);
     else for (const event of batch.events) handlers.onEvent?.(event);
     return;
   }
+  if (value.protocol_version === 2 || typeof value.type !== 'string') throw new StreamProtocolError(tr('Invalid stream event', '无效的流事件'));
   const event = value as StreamEvent;
   if (handlers.onBatch) {
     handlers.onBatch({
@@ -231,44 +359,88 @@ function deliverStreamPayload(payload: unknown, sessionId: string, handlers: Str
 export async function consumeSseResponse(response: Response, sessionId: string, handlers: StreamHandlers) {
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw ApiError.fromResponse(response.status, data);
+    const error = ApiError.fromResponse(response.status, data, response.headers.get('Retry-After'));
+    if (response.headers.get('X-iGraph-Feedback-Accepted') === 'false') error.feedbackAccepted = false;
+    throw error;
   }
-  if (!response.body) throw new Error('服务器没有返回流式响应');
+  if (!response.body) throw new Error(tr('The server did not return a streaming response', '服务器没有返回流式响应'));
   handlers.onOpen?.();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = '';
-  const consumeFrames = (complete: boolean) => {
-    buffer = buffer.replace(/\r\n/g, '\n');
-    const frames = buffer.split('\n\n');
-    buffer = complete ? '' : (frames.pop() || '');
-    for (const frame of frames) {
-      const data = frame.split('\n')
-        .filter(line => line.startsWith('data:'))
-        .map(line => line.slice(5).trimStart())
-        .join('\n');
-      if (!data) continue;
-      try { deliverStreamPayload(JSON.parse(data), sessionId, handlers); } catch { /* Ignore malformed keep-alive frames. */ }
+  const parser = createParser({
+    onEvent: ({ data }) => {
+      let payload: unknown;
+      try { payload = JSON.parse(data); } catch { throw new StreamProtocolError(tr('Invalid stream-event JSON', '流事件 JSON 无效')); }
+      deliverStreamPayload(payload, sessionId, handlers);
+    },
+    onError: error => { if (error.type === 'max-buffer-size-exceeded') throw new StreamProtocolError(tr('Stream event exceeded the buffer limit', '流事件超过缓冲限制')); },
+    maxBufferSize: 16 * 1024 * 1024,
+  });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      handlers.onActivity?.();
+      parser.feed(decoder.decode(value, { stream: true }));
     }
-  };
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    consumeFrames(false);
+    parser.feed(decoder.decode());
+  } finally {
+    // EOF is not a frame delimiter. Replay any incomplete final event.
+    parser.reset();
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
-  buffer += decoder.decode();
-  consumeFrames(false);
-  // An unterminated tail may be half of a JSON frame. Do not dispatch it or
-  // advance the resume cursor; the server will replay it on reconnect.
 }
 
-export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal) {
+export type RunSnapshot = {
+  session_id: string; run_id: string; status: string; messages: Message[];
+  active_run: ActiveRun | null; pending_feedback: FeedbackRequest | null;
+  snapshot_complete: boolean; resume_cursor: number | null;
+  control?: RunControl | null;
+};
+
+export type RunControl = {
+  run_id: string | null; start_request_id: string | null; registration_status: 'not_seen' | 'registered';
+  run_status?: string; cancel_status?: 'none' | 'requested' | 'stopping' | 'confirmed';
+  execution_stopped: boolean; terminal_persisted: boolean; pending_components?: string[];
+  revision: number; active_run?: ActiveRun | null; can_send: boolean;
+  native_run_created?: boolean;
+};
+export type RunTarget = { run_id: string; start_request_id?: never } | { start_request_id: string; run_id?: never };
+export function getCapabilities(signal?: AbortSignal) {
+  return json<{ run_cancel_v1: boolean; job_cancel_v1: boolean; edit_latest_turn_v1?: boolean }>('/api/capabilities', { signal });
+}
+export function cancelRun(sessionId: string, target: RunTarget, cancelRequestId: string, signal?: AbortSignal) {
+  return json<RunControl>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/cancel`, {
+    method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, cancel_request_id: cancelRequestId }),
+  });
+}
+export function getRunControl(sessionId: string, target: RunTarget, signal?: AbortSignal) {
+  const query = new URLSearchParams(Object.entries(target).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  return json<RunControl>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/control?${query}`, { signal });
+}
+export type JobControl = { job_id: string; execution_stopped: boolean; terminal_persisted: boolean; cancel_status: string };
+export function getJobControl(sessionId: string, jobId: string, signal?: AbortSignal) {
+  return json<JobControl>(`/api/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(jobId)}/control`, { signal });
+}
+export function cancelJob(sessionId: string, jobId: string, cancelRequestId: string, signal?: AbortSignal) {
+  return json<JobControl>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cancel_request_id: cancelRequestId }),
+    });
+}
+
+export function getRunSnapshot(sessionId: string, runId: string, signal?: AbortSignal) {
+  return json<RunSnapshot>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/snapshot`, { signal });
+}
+
+export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string, regenerateOf?: string, replaceRunId?: string) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
   const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
     method: 'POST', signal, headers,
-    body: JSON.stringify({ message, attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
+    body: JSON.stringify({ message, start_request_id: startRequestId, ...(replaceRunId ? { replace_run_id: replaceRunId } : {}), ...(regenerateOf ? { regenerate: true, regenerate_of: regenerateOf } : {}), attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
   });
   await consumeSseResponse(response, sessionId, handlers);
 }

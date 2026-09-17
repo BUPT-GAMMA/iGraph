@@ -3,6 +3,25 @@
 from __future__ import annotations
 
 import json
+from typing import Any
+
+
+_SCHEMA_TYPE_MAP: dict[str, Any] = {
+    "string": str,
+    "boolean": bool,
+    "integer": int,
+    "number": float,
+    # Agno currently serializes nested MCP object arguments as JSON strings.
+    # Accept both representations at the FastMCP boundary; the forwarding
+    # adapter below remains the single place that normalizes them to dicts.
+    "object": dict | str,
+    "array": list,
+}
+
+
+def schema_parameter_type(schema_type: str) -> Any:
+    """Return a FastMCP-compatible annotation for a JSON Schema type."""
+    return _SCHEMA_TYPE_MAP.get(schema_type, Any)
 
 
 def _decode_object_argument(value):
@@ -42,4 +61,4 @@ def forwarded_graph_tool_arguments(
     return forwarded_arguments
 
 
-__all__ = ["forwarded_graph_tool_arguments"]
+__all__ = ["forwarded_graph_tool_arguments", "schema_parameter_type"]

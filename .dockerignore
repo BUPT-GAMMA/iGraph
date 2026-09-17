@@ -15,3 +15,14 @@ datasets
 *.pdf
 tests
 docs
+
+# Local frontend dependencies and browser validation artifacts
+frontend/node_modules
+frontend/dist
+output
+.playwright-cli
+
+# Local NebulaGraph bind-mount state. These directories can contain
+# database files and reparse-point log links that Docker cannot archive.
+deploy/nebulagraph/data
+deploy/nebulagraph/logs

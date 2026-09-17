@@ -101,7 +101,7 @@ _ROLE_PROMPT = """\
    - 可同时高亮多种结构，例如同时高亮直径路径和端点节点
 4. `visualize_subgraph` 可与计算工具在同一轮 `◷` 中一起调用，不必等到下一轮。
 5. 若用户仅要求可视化而不涉及计算，直接调用 `visualize_subgraph`（不传 node_names 则返回全图）。
-6. 社区相关可视化应设置 `include_community: true`。
+6. 可视化默认启用社区着色（`include_community: true`），添加节点、路径或子图高亮时也应保持启用；仅在用户要求关闭社区着色时设置为 `false`。
 
 ## 图分析报告原则
 
@@ -285,7 +285,7 @@ _ROLE_PROMPT_NATIVE = """\
    - 可同时高亮多种结构，例如同时高亮直径路径和端点节点
 4. `visualize_subgraph` 可与计算工具在同一轮函数调用中一起发起。
 5. 若用户仅要求可视化而不涉及计算，直接调用 `visualize_subgraph`（不传 node_names 则返回全图）。
-6. 社区相关可视化应设置 `include_community: true`。
+6. 可视化默认启用社区着色（`include_community: true`），添加节点、路径或子图高亮时也应保持启用；仅在用户要求关闭社区着色时设置为 `false`。
 
 ## 图分析报告原则
 
@@ -385,8 +385,10 @@ class ContextManager:
         protocol: str = "text",
         provider_gateway=None,
         logger=None,
+        user_id: str = "",
     ) -> None:
         self.session_id = session_id
+        self.user_id = str(user_id or "").strip()
         self.reasoning_mode = reasoning_mode
         self.protocol = protocol
         self.messages: List[dict] = [
@@ -444,6 +446,7 @@ class ContextManager:
             skill_source_tools,
             graph_state=graph_state,
             intent=intent,
+            user_id=self.user_id,
         )
         working = working_messages if working_messages is not None else self.messages
         return self._driver.build_model_messages(

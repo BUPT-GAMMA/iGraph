@@ -1,0 +1,23 @@
+import networkx as nx
+from graph_data_service.compute import GraphCompute
+from graph_data_service.graph_data import GraphData
+
+
+def test_truncated_preview_retains_full_graph_degrees():
+    graph = nx.star_graph(20)
+    result = GraphCompute().visualize_subgraph(graph, GraphData(num_nodes=21), max_nodes=4)
+    assert result['truncated'] is True
+    assert result['degree_scope'] == 'full_graph'
+    assert len(result['nodes']) == 4
+    hub = next(node for node in result['nodes'] if node['id'] == 0)
+    assert hub['total_degree'] == 20
+    assert len(result['edges']) == 3
+
+
+def test_directed_preview_preserves_incoming_outgoing_and_parallel_edges():
+    graph = nx.MultiDiGraph()
+    graph.add_edges_from([('a', 'b'), ('a', 'b'), ('b', 'a'), ('a', 'a')])
+    result = GraphCompute().visualize_subgraph(graph, GraphData(num_nodes=2), node_names=['a', 'b'])
+    a = next(node for node in result['nodes'] if node['id'] == 'a')
+    assert (a['in_degree'], a['out_degree'], a['total_degree']) == (2, 3, 5)
+    assert result['directed'] and len(result['edges']) == 4

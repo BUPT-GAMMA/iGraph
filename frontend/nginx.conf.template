@@ -6,6 +6,15 @@ server {
 
     client_max_body_size 512m;
 
+    # Construction graph responses are large, repetitive JSON documents. Keep
+    # streaming endpoints untouched while compressing ordinary API payloads.
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_types application/json;
+
     location = /health {
         access_log off;
         default_type application/json;

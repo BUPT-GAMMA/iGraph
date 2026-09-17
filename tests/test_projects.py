@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -60,6 +61,12 @@ class FakeServiceClient:
 
         if path == "/sessions" and method == "GET":
             return {"data": [item for item in self.runtime_sessions.values() if item.get("user_id") == user_id]}
+        if path.startswith('/internal/sessions/') and path.endswith('/recovery-status'):
+            parts = path.split('/')
+            run = next((run for run in self.runtime_runs.get(parts[3], []) if run['run_id'] == parts[5]), None)
+            if run is None:
+                raise HTTPException(404, 'Run not found')
+            return {'run_id': run['run_id'], 'status': str(run['status']).lower()}
         if path == "/internal/models/custom" and method == "PUT":
             self.custom_model_requests.append({"method": method, "path": path, "user_id": user_id, "body": json_body})
             return {"success": True, "model_id": str((json_body or {}).get("model_id") or "")}
@@ -141,6 +148,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         default_user_model="qwen3.6-plus",
         custom_models_file=tmp_path / "custom_models.json",
     )
+    monkeypatch.setenv("IGRAPH_CONTROL_SERVICE_KEY", "test-project-key")
     monkeypatch.setattr(backend_app, "ServiceClient", FakeServiceClient)
     with TestClient(backend_app.create_app(config)) as test_client:
         yield test_client
@@ -150,16 +158,15 @@ def headers(user_id: str = "admin") -> dict[str, str]:
     return {"X-User-ID": user_id}
 
 
-def test_project_directory_has_stable_per_user_general(tmp_path: Path):
+def test_project_directory_reads_do_not_create_general(tmp_path: Path):
     directory = ProjectDirectory(tmp_path / "projects.json")
-    first = directory.ensure_default("admin")
-    second = directory.ensure_default("admin")
-    other = directory.ensure_default("alice")
-
-    assert first.project_id == second.project_id
-    assert first.project_id != other.project_id
-    assert first.name == "General"
-    assert first.is_default is True
+    assert directory.list("admin") == []
+    assert directory.list("alice") == []
+    assert directory.get(directory.default_project_id("admin"), "admin") is None
+    assert not directory.path.exists()
+    ordinary = directory.create("admin", "General")
+    assert not ordinary.is_default
+    assert directory.delete(ordinary.project_id, "admin")
 
 
 def test_custom_model_api_validates_isolates_syncs_updates_and_deletes(client: TestClient):
@@ -212,61 +219,25 @@ def test_custom_model_api_validates_isolates_syncs_updates_and_deletes(client: T
     assert client.get("/api/models/custom", headers=headers()).json()["models"] == []
 
 
-def test_project_crud_session_move_and_safe_delete(client: TestClient):
-    listed = client.get("/api/projects", headers=headers()).json()["projects"]
-    general = listed[0]
-    assert general["is_default"] is True
-    assert general["conversation_count"] == 1
-
-    created = client.post(
-        "/api/projects",
-        headers=headers(),
-        json={"name": "Graph Research", "description": "Experiments"},
-    ).json()["project"]
-    project_id = created["project_id"]
-
-    renamed = client.patch(
-        f"/api/projects/{project_id}",
-        headers=headers(),
-        json={"name": "GNN Research"},
-    ).json()["project"]
-    assert renamed["name"] == "GNN Research"
-
-    conversation = client.post(
-        "/api/sessions",
-        headers=headers(),
-        json={"project_id": project_id},
-    )
-    assert conversation.status_code == 200
-    session_id = conversation.json()["session_id"]
-
-    project_sessions = client.get(
-        f"/api/projects/{project_id}/conversations",
-        headers=headers(),
-    ).json()["conversations"]
-    assert [item["session_id"] for item in project_sessions] == [session_id]
-
-    moved = client.patch(
-        f"/api/sessions/{session_id}",
-        headers=headers(),
-        json={"project_id": general["project_id"]},
-    )
-    assert moved.status_code == 200
-    assert FakeServiceClient.runtime_sessions[session_id]["session_state"]["project_id"] == general["project_id"]
-
-    another = client.post(
-        "/api/sessions",
-        headers=headers(),
-        json={"project_id": project_id},
-    ).json()["session_id"]
-    deleted = client.request(
-        "DELETE",
-        f"/api/projects/{project_id}",
-        headers=headers(),
-        json={"conversation_action": "move_to_general"},
-    )
-    assert deleted.status_code == 200
-    assert FakeServiceClient.runtime_sessions[another]["session_state"]["project_id"] == general["project_id"]
+def test_project_crud_and_explicit_delete_contract(client: TestClient):
+    assert client.get('/api/projects', headers=headers()).json()['projects'] == []
+    independent = client.post('/api/sessions', headers=headers(), json={}).json()
+    assert independent['project_id'] is None
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Research'}).json()['project']
+    pid = project['project_id']
+    renamed = client.patch(f'/api/projects/{pid}', headers=headers(), json={'name': 'GNN'}).json()['project']
+    assert renamed['name'] == 'GNN'
+    sid = client.post('/api/sessions', headers=headers(), json={'project_id': pid}).json()['session_id']
+    assert [row['session_id'] for row in client.get(f'/api/projects/{pid}/conversations', headers=headers()).json()['conversations']] == [sid]
+    stale = client.request('DELETE', f'/api/projects/{pid}', headers=headers(), json={'conversation_action': 'move_to_general'})
+    assert stale.status_code == 409
+    assert stale.json()['detail']['code'] == 'PROJECT_DELETE_ACTION_CHANGED'
+    assert client.delete(f'/api/projects/{pid}', headers=headers()).status_code == 422
+    assert sid in FakeServiceClient.runtime_sessions
+    assert client.request('DELETE', f'/api/projects/{pid}', headers=headers(), json={'conversation_action': 'delete'}).status_code == 200
+    assert sid not in FakeServiceClient.runtime_sessions
+    assert independent['session_id'] in FakeServiceClient.runtime_sessions
+    assert client.get('/api/projects', headers=headers()).json()['projects'] == []
 
 
 def test_project_training_runs_aggregate_sessions_and_persist_job_status(client: TestClient):
@@ -393,14 +364,7 @@ def test_project_delete_conversations_and_cross_user_isolation(client: TestClien
     assert deleted.status_code == 200
     assert session_id not in FakeServiceClient.runtime_sessions
 
-    general = client.get("/api/projects", headers=headers()).json()["projects"][0]
-    protected = client.request(
-        "DELETE",
-        f"/api/projects/{general['project_id']}",
-        headers=headers(),
-        json={},
-    )
-    assert protected.status_code == 400
+    assert client.get('/api/projects', headers=headers()).json()['projects'] == []
 
 
 def test_project_dataset_upload_inheritance_switch_and_isolation(client: TestClient, tmp_path: Path):
@@ -415,7 +379,7 @@ def test_project_dataset_upload_inheritance_switch_and_isolation(client: TestCli
         f"/api/projects/{project['project_id']}/datasets",
         headers=headers(),
         data={"session_id": session_a},
-        files={"file": ("cora.txt", b"A B\nB C\n", "text/plain")},
+        files={"file": ("cora.edgelist", b"A B\nB C\n", "text/plain")},
     )
     assert uploaded.status_code == 200
     dataset = uploaded.json()["dataset"]
@@ -423,7 +387,7 @@ def test_project_dataset_upload_inheritance_switch_and_isolation(client: TestCli
     assert FakeServiceClient.runtime_sessions[session_a]["session_state"]["active_dataset_id"] == dataset["dataset_id"]
     assert FakeServiceClient.graph_loaded[session_a] is True
 
-    sources = list((tmp_path / "projects" / project["project_id"] / "datasets").rglob("cora.txt"))
+    sources = list((tmp_path / "projects" / project["project_id"] / "datasets").rglob("cora.edgelist"))
     assert len(sources) == 1
     assert sources[0].read_bytes() == b"A B\nB C\n"
 
@@ -463,9 +427,9 @@ def test_project_dataset_delete_clears_sessions_but_conversation_delete_preserve
     dataset = client.post(
         f"/api/projects/{project['project_id']}/datasets",
         headers=headers(),
-        files={"file": ("graph.csv", b"source,target\nA,B\n", "text/csv")},
+        files={"file": ("graph.edgelist", b"A B\nB C\n", "text/plain")},
     ).json()["dataset"]
-    source = next((tmp_path / "projects" / project["project_id"] / "datasets").rglob("graph.csv"))
+    source = next((tmp_path / "projects" / project["project_id"] / "datasets").rglob("graph.edgelist"))
 
     client.delete(f"/api/sessions/{session_id}", headers=headers())
     assert source.is_file()
@@ -559,7 +523,9 @@ def test_paused_run_snapshot_blocks_both_chat_endpoints(client: TestClient):
 
 def test_feedback_is_validated_and_duplicate_continue_is_rejected(client: TestClient):
     session_id = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
-    FakeServiceClient.runtime_runs[session_id] = [paused_run()]
+    previous = {'tool_call_id': 'earlier', 'tool_name': 'create_analysis_report', 'result': {'report': {'id': 'saved-report'}}}
+    pending = {**paused_run()['requirements'][0]['tool_execution'], 'approval_id': 'original-approval'}
+    FakeServiceClient.runtime_runs[session_id] = [{**paused_run(), 'tools': [pending, previous]}]
     body = {
         "run_id": "run-paused",
         "request_id": "run-paused",
@@ -583,6 +549,9 @@ def test_feedback_is_validated_and_duplicate_continue_is_rejected(client: TestCl
     forwarded_tools = json.loads(FakeServiceClient.runtime_stream_calls[0]["data"]["tools"])
     assert forwarded_tools[0]["tool_call_id"] == "call-train"
     assert forwarded_tools[0]["tool_args"] == {"epochs": 2}
+    assert forwarded_tools[0]["requires_confirmation"] is True
+    assert forwarded_tools[0]["approval_id"] == 'original-approval'
+    assert forwarded_tools[1] == previous
 
     duplicate = client.post(
         f"/api/sessions/{session_id}/feedback/stream",
@@ -647,13 +616,358 @@ def test_upstream_feedback_rejection_releases_submission_guard(client: TestClien
         "tool_name": "train",
     }
     first = client.post(f"/api/sessions/{session_id}/feedback/stream", headers=headers(), json=body)
-    assert first.status_code == 200
-    assert "feedback_submit_error" in first.text
+    assert first.status_code == 503
+    assert first.json()["detail"] == "runtime unavailable"
 
     second = client.post(
         f"/api/sessions/{session_id}/feedback/stream",
         headers=headers(),
         json={**body, "decision_id": "retry-2"},
     )
-    assert second.status_code == 200
+    assert second.status_code == 503
     assert len(FakeServiceClient.runtime_stream_calls) == 2
+
+
+def test_recovery_snapshot_is_complete_only_at_a_persisted_phase(client: TestClient):
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    record = {'run_id': 'r', 'status': 'RUNNING', 'content': 'AB', 'last_event_index': 100}
+    FakeServiceClient.runtime_runs[sid] = [record]
+    running = client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers()).json()
+    assert running['snapshot_complete'] is False and running['resume_cursor'] is None
+    assert running['active_run']['run_id'] == 'r'
+    record.update(status='COMPLETED', content='ABC')
+    FakeServiceClient.runtime_runs[sid].append({'run_id': 'new', 'status': 'RUNNING', 'created_at': 1000})
+    complete = client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers()).json()
+    assert complete['snapshot_complete'] is True and complete['resume_cursor'] is None
+    assert complete['active_run']['run_id'] == 'new'
+    assert next(message for message in complete['messages'] if message['id'] == 'assistant:r')['content'] == 'ABC'
+    assert client.get(f'/api/sessions/{sid}/runs/wrong/snapshot', headers=headers()).status_code == 404
+    assert client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers('other-user')).status_code in {401, 403, 404}
+
+
+def test_resume_propagates_structured_error_before_sse_headers(client: TestClient):
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    FakeServiceClient.runtime_stream_error = HTTPException(409, {'code': 'REPLAY_UNAVAILABLE', 'reason': 'window_trimmed'})
+    result = client.post(f'/api/sessions/{sid}/runs/r/resume?last_event_index=0', headers=headers())
+    assert result.status_code == 409
+    assert result.headers['content-type'] == 'application/json'
+    assert result.json()['detail']['code'] == 'REPLAY_UNAVAILABLE'
+    assert FakeServiceClient.runtime_stream_calls[-1]['path'] == f'/internal/sessions/{sid}/runs/r/resume'
+
+
+def test_feedback_continues_in_background_and_keeps_acceptance_guard(client: TestClient):
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    FakeServiceClient.runtime_runs[sid] = [paused_run()]
+    body = {'run_id': 'run-paused', 'decision_id': 'd', 'decision': 'approve', 'tool_call_id': 'call-train', 'tool_name': 'train'}
+    assert client.post(f'/api/sessions/{sid}/feedback/stream', headers=headers(), json=body).status_code == 200
+    assert FakeServiceClient.runtime_stream_calls[-1]['data']['background'] == 'true'
+    assert client.post(f'/api/sessions/{sid}/feedback/stream', headers=headers(), json=body).status_code == 409
+    assert len(FakeServiceClient.runtime_stream_calls) == 1
+
+
+def test_personal_datasets_are_reusable_explicit_and_scope_isolated(client):
+    first = client.post('/api/sessions', headers=headers(), json={}).json()
+    assert first['project_id'] is None and first['active_dataset_id'] is None
+    uploaded = client.post('/api/personal-datasets', headers=headers(),
+        files={'file': ('edges.edgelist', b'A B\nB C', 'text/plain')})
+    assert uploaded.status_code == 200, uploaded.text
+    dataset = uploaded.json()['dataset']
+    assert dataset['project_id'] is None and not dataset['is_default']
+    second = client.post('/api/sessions', headers=headers(), json={}).json()
+    assert second['active_dataset_id'] is None
+    selected = client.post('/api/sessions', headers=headers(), json={'active_dataset_id': dataset['dataset_id']}).json()
+    assert selected['active_dataset_id'] == dataset['dataset_id']
+    assert [row['dataset_id'] for row in client.get('/api/personal-datasets', headers=headers()).json()['datasets']] == [dataset['dataset_id']]
+    assert client.get('/api/personal-datasets', headers=headers('alice')).json()['datasets'] == []
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Scoped'}).json()['project']
+    assert client.post('/api/sessions', headers=headers(), json={'project_id': project['project_id'], 'active_dataset_id': dataset['dataset_id']}).status_code == 409
+    foreign = client.post(f"/api/projects/{project['project_id']}/datasets", headers=headers(), files={'file': ('other.csv', b'X,Y', 'text/csv')}).json()['dataset']
+    assert client.patch('/api/personal-datasets/' + foreign['dataset_id'], headers=headers(), json={'name': 'wrong'}).status_code == 404
+    assert client.delete('/api/personal-datasets/' + foreign['dataset_id'], headers=headers()).status_code == 404
+    # A query parameter cannot widen the personal route's ownership scope.
+    assert client.get('/api/personal-datasets', headers=headers(), params={'project_id': project['project_id']}).json()['datasets'][0]['dataset_id'] == dataset['dataset_id']
+    assert client.patch('/api/personal-datasets/' + dataset['dataset_id'], headers=headers(), json={'name': 'Renamed'}).json()['dataset']['name'] == 'Renamed'
+    assert client.delete('/api/personal-datasets/' + dataset['dataset_id'], headers=headers()).status_code == 200
+    assert FakeServiceClient.runtime_sessions[selected['session_id']]['session_state']['active_dataset_id'] is None
+
+
+def test_personal_multi_csv_upload_retains_one_pk_fk_bundle(client):
+    schema = {"version": "csv_bundle.v1", "tables": [
+        {"file_name": "customers.csv", "name": "customers", "columns": ["id", "name"],
+         "primary_key": ["id"], "foreign_keys": []},
+        {"file_name": "orders.csv", "name": "orders", "columns": ["id", "customer_id"],
+         "primary_key": ["id"], "foreign_keys": [
+             {"columns": ["customer_id"], "ref_table": "customers", "ref_columns": ["id"]}]},
+    ]}
+    response = client.post('/api/personal-datasets', headers=headers(), data={
+        'name': 'Retail CSV', 'csv_schema': json.dumps(schema),
+    }, files=[
+        ('files', ('customers.csv', io.BytesIO(b'id,name\nc1,Alice\n'), 'text/csv')),
+        ('files', ('orders.csv', io.BytesIO(b'id,customer_id\no1,c1\n'), 'text/csv')),
+    ])
+    assert response.status_code == 200, response.text
+    dataset = response.json()['dataset']
+    assert dataset['file_type'] == 'csv' and dataset['status'] == 'source_ready'
+    assert dataset['metadata']['csv_bundle']['source_files'] == ['customers.csv', 'orders.csv']
+    assert dataset['metadata']['csv_bundle']['tables'][1]['foreign_keys'][0]['ref_table'] == 'customers'
+
+
+def test_general_migration_preserves_sources_state_and_named_user_projects(client, tmp_path):
+    from backend.projects import ProjectRecord
+    from backend.project_datasets import ProjectDatasetDirectory
+    directory = ProjectDirectory(tmp_path / 'projects.json')
+    general_id = directory.default_project_id('admin')
+    directory._write({general_id: ProjectRecord(general_id, 'admin', 'General', is_default=True)})
+    named = directory.create('admin', 'General')
+    datasets = ProjectDatasetDirectory(tmp_path / 'project_datasets.json', tmp_path / 'projects')
+    dataset = datasets.create(project_id=general_id, user_id='admin', name='Shared', original_filename='edges.csv', content=b'A,B')
+    state = {'project_id': general_id, 'active_dataset_id': dataset.dataset_id, 'last_message_preview': 'keep', 'graph_version': 9}
+    FakeServiceClient.runtime_sessions['legacy-session']['session_state'] = state.copy()
+    first = client.get('/api/projects', headers=headers())
+    assert first.status_code == 200, first.text
+    assert first.json()['legacy_default_project_id'] == general_id
+    assert [row['project_id'] for row in first.json()['projects']] == [named.project_id]
+    assert FakeServiceClient.runtime_sessions['legacy-session']['session_state'] == {**state, 'project_id': None}
+    migrated = datasets.get(dataset.dataset_id, 'admin', None)
+    assert migrated.storage_path == dataset.storage_path
+    assert Path(migrated.storage_path).read_bytes() == b'A,B'
+    assert datasets.get(dataset.dataset_id, 'admin', general_id) is None
+    backups = list((tmp_path / 'migrations').rglob('session-*.json'))
+    assert len(backups) == 1 and json.loads(backups[0].read_text())['session_state'] == state
+    assert client.get('/api/projects', headers=headers()).json() == first.json()
+    assert Path(dataset.storage_path).exists()
+
+
+def test_standalone_chat_context_excludes_other_conversations(client):
+    first = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    second = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    FakeServiceClient.runtime_runs[first] = [{
+        'run_id': 'private-training', 'status': 'COMPLETED',
+        'tools': [{'tool_name': 'train', 'tool_call_id': 'private-model', 'tool_args': {'task': 'node_classification'},
+                   'result': json.dumps({'success': True, 'model_id': 'private-model', 'metrics': {'val_acc': .9}})}],
+    }]
+    response = client.post(f'/api/sessions/{second}/chat/stream', headers=headers(), json={'message': '你好'})
+    assert response.status_code == 200
+    assert FakeServiceClient.runtime_sessions[second]['session_state']['project_training_summary'] == []
+
+
+def test_general_migration_resumes_artifact_ownership_after_partial_failure(client, tmp_path, monkeypatch):
+    from backend.projects import ProjectRecord
+    directory = ProjectDirectory(tmp_path / 'projects.json')
+    pid = directory.default_project_id('admin')
+    directory._write({pid: ProjectRecord(pid, 'admin', 'General', is_default=True)})
+    FakeServiceClient.runtime_sessions['legacy-session']['session_state'] = {'project_id': pid, 'graph_version': 7}
+    original = FakeServiceClient.request
+    attempts = []
+    async def interrupted(self, method, path, **kwargs):
+        if path == '/internal/artifacts/ownership':
+            attempts.append(kwargs['json_body'])
+            if len(attempts) == 1:
+                raise HTTPException(503, 'injected graph outage')
+        return await original(self, method, path, **kwargs)
+    monkeypatch.setattr(FakeServiceClient, 'request', interrupted)
+    assert client.get('/api/projects', headers=headers()).status_code == 503
+    assert FakeServiceClient.runtime_sessions['legacy-session']['session_state']['project_id'] is None
+    assert directory.get(pid, 'admin') is not None
+    assert client.get('/api/projects', headers=headers()).status_code == 200
+    assert attempts == [{'sessions': [{'session_id': 'legacy-session', 'project_id': None}]}] * 2
+    assert directory.get(pid, 'admin') is None
+    manifest = json.loads(next((tmp_path / 'migrations').rglob('manifest.json')).read_text())
+    assert manifest['conversations'] == 1 and manifest['status'] == 'completed'
+
+
+def test_project_delete_delivery_outage_keeps_queryable_intent(client, monkeypatch):
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Retry'}).json()['project']
+    monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'true')
+    original = FakeServiceClient.request
+    async def unavailable(self, method, path, **kwargs):
+        if path.startswith('/internal/projects/'):
+            raise HTTPException(503, 'injected control outage')
+        return await original(self, method, path, **kwargs)
+    monkeypatch.setattr(FakeServiceClient, 'request', unavailable)
+    url = '/api/projects/' + project['project_id']
+    response = client.request('DELETE', url, headers=headers(), json={'conversation_action': 'delete'})
+    assert response.status_code == 202
+    queried = client.get(url + '/deletion', headers=headers())
+    assert queried.status_code == 200 and queried.json()['delivery_pending']
+    assert client.post('/api/sessions', headers=headers(), json={'project_id': project['project_id']}).status_code == 409
+
+
+def test_recent_sessions_sort_by_activity_before_applying_limit(client):
+    for index in range(210):
+        FakeServiceClient.runtime_sessions[str(index)] = {'session_id': str(index), 'user_id': 'admin',
+            'session_state': {}, 'updated_at': index}
+    rows = client.get('/api/sessions', headers=headers()).json()['sessions']
+    assert len(rows) == 200
+    assert [row['session_id'] for row in rows] == [str(index) for index in range(209, 9, -1)]
+
+
+def test_reused_creation_identity_cannot_change_project_scope(client):
+    import uuid
+    sid = str(uuid.uuid4())
+    body = {'client_session_id': sid}
+    assert client.post('/api/sessions', headers=headers(), json=body).status_code == 200
+    assert client.post('/api/sessions', headers=headers(), json=body).json()['reused'] is True
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Different scope'}).json()['project']
+    conflict = client.post('/api/sessions', headers=headers(), json={**body, 'project_id': project['project_id']})
+    assert conflict.status_code == 409
+    assert FakeServiceClient.runtime_sessions[sid]['session_state']['project_id'] is None
+
+
+def test_workspace_upload_preserves_dataset_registration_and_download_ownership(client, tmp_path, monkeypatch):
+    from workspace_storage import workspace_root_for
+    monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    first = client.post(f"/api/sessions/{sid}/upload", headers=headers(), files={"file": ("edges.csv", b"a,b\n1,2\n")})
+    second = client.post(f"/api/sessions/{sid}/upload", headers=headers(), files={"file": ("edges.txt", b"a,b\n1,2\n")})
+    assert first.status_code == second.status_code == 200
+    a, b = first.json(), second.json()
+    assert a["file_token"] != b["file_token"]
+    assert a["dataset"]["dataset_id"] != b["dataset"]["dataset_id"]
+    assert a["construction_required"] and b["construction_required"]
+    root = workspace_root_for("admin", sid)
+    assert (root / a["workspace_path"]).read_bytes() == b"a,b\n1,2\n"
+    (root / "Derived/report.txt").write_text("public report")
+    (root / "Ephemeral/private.txt").write_text("private intermediate")
+    listed = client.get(f"/api/sessions/{sid}/workspace/files", headers=headers())
+    assert len(listed.json()["files"]) == 3
+    assert client.get(f"/api/sessions/{sid}/workspace/files", headers=headers("alice")).status_code == 404
+    assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt").status_code == 401
+    assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt", headers=headers()).content == b"public report"
+    assert client.get(f"/api/sessions/{sid}/workspace/derived/%2E%2E%2FEphemeral%2Fprivate.txt", headers=headers()).status_code == 404
+
+
+def test_chat_rebinds_legacy_empty_attachment_token_before_agent_run(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    monkeypatch.setenv("IGRAPH_RUN_CANCEL_ENABLED", "false")
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    uploaded = client.post(
+        f"/api/sessions/{sid}/upload",
+        headers=headers(),
+        files={"file": ("交易记录（2026年9月）.csv", b"a,b\n1,2\n")},
+    ).json()
+
+    response = client.post(
+        f"/api/sessions/{sid}/chat/stream",
+        headers=headers(),
+        json={"message": "重新分析", "attachments": [{
+            "file_token": "", "filename": "交易记录（2026年9月）.csv",
+        }]},
+    )
+
+    assert response.status_code == 200
+    form = FakeServiceClient.runtime_stream_calls[-1]["data"]
+    metadata = json.loads(form["metadata"])["igraph_turn"]["attachments"]
+    assert metadata == [{"file_token": uploaded["file_token"], "filename": "交易记录（2026年9月）.csv"}]
+    clean, attachments = backend_app._parse_run_input(form["message"])
+    assert clean == "重新分析"
+    assert attachments == metadata
+
+def test_workspace_upload_size_limit_rejects_before_ingest(client, monkeypatch):
+    monkeypatch.setenv("IGRAPH_MAX_UPLOAD_BYTES", "3")
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    assert client.post(f"/api/sessions/{sid}/upload", headers=headers(), files={"file": ("x.txt", b"1234")}).status_code == 413
+    assert client.post(f"/api/sessions/{sid}/upload", headers=headers(), files={"file": ("x.txt", b"")}).status_code == 400
+
+def test_regeneration_has_explicit_validated_provenance_and_preserves_repeat_turns(client):
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+    FakeServiceClient.runtime_runs[sid] = [{"run_id": "old-run", "status": "completed", "run_input": "same", "content": "answer"}]
+    stale = client.post(f"/api/sessions/{sid}/chat/stream", headers=headers(), json={"message": "same", "regenerate": True, "regenerate_of": "wrong"})
+    assert stale.status_code == 409
+    response = client.post(f"/api/sessions/{sid}/chat/stream", headers=headers(), json={"message": "same", "regenerate": True, "regenerate_of": "old-run"})
+    assert response.status_code == 200
+    metadata = json.loads(FakeServiceClient.runtime_stream_calls[-1]["data"]["metadata"])
+    assert metadata["igraph_turn"]["regenerate_of"] == "old-run"
+    runs = [dict(FakeServiceClient.runtime_runs[sid][0]), {"run_id": "new-run", "status": "completed", "run_input": "same", "content": "new answer"}]
+    messages = backend_app._messages_from_runs(runs)
+    assert [message["content"] for message in messages if message["role"] == "user"] == ["same", "same"]
+
+
+def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata():
+    from backend.event_mapper import project_run
+    run = {"run_id": "legacy", "status": "completed", "run_input": "question",
+        "content": "answer", "metadata": "legacy metadata",
+        "events": [
+            {"event": "RunContent", "event_index": None, "content": "checking"},
+            {"event": "ToolCallStarted", "event_index": "invalid", "tool": {"tool_name": "get_graph_info", "tool_call_id": "call"}},
+            {"event": "ToolCallCompleted", "tool": {"tool_name": "get_graph_info", "tool_call_id": "call", "result": {"success": True}}},
+        ]}
+    projected = project_run(run)
+    assert projected["last_event_index"] == 2
+    assert [item["kind"] for item in projected["processItems"]] == ["text", "tool"]
+    assert projected["processItems"][-1]["tool"]["done"]
+    messages = backend_app._messages_from_runs([run])
+    assert [message["content"] for message in messages] == ["question", "answer"]
+    assert messages[-1]["regenerate_of"] is None
+
+
+def test_attachment_context_round_trips_tokens_without_stripping_user_markers():
+    message = "请解释下面的界面文本：\n\n[附件文件]\n这段内容属于用户正文"
+    request = backend_app.ChatReq(message=message, attachments=[
+        backend_app.AttachmentRef(file_token="token-2026", filename="交易记录（2026年9月）.csv"),
+    ])
+
+    run_input = backend_app._message_with_attachments(request)
+    clean, attachments = backend_app._parse_run_input(run_input)
+
+    assert clean == message
+    assert attachments == [{"file_token": "token-2026", "filename": "交易记录（2026年9月）.csv"}]
+    projected = backend_app._messages_from_runs([{
+        "run_id": "attachment-run", "status": "completed", "run_input": run_input, "content": "完成",
+    }])
+    assert projected[0]["content"] == message
+    assert projected[0]["attachments"] == attachments
+
+
+def test_plain_user_attachment_marker_is_never_treated_as_injected_context():
+    message = "刷新后出现了：\n\n[附件文件]\n- graph.csv（这只是用户引用的文本）"
+    assert backend_app._parse_run_input(message) == (message, [])
+    assert backend_app._run_input_text({"run_input": message}) == message
+
+
+def test_legacy_attachment_context_preserves_fullwidth_parentheses_in_filename():
+    message = "分析历史附件"
+    run_input = (
+        message
+        + backend_app._LEGACY_ATTACHMENT_BLOCK_MARKER
+        + backend_app._ATTACHMENT_BLOCK_HEADER
+        + "- 交易记录（2026年9月）.csv（使用 load_graph_from_upload 自动检测并加载）"
+        + backend_app._ATTACHMENT_BLOCK_FOOTER
+    )
+
+    assert backend_app._parse_run_input(run_input) == (
+        message,
+        [{"file_token": "", "filename": "交易记录（2026年9月）.csv"}],
+    )
+
+
+def test_legacy_attachment_token_is_restored_only_from_a_unique_session_upload(tmp_path, monkeypatch):
+    from workspace_storage import save_upload
+
+    monkeypatch.setenv("IGRAPH_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    save_upload("admin", "session-a", "original-token", "交易记录（2026年9月）.csv", b"source")
+    legacy = [backend_app.AttachmentRef(file_token="", filename="交易记录（2026年9月）.csv")]
+
+    restored = backend_app._restore_attachment_tokens(legacy, user_id="admin", session_id="session-a")
+    assert restored[0].file_token == "original-token"
+
+    save_upload("admin", "session-a", "duplicate-token", "交易记录（2026年9月）.csv", b"duplicate")
+    with pytest.raises(HTTPException) as ambiguous:
+        backend_app._restore_attachment_tokens(legacy, user_id="admin", session_id="session-a")
+    assert ambiguous.value.status_code == 409
+    assert ambiguous.value.detail["code"] == "ATTACHMENT_REFERENCE_EXPIRED"
+
+
+def test_event_only_history_retains_background_training_controls():
+    arguments = {"model": "GCN", "train_config": {"epochs": 100000}}
+    run = {"run_id": "old", "status": "completed", "run_input": "train", "content": "queued", "tools": [],
+        "events": [
+            {"event": "ToolCallStarted", "tool": {"tool_name": "train", "tool_call_id": "call", "tool_args": arguments}},
+            {"event": "ToolCallCompleted", "tool": {"tool_name": "train", "tool_call_id": "call", "tool_args": arguments,
+                "result": json.dumps({"success": True, "async": True, "job_id": "running-job", "status": "queued"})}},
+        ]}
+    messages = backend_app._messages_from_runs([run, {"run_id": "new", "status": "running", "run_input": "next", "content": "A"}])
+    card = messages[1]["tools"][0]
+    assert card["tool"] == "train" and card["call_id"] == "call"
+    assert card["args"] == arguments
+    assert card["job_id"] == "running-job" and card["done"] is False

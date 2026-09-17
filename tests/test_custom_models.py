@@ -182,7 +182,7 @@ def test_create_model_uses_custom_endpoint_without_exposing_network(monkeypatch:
         def __init__(self, **kwargs: str) -> None:
             created.append(kwargs)
 
-    monkeypatch.setattr(model_factory, "OpenAILike", FakeOpenAILike)
+    monkeypatch.setattr(model_factory, "DAGOpenAILike", FakeOpenAILike)
     model = model_factory.create_model(
         "custom/v1",
         runtime_config,
@@ -233,7 +233,7 @@ def test_create_model_resolves_each_builtin_provider(
         def __init__(self, **kwargs: str) -> None:
             captured.update(kwargs)
 
-    monkeypatch.setattr(model_factory, "OpenAILike", FakeOpenAILike)
+    monkeypatch.setattr(model_factory, "DAGOpenAILike", FakeOpenAILike)
     model_factory.create_model(model_id, runtime_config)
     assert captured == {"id": model_id, "api_key": "provider-key", "base_url": "https://provider.example/v1"}
 
@@ -247,7 +247,7 @@ def test_builtin_model_falls_back_to_config_and_rejects_missing_endpoint(monkeyp
         def __init__(self, **kwargs: str) -> None:
             captured.update(kwargs)
 
-    monkeypatch.setattr(model_factory, "OpenAILike", FakeOpenAILike)
+    monkeypatch.setattr(model_factory, "DAGOpenAILike", FakeOpenAILike)
     model_factory.create_model("", runtime_config, custom_model="not-a-dict")
     assert captured == {"id": "qwen3.6-plus", "api_key": "fallback-key", "base_url": "https://fallback.example/v1"}
 

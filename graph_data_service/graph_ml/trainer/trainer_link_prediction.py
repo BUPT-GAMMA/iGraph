@@ -3,6 +3,7 @@
 """
 
 from __future__ import annotations
+from graph_data_service.worker_signals import check_cancelled
 
 from typing import Any, Callable, Dict
 
@@ -88,6 +89,7 @@ class LinkPredictionTrainer:
         best_loss = float("inf")
         best_backbone_state: Dict[str, torch.Tensor] | None = None
         for epoch in range(epochs):
+            check_cancelled()
             trained_epochs = epoch + 1
             backbone.train()
             opt.zero_grad()

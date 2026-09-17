@@ -77,25 +77,66 @@ describe('ManagementPanel', () => {
           { name: 'Train Model', description: '训练模型', source: 'custom' },
         ],
       }))
+      .mockResolvedValueOnce(jsonResponse({ skill: { content: '# Graph Audit' } }))
+      .mockResolvedValueOnce(jsonResponse({ skill: { content: '# Graph Audit' } }))
       .mockResolvedValueOnce(jsonResponse({ items: [] }));
 
     render(<ManagementPanel onClose={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('暂无匹配的记忆')).toBeTruthy());
-    fireEvent.click(screen.getByRole('tab', { name: /Skills/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /技能/ }));
 
     await waitFor(() => expect(screen.getByText('Graph Audit')).toBeTruthy());
     expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/skills?source=all');
-    fireEvent.change(screen.getByPlaceholderText('搜索 Skill'), { target: { value: 'audit' } });
+    fireEvent.change(screen.getByPlaceholderText('搜索技能'), { target: { value: 'audit' } });
     expect(screen.queryByText('Train Model')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Graph Audit/ }));
-    expect(screen.getByText('builtin · ready')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '关闭 Skill 详情' }));
-    expect(screen.queryByText('builtin · ready')).toBeNull();
+    expect(screen.getByText('内置 · 就绪')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '关闭技能详情' }));
+    expect(screen.queryByText('内置 · 就绪')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Graph Audit/ }));
-    fireEvent.click(screen.getByRole('tab', { name: /Memory/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /记忆/ }));
     await waitFor(() => expect(screen.getByText('暂无匹配的记忆')).toBeTruthy());
-    expect(screen.queryByText('builtin · ready')).toBeNull();
+    expect(screen.queryByText('内置 · 就绪')).toBeNull();
     expect((screen.getByPlaceholderText('搜索记忆内容') as HTMLInputElement).value).toBe('');
+  });
+
+  it('uploads and deletes uploaded skills while keeping bundled skills protected', async () => {
+    apiFetchMock
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(jsonResponse({ skills: [
+        { name: 'bundled-skill', description: 'Built in', source: 'bundled' },
+        { name: 'pending-skill', description: 'Pending', source: 'review_queue' },
+      ] }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, name: 'uploaded-skill', source: 'review_queue' }))
+      .mockResolvedValueOnce(jsonResponse({ skills: [
+        { name: 'bundled-skill', description: 'Built in', source: 'bundled' },
+        { name: 'uploaded-skill', description: 'Uploaded', source: 'review_queue' },
+        { name: 'pending-skill', description: 'Pending', source: 'review_queue' },
+      ] }))
+      .mockResolvedValueOnce(jsonResponse({ skill: { content: '# Uploaded' } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true }))
+      .mockResolvedValueOnce(jsonResponse({ skill: { content: '# Bundled' } }));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<ManagementPanel onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('暂无匹配的记忆')).toBeTruthy());
+    fireEvent.click(screen.getByRole('tab', { name: /技能/ }));
+    await waitFor(() => expect(screen.getByText('pending-skill')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('上传技能 ZIP'), {
+      target: { files: [new File(['skill'], 'uploaded-skill.zip', { type: 'application/zip' })] },
+    });
+    await waitFor(() => expect(screen.getByText('uploaded-skill')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /uploaded-skill/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '删除技能' })).toBeTruthy());
+    expect(screen.getByRole('button', { name: '删除技能' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '删除技能' }));
+    await waitFor(() => expect(screen.queryByText('uploaded-skill')).toBeNull());
+    expect(apiFetchMock).toHaveBeenNthCalledWith(6, '/api/skills/uploaded-skill?source=review_queue', { method: 'DELETE' });
+
+    fireEvent.click(screen.getByRole('button', { name: /bundled-skill/ }));
+    await waitFor(() => expect(screen.getAllByText('内置').length).toBeGreaterThan(0));
+    expect(screen.queryByRole('button', { name: '删除技能' })).toBeNull();
   });
 });

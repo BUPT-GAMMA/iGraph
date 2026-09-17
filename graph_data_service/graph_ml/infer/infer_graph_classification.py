@@ -1,6 +1,7 @@
 """Inference for session-bound HIV/PCBA graph-classification artifacts."""
 
 from __future__ import annotations
+from graph_data_service.worker_signals import check_cancelled
 
 import math
 from numbers import Integral, Real
@@ -294,6 +295,7 @@ class GraphClassificationInfer:
         probabilities: list[torch.Tensor] = []
         with torch.no_grad():
             for cpu_batch in loader:
+                check_cancelled()
                 validate_graph_classification_batch(cpu_batch, bundle)
                 batch = cpu_batch.to(device)
                 logits = model(batch)

@@ -1,0 +1,40 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { WorkspaceFiles, fetchArtifact } from './WorkspaceFiles';
+import { bindRequestAccount, setUserId } from '../api';
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
+
+it('sends the pinned identity for downloads and rejects cross-zone paths', async () => {
+  setUserId('alice');
+  const unbind = bindRequestAccount('alice');
+  const fetchMock = vi.fn().mockResolvedValue(new Response('report'));
+  vi.stubGlobal('fetch', fetchMock);
+  expect(await (await fetchArtifact('session', 'Derived/a b.txt')).text()).toBe('report');
+  expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-User-ID')).toBe('alice');
+  expect(fetchMock.mock.calls[0][0]).toContain('/workspace/derived/a%20b.txt');
+  await expect(fetchArtifact('session', 'Derived/../Ephemeral/private')).rejects.toThrow();
+  unbind();
+});
+
+it('refreshes files after an upload event without changing the session', async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ files: [] })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ files: [{ path: 'Derived/new.txt', name: 'new.txt', zone: 'Derived', size: 2 }] })));
+  vi.stubGlobal('fetch', fetchMock);
+  render(<WorkspaceFiles sessionId="s" />);
+  await screen.findByText('暂无上传文件或已发布产物');
+  window.dispatchEvent(new CustomEvent('igraph:workspace-changed', { detail: { sessionId: 's' } }));
+  await screen.findByText('new.txt');
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+it('does not let a late previous-session response replace current files', async () => {
+  let complete!: (response: Response) => void;
+  vi.stubGlobal('fetch', vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { complete = resolve; }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ files: [{ path: 'Derived/new', name: 'current', zone: 'Derived', size: 2 }] }))));
+  const { rerender } = render(<WorkspaceFiles sessionId="old" />);
+  rerender(<WorkspaceFiles sessionId="new" />);
+  await screen.findByText('current');
+  complete(new Response(JSON.stringify({ files: [{ path: 'Derived/old', name: 'stale', zone: 'Derived', size: 1 }] })));
+  await waitFor(() => expect(screen.queryByText('stale')).toBeNull());
+});

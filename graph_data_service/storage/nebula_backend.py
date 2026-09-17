@@ -1665,7 +1665,13 @@ class NebulaGraphRepository:
     ) -> list[str]:
         max_nodes = max(1, int(max_nodes))
         if seed_names:
-            seeds = [self._find_node_record(graph_key, name) for name in seed_names]
+            ordered_seed_names = sorted(set(str(name) for name in seed_names))
+            if len(ordered_seed_names) > max_nodes and allow_truncate and not expand_to_limit:
+                ordered_seed_names = ordered_seed_names[:max_nodes]
+            seeds = [
+                self._find_node_record(graph_key, name)
+                for name in ordered_seed_names
+            ]
             seed_vids = [str(_row_get(row, "vid")) for row in seeds]
             if expand_to_limit:
                 # Match the local visualization behaviour: highlighted/path
@@ -1691,7 +1697,7 @@ class NebulaGraphRepository:
                             + ",".join(_ngql_literal(vid) for vid in batch)
                             + f" OVER {RELATION_EDGE}{clause} "
                             "YIELD DISTINCT id($$) AS vid "
-                            f"| LIMIT {max_nodes + 1}"
+                            f"| ORDER BY $-.vid | LIMIT {max_nodes + 1}"
                         )
                         for row in rows:
                             vid = str(_row_get(row, "vid", "") or "")
@@ -1708,20 +1714,28 @@ class NebulaGraphRepository:
                     frontier = next_frontier
                 return vids
             if hops <= 0:
-                return list(dict.fromkeys(seed_vids))
+                vids = list(dict.fromkeys(seed_vids))
+                if len(vids) > max_nodes:
+                    if allow_truncate:
+                        return vids[:max_nodes]
+                    raise NebulaRepositoryError(
+                        "SUBGRAPH_TOO_LARGE",
+                        f"待物化子图节点数超过上限 {max_nodes}，请减少指定节点数",
+                    )
+                return vids
             clause = self._direction_clause(direction)
             rows = self._query_rows(
                 f"GO 1 TO {max(1, int(hops))} STEPS FROM "
                 + ",".join(_ngql_literal(vid) for vid in seed_vids)
                 + f" OVER {RELATION_EDGE}{clause} "
                 "YIELD DISTINCT id($$) AS vid "
-                f"| LIMIT {max_nodes + 1}"
+                f"| ORDER BY $-.vid | LIMIT {max_nodes + 1}"
             )
             vids = list(dict.fromkeys(seed_vids + [str(_row_get(row, "vid")) for row in rows]))
         else:
             rows = self._query_rows(
                 f"LOOKUP ON {ENTITY_TAG} WHERE {ENTITY_TAG}.graph_key == {_ngql_literal(graph_key)} "
-                f"YIELD id(vertex) AS vid | LIMIT {max_nodes + 1}"
+                f"YIELD id(vertex) AS vid | ORDER BY $-.vid | LIMIT {max_nodes + 1}"
             )
             vids = [str(_row_get(row, "vid")) for row in rows]
         if len(vids) > max_nodes:
@@ -1791,13 +1805,13 @@ class NebulaGraphRepository:
         rows = self._query_rows(
             f"LOOKUP ON {RELATION_EDGE} WHERE "
             f"{RELATION_EDGE}.graph_key == {_ngql_literal(graph_key)} "
-            "YIELD src(edge) AS vid | LIMIT 1"
+            "YIELD src(edge) AS vid | ORDER BY $-.vid | LIMIT 1"
         )
         if not rows:
             rows = self._query_rows(
                 f"LOOKUP ON {ENTITY_TAG} WHERE "
                 f"{ENTITY_TAG}.graph_key == {_ngql_literal(graph_key)} "
-                "YIELD id(vertex) AS vid | LIMIT 1"
+                "YIELD id(vertex) AS vid | ORDER BY $-.vid | LIMIT 1"
             )
         if not rows:
             return None
@@ -1843,7 +1857,7 @@ class NebulaGraphRepository:
         )
         node_rows = self._fetch_node_records(vids)
         by_vid = {str(_row_get(row, "vid")): row for row in node_rows}
-        ordered_vids = [vid for vid in vids if vid in by_vid]
+        ordered_vids = sorted(vid for vid in vids if vid in by_vid)
         local_by_vid = {vid: index for index, vid in enumerate(ordered_vids)}
         id2node = {
             index: str(_row_get(by_vid[vid], "node_name", _row_get(by_vid[vid], "local_node_id", index)))
@@ -1855,6 +1869,12 @@ class NebulaGraphRepository:
         node_texts = [str(_row_get(by_vid[vid], "node_text", "") or "") for vid in ordered_vids]
 
         edge_rows = self._fetch_internal_edges(graph_key, ordered_vids, max_edges=max_edges)
+        edge_rows.sort(key=lambda row: (
+            str(_row_get(row, "src_vid", "")),
+            str(_row_get(row, "dst_vid", "")),
+            int(_row_get(row, "edge_rank", 0) or 0),
+            str(_row_get(row, "local_edge_id", "")),
+        ))
         pairs: list[tuple[int, int]] = []
         weights: list[float] = []
         edge_names: list[str] = []

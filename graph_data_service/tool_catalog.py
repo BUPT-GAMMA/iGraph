@@ -7,7 +7,8 @@
 新增工具步骤：
   1. 在 graph_data_service/compute.py 实现算法
   2. 在此文件 GRAPH_TOOLS 列表末尾添加一条规格
-  3. 完成 —— MCP 注册、system prompt、native FC 参数全部自动生效
+  3. 在 graph_engine/tool_execution.py 声明读写资源；未经分类的工具按屏障执行
+  4. 完成 —— MCP 注册、system prompt、native FC 参数全部自动生效
 """
 
 from __future__ import annotations
@@ -15,8 +16,17 @@ from __future__ import annotations
 import os
 from typing import List
 
+from graph_engine.construction_catalog import CONSTRUCTION_TOOLS
+from graph_engine.tool_execution import get_tool_execution_metadata
+from graph_engine.analysis_policy import MULTIGRAPH_POLICIES
+
 _REPORTING_TOOLS_ENV = "MCP_ENABLE_REPORTING_TOOLS"
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+_APPEND_COMPATIBILITY = (
+    "\n追加模式仅支持普通图合并。当前图或待合并图包含构图属性图时，"
+    "返回 UNSUPPORTED_PROPERTY_GRAPH_APPEND 并保留原图。"
+    "此时向用户说明限制；覆盖或清空图需要用户明确要求。"
+)
 
 # ─────────────────────────────────────────────────────────────────
 # 图分析工具（对外暴露给 LLM）
@@ -34,7 +44,7 @@ GRAPH_TOOLS: List[dict] = [
             "  - true: 追加到当前图。\n\n"
             "返回:\n"
             "- JSON 字符串，包含加载状态、图版本和提示信息。\n"
-            "- 图规模/结构详情请调用 `get_graph_info`。"
+            "- 图规模/结构详情请调用 `get_graph_info`。" + _APPEND_COMPATIBILITY
         ),
         "inputSchema": {
             "type": "object",
@@ -71,7 +81,7 @@ GRAPH_TOOLS: List[dict] = [
             "- local 模式的 binary/edge_list/triple：加载状态、检测格式、图版本；\n"
             "- freetext、graph_classification_dataset 或 nebula 模式的 binary："
             "async=true、job_id、status='queued'；Agent 会在后端自动监控，直接 API 调用方可低频使用 get_job_status/get_job_result 查询，模型无需反复调用；\n"
-            "- 图规模/结构详情请调用 `get_graph_info`。"
+            "- 图规模/结构详情请调用 `get_graph_info`。" + _APPEND_COMPATIBILITY
         ),
         "inputSchema": {
             "type": "object",
@@ -964,6 +974,134 @@ GRAPH_TOOLS: List[dict] = [
         "category": "compute",
     },
     {
+        "name": "graph_structure_analysis",
+        "description": (
+            "图结构判定与遍历工具。支持树/森林/DAG/AT-free/锦标赛/二部图判定，"
+            "BFS/DFS 树、字典序及全部拓扑序、平面性检查、竞赛得分序列和 Weisfeiler-Lehman 图哈希。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "is_tree", "is_forest", "is_directed_acyclic_graph",
+                        "bfs_tree", "dfs_tree", "lexicographical_topological_sort",
+                        "all_topological_sorts", "is_at_free", "check_planarity",
+                        "is_tournament", "score_sequence", "is_bipartite",
+                        "weisfeiler_lehman_graph_hash",
+                    ],
+                },
+                "source": {"type": "string", "description": "BFS/DFS 的起点。"},
+                "depth_limit": {"type": "integer", "minimum": 0, "description": "BFS/DFS 最大深度。"},
+                "iterations": {"type": "integer", "minimum": 1, "default": 3, "description": "WL 哈希迭代次数。"},
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["method"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "connectivity_analysis",
+        "description": (
+            "高级连通性分析。支持点/边连通度、最小点割/边割、割点、桥、局部桥、"
+            "点双连通边分量、桥分量和有向图强连通缩点图。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "node_connectivity", "edge_connectivity", "minimum_node_cut",
+                        "minimum_edge_cut", "articulation_points", "bridges", "local_bridges",
+                        "biconnected_component_edges", "bridge_components", "condensation",
+                    ],
+                },
+                "source": {"type": "string", "description": "局部连通度/割集起点；与 target 同时提供。"},
+                "target": {"type": "string", "description": "局部连通度/割集终点；与 source 同时提供。"},
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["method"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "tree_dag_analysis",
+        "description": (
+            "树、DAG 与支配关系分析。支持最大/随机生成树、最近公共祖先、即时支配点、"
+            "支配边界、DAG 最长路、反链、非周期性以及 collider/v-structure 检测。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "maximum_spanning_tree", "random_spanning_tree", "lowest_common_ancestor",
+                        "immediate_dominators", "dominance_frontiers", "dag_longest_path",
+                        "dag_longest_path_length", "antichains", "is_aperiodic", "colliders",
+                        "v_structures",
+                    ],
+                },
+                "source": {"type": "string", "description": "支配关系分析的起点。"},
+                "node1": {"type": "string", "description": "最近公共祖先的第一个节点。"},
+                "node2": {"type": "string", "description": "最近公共祖先的第二个节点。"},
+                "seed": {"type": "integer", "default": 42, "description": "随机生成树种子。"},
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["method"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "matching_coloring_analysis",
+        "description": "匹配、边覆盖和图着色工具，支持最大/最小权匹配、极大匹配、最小边覆盖、匹配校验、贪心着色与均衡着色。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "max_weight_matching", "min_weight_matching", "maximal_matching",
+                        "min_edge_cover", "is_matching", "greedy_color", "equitable_color",
+                    ],
+                },
+                "edges": {"type": "array", "items": {"type": ["array", "object"]}, "description": "is_matching 待校验边集。"},
+                "maxcardinality": {"type": "boolean", "default": False, "description": "最大权匹配是否优先最大基数。"},
+                "strategy": {"type": "string", "default": "largest_first", "description": "greedy_color 的 NetworkX 着色策略。"},
+                "num_colors": {"type": "integer", "minimum": 1, "description": "equitable_color 颜色数。"},
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["method"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "distance_measures",
+        "description": (
+            "扩展距离与结构度量。支持中心/边缘/离心率、Wiener 指数、全局/局部效率、"
+            "平均邻居度、平均度连通性、富俱乐部系数、互惠性、流层级、重心、Estrada 指数和围长。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": [
+                        "center", "periphery", "eccentricity", "wiener_index",
+                        "global_efficiency", "local_efficiency", "average_neighbor_degree",
+                        "average_degree_connectivity", "rich_club_coefficient", "reciprocity",
+                        "flow_hierarchy", "barycenter", "estrada_index", "girth",
+                    ],
+                },
+                "limit": {"type": ["integer", "string"], "default": 20, "description": "预览上限，最大 200；可传 all。"},
+            },
+            "required": ["metric"],
+        },
+        "category": "compute",
+    },
+    {
         "name": "list_datasets",
         "description": "列出所有已注册数据集。",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
@@ -1001,7 +1139,7 @@ GRAPH_TOOLS: List[dict] = [
             "从自然语言文本中通过 LLM 抽取实体关系并构建图到当前会话。\n"
             "支持长文本自动分块、逐块抽取、去重和规范化。\n"
             "可传入 text（内联文本）或 filename（已上传文件名）之一，避免 LLM 重复输出文件内容。\n"
-            "返回摘要统计，不返回中间完整三元组。"
+            "返回摘要统计，不返回中间完整三元组。" + _APPEND_COMPATIBILITY
         ),
         "inputSchema": {
             "type": "object",
@@ -1027,7 +1165,7 @@ GRAPH_TOOLS: List[dict] = [
     },
     {
         "name": "load_graph_from_triples",
-        "description": "从结构化实体关系三元组构建图并加载到当前会话。",
+        "description": "从结构化实体关系三元组构建图并加载到当前会话。" + _APPEND_COMPATIBILITY,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1081,10 +1219,12 @@ GRAPH_TOOLS: List[dict] = [
     },
     {
         "name": "get_job_status",
-        "description": "查询异步作业状态。",
+        "description": "查询异步作业状态。传 after_seq=0 开始独立读取完整进度，再用 progress_cursor 读取后续页；progress_has_more=true 时继续读取。省略游标保留旧增量队列行为。",
         "inputSchema": {
             "type": "object",
-            "properties": {"job_id": {"type": "string"}},
+            "properties": {"job_id": {"type": "string"},
+                           "after_seq": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
+                           "progress_limit": {"type": "integer", "minimum": 1, "maximum": 1000}},
             "required": ["job_id"],
         },
         "category": "system",
@@ -1112,10 +1252,11 @@ GRAPH_TOOLS: List[dict] = [
             "- 用户问某节点特征时，highlights.nodes 中填入该节点\n\n"
             "参数:\n"
             "- node_names(可选): 指定节点列表；为空则返回全图。\n"
-            "- include_community(可选): 是否包含社区信息，默认 false。\n"
-            "- max_nodes(可选): 返回的最大节点数，默认 200。超出时优先保留高亮节点，\n"
-            "  其余随机采样补足，结果中含 truncated=true 及 total_nodes 字段。\n"
-            "  图规模较大时，可减小该值以避免上下文膨胀；需完整展示时可适当调大。\n"
+            "- include_community(可选): 是否包含社区信息，默认 true；仅在用户要求关闭社区着色时设为 false。\n"
+            "- max_nodes(可选): 返回的最大节点数，默认 800。超出时生成确定性的智能概览，\n"
+            "  保留高亮、节点类型与社区代表，优先高连接度节点并补齐代表间路径；\n"
+            "  结果中含 truncated=true、total_nodes 与 overview 字段。\n"
+            "  图规模较大时可减小该值；交互式 SVG 画布最高展示 800 个节点、2000 条边。\n"
             "- highlights(可选): 高亮信息，统一格式:\n"
             "  {\n"
             '    "nodes": [{"ids": ["A","B"], "color": "#hex", "label": "关键节点"}],\n'
@@ -1125,7 +1266,7 @@ GRAPH_TOOLS: List[dict] = [
             "  color 和 label 可选，系统会自动分配颜色。\n\n"
             "返回:\n"
             "- JSON 字符串，包含节点、边、高亮信息及元数据。\n"
-            "- 若节点被截断，结果含 truncated=true、total_nodes（图总节点数）、truncated_to（实际返回上限）。"
+            "- 若节点或边被截断，结果含 truncated=true、全图计数及实际返回上限。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1137,13 +1278,13 @@ GRAPH_TOOLS: List[dict] = [
                 },
                 "include_community": {
                     "type": "boolean",
-                    "description": "是否包含社区信息（默认 false）",
-                    "default": False,
+                    "description": "是否包含社区信息（默认 true，仅在用户要求关闭社区着色时设为 false）",
+                    "default": True,
                 },
                 "max_nodes": {
                     "type": "integer",
-                    "description": "返回的最大节点数，默认 200。超出时优先保留高亮节点，其余随机采样。",
-                    "default": 200,
+                    "description": "返回的最大节点数，默认 800。超出时生成稳定、可复现的拓扑智能概览。",
+                    "default": 800,
                 },
                 "highlights": {
                     "type": "object",
@@ -1313,8 +1454,21 @@ _GNN_ALGO_CONFIG_SCHEMA: dict = {
         "dropout": {"type": "number", "description": "dropout 比例。", "default": 0.2},
         "gat_heads": {
             "type": "integer",
-            "description": "GAT 多头数，仅 model=GAT 时生效。",
+            "description": "注意力头数，仅 model=GAT/GATV2/TRANSFORMER 时生效。",
             "default": 2,
+        },
+        "appnp_k": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "APPNP 的传播迭代次数，仅 model=APPNP 时生效。",
+            "default": 10,
+        },
+        "appnp_alpha": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "description": "APPNP 的 teleport/保留概率，仅 model=APPNP 时生效。",
+            "default": 0.1,
         },
         "use_residual_connection": {
             "type": "boolean",
@@ -1665,7 +1819,10 @@ GRAPH_ML_TOOLS: List[dict] = [
                     ],
                     "description": "任务类型",
                 },
-                "model": {"type": "string", "description": "模型名称（可选）"},
+                "model": {
+                    "type": "string",
+                    "description": "模型名称（可选）。GNN 主干支持 APPNP、GCN、GAT、GATV2、GEN、GIN、SAGE、TRANSFORMER。",
+                },
                 "method": {"type": "string", "description": "训练方法（可选）"},
                 "graph_version": {"type": "integer", "description": "图版本（可选）"},
                 "upstream_model_id": {"type": "string", "description": "上游模型 ID（可选）"},
@@ -1684,7 +1841,12 @@ GRAPH_ML_TOOLS: List[dict] = [
             "参数:\n"
             "- model_id: 已训练模型 ID。\n"
             "- graph_version(可选): 指定推理使用的图版本。\n"
-            "- query(可选): 推理输入内容（字典，如目标节点/边或批量查询参数）。\n"
+            "- query(可选): 推理输入内容（字典或等价 JSON 字符串）。精确格式示例："
+            "节点分类 `{\"nodes\":[\"0\",\"1\"]}`；链接预测的 edges 必须是"
+            "二元数组列表 `{\"edges\":[[\"0\",\"8\"],[\"1\",\"344\"]]}`，"
+            "不接受 `{source,target}` 对象；按源节点预测可用 "
+            "`{\"source_node\":\"0\",\"candidate_nodes\":[\"8\",\"1\"],\"topk\":10}`；"
+            "图分类使用 `{\"graph_indices\":[0,1,2]}`。\n"
             "- infer_config(可选): 推理配置（字典，如阈值、批大小、后处理选项）。\n\n"
             "返回:\n"
             "- 节点分类若 query 指定 nodes/split，返回该集合 evaluation 指标，并最多返回 20 条 predictions；超出会给出截断提示。\n"
@@ -1801,6 +1963,12 @@ INTERNAL_TOOLS: List[dict] = [
 ]
 
 
+for _tool_spec in [*GRAPH_TOOLS, *GRAPH_ML_TOOLS, *REPORTING_TOOLS, *INTERNAL_TOOLS]:
+    _tool_spec["execution"] = get_tool_execution_metadata(_tool_spec["name"])
+    if _tool_spec["name"] in MULTIGRAPH_POLICIES:
+        _tool_spec["multigraph_support"] = MULTIGRAPH_POLICIES[_tool_spec["name"]]
+
+
 def _reporting_tools_enabled_from_env() -> bool:
     value = os.getenv(_REPORTING_TOOLS_ENV, "").strip().lower()
     if value in _FALSE_ENV_VALUES:
@@ -1813,7 +1981,7 @@ def get_all_public_tools(
     include_reporting: bool | None = None,
 ) -> List[dict]:
     """返回对 LLM 暴露的工具规格列表。"""
-    tools = list(GRAPH_TOOLS)
+    tools = [*GRAPH_TOOLS, *CONSTRUCTION_TOOLS]
     if include_reporting is None:
         include_reporting = _reporting_tools_enabled_from_env()
     if include_reporting:

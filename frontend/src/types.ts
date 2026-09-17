@@ -1,6 +1,6 @@
 export type Session = {
   session_id: string;
-  project_id?: string;
+  project_id?: string | null;
   title?: string;
   preview?: string;
   last_message?: string;
@@ -19,19 +19,23 @@ export type Project = {
   is_default?: boolean;
   default_dataset_id?: string | null;
   conversation_count?: number;
+  dataset_count?: number;
   created_at?: string;
   updated_at?: string;
 };
 
 export type ToolCall = {
   tool?: string;
+  job_id?: string;
   call_id?: string;
   args?: unknown;
   done?: boolean;
   progress?: Record<string, unknown>;
   result?: unknown;
   history?: Array<Record<string, unknown>>;
+  status?: 'running' | 'completed' | 'failed' | 'cancelled';
 };
+export type ProcessItem = { id: string; kind: 'reasoning' | 'text' | 'tool'; sequence: number; content?: string; tool?: ToolCall };
 export type ProjectTrainingRun = ToolCall & {
   training_run_id: string;
   session_id: string;
@@ -44,6 +48,8 @@ export type ProjectTrainingRun = ToolCall & {
 };
 export type Plan = { steps?: Array<{ step_id?: number; goal?: string; status?: string; result_summary?: string }>; completed?: boolean };
 export type GraphSnapshot = {
+  degree_scope?: 'full_graph' | 'subgraph';
+  id?: string;
   nodes: Array<Record<string, unknown>>;
   edges?: Array<Record<string, unknown>>;
   links?: Array<Record<string, unknown>>;
@@ -60,6 +66,9 @@ export type GraphSnapshot = {
 };
 
 export type Message = {
+  run_status?: string;
+  regenerate_of?: string | null;
+  run_id?: string;
   id?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -67,7 +76,12 @@ export type Message = {
   plan?: Plan | null;
   graphs?: GraphSnapshot[];
   reports?: Array<Record<string, unknown>>;
+  attachments?: AttachmentRef[];
+  artifacts?: ArtifactRef[];
   streaming?: boolean;
+  thinking?: Array<{ phase?: string; text?: string; streaming?: boolean }>;
+  processItems?: ProcessItem[];
+  variants?: Array<{ content: string; tools?: ToolCall[]; graphs?: GraphSnapshot[]; reports?: Array<Record<string, unknown>> }>;
 };
 
 export type GraphCommunity = {
@@ -91,9 +105,11 @@ export type GraphHighlights = Highlight[] | {
 };
 
 export type GraphData = {
+  degree_scope?: 'full_graph' | 'subgraph';
   success?: boolean;
   nodes: Array<Record<string, unknown>>;
   edges: Array<Record<string, unknown>>;
+  visualization_kind?: 'instances' | 'schema' | string;
   directed?: boolean;
   num_nodes?: number;
   num_edges?: number;
@@ -148,7 +164,7 @@ export function isGraphData(value: unknown): value is GraphData {
 
 export type Dataset = {
   dataset_id: string;
-  project_id: string;
+  project_id: string | null;
   name: string;
   original_filename: string;
   file_type: string;
@@ -158,7 +174,138 @@ export type Dataset = {
   created_at?: string;
   updated_at?: string;
 };
+
+export type CsvForeignKey = {
+  columns: string[];
+  ref_table: string;
+  ref_columns: string[];
+};
+export type CsvBundleTableSchema = {
+  file_name: string;
+  name: string;
+  columns: string[];
+  primary_key: string[];
+  foreign_keys: CsvForeignKey[];
+};
+export type CsvBundleSchema = {
+  version: 'csv_bundle.v1';
+  tables: CsvBundleTableSchema[];
+};
+
+export type ConstructionState = {
+  dataset_id: string;
+  build_id?: string | null;
+  failure_code?: string | null;
+  status: 'not_built' | 'algorithm_unavailable' | 'building' | 'ready' | 'failed';
+  revision: number;
+  node_count?: number;
+  edge_count?: number;
+  directed?: boolean;
+  source_filename?: string;
+  source_type?: string;
+  algorithm_available?: boolean;
+  message?: string;
+  updated_at?: string;
+  last_build_status?: string;
+  progress?: ConstructionProgress;
+};
+export type ConstructionProgressEvent = {
+  id: string;
+  kind: 'stage' | 'candidate' | 'terminal';
+  stage: string;
+  message: string;
+  outcome?: 'accepted' | 'rejected' | 'ready' | 'failed';
+  timestamp?: string;
+};
+export type ConstructionProgress = {
+  version: 'construction_progress.v1';
+  status?: string;
+  stage: string;
+  current_message?: string;
+  elapsed_seconds?: number;
+  updated_at?: string;
+  metrics?: {
+    query_count?: number;
+    max_iterations?: number;
+    iterations?: number;
+    tool_calls?: number;
+    evaluated_candidates?: number;
+    accepted_candidates?: number;
+    initial_nodes?: number;
+    initial_edges?: number;
+    chunks_completed?: number;
+    chunks_total?: number;
+    extracted_nodes?: number;
+    extracted_edges?: number;
+  };
+  events: ConstructionProgressEvent[];
+};
+export type ConstructionDomainCategory = 'auto' | 'finance' | 'academic' | 'commerce' | 'healthcare' | 'social' | 'general';
+export type ConstructionBuildOptions = {
+  mode?: 'llm' | 'rules';
+  query_count?: number;
+  domain?: string;
+  domain_category?: ConstructionDomainCategory;
+  experience_enabled?: boolean;
+  delimiter?: string;
+  txt_mode?: 'auto' | 'lines' | 'entities';
+};
+export type ConstructionOperation =
+  | { op: 'collapse_node'; node_id: string; edge_type: string }
+  | { op: 'node_property_to_edge'; node_id: string; property: string; edge_ids: string[]; target_property?: string; remove_from_node: boolean }
+  | { op: 'extract_property_node'; node_ids: string[]; property: string; node_type: string; edge_type: string; remove_from_node: boolean }
+  | { op: 'delete'; target: 'node' | 'edge'; ids: string[]; property?: string; cascade?: boolean }
+  | { op: 'reverse_edges'; edge_ids: string[] }
+  | { op: 'rename_type'; target: 'node' | 'edge'; old_type: string; new_type: string };
+export type ConstructionGraph = { dataset_id: string; revision: number; graph: GraphData };
+export type ConstructionSchemaPropertyPath = {
+  path: string;
+  types?: string[];
+  type_counts?: Record<string, number>;
+  present_count?: number;
+  value_count?: number;
+};
+export type ConstructionSchemaNodeType = {
+  id: string;
+  type: string;
+  type_name?: string;
+  instance_count: number;
+  property_paths?: ConstructionSchemaPropertyPath[];
+};
+export type ConstructionSchemaEdgeType = {
+  id: string;
+  type: string;
+  type_name?: string;
+  source_type: string;
+  target_type: string;
+  relationship_count: number;
+  property_paths?: ConstructionSchemaPropertyPath[];
+};
+export type ConstructionSchema = {
+  directed?: boolean;
+  node_count?: number;
+  edge_count?: number;
+  node_type_count: number;
+  edge_type_count: number;
+  node_types: ConstructionSchemaNodeType[];
+  edge_types: ConstructionSchemaEdgeType[];
+  graph: GraphData;
+};
+export type ConstructionSchemaResponse = { dataset_id: string; revision: number; schema: ConstructionSchema };
+export type ConstructionResult = ConstructionGraph & {
+  success: boolean;
+  status: 'preview' | 'ready';
+  base_revision: number;
+  summary: {
+    before: { node_count: number; edge_count: number };
+    after: { node_count: number; edge_count: number };
+    changed_nodes: number;
+    changed_edges: number;
+  };
+};
 export type AttachmentRef = { file_token: string; filename: string };
+/** A Derived workspace file the agent published as a deliverable for one turn. */
+export type ArtifactRef = { path: string; filename: string; size?: number; mime_type?: string; artifact_id?: string };
 export type DraftPhase = 'editing' | 'creating_session' | 'uploading' | 'starting_run' | 'failed';
 export type DraftAttachment = {
   localId: string;
@@ -166,11 +313,12 @@ export type DraftAttachment = {
   file?: File;
   fileToken?: string;
   status: 'staged' | 'uploading' | 'uploaded' | 'failed' | 'needs_reselect';
+  progress?: number;
   error?: string;
 };
 export type NewConversationDraft = {
   draftId: string;
-  projectId: string;
+  projectId: string | null;
   phase: DraftPhase;
   text: string;
   model: string;

@@ -10,9 +10,12 @@ from __future__ import annotations
 import uvicorn
 
 from graph_engine.env import load_environment, require_env, require_int_env
-from .app import GraphDataService, create_app
+from execution_protocol import validate_service_configuration
 
 load_environment()
+validate_service_configuration()
+
+from .app import GraphDataService, create_app
 
 _service = GraphDataService()
 app = create_app(_service)
