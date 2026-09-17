@@ -43,6 +43,11 @@ MULTIGRAPH_POLICIES = {
     'maximum_cycle': 'unsupported',
     'link_prediction_score': 'unsupported',
     'clique_analysis': 'unsupported',
+    'graph_structure_analysis': 'unsupported',
+    'connectivity_analysis': 'unsupported',
+    'tree_dag_analysis': 'unsupported',
+    'matching_coloring_analysis': 'unsupported',
+    'distance_measures': 'unsupported',
 }
 
 

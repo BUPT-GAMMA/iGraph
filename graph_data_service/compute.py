@@ -18,7 +18,7 @@ from __future__ import annotations
 import heapq
 import os
 import statistics
-from itertools import islice
+from itertools import combinations, islice
 from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
@@ -1328,6 +1328,423 @@ class GraphCompute:
             return {"success": False, "error": f"未知指标 '{metric}'"}
         return {"success": True, "metric": metric, "value": round(float(dispatch[metric]()), 6)}
 
+    # ── YiGraph 对标扩展算子 ───────────────────────────────────────
+
+    @staticmethod
+    @analysis_contract
+    def graph_structure_analysis(
+        g: nx.DiGraph,
+        method: str,
+        *,
+        source: str | None = None,
+        depth_limit: int | None = None,
+        iterations: int = 3,
+        limit: int | None = None,
+    ) -> dict:
+        """图结构判定、遍历、平面性、二部图与 WL 哈希。"""
+        ug = g.to_undirected()
+        scalar_dispatch = {
+            "is_tree": lambda: nx.is_tree(ug),
+            "is_forest": lambda: nx.is_forest(ug),
+            "is_directed_acyclic_graph": lambda: nx.is_directed_acyclic_graph(g),
+            "is_at_free": lambda: nx.is_at_free(ug),
+            "is_tournament": lambda: nx.is_tournament(g),
+            "is_bipartite": lambda: nx.is_bipartite(ug),
+        }
+        if method in scalar_dispatch:
+            return {"success": True, "method": method, "value": bool(scalar_dispatch[method]())}
+        if method == "check_planarity":
+            planar, _embedding = nx.check_planarity(ug)
+            return {"success": True, "method": method, "is_planar": bool(planar)}
+        if method in {"bfs_tree", "dfs_tree"}:
+            if not source or source not in g:
+                return {"success": False, "error": f"节点 '{source}' 不存在"}
+            tree = (
+                nx.bfs_tree(g, source, depth_limit=depth_limit)
+                if method == "bfs_tree"
+                else nx.dfs_tree(g, source, depth_limit=depth_limit)
+            )
+            edge_rows = [{"from": u, "to": v} for u, v in tree.edges()]
+            eff = _effective_limit(limit, _MAX_LIST_ITEMS)
+            preview, truncated = _truncate(edge_rows, eff)
+            return {
+                "success": True,
+                "method": method,
+                "source": source,
+                "num_nodes": tree.number_of_nodes(),
+                "num_edges": tree.number_of_edges(),
+                "edges_preview": preview,
+                "truncated": truncated,
+            }
+        if method == "lexicographical_topological_sort":
+            if not nx.is_directed_acyclic_graph(g):
+                return {"success": False, "error": "该方法要求有向无环图（DAG）"}
+            order = list(nx.lexicographical_topological_sort(g, key=str))
+            preview, truncated = _truncate(order, _effective_limit(limit, _MAX_LIST_ITEMS))
+            return {"success": True, "method": method, "order": preview, "total_nodes": len(order), "truncated": truncated}
+        if method == "all_topological_sorts":
+            if not nx.is_directed_acyclic_graph(g):
+                return {"success": False, "error": "该方法要求有向无环图（DAG）"}
+            # 拓扑序可能指数爆炸；即使请求 all 也保留 200 条硬上限。
+            eff = _effective_limit(limit, _MAX_LIST_ITEMS) or 200
+            rows = list(islice(nx.all_topological_sorts(g), eff + 1))
+            truncated = len(rows) > eff
+            return {"success": True, "method": method, "orders": rows[:eff], "truncated": truncated, "hard_limit": 200}
+        if method == "score_sequence":
+            if not g.is_directed():
+                return {"success": False, "error": "score_sequence 要求有向图"}
+            sequence = sorted((int(g.out_degree(node)) for node in g.nodes()), reverse=True)
+            ascending = list(reversed(sequence))
+            prefix_sum = 0
+            is_score_sequence = True
+            for size, score in enumerate(ascending, start=1):
+                prefix_sum += score
+                if score < 0 or score >= len(sequence) or prefix_sum < size * (size - 1) // 2:
+                    is_score_sequence = False
+                    break
+            is_score_sequence = (
+                is_score_sequence
+                and sum(sequence) == len(sequence) * (len(sequence) - 1) // 2
+            )
+            preview, truncated = _truncate(
+                sequence,
+                _effective_limit(limit, _MAX_LIST_ITEMS),
+            )
+            return {
+                "success": True,
+                "method": method,
+                "score_sequence": preview,
+                "total_nodes": len(sequence),
+                "truncated": truncated,
+                "is_tournament_score_sequence": is_score_sequence,
+            }
+        if method == "weisfeiler_lehman_graph_hash":
+            return {
+                "success": True,
+                "method": method,
+                "iterations": max(1, int(iterations)),
+                "hash": nx.weisfeiler_lehman_graph_hash(g, iterations=max(1, int(iterations))),
+            }
+        return {"success": False, "error": f"未知方法 '{method}'"}
+
+    @staticmethod
+    @analysis_contract
+    def connectivity_analysis(
+        g: nx.DiGraph,
+        method: str,
+        *,
+        source: str | None = None,
+        target: str | None = None,
+        limit: int | None = None,
+    ) -> dict:
+        """点/边连通度、割集、割点、桥及缩点图。"""
+        ug = g.to_undirected()
+        eff = _effective_limit(limit, _MAX_LIST_ITEMS)
+        if method in {"node_connectivity", "edge_connectivity"}:
+            fn = nx.node_connectivity if method == "node_connectivity" else nx.edge_connectivity
+            if bool(source) != bool(target):
+                return {"success": False, "error": "source 与 target 必须同时提供或同时省略"}
+            if source and (source not in g or target not in g):
+                return {"success": False, "error": "source 或 target 节点不存在"}
+            value = fn(ug, source, target) if source else fn(ug)
+            return {"success": True, "method": method, "source": source, "target": target, "value": int(value)}
+        if method in {"minimum_node_cut", "minimum_edge_cut"}:
+            if bool(source) != bool(target):
+                return {"success": False, "error": "source 与 target 必须同时提供或同时省略"}
+            if source and (source not in g or target not in g):
+                return {"success": False, "error": "source 或 target 节点不存在"}
+            if not source and (ug.number_of_nodes() == 0 or not nx.is_connected(ug)):
+                return {"success": False, "error": "全局最小割要求非空连通图"}
+            fn = nx.minimum_node_cut if method == "minimum_node_cut" else nx.minimum_edge_cut
+            cut = fn(ug, source, target) if source else fn(ug)
+            if method == "minimum_node_cut":
+                rows = sorted(cut, key=str)
+                key = "nodes"
+            else:
+                rows = [{"from": u, "to": v} for u, v in sorted(cut, key=lambda item: (str(item[0]), str(item[1])))]
+                key = "edges"
+            preview, truncated = _truncate(rows, eff)
+            return {"success": True, "method": method, "size": len(cut), key: preview, "truncated": truncated}
+        if method == "articulation_points":
+            rows = sorted(nx.articulation_points(ug), key=str)
+            preview, truncated = _truncate(rows, eff)
+            return {"success": True, "method": method, "count": len(rows), "nodes": preview, "truncated": truncated}
+        if method in {"bridges", "local_bridges", "biconnected_component_edges"}:
+            if method == "bridges":
+                rows = [{"from": u, "to": v} for u, v in nx.bridges(ug)]
+            elif method == "local_bridges":
+                rows = [
+                    {"from": u, "to": v, "span": None if span == float("inf") else span}
+                    for u, v, span in nx.local_bridges(ug, with_span=True, weight="weight")
+                ]
+            else:
+                rows = [
+                    [{"from": u, "to": v} for u, v in component]
+                    for component in nx.biconnected_component_edges(ug)
+                ]
+            preview, truncated = _truncate(rows, eff)
+            return {"success": True, "method": method, "count": len(rows), "items": preview, "truncated": truncated}
+        if method == "bridge_components":
+            bridge_free = ug.copy()
+            bridge_free.remove_edges_from(nx.bridges(ug))
+            components = [sorted(nodes, key=str) for nodes in nx.connected_components(bridge_free)]
+            components.sort(key=len, reverse=True)
+            preview, truncated = _truncate(components, eff)
+            return {"success": True, "method": method, "count": len(components), "components": preview, "truncated": truncated}
+        if method == "condensation":
+            if not g.is_directed():
+                return {"success": False, "error": "condensation 要求有向图"}
+            condensed = nx.condensation(g)
+            nodes = [
+                {"id": node, "members": sorted(data.get("members", []), key=str)}
+                for node, data in condensed.nodes(data=True)
+            ]
+            edges = [{"from": u, "to": v} for u, v in condensed.edges()]
+            nodes_preview, nodes_truncated = _truncate(nodes, eff)
+            edges_preview, edges_truncated = _truncate(edges, eff)
+            return {
+                "success": True,
+                "method": method,
+                "num_components": condensed.number_of_nodes(),
+                "nodes": nodes_preview,
+                "edges": edges_preview,
+                "truncated": nodes_truncated or edges_truncated,
+            }
+        return {"success": False, "error": f"未知方法 '{method}'"}
+
+    @staticmethod
+    @analysis_contract
+    def tree_dag_analysis(
+        g: nx.DiGraph,
+        method: str,
+        *,
+        source: str | None = None,
+        node1: str | None = None,
+        node2: str | None = None,
+        seed: int = 42,
+        limit: int | None = None,
+    ) -> dict:
+        """生成树、DAG 最长路、支配关系、反链和碰撞结构。"""
+        ug = g.to_undirected()
+        eff = _effective_limit(limit, _MAX_LIST_ITEMS)
+        if method in {"maximum_spanning_tree", "random_spanning_tree"}:
+            if ug.number_of_nodes() and not nx.is_connected(ug):
+                return {"success": False, "error": "该方法要求连通图"}
+            tree = (
+                nx.maximum_spanning_tree(ug, weight="weight")
+                if method == "maximum_spanning_tree"
+                else nx.random_spanning_tree(ug, weight="weight", seed=int(seed))
+            )
+            rows = [{"from": u, "to": v, "weight": float(data.get("weight", 1.0))} for u, v, data in tree.edges(data=True)]
+            preview, truncated = _truncate(rows, eff)
+            return {"success": True, "method": method, "num_edges": len(rows), "total_weight": round(sum(row["weight"] for row in rows), 6), "edges": preview, "truncated": truncated}
+        if method == "lowest_common_ancestor":
+            if not node1 or not node2 or node1 not in g or node2 not in g:
+                return {"success": False, "error": "node1 和 node2 必须是图中的节点"}
+            if not nx.is_directed_acyclic_graph(g):
+                return {"success": False, "error": "lowest_common_ancestor 要求 DAG"}
+            return {"success": True, "method": method, "node1": node1, "node2": node2, "ancestor": nx.lowest_common_ancestor(g, node1, node2)}
+        if method in {"immediate_dominators", "dominance_frontiers"}:
+            if not g.is_directed():
+                return {"success": False, "error": "支配关系分析要求有向图"}
+            if not source or source not in g:
+                return {"success": False, "error": f"起点 '{source}' 不存在"}
+            values = nx.immediate_dominators(g, source) if method == "immediate_dominators" else nx.dominance_frontiers(g, source)
+            rows = [
+                {"node": node, "value": sorted(value, key=str) if isinstance(value, set) else value}
+                for node, value in values.items()
+            ]
+            preview, truncated = _truncate(rows, eff)
+            return {"success": True, "method": method, "source": source, "count": len(rows), "items": preview, "truncated": truncated}
+        if method in {"dag_longest_path", "dag_longest_path_length"}:
+            if not nx.is_directed_acyclic_graph(g):
+                return {"success": False, "error": "该方法要求 DAG"}
+            if method == "dag_longest_path":
+                path = nx.dag_longest_path(g, weight="weight")
+                preview, truncated = _truncate(path, eff)
+                return {"success": True, "method": method, "path": preview, "path_nodes": len(path), "truncated": truncated}
+            return {"success": True, "method": method, "value": float(nx.dag_longest_path_length(g, weight="weight"))}
+        if method == "antichains":
+            if not nx.is_directed_acyclic_graph(g):
+                return {"success": False, "error": "antichains 要求 DAG"}
+            cap = eff or 200
+            rows = list(islice(nx.antichains(g), cap + 1))
+            return {"success": True, "method": method, "antichains": rows[:cap], "truncated": len(rows) > cap, "hard_limit": 200}
+        if method == "is_aperiodic":
+            if not g.is_directed():
+                return {"success": False, "error": "is_aperiodic 要求有向图"}
+            if g.number_of_nodes() == 0 or not nx.is_strongly_connected(g):
+                return {"success": False, "error": "is_aperiodic 要求非空强连通有向图"}
+            return {"success": True, "method": method, "value": bool(nx.is_aperiodic(g))}
+        if method in {"colliders", "v_structures"}:
+            if not g.is_directed():
+                return {"success": False, "error": "碰撞结构分析要求有向图"}
+
+            def iter_structures():
+                for center in g.nodes():
+                    for left, right in combinations(g.predecessors(center), 2):
+                        if method == "v_structures" and (
+                            g.has_edge(left, right) or g.has_edge(right, left)
+                        ):
+                            continue
+                        yield {"left": left, "center": center, "right": right}
+
+            # These methods are quadratic in a node's in-degree.  Keep a hard
+            # cap even when callers request "all", just like topology/antichain
+            # enumeration, so a high-degree node cannot exhaust worker memory.
+            cap = eff or 200
+            sampled = list(islice(iter_structures(), cap + 1))
+            truncated = len(sampled) > cap
+            preview = sampled[:cap]
+            exact_count = None
+            if method == "colliders":
+                exact_count = sum(
+                    degree * (degree - 1) // 2
+                    for _, degree in g.in_degree()
+                )
+            elif not truncated:
+                exact_count = len(preview)
+            return {
+                "success": True,
+                "method": method,
+                "count": exact_count,
+                "returned_count": len(preview),
+                "count_is_exact": exact_count is not None,
+                "structures": preview,
+                "truncated": truncated,
+                "hard_limit": 200,
+            }
+        return {"success": False, "error": f"未知方法 '{method}'"}
+
+    @staticmethod
+    @analysis_contract
+    def matching_coloring_analysis(
+        g: nx.DiGraph,
+        method: str,
+        *,
+        edges: list | None = None,
+        maxcardinality: bool = False,
+        strategy: str = "largest_first",
+        num_colors: int | None = None,
+        limit: int | None = None,
+    ) -> dict:
+        """匹配、边覆盖与图着色。"""
+        ug = g.to_undirected()
+        eff = _effective_limit(limit, _MAX_LIST_ITEMS)
+
+        def matching_rows(matching: Any) -> list[dict]:
+            pairs = []
+            for item in matching:
+                u, v = tuple(item)
+                pairs.append({"from": u, "to": v, "weight": float(ug.get_edge_data(u, v, {}).get("weight", 1.0))})
+            return sorted(pairs, key=lambda row: (str(row["from"]), str(row["to"])))
+
+        if method in {"max_weight_matching", "min_weight_matching", "maximal_matching"}:
+            if method == "max_weight_matching":
+                matching = nx.max_weight_matching(ug, maxcardinality=bool(maxcardinality), weight="weight")
+            elif method == "min_weight_matching":
+                matching = nx.min_weight_matching(ug, weight="weight")
+            else:
+                matching = nx.maximal_matching(ug)
+            rows = matching_rows(matching)
+            preview, truncated = _truncate(rows, eff)
+            return {"success": True, "method": method, "size": len(rows), "total_weight": round(sum(row["weight"] for row in rows), 6), "matching": preview, "truncated": truncated}
+        if method == "min_edge_cover":
+            if any(degree == 0 for _, degree in ug.degree()):
+                return {"success": False, "error": "存在孤立节点，无法计算边覆盖"}
+            cover = nx.min_edge_cover(ug)
+            rows = matching_rows(cover)
+            preview, truncated = _truncate(rows, eff)
+            return {"success": True, "method": method, "size": len(rows), "edges": preview, "truncated": truncated}
+        if method == "is_matching":
+            parsed = []
+            for edge in edges or []:
+                if isinstance(edge, (list, tuple)) and len(edge) == 2:
+                    parsed.append((edge[0], edge[1]))
+                elif isinstance(edge, dict) and "from" in edge and "to" in edge:
+                    parsed.append((edge["from"], edge["to"]))
+                else:
+                    return {"success": False, "error": "edges 中每项必须是 [u,v] 或 {from,to}"}
+            return {"success": True, "method": method, "value": bool(nx.is_matching(ug, parsed)), "edge_count": len(parsed)}
+        if method in {"greedy_color", "equitable_color"}:
+            if method == "greedy_color":
+                coloring = nx.greedy_color(ug, strategy=strategy)
+            else:
+                if not num_colors or int(num_colors) < 1:
+                    return {"success": False, "error": "equitable_color 要求 num_colors >= 1"}
+                maximum_degree = max((degree for _, degree in ug.degree()), default=0)
+                if int(num_colors) <= maximum_degree:
+                    return {
+                        "success": False,
+                        "error": f"equitable_color 要求 num_colors > 最大度数 {maximum_degree}",
+                    }
+                coloring = nx.equitable_color(ug, int(num_colors))
+            rows = [{"node": node, "color": int(color)} for node, color in coloring.items()]
+            rows.sort(key=lambda row: (row["color"], str(row["node"])))
+            preview, truncated = _truncate(rows, eff)
+            used = len(set(coloring.values()))
+            return {"success": True, "method": method, "num_colors": used, "coloring": preview, "truncated": truncated}
+        return {"success": False, "error": f"未知方法 '{method}'"}
+
+    @staticmethod
+    @analysis_contract
+    def distance_measures(g: nx.DiGraph, metric: str, *, limit: int | None = None) -> dict:
+        """扩展距离、效率、邻居度、富俱乐部与有向层级指标。"""
+        ug = g.to_undirected()
+        if ug.number_of_nodes():
+            largest_nodes = max(nx.connected_components(ug), key=len)
+            largest = ug.subgraph(largest_nodes).copy()
+        else:
+            largest = ug
+        eff = _effective_limit(limit, _MAX_LIST_ITEMS)
+        if metric == "flow_hierarchy" and not g.is_directed():
+            return {"success": False, "error": "flow_hierarchy 要求有向图"}
+        if metric == "girth":
+            value = nx.girth(ug)
+            if value == float("inf"):
+                return {
+                    "success": True,
+                    "metric": metric,
+                    "value": None,
+                    "acyclic": True,
+                }
+            return {
+                "success": True,
+                "metric": metric,
+                "value": int(value),
+                "acyclic": False,
+            }
+        scalar_dispatch = {
+            "wiener_index": lambda: nx.wiener_index(largest) if largest.number_of_nodes() else 0,
+            "global_efficiency": lambda: nx.global_efficiency(ug),
+            "local_efficiency": lambda: nx.local_efficiency(ug),
+            "reciprocity": lambda: nx.reciprocity(g) if g.number_of_edges() else 0,
+            "flow_hierarchy": lambda: nx.flow_hierarchy(g, weight="weight") if g.number_of_edges() else 0,
+            "estrada_index": lambda: nx.estrada_index(ug),
+        }
+        if metric in scalar_dispatch:
+            value = scalar_dispatch[metric]()
+            value = 0 if value is None else value
+            return {"success": True, "metric": metric, "value": round(float(value), 6)}
+        if metric in {"center", "periphery", "barycenter"}:
+            fn = {"center": nx.center, "periphery": nx.periphery, "barycenter": nx.barycenter}[metric]
+            rows = fn(largest, weight="weight") if metric == "barycenter" else fn(largest)
+            preview, truncated = _truncate(list(rows), eff)
+            return {"success": True, "metric": metric, "nodes": preview, "count": len(rows), "truncated": truncated, "scope": "largest_connected_component"}
+        mapping_dispatch = {
+            "eccentricity": lambda: nx.eccentricity(largest),
+            "average_neighbor_degree": lambda: nx.average_neighbor_degree(g, weight="weight"),
+            "average_degree_connectivity": lambda: nx.average_degree_connectivity(g, weight="weight"),
+            "rich_club_coefficient": lambda: nx.rich_club_coefficient(ug, normalized=False),
+        }
+        if metric in mapping_dispatch:
+            values = mapping_dispatch[metric]()
+            rows = [{"key": key, "value": round(float(value), 6)} for key, value in values.items()]
+            rows.sort(key=lambda row: (-row["value"], str(row["key"])))
+            preview, truncated = _truncate(rows, eff)
+            return {"success": True, "metric": metric, "count": len(rows), "values": preview, "truncated": truncated}
+        return {"success": False, "error": f"未知指标 '{metric}'"}
+
     # ── 第 4 批新增（图可视化）───────────────────────────────────────
 
     # 高亮默认调色板
@@ -1761,6 +2178,8 @@ NX_TOOL_NAMES: frozenset = frozenset({
     "graph_connectivity", "find_cycles", "maximum_cycle", "topological_sort", "degree_analysis",
     "subgraph_extraction", "link_prediction_score", "path_analysis",
     "clique_analysis", "reachability", "global_metrics",
+    "graph_structure_analysis", "connectivity_analysis", "tree_dag_analysis",
+    "matching_coloring_analysis", "distance_measures",
 })
 
 
@@ -1870,4 +2289,43 @@ def run_nx_tool(tool_name: str, g: nx.DiGraph, arguments: dict) -> dict:
         )
     if tool_name == "global_metrics":
         return c.global_metrics(g, str(a.get("metric", "")))
+    if tool_name == "graph_structure_analysis":
+        return c.graph_structure_analysis(
+            g,
+            str(a.get("method", "")),
+            source=str(a.get("source") or "") or None,
+            depth_limit=int(a["depth_limit"]) if a.get("depth_limit") is not None else None,
+            iterations=int(a.get("iterations", 3)),
+            limit=lim,
+        )
+    if tool_name == "connectivity_analysis":
+        return c.connectivity_analysis(
+            g,
+            str(a.get("method", "")),
+            source=str(a.get("source") or "") or None,
+            target=str(a.get("target") or "") or None,
+            limit=lim,
+        )
+    if tool_name == "tree_dag_analysis":
+        return c.tree_dag_analysis(
+            g,
+            str(a.get("method", "")),
+            source=str(a.get("source") or "") or None,
+            node1=str(a.get("node1") or "") or None,
+            node2=str(a.get("node2") or "") or None,
+            seed=int(a.get("seed", 42)),
+            limit=lim,
+        )
+    if tool_name == "matching_coloring_analysis":
+        return c.matching_coloring_analysis(
+            g,
+            str(a.get("method", "")),
+            edges=a.get("edges") if isinstance(a.get("edges"), list) else None,
+            maxcardinality=bool(a.get("maxcardinality", False)),
+            strategy=str(a.get("strategy", "largest_first")),
+            num_colors=int(a["num_colors"]) if a.get("num_colors") is not None else None,
+            limit=lim,
+        )
+    if tool_name == "distance_measures":
+        return c.distance_measures(g, str(a.get("metric", "")), limit=lim)
     return {"success": False, "error": f"未知 nx 工具: {tool_name}"}

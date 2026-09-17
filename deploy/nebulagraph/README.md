@@ -23,7 +23,8 @@ docker compose ps
 
 ```env
 NEBULA_ENABLED=1
-NEBULA_HOSTS=127.0.0.1:9669
+# Graph Engine 由根目录 Docker Compose 启动
+NEBULA_HOSTS=host.docker.internal:9669
 NEBULA_USER=root
 NEBULA_PASSWORD=nebula
 NEBULA_SPACE=igraph
@@ -40,6 +41,10 @@ NEBULA_IMPORTER_TIMEOUT_SECONDS=21600
 NEBULA_SCHEMA_WAIT_SECONDS=30
 NEBULA_MAX_RETRIES=3
 ```
+
+如果 Graph Engine 是直接在宿主机上用 Python 启动，则改用
+`NEBULA_HOSTS=127.0.0.1:9669`。容器内的 `127.0.0.1` 指向容器自身，不能用来
+访问宿主机发布的 NebulaGraph 端口。
 
 默认账号只用于绑定到 `127.0.0.1` 的本地开发服务，不应直接用于远程或生产环境。
 Importer 是一次性批量导入进程，不作为常驻 Compose 服务运行；应用在大图任务中通过

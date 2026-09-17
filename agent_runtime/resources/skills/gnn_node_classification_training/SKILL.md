@@ -1,6 +1,6 @@
 ---
 name: gnn_node_classification_training
-description: GCN/图神经网络节点分类训练全流程，含环境失败时的邻居多数投票降级方案
+description: GCN、GIN、APPNP、GATv2、Graph Transformer、GENConv 等图神经网络节点分类训练全流程，含环境失败时的邻居多数投票降级方案
 metadata:
   version: 1.1.0
   domain: graph_ml
@@ -8,13 +8,13 @@ metadata:
   igraph:
     any_tools: [get_graph_info, get_train_config, train, infer, get_node_info, tool_select]
     requires_graph_state: weighted
-    activates_on_intents: [训练GCN, train GCN, 图神经网络, 节点分类训练, GCN训练, GAT训练, SAGE训练, train node_classification, 性别预测, infer, model_id]
+    activates_on_intents: [训练GCN, train GCN, 图神经网络, 节点分类训练, GCN训练, GIN训练, APPNP训练, GAT训练, GATv2训练, Graph Transformer训练, GENConv训练, SAGE训练, train node_classification, 性别预测, infer, model_id]
 ---
 
 # GCN/图神经网络节点分类训练全流程（含环境失败降级）
 
 ## When to Use
-当用户需要在图上训练 GCN、GAT 或 GraphSAGE 等图神经网络模型以完成节点分类任务时触发。适用于节点带有特征向量和标签的图，典型场景包括用户属性预测（如性别、年龄段）、社区角色分类等。当训练环境不可用（如缺少 torch）时，自动降级为邻居多数投票方法提供近似结果。
+当用户需要在图上训练 GCN、GIN、APPNP、GAT、GATv2、GraphSAGE、Graph Transformer 或 GENConv 等图神经网络模型以完成节点分类任务时触发。适用于节点带有特征向量和标签的图，典型场景包括用户属性预测（如性别、年龄段）、社区角色分类等。当训练环境不可用（如缺少 torch）时，自动降级为邻居多数投票方法提供近似结果。
 
 ## Procedure
 
@@ -25,7 +25,7 @@ metadata:
    - 记录节点数、边数、特征维度、已标注节点数、标签类别列表。
    - 若上述任一条件不满足，立即告知用户缺失内容，终止流程。
 
-2. **获取训练配置模板**：调用 `get_train_config(task=node_classification, model=GCN)`（或 GAT/SAGE），获取默认参数模板，包括：
+2. **获取训练配置模板**：调用 `get_train_config(task=node_classification, model=GCN)`（也可选择 APPNP/GIN/GAT/GATV2/SAGE/TRANSFORMER/GEN），获取默认参数模板，包括：
    - `split`（train/val/test 比例）
    - `epochs`、`lr`、`hidden_dim`、`num_layers`、`dropout`
    - 将模板参数展示给用户，允许用户覆盖任意字段。
@@ -89,5 +89,5 @@ metadata:
 - MCP 客户端可能把 `data`、`train_config`、`algo_config`、`query`、`infer_config` 序列化成 JSON 字符串；服务端兼容两种表示，Agent 不应因表示形式报错而删掉用户参数重试。
 - 训练失败时务必区分"环境问题"与"数据问题"，避免误导用户认为图数据有误。
 - 邻居投票降级方案在图结构稀疏或邻居标注率极低时效果有限，应在报告中明确说明局限性。
-- GAT 和 GraphSAGE 的调用方式与 GCN 完全一致，仅需修改 `model` 字段。
+- GIN、APPNP、GAT、GATv2、GraphSAGE、Graph Transformer 和 GENConv 的调用方式与 GCN 完全一致，仅需修改 `model` 字段；APPNP 可通过 `appnp_k` 和 `appnp_alpha` 调整传播，GAT/GATV2/TRANSFORMER 可通过 `gat_heads` 调整注意力头数。
 - 若图为无向图，邻居投票天然包含双向邻居；若为有向图，建议同时考虑入边和出边邻居以提高覆盖率。

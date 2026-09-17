@@ -9,6 +9,15 @@ import networkx as nx
 from graph_engine.analysis_policy import multigraph_policy, numeric_weight
 
 
+_STRUCTURED_FAILURE_TOOLS = frozenset({
+    'graph_structure_analysis',
+    'connectivity_analysis',
+    'tree_dag_analysis',
+    'matching_coloring_analysis',
+    'distance_measures',
+})
+
+
 def project_parallel_edges(graph, policy, *, use_weight=True):
     """Build a private calculation view; stored relationships stay intact."""
     undirected = policy.endswith('_undirected')
@@ -59,6 +68,7 @@ def analysis_contract(function):
         graph = bound.arguments['g']
         multi = graph.is_multigraph()
         property_graph = graph.graph.get('property_graph', False)
+        structured_failures = multi or property_graph or function.__name__ in _STRUCTURED_FAILURE_TOOLS
         policy = multigraph_policy(function.__name__, bound.arguments) if multi or property_graph else None
         project = bool(policy and policy not in {'native', 'unsupported'} and
                        (multi or policy.endswith('_undirected')))
@@ -91,15 +101,15 @@ def analysis_contract(function):
                         graph, policy, use_weight=bound.arguments.get('use_weight', True))
             result = function(*bound.args, **bound.kwargs)
         except nx.NetworkXException as exc:
-            if not (multi or property_graph):
+            if not structured_failures:
                 raise
             return {'success': False, 'code': 'GRAPH_ALGORITHM_FAILED', 'tool': function.__name__, 'error': str(exc)}
         except ValueError as exc:
-            if not (multi or property_graph):
+            if not structured_failures:
                 raise
             return {'success': False, 'code': 'INVALID_GRAPH_ANALYSIS_INPUT', 'tool': function.__name__, 'error': str(exc)}
         except (OverflowError, ZeroDivisionError) as exc:
-            if not (multi or property_graph):
+            if not structured_failures:
                 raise
             return {'success': False, 'code': 'GRAPH_ALGORITHM_FAILED', 'tool': function.__name__, 'error': str(exc)}
         if (multi or property_graph) and _nonfinite_result(result):

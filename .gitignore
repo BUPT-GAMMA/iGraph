@@ -30,6 +30,7 @@ ENV/
 
 # Runtime outputs
 /data/
+deploy/nebulagraph/data/
 logs/
 uploads/
 artifacts/
