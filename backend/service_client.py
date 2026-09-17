@@ -6,13 +6,18 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 import httpx
+import uuid
+import anyio
 from fastapi import HTTPException, Request
+from execution_protocol import controls_enabled, execution_headers, service_headers
 
 
 def forwarded_headers(request: Request, user_id: str) -> dict[str, str]:
     headers = {
         "X-User-ID": user_id,
         "X-Request-ID": request.headers.get("X-Request-ID", ""),
+        **(service_headers(user_id) if controls_enabled() else {}),
+        **execution_headers.get(),
     }
     authorization = request.headers.get("Authorization", "").strip()
     if authorization:
@@ -39,8 +44,13 @@ class ServiceClient:
         json_body: Any = None,
         data: Any = None,
         files: Any = None,
+        timeout: float | None = None,
     ) -> Any:
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout, trust_env=False) as client:
+        # A preparation contains multiple independent graph operations. Allocate
+        # per HTTP operation, not per Run; keep caller-supplied retry keys intact.
+        if headers.get("X-Run-ID") and not headers.get("X-Operation-ID"):
+            headers = {**headers, "X-Operation-ID": str(uuid.uuid4())}
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout if timeout is None else timeout, trust_env=False) as client:
             response = await client.request(
                 method,
                 path,
@@ -55,7 +65,8 @@ class ServiceClient:
                 detail = response.json()
             except ValueError:
                 detail = response.text
-            raise HTTPException(status_code=response.status_code, detail=detail)
+            raise HTTPException(status_code=response.status_code, detail=detail.get("detail", detail) if isinstance(detail, dict) else detail,
+                                headers={"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else None)
         if response.status_code == 204 or not response.content:
             return None
         try:
@@ -81,8 +92,13 @@ class ServiceClient:
             async with client.stream(method, path, headers=headers, data=data) as response:
                 if response.status_code >= 400:
                     body = await response.aread()
-                    raise HTTPException(status_code=response.status_code, detail=body.decode("utf-8", "replace"))
+                    try:
+                        detail = response.json()
+                    except ValueError:
+                        detail = body.decode("utf-8", "replace")
+                    raise HTTPException(status_code=response.status_code, detail=detail.get("detail", detail) if isinstance(detail, dict) else detail,
+                                        headers={"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else None)
                 yield response
         finally:
-            await client.aclose()
-
+            with anyio.CancelScope(shield=True):
+                await client.aclose()

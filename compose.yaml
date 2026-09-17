@@ -31,12 +31,17 @@ services:
     environment:
       GRAPH_DATA_HOST: 0.0.0.0
       GRAPH_DATA_PORT: 21111
+      AGENT_RUNTIME_URL: http://agent-runtime:21112
+      BACKEND_CONTROL_URL: http://backend:21109
+      IGRAPH_CONTROL_SERVICE_KEY: ${IGRAPH_CONTROL_SERVICE_KEY:?Set a shared random IGRAPH_CONTROL_SERVICE_KEY in .env}
       IGRAPH_DATA_ROOT: /data
       GRAPH_DATA_UPLOAD_DIR: /data/graph_engine/uploads
       GRAPH_DATASET_DIR: /data/graph_engine/datasets
       GRAPH_ML_ARTIFACT_ROOT: /data/graph_engine/artifacts
     volumes:
       - igraph-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     expose:
       - "21111"
     networks:
@@ -56,6 +61,7 @@ services:
       MCP_HOST: 0.0.0.0
       MCP_PORT: 21110
       GRAPH_DATA_SERVER_URL: http://graph-engine-api:21111
+      IGRAPH_CONTROL_SERVICE_KEY: ${IGRAPH_CONTROL_SERVICE_KEY:?Set a shared random IGRAPH_CONTROL_SERVICE_KEY in .env}
       IGRAPH_DATA_ROOT: /data
     volumes:
       - igraph-data:/data
@@ -81,6 +87,9 @@ services:
       AGENT_RUNTIME_PORT: 21112
       AGENT_RUNTIME_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-igraph}:${POSTGRES_PASSWORD:-igraph}@postgres:5432/${POSTGRES_DB:-igraph}
       GRAPH_ENGINE_MCP_URL: http://graph-engine-mcp:21110/mcp
+      GRAPH_ENGINE_API_URL: http://graph-engine-api:21111
+      BACKEND_CONTROL_URL: http://backend:21109
+      IGRAPH_CONTROL_SERVICE_KEY: ${IGRAPH_CONTROL_SERVICE_KEY:?Set a shared random IGRAPH_CONTROL_SERVICE_KEY in .env}
       AGENT_RUNTIME_SKILLS_ROOT: /data/agent_runtime/skills
       IGRAPH_DATA_ROOT: /data
       AGNO_TELEMETRY: ${AGNO_TELEMETRY:-false}
@@ -95,6 +104,10 @@ services:
         condition: service_healthy
     networks:
       - backplane
+    # bubblewrap needs to create namespaces; Docker's default seccomp profile
+    # refuses that, which forces the workspace into unisolated fallback mode.
+    security_opt:
+      - seccomp:unconfined
     restart: unless-stopped
 
   backend:
@@ -110,6 +123,7 @@ services:
       BACKEND_PORT: 21109
       AGENT_RUNTIME_URL: http://agent-runtime:21112
       GRAPH_ENGINE_URL: http://graph-engine-api:21111
+      IGRAPH_CONTROL_SERVICE_KEY: ${IGRAPH_CONTROL_SERVICE_KEY:?Set a shared random IGRAPH_CONTROL_SERVICE_KEY in .env}
       BACKEND_USERS_FILE: /data/backend/users.json
       BACKEND_PROJECTS_FILE: /data/backend/projects.json
       IGRAPH_DATA_ROOT: /data

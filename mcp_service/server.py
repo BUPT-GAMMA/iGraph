@@ -16,16 +16,21 @@ import logging
 import os
 import sys
 from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
 
 from fastmcp import Context, FastMCP
 
 from graph_engine.observability import get_service_logger, close_service_loggers
 import graph_engine.paths as _dp
 from graph_engine.env import load_environment
+from execution_protocol import validate_service_configuration
 from mcp_service.config import MCPConfig
 from mcp_service.graph_data_client import GraphDataClient
 from mcp_service.session_registry import SessionRegistry
-from mcp_service.tool_forwarding import forwarded_graph_tool_arguments
+from mcp_service.tool_forwarding import (
+    forwarded_graph_tool_arguments,
+    schema_parameter_type,
+)
 
 load_environment()
 
@@ -56,13 +61,32 @@ logger = _setup_logging()
 config = MCPConfig.from_env()
 logger.info("GraphData target configured: %s", config.graph_data_url)
 
+
+@asynccontextmanager
+async def service_lifespan(_server):
+    validate_service_configuration()
+    yield {}
+
+
 mcp = FastMCP(
     "iGraph",
     instructions="图论分析与图机器学习工具集。工具规格由 tool_catalog 统一定义，动态注册到 MCP。",
+    lifespan=service_lifespan,
 )
 
 _graph_data = GraphDataClient(config.graph_data_url)
 _session_registry = SessionRegistry()
+
+
+@mcp.custom_route('/internal/capabilities', methods=['GET'], include_in_schema=False)
+async def control_capabilities(request):
+    import hmac
+    from starlette.responses import JSONResponse
+    from execution_protocol import controls_enabled
+    expected = os.getenv('IGRAPH_CONTROL_SERVICE_KEY', '')
+    if not expected or not hmac.compare_digest(request.headers.get('X-iGraph-Service-Key', ''), expected):
+        return JSONResponse({'code': 'SERVICE_AUTH_REQUIRED'}, status_code=403)
+    return JSONResponse({'run_cancel_v1': controls_enabled(), 'job_cancel_v1': controls_enabled()})
 
 
 def _json(payload: dict) -> str:
@@ -122,13 +146,14 @@ async def _invoke_graph_tool(tool_name: str, ctx: Context, arguments: dict) -> s
             target_base_url=_graph_data.base_url,
         )
     start = asyncio.get_event_loop().time()
-    result = await _graph_data.call_tool(
-        sid,
-        tool_name,
-        forwarded_arguments,
-        user_id=user_id,
-        run_id=_run_id(),
-    )
+    from execution_protocol import execution_headers
+    incoming = _http_headers()
+    token = execution_headers.set({key: incoming[key.lower()] for key in
+        ['X-iGraph-Service-Key', 'X-Execution-Generation', 'X-Operation-ID'] if incoming.get(key.lower())})
+    try:
+        result = await _graph_data.call_tool(sid, tool_name, forwarded_arguments, user_id=user_id, run_id=_run_id())
+    finally:
+        execution_headers.reset(token)
     duration_ms = int((asyncio.get_event_loop().time() - start) * 1000)
     result_dict = result if isinstance(result, dict) else {"success": False, "error": str(result)}
     mcp_log.response(tool_name, result_dict, duration_ms)
@@ -140,17 +165,6 @@ async def _invoke_graph_tool(tool_name: str, ctx: Context, arguments: dict) -> s
 # ──────────────────────────────────────────────────────────────────────────────
 # 动态工具注册
 # ──────────────────────────────────────────────────────────────────────────────
-
-# JSON Schema type → Python type 映射
-_SCHEMA_TYPE_MAP: Dict[str, type] = {
-    "string": str,
-    "boolean": bool,
-    "integer": int,
-    "number": float,
-    "object": dict,
-    "array": list,
-}
-
 
 def _build_handler_with_signature(
     tool_name: str,
@@ -176,7 +190,11 @@ def _build_handler_with_signature(
     for pname, pschema in properties.items():
         raw_type = pschema.get("type", "string")
         type_key = raw_type[0] if isinstance(raw_type, list) else raw_type
-        py_type = _SCHEMA_TYPE_MAP.get(type_key, Any)
+        py_type = schema_parameter_type(type_key)
+        if pname == "operations" and tool_name in {"preview_graph_optimization", "commit_graph_optimization"}:
+            # Agno providers may serialize nested operation arrays as JSON.
+            # construction_request decodes and validates this representation.
+            py_type = list | str
         if pname in required_fields:
             p = inspect.Parameter(
                 pname,
@@ -321,6 +339,7 @@ async def set_session_config(llm_model: Optional[str], ctx: Context) -> str:
 
 
 if __name__ == "__main__":
+    validate_service_configuration()
     transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
     logger.info("mcp_server starting  transport=%s", transport)
     if transport in ("streamable-http", "http"):

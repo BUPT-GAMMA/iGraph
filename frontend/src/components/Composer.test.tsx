@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatPane } from './ChatPane';
 import { Composer } from './Composer';
@@ -36,6 +36,57 @@ const approval = {
 };
 
 describe('ConversationInputArea', () => {
+  it('uses a project-aware heading only for project drafts', () => {
+    const { rerender } = render(<ChatPane {...baseChatProps} />);
+    expect(screen.getByRole('heading', { name: '开始图分析' })).toBeTruthy();
+
+    rerender(<ChatPane {...baseChatProps} emptyProjectName="test" />);
+    expect(screen.getByRole('heading', { name: '开始在 test 中图分析' })).toBeTruthy();
+    expect(screen.getByText('test').classList.contains('empty-project-name')).toBe(true);
+    expect(screen.queryByRole('heading', { name: '开始图分析' })).toBeNull();
+  });
+
+  it('renders streaming run tools once above the assistant content', () => {
+    const { container } = render(<ChatPane
+      {...baseChatProps}
+      loading
+      messages={[
+        { id: 'user-1', role: 'user', content: '分析这个图' },
+        { id: 'assistant-1', role: 'assistant', content: '正在生成回答', streaming: true, tools: [{ tool: 'stale_tool', done: true }] },
+      ]}
+      runTools={[
+        { tool: 'degree_analysis', call_id: 'tool-1', done: true },
+        { tool: 'community_detection', call_id: 'tool-2', done: false },
+      ]}
+    />);
+
+    const assistantBody = container.querySelector('.message-row.assistant .message-body')!;
+    const toolLists = container.querySelectorAll('.tool-list');
+    const toolList = toolLists[0];
+    const messageContent = assistantBody.querySelector('.message-content')!;
+
+    expect(toolLists).toHaveLength(1);
+    expect(container.querySelector('.live-analysis-card')).toBeNull();
+    expect(toolList.querySelectorAll('.tool-row')).toHaveLength(2);
+    expect(toolList.textContent).toContain('degree_analysis');
+    expect(toolList.textContent).toContain('community_detection');
+    expect(toolList.textContent).not.toContain('stale_tool');
+    expect(Array.from(assistantBody.children).indexOf(toolList)).toBeLessThan(Array.from(assistantBody.children).indexOf(messageContent));
+  });
+
+  it('omits the user initial avatar while keeping the assistant mark', () => {
+    const { container } = render(<ChatPane
+      {...baseChatProps}
+      messages={[
+        { id: 'user-1', role: 'user', content: '分析这个图' },
+        { id: 'assistant-1', role: 'assistant', content: '分析完成' },
+      ]}
+    />);
+
+    expect(container.querySelector('.message-row.user .message-avatar')).toBeNull();
+    expect(container.querySelector('.message-row.assistant .message-avatar')).not.toBeNull();
+  });
+
   it('keeps normal Composer behavior outside feedback states', () => {
     const onChange = vi.fn();
     const onSend = vi.fn();
@@ -61,8 +112,10 @@ describe('ConversationInputArea', () => {
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(onSend).toHaveBeenCalledOnce();
     expect((screen.getByLabelText('发送') as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByLabelText('选择模型') as HTMLSelectElement).disabled).toBe(false);
+    expect((screen.getByLabelText('选择模型') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText('上传图文件') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/支持上传 \.txt/)).toBeNull();
+    expect(screen.queryByText('Shift + Enter 换行')).toBeNull();
   });
 
   it('opens custom model configuration in a separate dialog', async () => {
@@ -87,11 +140,11 @@ describe('ConversationInputArea', () => {
     fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
     fireEvent.click(screen.getByRole('button', { name: '配置自定义模型' }));
 
-    expect(screen.queryByRole('listbox', { name: '可用模型' })).toBeNull();
+    expect(screen.queryByRole('group', { name: '可用模型' })).toBeNull();
     expect(screen.getByRole('dialog', { name: '配置自定义模型' })).toBeTruthy();
     fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'llama-3.1-8b' } });
-    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://api.example.com/v1' } });
-    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'test-key' } });
+    fireEvent.change(screen.getByLabelText('接口地址'), { target: { value: 'https://api.example.com/v1' } });
+    fireEvent.change(screen.getByLabelText('访问密钥'), { target: { value: 'test-key' } });
     fireEvent.click(screen.getByRole('button', { name: '保存模型' }));
 
     await waitFor(() => expect(onSaveCustomModel).toHaveBeenCalledWith({
@@ -101,6 +154,79 @@ describe('ConversationInputArea', () => {
       api_key: 'test-key',
     }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '配置自定义模型' })).toBeNull());
+  });
+
+  it('shows one branded representative per built-in model company', () => {
+    render(<Composer
+      value=""
+      model="qwen3.6-plus"
+      models={[
+        'qwen3.6-plus',
+        'claude-opus-4-6',
+        'claude-sonnet-4-6',
+        'deepseek-v4-flash',
+        'deepseek-v4-lite',
+        'deepseek-v4-pro',
+        'doubao-seed-2-0-pro-260215',
+        'gpt-5-2',
+        'gpt-5-4',
+        'qwen3.7-max',
+      ]}
+      onChange={noop}
+      onModelChange={noop}
+      onDataset={noop}
+      onSend={noop}
+      onUpload={noop}
+      onRemoveAttachment={noop}
+      attachments={[]}
+      loading={false}
+      uploading={false}
+      disabled={false}
+    />);
+
+    const trigger = screen.getByRole('button', { name: '选择模型' });
+    expect(trigger.querySelector('[data-model-provider="qwen"]')).toBeTruthy();
+    fireEvent.click(trigger);
+
+    expect(screen.getByText('模型')).toBeTruthy();
+    expect(screen.queryByText(/每家精选一款/)).toBeNull();
+    const modelGroup = screen.getByRole('group', { name: '可用模型' });
+    expect(within(modelGroup).getAllByRole('button')).toHaveLength(5);
+    expect(within(modelGroup).getByRole('button', { name: 'qwen3.6-plus' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(modelGroup).queryByRole('button', { name: 'qwen3.7-max' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'claude-opus-4-6' }).querySelector('[data-model-provider="anthropic"]')).toBeTruthy();
+    expect(within(modelGroup).queryByRole('button', { name: 'claude-sonnet-4-6' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'deepseek-v4-pro' }).querySelector('[data-model-provider="deepseek"]')).toBeTruthy();
+    expect(within(modelGroup).queryByRole('button', { name: 'deepseek-v4-flash' })).toBeNull();
+    expect(within(modelGroup).queryByRole('button', { name: 'deepseek-v4-lite' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'doubao-seed-2-0-pro-260215' }).querySelector('[data-model-provider="doubao"]')).toBeTruthy();
+    expect(within(modelGroup).getByRole('button', { name: 'gpt-5-4' }).querySelector('[data-model-provider="openai"]')).toBeTruthy();
+    expect(within(modelGroup).queryByRole('button', { name: 'gpt-5-2' })).toBeNull();
+  });
+
+  it('terminates despite upload and draft gates, and allows idempotent retry when unconfirmed', () => {
+    const onCancel = vi.fn();
+    const props = {
+      value: '', model: 'model-a', models: ['model-a'], onChange: noop,
+      onModelChange: noop, onDataset: noop, onSend: noop, onUpload: noop,
+      onRemoveAttachment: noop, attachments: [], uploading: true, disabled: true,
+      sendBlocked: true, sendBlockedReason: '当前会话已有活动任务',
+      canCancel: true, onCancel,
+    };
+    const { rerender } = render(<Composer {...props} loading />);
+
+    const pause = screen.getByRole('button', { name: '终止当前任务' }) as HTMLButtonElement;
+    expect(pause.disabled).toBe(false);
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true);
+    fireEvent.click(pause);
+    expect(onCancel).toHaveBeenCalledOnce();
+
+    rerender(<Composer {...props} loading cancellation="stopping" />);
+    expect((screen.getByRole('button', { name: '终止当前任务' }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<Composer {...props} loading cancellation="unconfirmed" />);
+    expect(screen.getByRole('status').textContent).toContain('停止请求尚未确认');
+    fireEvent.click(screen.getByRole('button', { name: '终止当前任务' }));
+    expect(onCancel).toHaveBeenCalledTimes(2);
   });
 
   it('shows the custom model ID instead of its display name', () => {
@@ -124,8 +250,8 @@ describe('ConversationInputArea', () => {
     expect(screen.getByRole('button', { name: '选择模型' }).textContent).toContain('Deepseek-v4-pro');
     expect(screen.getByRole('button', { name: '选择模型' }).textContent).not.toContain('iGraph');
     fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
-    expect(screen.getByRole('option', { name: 'Deepseek-v4-pro' })).toBeTruthy();
-    expect(screen.queryByRole('option', { name: 'iGraph' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Deepseek-v4-pro' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'iGraph' })).toBeNull();
   });
 
   it('replaces Composer with approval controls and preserves a hidden draft and attachments', () => {
@@ -138,7 +264,7 @@ describe('ConversationInputArea', () => {
       interaction={approval}
     />);
 
-    expect(screen.getByText('Agent 请求确认')).toBeTruthy();
+    expect(screen.getByText('助手请求确认')).toBeTruthy();
     expect(screen.getByText('草稿已保存 · 1 个附件已保存')).toBeTruthy();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.queryByLabelText('发送')).toBeNull();
@@ -210,6 +336,66 @@ describe('ConversationInputArea', () => {
     expect(screen.queryByRole('button', { name: '滚动到最新消息' })).toBeNull();
   });
 
+  it.each(['completed', 'cancelled'])('preserves reading position when a %s snapshot replaces temporary IDs', (status) => {
+    const messages = [
+      { id: 'user:local-generation', role: 'user' as const, content: 'question', run_id: 'run-1' },
+      { id: 'assistant:local-generation', role: 'assistant' as const, content: 'partial answer', run_id: 'run-1', streaming: true },
+    ];
+    const { container, rerender } = render(<ChatPane {...baseChatProps} loading messages={messages} />);
+    const scroll = container.querySelector('.chat-scroll') as HTMLDivElement;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1800 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 120 },
+    });
+    fireEvent.scroll(scroll);
+    rerender(<ChatPane {...baseChatProps} loading={false} messages={[
+      { ...messages[0], id: 'user:run-1' },
+      { ...messages[1], id: 'assistant:run-1', streaming: false, run_status: status,
+        content: status === 'completed' ? 'complete answer' : '已停止本轮对话' },
+    ]} />);
+    expect(scroll.scrollTop).toBe(120);
+    expect(screen.getByRole('button', { name: '滚动到最新消息' })).toBeTruthy();
+  });
+
+  it('keeps following completion when already at the bottom', () => {
+    const messages = [{ id: 'user:local', role: 'user' as const, content: 'question' }];
+    const { container, rerender } = render(<ChatPane {...baseChatProps} messages={messages} loading />);
+    const scroll = container.querySelector('.chat-scroll') as HTMLDivElement;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 700 },
+    });
+    fireEvent.scroll(scroll);
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 1500 });
+    rerender(<ChatPane {...baseChatProps} messages={[
+      { ...messages[0], id: 'user:run' }, { id: 'assistant:run', role: 'assistant', content: 'done' },
+    ]} />);
+    expect(scroll.scrollTop).toBe(1500);
+  });
+
+  it('resumes following on an explicit send, even for an identical prompt', () => {
+    const onSend = vi.fn();
+    const messages = [{ id: 'user:old', role: 'user' as const, content: 'question' }];
+    const { container, rerender } = render(<ChatPane {...baseChatProps} messages={messages} value="question" onSend={onSend} />);
+    const scroll = container.querySelector('.chat-scroll') as HTMLDivElement;
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 120 },
+    });
+    fireEvent.scroll(scroll);
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(scroll.scrollTop).toBe(1000);
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 1500 });
+    rerender(<ChatPane {...baseChatProps} messages={[...messages,
+      { id: 'user:new', role: 'user', content: 'question' },
+    ]} loading />);
+    expect(scroll.scrollTop).toBe(1500);
+  });
+
   it('jumps to the bottom when switching conversations', () => {
     const messages = [
       { id: 'user-1', role: 'user' as const, content: 'question' },
@@ -227,4 +413,34 @@ describe('ConversationInputArea', () => {
     expect(scroll.scrollTop).toBe(1200);
     expect(screen.queryByRole('button', { name: '滚动到最新消息' })).toBeNull();
   });
+});
+
+
+it('uploads a dropped file through the existing handler and respects the disabled gate', () => {
+  const onUpload = vi.fn();
+  const file = new File(['print(1)'], 'inspect.py', { type: 'text/plain' });
+  const { container, rerender } = render(<Composer {...baseChatProps} onUpload={onUpload} />);
+  fireEvent.drop(container.querySelector('.composer-wrap')!, { dataTransfer: { files: [file], types: ['Files'] } });
+  expect(onUpload).toHaveBeenCalledWith(file);
+  rerender(<Composer {...baseChatProps} onUpload={onUpload} disabled />);
+  fireEvent.drop(container.querySelector('.composer-wrap')!, { dataTransfer: { files: [file], types: ['Files'] } });
+  expect(onUpload).toHaveBeenCalledTimes(1);
+});
+
+it('offers copy without resend actions or changes to the current draft', async () => {
+  const copy = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+  const onSend = vi.fn();
+  const onChange = vi.fn();
+  render(<ChatPane {...baseChatProps} value="unsent draft" onSend={onSend} onChange={onChange} messages={[
+    { id: 'u', role: 'user', content: 'inspect', attachments: [{ filename: 'a.csv', file_token: 'a' }] },
+    { id: 'a', role: 'assistant', content: 'result', run_id: 'run-a' },
+  ]} />);
+  expect(screen.queryByRole('button', { name: '重新生成' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '编辑并重发' })).toBeNull();
+  fireEvent.click(screen.getAllByRole('button', { name: '复制' })[0]);
+  await waitFor(() => expect(copy).toHaveBeenCalledWith('inspect'));
+  expect(onSend).not.toHaveBeenCalled();
+  expect(onChange).not.toHaveBeenCalled();
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('unsent draft');
 });

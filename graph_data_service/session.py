@@ -19,6 +19,9 @@ import numpy as np
 
 import graph_engine.paths as _dp
 from graph_data_service.graph_data import GraphData
+from graph_data_service.property_graph import require_lossless_append
+from graph_data_service.graph_snapshot import GraphSnapshot, snapshot_summary
+from execution_lifecycle import atomic_json
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,61 @@ class GraphSession:
         self._remote_graph = None
         self._bump_version()
         self.save_snapshot(description=description or "更新图")
+
+    def publish_snapshot(self, source, summary, *, expected_version, receipt, description='任务计算结果', activate_version=None, discard_version=None, before_commit=None):
+        """Short commit: the worker has finished all graph-sized I/O/validation.
+
+        graph_versions.json is the authoritative commit boundary. Unlisted
+        staged/orphan files never become visible versions after a crash.
+        Call under the session write lock after the executor-generation check.
+        """
+        if self.graph_version != expected_version:
+            raise ValueError('GRAPH_VERSION_CHANGED')
+        version = int(activate_version) if activate_version is not None else self.next_graph_version()
+        target = self._snapshots_dir / f'v{version:03d}.npz'
+        candidate = GraphSnapshot(target, summary)
+        records = self._load_version_records()
+        manifest = json.loads(self._versions_path().read_text()) if self._versions_path().is_file() else {}
+        if not isinstance(manifest, dict) or manifest.get('format') != 2:
+            # Upgrade visibility before moving a candidate file, so even the
+            # first failed publication cannot expose an uncommitted orphan.
+            atomic_json(self._versions_path(), {'format': 2, 'session_id': self.session_id,
+                'current_graph_version': self.graph_version, 'versions': records})
+        receipt = {**receipt, 'result': {**receipt.get('result', {}), 'graph_version': version}}
+        if activate_version is None:
+            os.replace(source, target)
+            records = [row for row in records if int(row['graph_version']) != version]
+            records.append({'graph_version': version, 'description': description,
+                'created_at': self._now_iso(), 'loaded': True,
+                'node_count': summary['num_nodes'], 'edge_count': summary['num_edges'],
+                'edge_entry_count': summary['num_edge_entries'], 'unique_edge_count': summary['num_unique_edges'],
+                **{key: summary[key] for key in ('num_unique_directed_edges', 'num_unique_undirected_edges',
+                    'semantic_type', 'storage_type', 'is_symmetric', 'has_self_loops', 'has_duplicate_entries')},
+                'is_directed': summary['directed'], 'has_weights': summary['has_edge_weight'],
+                'snapshot': str(target), 'summary': summary, 'commit_receipt': receipt})
+        elif not target.is_file():
+            raise ValueError('GRAPH_VERSION_NOT_FOUND')
+        else:
+            records = [{**row, 'summary': summary} if int(row['graph_version']) == version else row for row in records]
+        if discard_version is not None:
+            if int(discard_version) == version:
+                raise ValueError('CANNOT_DISCARD_ACTIVE_GRAPH')
+            records = [row for row in records if int(row['graph_version']) != int(discard_version)]
+        atomic_json(self._versions_path(), {'format': 2, 'session_id': self.session_id,
+            'current_graph_version': version, 'versions': records, 'commit_receipt': receipt}, before_replace=before_commit)
+        # Once published, cancellation preserves this result. No graph-sized
+        # allocation or write occurs between publication and in-memory adoption.
+        self._graph, self._remote_graph, self._graph_version = candidate, None, version
+        if discard_version is not None:
+            try:
+                (self._snapshots_dir / f'v{int(discard_version):03d}.npz').unlink(missing_ok=True)
+            except OSError:
+                logger.warning('discarded_snapshot_cleanup_pending session_id=%s version=%s', self.session_id, discard_version)
+        try:
+            self._write_session_meta(candidate)
+        except OSError:
+            logger.warning('graph_metadata_sync_pending session_id=%s', self.session_id)
+        return version
 
     def next_graph_version(self) -> int:
         """Return the next durable version without mutating session state."""
@@ -208,6 +266,8 @@ class GraphSession:
 
     def _parse_edgelist(self, text: str, append: bool = False) -> Tuple[int, int]:
         """从文本边列表建图，返回 (节点数, 边数)。"""
+        if append:
+            require_lossless_append(self._graph)
         raw_edges: List[Tuple[str, str, float]] = []
         for line in text.strip().splitlines():
             line = line.strip()
@@ -271,6 +331,8 @@ class GraphSession:
 
     def load_graph_from_upload_path(self, saved_path: str, append: bool = False) -> Tuple[int, int]:
         """从上传文件路径加载图，支持文本格式、.npz 与 .json（graph_data.v1）格式。"""
+        if append:
+            require_lossless_append(self._graph)
         resolved_path = self._resolve_existing_upload_path(saved_path)
         if resolved_path is None:
             raise FileNotFoundError(f"文件不存在: {saved_path}")
@@ -279,6 +341,7 @@ class GraphSession:
         if lower_path.endswith(".npz") or lower_path.endswith(".pt"):
             loaded = GraphData.load(resolved_path)
             if append and self._graph is not None:
+                require_lossless_append(self._graph, loaded)
                 existing_text = self._graph_to_text(self._graph)
                 new_text = self._graph_to_text(loaded)
                 return self._parse_edgelist(existing_text + "\n" + new_text, append=False)
@@ -295,6 +358,7 @@ class GraphSession:
             try:
                 loaded = GraphData.load(resolved_path)
                 if append and self._graph is not None:
+                    require_lossless_append(self._graph, loaded)
                     existing_text = self._graph_to_text(self._graph)
                     new_text = self._graph_to_text(loaded)
                     return self._parse_edgelist(existing_text + "\n" + new_text, append=False)
@@ -544,14 +608,12 @@ class GraphSession:
 
     def _write_version_records(self, records: list[dict]) -> None:
         payload = {
+            'format': 2,
             "session_id": self.session_id,
             "current_graph_version": self.graph_version,
             "versions": sorted(records, key=lambda r: int(r.get("graph_version", 0))),
         }
-        self._versions_path().write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_json(self._versions_path(), payload)
 
     def _legacy_session_dirs(self) -> list[Path]:
         if not self.user_id:
@@ -580,7 +642,8 @@ class GraphSession:
                 raise ValueError(
                     f"refusing to delete storage outside session root: {resolved}"
                 )
-            shutil.rmtree(resolved, ignore_errors=True)
+            if resolved.exists():
+                shutil.rmtree(resolved)
 
     def _migrate_legacy_session_storage(self) -> None:
         if (self._session_dir / "graph_current.npz").exists():
@@ -708,6 +771,17 @@ class GraphSession:
                         )
             except Exception:
                 pass
+        if self._versions_path().exists():
+            manifest = json.loads(self._versions_path().read_text())
+            if isinstance(manifest, dict) and manifest.get('format') == 2:
+                version = int(manifest.get('current_graph_version', 0))
+                record = next((r for r in manifest['versions'] if int(r['graph_version']) == version), None)
+                if record and record.get('summary') and record.get('snapshot'):
+                    path = Path(record['snapshot'])
+                    if not path.is_file():
+                        raise ValueError('COMMITTED_GRAPH_SNAPSHOT_MISSING')
+                    self._graph, self._remote_graph, self._graph_version = GraphSnapshot(path, record['summary']), None, version
+                    return True
         remote = meta.get("remote_graph") if isinstance(meta, dict) else None
         if isinstance(remote, dict) and remote.get("graph_key"):
             self._remote_graph = dict(remote)
@@ -759,6 +833,10 @@ class GraphSession:
             for path in self._snapshots_dir.glob("v*.npz")
             if path.stem[1:].isdigit()
         }
+        if self._versions_path().exists():
+            manifest = json.loads(self._versions_path().read_text())
+            if isinstance(manifest, dict) and manifest.get('format') == 2:
+                existing = {}  # Only the committed manifest grants visibility.
         records_by_version: dict[int, dict] = {}
         for rec in self._load_version_records():
             try:
@@ -768,6 +846,8 @@ class GraphSession:
             path_text = str(rec.get("snapshot") or "")
             loaded = bool(rec.get("loaded", True)) and (not path_text or Path(path_text).exists())
             row = dict(rec)
+            row.pop('commit_receipt', None)
+            row.pop('summary', None)
             row["graph_version"] = version
             row["loaded"] = loaded
             row["current"] = version == self.graph_version
@@ -990,7 +1070,7 @@ class GraphSession:
         for child in root.iterdir():
             if not child.is_dir():
                 continue
-            if (child / "graph_current.npz").exists():
+            if (child / "graph_current.npz").exists() or (child / 'graph_versions.json').exists():
                 rows.append(child.name)
                 continue
             meta_path = child / "session_meta.json"

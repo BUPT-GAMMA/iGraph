@@ -30,11 +30,11 @@ function Harness() {
     <button onClick={() => dispatch({ type: 'SET_ACTIVE_SESSION', sessionId: 'B' })}>B</button>
     <button onClick={() => dispatch({
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen-a',
-      batch: { protocol_version: 2, session_id: 'A', run_id: 'run-a', event_index: 1, events: [{ type: 'token', message_id: 'assistant:run-a', content: 'background A' }] },
+      batch: { protocol_version: 2, session_id: 'A', run_id: 'run-a', event_index: 0, events: [{ type: 'token', message_id: 'assistant:run-a', content: 'background A' }] },
     })}>token A</button>
     <button onClick={() => dispatch({
       type: 'APPLY_BATCH', sessionId: 'B', generation: 'gen-b',
-      batch: { protocol_version: 2, session_id: 'B', run_id: 'run-b', event_index: 1, events: [{ type: 'token', message_id: 'assistant:run-b', content: 'parallel B' }] },
+      batch: { protocol_version: 2, session_id: 'B', run_id: 'run-b', event_index: 0, events: [{ type: 'token', message_id: 'assistant:run-b', content: 'parallel B' }] },
     })}>token B</button>
   </>;
 }

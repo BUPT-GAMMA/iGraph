@@ -148,6 +148,23 @@ class GraphMLDatasetStore:
         """Bind only the bundle already resident in this runtime session."""
         return self.resolve_for_session(session_id, dataset_id)
 
+    def generation_token(self, session_id):
+        with self._lock:
+            return self._generations.get(session_id, 0)
+
+    def adopt_worker_bundle(self, session_id, session, bundle, *, expected_generation):
+        """Commit a fully validated canonical worker result, after scope checks."""
+        session_key = _require_session_id(session_id)
+        _require_matching_session(session_key, session)
+        with self._lock:
+            if self._generations.get(session_key, 0) != expected_generation:
+                raise ValueError('DATASET_GENERATION_CHANGED')
+            if session_key not in self._bundles and self._occupied_slots_locked() >= self._max_resident_datasets:
+                raise ValueError('图分类数据集常驻数量已达到上限')
+            self._persist_binding(session, bundle)
+            self._bundles[session_key] = bundle
+            self._generations[session_key] = expected_generation + 1
+
     def resolve_for_session(
         self,
         session_id: str,
@@ -197,6 +214,7 @@ class GraphMLDatasetStore:
                     raise ValueError("会话已释放，图分类数据集加载结果未绑定")
                 self._persist_binding(session, bundle)
                 self._bundles[session_key] = bundle
+                self._generations[session_key] = inflight.generation + 1
                 if self._inflight.get(session_key) is inflight:
                     self._inflight.pop(session_key, None)
                 inflight.future.set_result(bundle)

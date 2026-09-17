@@ -13,13 +13,28 @@ from graph_data_service.embedding import EmbeddingProvider, default_provider
 class LightweightRAG:
     def __init__(self, session_dir: str, provider: EmbeddingProvider | None = None) -> None:
         self.session_dir = Path(session_dir)
-        self.docs_dir = self.session_dir / "docs"
-        self.docs_dir.mkdir(parents=True, exist_ok=True)
-        self.embedding_path = self.session_dir / "doc_embeddings.npy"
-        self.index_path = self.session_dir / "doc_index.json"
         self._provider = provider or default_provider()
+        self._refresh_paths()
+
+    @staticmethod
+    def current_directory(session_dir: Path) -> Path:
+        manifest = session_dir / 'rag_manifest.json'
+        if not manifest.exists():
+            return session_dir  # Existing document format remains readable.
+        version = json.loads(manifest.read_text(encoding='utf-8'))['version']
+        if not isinstance(version, str) or not re.fullmatch(r'[a-zA-Z0-9-]+', version):
+            raise ValueError('INVALID_RAG_VERSION')
+        return session_dir / '.rag_versions' / version
+
+    def _refresh_paths(self):
+        self.data_directory = self.current_directory(self.session_dir)
+        self.docs_dir = self.data_directory / "docs"
+        self.docs_dir.mkdir(parents=True, exist_ok=True)
+        self.embedding_path = self.data_directory / "doc_embeddings.npy"
+        self.index_path = self.data_directory / "doc_index.json"
 
     def ingest_document(self, doc_id: str, content: str, *, chunk_size: int = 512, overlap: int = 128) -> dict[str, Any]:
+        self._refresh_paths()
         chunks = self._chunk_text(content, chunk_size=chunk_size, overlap=overlap)
         embeddings = self._provider.encode([chunk["text"] for chunk in chunks])
         existing = self._load_index()
@@ -34,6 +49,10 @@ class LightweightRAG:
                 }
             )
         current = self._load_embeddings()
+        if self._provider.name == 'lexical' and start:
+            # Python's lexical hash is process-local. Recompute the old rows in
+            # the executing process instead of mixing hash spaces across workers.
+            current = self._provider.encode([chunk['text'] for chunk in existing[:start]])
         if current.size and embeddings.size and current.shape[1] != embeddings.shape[1]:
             (self.docs_dir / f"{doc_id}.txt").write_text(content, encoding="utf-8")
             return {
@@ -61,6 +80,7 @@ class LightweightRAG:
         }
 
     def retrieve(self, query: str, top_k: int = 5) -> dict[str, Any]:
+        self._refresh_paths()
         index = self._load_index()
         embeddings = self._load_embeddings()
         if not index or embeddings.size == 0:
@@ -70,6 +90,8 @@ class LightweightRAG:
                 "retrieval_mode": self._provider.name,
                 "semantic_enabled": self._provider.name != "lexical",
             }
+        if self._provider.name == 'lexical':
+            embeddings = self._provider.encode([chunk['text'] for chunk in index])
         q = self._provider.encode([query])
         if embeddings.shape[1] != q.shape[1]:
             return {

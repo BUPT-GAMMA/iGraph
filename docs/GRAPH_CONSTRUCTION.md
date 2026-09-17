@@ -1,0 +1,444 @@
+# 数据集构图与图数据优化
+
+本功能把 SQL、CSV、TXT 文件的构图流程接入前端、BFF、Graph Engine 和 Agent Runtime。构图结果归属于原 dataset，可保存、重新加载并继续优化；会话只是加载该数据集的某个版本进行分析。
+
+通用加载工具 `load_graph`、`load_graph_from_text`、`load_graph_from_triples` 和 `load_graph_from_upload` 的追加模式仅支持普通图合并。当前图或待合并图包含构图属性图时，返回 `success=false`、`code=UNSUPPORTED_PROPERTY_GRAPH_APPEND`，保留当前会话图、版本及构图数据集。检查覆盖工具执行、底层合并与上传解析，属性图关系编号、类型、属性和平行边不会进入有损转换。空会话直接加载属性图文件仍受支持；普通图追加及显式覆盖保持既有行为。Agent 遇到该错误应说明限制，覆盖或清空图需用户明确要求。完整属性图追加需要另行定义关系身份和属性冲突规则。
+
+Graph Engine 默认注册 SQL/CSV 构图子代理，生成保留源数据的属性图，并以独立 SQL 查询结果验收候选转换。默认 `llm` 模式需要模型配置，`rules` 是显式离线模式。TXT 尚无内置算法，继续返回 `algorithm_unavailable`。自定义 `Path/options -> graph` 算法注册接口保留。
+
+## 1. 数据源与已有数据的兼容
+
+新上传的 SQL/CSV/TXT 文件先保存到个人或项目数据集，BFF 的 dataset 记录为：
+
+```json
+{
+  "status": "source_ready",
+  "metadata": {
+    "dataset_kind": "construction_source",
+    "construction": {
+      "status": "not_built",
+      "revision": 0,
+      "source_type": "csv"
+    }
+  }
+}
+```
+
+`source_ready` 表示原文件已保存，不表示图已经可用。此类数据集不会自动替换当前会话的图，也不能设置为项目默认图。上传入口和附件入口都保留 dataset 身份，后续构图不需要再次上传文件。
+
+已有的、已经按旧流程加载成功的 CSV/TXT 数据集保持原有加载行为。仅打开这些数据集的构图状态面板，不会把旧 `ready` 数据集改成 `source_ready`。Graph Engine 底层旧上传解析器继续保留兼容能力；新数据源入口由 BFF 状态、MCP 检查和 Runtime 指令导向构图流程。
+
+用户直接粘贴的独立内联边表或文本仍按现有功能处理。Agent 不得读取新源文件后把内容复制到旧文本、三元组或上传工具中绕开构图入口。
+
+| Graph Engine 构图状态 | BFF dataset 状态 | 含义 |
+| --- | --- | --- |
+| `not_built` | 新文件为 `source_ready` | 尚无保存的构图结果，`revision=0` |
+| `algorithm_unavailable` | `source_ready` | 源文件已保留，对应算法尚未注册 |
+| `building` | `source_ready` | 服务已接收任务，正在构图或确认工作进程退出 |
+| `failed` | `source_ready` | 算法执行或输出校验失败；原文件保留，失败信息放在构图状态中 |
+| `ready` | `ready` | 已保存可复用图，`revision>=1`，`dataset_kind=single_graph` |
+
+Graph Engine 是构图状态和图数据的权威来源；BFF 的 `metadata.construction` 是数据集目录中的同步信息。查询或使用数据集时会核对 Engine 状态，防止目录信息落后于实际版本。
+
+### 构图并发、预算与恢复
+
+`GRAPH_CONSTRUCTION_CONCURRENCY` 是每个 Graph Engine 服务进程的构图并发上限，默认 `1`，必须为正整数；每个用户最多同时运行一个构图任务。当前标准入口使用单个服务进程。该值不代表跨主机或多实例的共享容量，扩容前需按实例总数评估 CPU 和内存。
+
+准入在提交工作线程之前完成。已完成的数据集通过来源一致性检查后复用结果，不占计算名额；相同用户、数据集、来源和参数的活动请求返回同一个 `build_id` 的 `building` 状态。不同参数的重复请求返回 `409 construction_build_conflict`；新任务满载返回 `429 construction_capacity_exhausted`，不会改变数据集状态、进入队列或自动重试。构图期间的源替换、编辑和删除返回可重试的 `409 construction_busy`。普通编辑之间仍按修订号串行提交。
+
+构图事务使用专用线程；内置 SQL/CSV 算法使用固定入口的独立子进程。候选生成按表和节点关联边建立索引，扫描成本为 `O(V+E)`；同一任务的已接受图版本复用候选，接受转换后才失效。自环计一次，平行边及遍历顺序保留。
+
+`max_seconds`（默认 `900`，范围 `1..3600`）限制算法执行，子进程启动、源解析、建图、候选生成、模型调用和完整性验证共用截止时间。批量扫描每 1,024 项检查预算；局部 SQL 和模型超时不能延长整体预算。监督器在超时后请求退出，必要时终止进程组，并等待退出确认；最多 5 秒的正常回收宽限及最终持久化属于收尾阶段，期间仍占用名额。无法确认退出时保留占用并记录 `construction_exit_unconfirmed`，不能仅凭等待超时放行新任务。
+
+关闭浏览器或 BFF 等待超时不会取消已接收任务。服务关闭会停止准入并回收工作进程；异常重启通过服务租约、工作进程租约和进程创建时间恢复。只有确认旧执行者退出后才标记中断、清理该次临时结果并允许重试；已原子提交的 `ready` 结果保留。
+
+状态 API 增加可选 `build_id`、`failure_code`；旧记录仍可读取。预算耗尽的失败原因是 `construction_time_budget_exhausted`，中断为 `construction_interrupted`。图只在工作进程退出、结果身份与校验通过后原子提交；失败不增加修订号。日志记录任务去重、容量拒绝、超时、总耗时及退出确认，私有 `evolution-report.json` 保存 `phase_seconds` 阶段耗时。自定义进程内算法保留调用协议和执行资源隔离，其自行启动的外部任务不属于内置算法的进程监督范围。
+
+## 2. 前端入口与编辑流程
+
+“构图”入口放在数据集列表和项目数据集条目旁，构图成功后改为“查看构图”。右侧图工作台也提供入口：当前数据集支持构图时直接打开它，否则进入数据集选择。源文件上传完成后可直接进入构图工作台。
+
+工作台把源文件信息、六项优化表单、图画布、节点/边属性检查和保存动作放在同一处。编辑流程为：
+
+1. 读取构图状态；存在保存图时读取图和当前 `revision`。
+2. 从实际节点、边和属性中选择操作目标。
+3. “应用并预览”提交完整的待保存操作列表，只更新预览图。
+4. 可撤销预览的最后一步或还原全部；关闭含未保存修改的面板时提示用户。
+5. “保存到数据集”提交与预览相同的版本及操作列表。
+6. 保存成功后，可选择“在当前会话使用”，显式加载保存版本。
+
+画布最多展示 180 个节点和 400 条边。工作台统计、优化校验与保存仍针对完整图数据，不能把画布显示数量当作数据集的完整规模。无算法时不显示伪造的图结果。
+
+## 3. 图文档契约
+
+`GET /construction/{dataset_id}/graph` 返回：
+
+```json
+{
+  "dataset_id": "ds_people",
+  "revision": 1,
+  "graph": {
+    "directed": true,
+    "nodes": [
+      {"id": "person_alice", "type": "Person", "properties": {"phone": "13800000000"}},
+      {"id": "person_bob", "type": "Person", "properties": {"name": "Bob"}}
+    ],
+    "edges": [
+      {
+        "id": "knows_1",
+        "source": "person_alice",
+        "target": "person_bob",
+        "type": "KNOWS",
+        "properties": {"since": 2020}
+      }
+    ]
+  }
+}
+```
+
+内层 `graph` 只允许 `directed`、`nodes`、`edges` 三个字段。节点只允许 `id`、`type`、`properties`；边另外包含 `source`、`target`。名称、标签等业务信息应放在 `properties`，不要添加未约定的顶层字段。
+
+SQL/CSV 自动生成的源记录以 `properties.table`、非负整数 `properties.row_index` 和对象 `properties.data` 标识，业务字段位于 `data` 内。工作台和公共 preview/commit 接口按业务字段名访问这些记录；字段名 `data`、`table` 或包含点号时仍按完整列名处理，不解释为路径。旧图的普通 `properties` 字段和嵌套 JSON 保持原有语义。源记录的表名、行号和关系元数据不作为业务字段编辑。
+
+从源记录提取字段时，字段值存入当前属性节点，以 `extracted_attribute` 关系连接源记录；转移到边时使用现有 `relocated_attributes` 结构，工作台按其中的 `name`（缺失时使用 `column`）展示和选择字段。读取和验证使用这些当前值，不复制一份隐藏的原始值作为答案。目标字段冲突会拒绝整个操作批次；明确删除业务字段仍是允许的数据修改。
+
+SQL 文本导入按语句类型检查：建表语句允许合法 `ON UPDATE` / `ON DELETE` 外键动作，INSERT 仍限制为导出数据，不接受显式 SELECT、CTE、RETURNING 或 UPSERT 更新。SQLite 授权回调继续限制附加数据库、触发器、函数和建表查询等操作。
+
+- `directed` 必须为布尔值。
+- 节点和边的 `id`、`type` 必须是非空字符串；ID 在各自集合中唯一，不接受自动转成字符串的数字 ID。
+- 边两端必须引用存在的节点 ID。
+- `properties` 必须是 JSON 对象；支持嵌套 JSON，但拒绝非字符串属性名、`NaN`、无穷数以及 Python 专有对象。
+- 节点 ID、边 ID 由算法生成，并应在同一数据源的相同建模结果中保持稳定。优化生成的新 ID 使用确定性哈希，使同一版本、同一操作的预览与提交一致。
+- 当前单个构图文档上限为 200,000 个节点和 1,000,000 条边；每次优化批次包含 1 至 100 项操作。
+
+能力接口的 `schema` 值为 `construction_graph.v1`。不要把此字段加入内层图对象；这也不是旧 `graph_data.v1` 数组存储格式。
+
+## 4. BFF 对外 API
+
+个人数据集前缀为 `/api/personal-datasets/{dataset_id}/construction`，并保留 `/api/datasets/{dataset_id}/construction` 别名。项目数据集前缀为 `/api/projects/{project_id}/datasets/{dataset_id}/construction`。
+
+| 方法 | 前缀后的路径 | 请求与用途 |
+| --- | --- | --- |
+| `GET` | 空 | 查询状态、版本、规模和算法可用性 |
+| `POST` | `/build` | `{"options": {}}`，从已登记的数据集源文件发起构图 |
+| `GET` | `/graph` | 读取保存的图与版本 |
+| `POST` | `/preview` | `{"base_revision": 1, "operations": [...]}`，只预览 |
+| `POST` | `/commit` | 与预览相同的请求体，保存到 dataset |
+
+BFF 根据登录用户、dataset 和项目归属完成授权，再从服务器数据集记录读取 `storage_path` 和 `original_filename`。浏览器不提供可信源路径，也不能通过请求体指定所属用户或另一个项目。普通数据集选择流程会使用下面的 Engine 专用加载接口，前端不直接调用内部服务。
+
+构图成功和优化提交后，BFF 同步 `metadata.construction`、节点数、边数、方向和 `dataset_kind`。删除对应个人/项目数据集或项目时，会清理其 Engine 构图存储。
+
+## 5. Graph Engine 内部 API
+
+所有构图专用接口要求有效的 `X-iGraph-Service-Key` 和非空 `X-User-ID`。服务密钥由 `IGRAPH_CONTROL_SERVICE_KEY` 配置，不能依赖取消功能开关来决定是否发送此身份。BFF 和 Engine 必须能够以有效路径访问共享的 `IGRAPH_DATA_ROOT`；构图源文件必须位于该根目录内部，且提供的路径和文件名必须匹配 BFF 中该 dataset 的源记录。省略 build 的源路径时继续复用已登记的 Engine 源副本。
+
+### 项目与个人空间的范围校验
+
+BFF 的 `ProjectDatasetDirectory` 是数据集归属的唯一依据。Engine 在返回构图状态、图内容、列表或执行修改前，调用受服务密钥保护的 `POST /internal/construction/access` 核验范围：
+
+- 会话工具使用可信的 `X-Session-ID`（通用工具路由使用 URL 中的会话 ID），BFF 读取原生 Runtime 已保存会话，核对用户并确定项目或个人空间。模型参数和缓存的 `data_state` 不提供最终授权。
+- 数据集面板可以没有会话。BFF 完成公开路由的归属校验后，生成 `X-iGraph-Construction-Scope: project:<项目 ID>` 或 `personal`；浏览器传来的同名头不作为权限依据。同时提供会话和范围时，两者必须一致。
+- `list_datasets` 仅加入授权范围内的构图记录；公共示例与原有账户级 Dataset Registry 保持既有语义。无范围的 Engine `GET /datasets` 只返回原有 Registry；BFF `GET /api/datasets` 显式使用个人范围。
+- 缺少可信范围、会话不存在或跨项目 ID 均拒绝访问。已删除目录记录及跨范围迁移会撤销后续读取权限，残留的 Engine 文件不提供权限。排队任务在实际执行时复核；已完成作业重放也复核数据集权限，重放列表按当前范围过滤。
+- 删除构图使用单独的 `cleanup` 授权：必须提供显式范围和 dataset ID，且继续核对用户、项目及数据集归属。项目标记删除后可清理构图文件，普通读取返回 `PROJECT_DELETING`。目录记录仍存在时，重复清理构图保持幂等。
+
+Engine 的权限请求总时限为 5 秒；BFF 查询会话限时 4 秒。权限服务故障返回 `503 DATASET_AUTHORIZATION_UNAVAILABLE`，不会使用过期授权或放宽到整个用户目录。权限响应中的服务器路径仅供内部源校验使用。
+
+部署需同步更新 BFF、Runtime、MCP 和 Engine。`IGRAPH_CONTROL_SERVICE_KEY` 是四个服务共同的必填配置，即使关闭取消功能也必须填写；Compose 和服务启动阶段会检查配置，具体步骤见 [部署说明](../README.md#部署)。Engine 需能访问 `BACKEND_CONTROL_URL`：本地使用 `.env.example` 中的 `http://127.0.0.1:21109`，Compose 已设置为 `http://backend:21109`。无需迁移既有构图文件。旧 HTTP 路径的兼容边界及替代路径见 [数据集接口迁移](DATASET_API_MIGRATION.md)。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/construction/capabilities` | 返回各格式 `algorithm_available`、支持的操作及 `schema` |
+| `GET` | `/construction/{dataset_id}` | 已授权且尚无构图记录的数据源返回 `not_built`、`revision=0` |
+| `POST` | `/construction/{dataset_id}/source` | 可信源登记：`source_path`、`source_filename` |
+| `POST` | `/construction/{dataset_id}/build` | 可同时登记源；请求为 `source_path?`、`source_filename?`、`options` |
+| `GET` | `/construction/{dataset_id}/graph` | 返回第 3 节图文档；无图时返回 `409 graph_not_ready` |
+| `POST` | `/construction/{dataset_id}/preview` | 按 `base_revision` 校验完整操作批次，不写图 |
+| `POST` | `/construction/{dataset_id}/commit` | 同样校验并原子保存新版本 |
+| `DELETE` | `/construction/{dataset_id}` | 删除该用户、该数据集的构图结果和 Engine 保留源副本 |
+| `POST` | `/sessions/{session_id}/graph/load_construction` | `{"dataset_id":"ds_people"}`，加载保存图并替换当前会话图 |
+
+构图状态响应包含 `dataset_id`、`status`、`revision`、`node_count`、`edge_count`、`directed`、`source_filename`、`source_type`、`algorithm_available`、`message`、`updated_at` 和 `last_build_status`。
+
+算法未接入的 build 返回 HTTP 200、`success=false`、`status=algorithm_unavailable` 和 `revision=0`。这是明确的业务状态，调用方不能只根据 HTTP 200 判断已生成图。算法抛错或输出不合法时返回 `status=failed`，不会保存半成品图。
+
+预览和提交的公共响应结构为：
+
+```json
+{
+  "success": true,
+  "dataset_id": "ds_people",
+  "status": "preview",
+  "base_revision": 1,
+  "revision": 2,
+  "graph": {"directed": true, "nodes": [], "edges": []},
+  "summary": {
+    "before": {"node_count": 2, "edge_count": 1},
+    "after": {"node_count": 0, "edge_count": 0},
+    "changed_nodes": 2,
+    "changed_edges": 1
+  }
+}
+```
+
+示例中的空图仅表示响应格式示例，生产不会生成示例图。预览返回的 `revision=base_revision+1` 是候选版本，磁盘版本不会因此改变；提交成功时 `status=ready`，该新版本才正式生效。
+
+结构化错误通常为 `{"detail":{"code":"...","message":"..."}}`。批次操作错误还包含从 0 开始的 `operation_index`。
+
+| HTTP / code | 处理方式 |
+| --- | --- |
+| `409 revision_conflict` | 重新读取最新图，再预览、确认；不能只改版本号强行重放 |
+| `409 source_conflict` | 已构图 dataset 不能绑定不同内容或格式的源文件 |
+| `409 graph_not_ready` / `source_not_registered` | 先处理源登记和构图状态 |
+| `422 invalid_operation` / `property_conflict` / `invalid_graph` | 根据具体错误修改操作或算法输出 |
+| `403 invalid_source` | 检查源路径与目录记录是否一致、文件是否存在及共享存储挂载 |
+| `403/404 DATASET_SCOPE_REQUIRED` | 核对当前会话及数据集所属项目/个人空间 |
+| `409 PROJECT_DELETING` | 项目删除中，停止读取及编辑 |
+| `503 DATASET_AUTHORIZATION_UNAVAILABLE` | 检查 BFF / Runtime 可达性与服务配置，恢复后重试 |
+| `409 SESSION_EXECUTION_ACTIVE` | 当前会话处理完成后再切换加载图 |
+
+## 6. 六类优化的精确操作
+
+每项操作用 `op` 字段指定规则。操作按顺序作用于候选图，因此后项可以引用前项结果；任意一项失败都会拒绝整个批次。属性覆盖冲突、未知 ID、重复选择 ID、悬挂边、无效参数以及最终没有变化的批次均不会被静默保存。
+
+| 操作 | 请求项 | 约束和属性处理 |
+| --- | --- | --- |
+| 节点转成边 | `{"op":"collapse_node","node_id":"bridge","edge_type":"CONNECTS"}` | 节点恰有两条相连边，无自环；有向图必须一入一出，压缩后连接两个不同邻居。新边用 `_collapsed_node`、`_collapsed_edges` 属性完整保留被压缩节点、两条边及其类型和属性，避免同名属性互相覆盖 |
+| 节点属性转成边属性 | `{"op":"node_property_to_edge","node_id":"alice","property":"phone","edge_ids":["e1"],"target_property":"contact_phone","remove_from_node":true}` | 指定边必须与节点相连，源属性必须存在。目标边已有不同值时拒绝；`target_property` 默认为原属性名。`remove_from_node=false` 表示复制，`true` 表示移动 |
+| 属性提取为独立节点 | `{"op":"extract_property_node","node_ids":["alice","bob"],"property":"phone","node_type":"Phone","edge_type":"HAS_PHONE","remove_from_node":true}` | 每个源节点必须包含该属性；根据新节点类型、属性名和值生成确定性 ID，相同内容复用同一属性节点。生成 ID 与不相容的现有内容冲突时拒绝；禁止提取到源节点自身 |
+| 删除节点、边或属性 | `{"op":"delete","target":"node","ids":["alice"],"cascade":true}` | `target` 为 `node` 或 `edge`。提供 `property` 时只删除指定属性；不提供时删除实体。删除仍有相连边的节点必须显式 `cascade=true`，否则拒绝。删除边或属性时不接受级联 |
+| 调整边方向 | `{"op":"reverse_edges","edge_ids":["e1"]}` | 仅适用于有向图；交换两端，保留边 ID、类型与属性 |
+| 重命名类型 | `{"op":"rename_type","target":"node","old_type":"Person","new_type":"Customer"}` | 对全部匹配类型的节点或边生效。旧类型必须存在、新名称必须不同；不修改元素 ID 或业务属性 |
+
+`remove_from_node` 的 Engine 默认值为 `true`，`cascade` 默认值为 `false`。前端提供对应复选框；Agent 应根据用户意图显式传递这些布尔值，避免依赖默认值推断删除范围。
+
+## 7. 算法插件接入
+
+入口是 `ConstructionStore.register_algorithm(source_type, algorithm)`，`source_type` 只能是 `sql`、`csv`、`txt`。插件为同步可调用对象：
+
+```python
+from pathlib import Path
+
+def build_csv(source: Path, options: dict) -> dict:
+    # TODO：由后续算法工作实现字段识别、实体/关系建模与稳定 ID 生成。
+    # 返回第 3 节约定的内层 graph 对象。
+    raise NotImplementedError("CSV 构图算法尚未实现")
+```
+
+服务装配示例：
+
+```python
+from graph_data_service.app import GraphDataService, create_app
+from graph_data_service.construction import ConstructionStore
+
+store = ConstructionStore()
+
+# 只有真实算法完成并通过输出契约测试后，才启用相应注册语句。
+# store.register_algorithm("csv", build_csv)
+# store.register_algorithm("sql", build_sql)
+# store.register_algorithm("txt", build_txt)
+
+service = GraphDataService(construction_store=store)
+app = create_app(service)
+```
+
+当前默认服务启动代码没有注册上述算法，也没有通过环境变量自动加载插件。后续接入需要在实际服务装配位置注入已注册的 store。
+
+插件收到的是 Engine 已保留的源文件 `Path` 和独立的 `options` 副本。读取文件、确定节点/关系/属性、生成稳定 ID 都属于插件职责；SQL 文件不会在此框架中自动执行。算法必须返回完整合法图，框架校验成功后才发布第一版，任何异常或非法输出都不会留下可加载的半图。不要注册返回演示数据的占位算法，也不要注册只抛 `NotImplementedError` 的函数来把“算法可用”显示为真。
+
+## 8. 持久化、版本与会话加载
+
+Engine 构图存储布局：
+
+```text
+IGRAPH_DATA_ROOT/
+  .construction_locks/<owner-and-dataset-hash>.lock
+  .construction_runtime/
+    services/<instance-id>.lock
+    workers/<build-id>.lock
+    workers/<build-id>.identity.json
+    attempts/<build-id>.json
+  users/<user_id>/datasets/<dataset_id>/construction/
+    record.json
+    source-<sha256>.csv
+    evolution-report.json
+    .builds/<build-id>/  # 本次私有请求与图文件；收尾后清理
+  users/<user_id>/graph_sessions/<session_id>/
+    graph_versions.json
+    dataset_binding.json
+    snapshots/v001.npz
+```
+
+源副本扩展名随真实格式变化。`record.json` 包含保存图、当前 `revision`、源文件信息、校验和及状态，是构图事务的发布点。源文件复制和图记录写入使用临时文件及替换；同一 user/dataset 的操作通过线程锁和文件锁串行化，提交时再次检查 `base_revision`。一个并发提交成功后，基于旧版本的另一个提交必须返回冲突。
+
+首次成功构图产生 `revision=1`；每次成功优化提交递增一次。预览、读取、会话加载不会增加 dataset 的 revision。数据集已为 `ready` 时再次 build 会返回已有图状态及 `reused=true`，不会重新执行算法。当前构图 store 保存最新版本，没有任意历史 revision 的查询或强制重建接口；会话自己的图版本历史仍按原有快照机制管理。
+
+加载已保存图时，Engine 把节点/边 ID 映射到现有 GraphData 的名称和数组结构，同时在 `graph_metadata.construction_graph` 保留完整业务图文档。该元数据随 JSON/NPZ 和会话快照持久化；NetworkX 适配器提供业务属性及完整 `properties`，平行边使用 MultiGraph/MultiDiGraph 保留独立关系身份。
+
+加载响应与 `get_graph_info` 包含 `construction_dataset_id`、`construction_revision`。它们与会话自己的 `graph_version` 是不同概念：前者标识 dataset 保存版本，后者标识本次会话图快照。优化提交只修改 dataset，不会在会话分析过程中偷偷替换图；用户选择使用、Agent 显式加载或后续 Run 检查时才加载保存版本。正在进行的分析保留原快照。
+
+带 Run 身份的加载与提交沿用现有执行控制，转发 `X-Run-ID`、`X-Session-ID`、generation 和 operation 身份，并在提交边界检查取消信号。普通前端加载请求也会检查正在处理的会话作业。
+
+**当前限制：构图会话使用本地 GraphData/NPZ 快照，即使部署同时配置了 Nebula。** 现有 Nebula 投影不能保证保留任意嵌套 JSON 属性，所以不会把它作为构图加载的属性存储替代品。需要 Nebula 原生构图处理时，应先实现并验证完整属性和关系身份的存储、物化及版本契约。计算入口使用统一的平行关系适配规则，详见下节。
+
+### 平行关系、边权与分析规则
+
+构图边的 `id` 是关系身份。转为无向图时，同一个 ID 的正反向存储记录计为一条关系；不同 ID 始终保留，即使端点、类型和属性完全相同。重复转换、提取子图和 JSON/NPZ 重载遵循同一规则。`num_edge_entries`（以及兼容字段 `num_edges`）表示底层存储条目数，`num_unique_edges` 表示业务关系数；无向自环对度数贡献 2，对关系数贡献 1。
+
+边属性 `properties.weight` 保留为有限数值，省略时计算权重为 1。字符串、布尔值、null、非有限值和超出浮点计算范围的权重在构图发布前拒绝。数字权重同步到 GraphData 数组、NetworkX 和关系查询，保留 JSON 双精度；已有合法快照重载时也会补齐。最短路径、流和中心性等加权分析要求非负权重；最小生成树接受负权重。betweenness 和 load 中心性要求严格正的距离权重，以避免零距离环导致路径计数歧义。
+
+计算投影仅作用于当前调用的临时图，保存的完整关系及属性保持原样。直接调用、HTTP、进程池和隔离 worker 共用同一计算入口。
+
+| 工具或选项 | 平行关系处理 |
+| --- | --- |
+| 最短路径、全部最短路径、Yen K 条最短路径 | 同一方向、同一对端点取最小权重；等权时按关系 ID 确定代表边。单条路径和 Yen 的逐边明细带实际关系 ID 和边权；全部最短路径按节点序列返回。`use_weight=false` 时按跳数计算 |
+| 路径枚举、平均最短路径长度 | 按不同节点序列计算，平行关系产生的同一节点序列只出现一次 |
+| 最大流、指定端点最小割 | 同方向容量求和，沿用 weight 作为容量的约定；返回的流量及割边是端点对的合计值 |
+| 全局最小割 | 使用原有容量求和规则，统计各条真实关系一次 |
+| 最小生成树 / 森林 | 忽略方向后取最小权重，保留最便宜关系的属性 |
+| 度、连通性、拓扑排序、环检测、可达性、ego / 指定节点子图、密度、直径、半径 | 直接使用多重图；度和密度按真实关系计数，密度可大于 1，环按节点序列报告 |
+| betweenness、closeness、harmonic、load 中心性 | 权重作为距离，同向平行关系取最小值 |
+| PageRank、eigenvector、Katz 中心性 | 权重作为连接强度，同向平行关系求和；依赖中显式包含 SciPy |
+| Louvain、greedy_modularity 社区发现 | 忽略方向后对关系权重求和 |
+
+`get_edge_info` 在端点之间存在多条关系时返回 `parallel_edges=true`、`edge_count`、`edges` 和 `truncated`，最多展示 20 条；每条带有自己的 ID、类型、权重及属性。单条关系延续原响应字段。按关系名称读取权重、特征及节点相连关系明细均保留独立 ID。
+
+尚未适配的多重图操作包括最大环、链路预测、团分析、k-core / k-truss / k-corona、聚类系数 / 传递性 / 度同配性、voterank / percolation，以及表中未列出的社区算法。这些操作返回 `success=false`、`code=UNSUPPORTED_MULTIGRAPH_OPERATION`；普通简单图继续沿用原有实现。工具目录的 `multigraph_support` 声明支持范围，成功的多重图计算响应中 `multigraph_policy` 说明实际规则。
+
+输入不满足算法条件、迭代未收敛或结果溢出时返回业务失败，避免把无效数值作为成功结果。超时、取消和隔离进程生命周期继续由现有执行框架管理。
+
+## 9. MCP 与 Agent Runtime
+
+构图工具目录由 `graph_engine/construction_catalog.py` 定义，并加入 Graph Engine 的公共工具目录。MCP 用专门 REST 转发调用同一 Engine 行为，不另做一套构图或优化实现。
+
+| 工具 | 参数与行为 |
+| --- | --- |
+| `get_graph_construction_capabilities` | 无参数，读取算法可用性 |
+| `get_graph_construction_status` | `dataset_id`，读取状态 |
+| `get_constructed_graph` | `dataset_id`，读取真实元素及 revision |
+| `load_constructed_graph` | `dataset_id`，加载到当前会话 |
+| `preview_graph_optimization` | `dataset_id`、`base_revision`、`operations`，只预览 |
+| `commit_graph_optimization` | 同上，通过既有工具确认流程后持久化 |
+
+没有供 LLM 传入服务器路径的 build 工具；原文件构图由数据集面板发起。`list_datasets` 中的构图记录包含 `load_tool=load_constructed_graph`。通用 `load_dataset` 遇到构图记录会返回 `USE_CONSTRUCTED_GRAPH_LOADER`，避免绕过专用工具的范围检查和会话状态同步。
+
+BFF 在 Run 的 `session_state.data_state` 中传入：
+
+- `active_dataset_id`、`construction_status`、`construction_revision`、`source_format`。
+- `construction_sources`：当前消息附件对应的 dataset ID、文件名、格式与状态，用于避免 Agent 误用另一个已活动图回答新附件的问题。
+- `available_construction_sources`：当前范围内所有 SQL/CSV/TXT 数据源 ID，支持后续消息查询尚未构图的数据源状态。
+- `available_constructed_datasets`：当前用户及当前项目/个人范围内可用的已构图数据集。
+
+Runtime 的 `construction_tool_hook` 对状态读取、图读取、加载、预览和提交检查该会话范围，拒绝模型猜测其他项目的 dataset ID。状态读取也允许当前范围内尚未构图的数据源；图读取及修改使用可用构图列表，Engine 再按最新目录复核。成功加载后更新原生 Agno `session_state` 的活动 dataset 与 revision；提交本身不把保存动作冒充当前会话已加载。
+
+Agent 应先读取真实图和版本，预览影响，再用相同操作及版本提交并经过工具确认。冲突需要重新读取、预览和确认；网络状态未知时先核对保存状态，不能盲目重试提交。保存后使用 `load_constructed_graph`、`get_graph_info`、`visualize_subgraph` 完成加载核验和展示。
+
+### 异步作业进度与 DAG 完成条件
+
+Runtime 等待后台作业期间，将进度作为原生 Agno `CustomEvent` 发出；BFF 转为 `tool_progress`，保留原工具调用的 `call_id`。同名工具的进度按调用 ID 归属，训练轮次按 epoch 去重。依赖节点在父作业返回最终结果后才执行；早停通知只更新进度，作业实际结束后才标记完成。
+
+`get_job_status` 支持独立读取游标：
+
+- 首次传 `job_id`、`after_seq=0`，后续传上次返回的 `progress_cursor`。
+- 每条 `progress_updates` 带单调递增的 `progress_seq`。`progress_limit` 默认 200，可取 1–1000；`progress_has_more=true` 时继续读取，包括已经结束的作业。
+- 同一游标可以重复读取，不清除其他读者的进度。省略 `after_seq` 保留旧接口的清空队列行为，旧队列仍最多保留 100 条；新 Runtime 始终传游标。
+- 读取继续校验用户与会话归属；传输异常最多重试三次，重试保持相同作业 ID 和游标。取消会终止等待。
+
+进度日志使用 Python 标准库 SQLite，保存在 `IGRAPH_DATA_ROOT/graph_engine/job_progress/progress.sqlite3`，按作业分页读取；永久删除会话时清理对应日志。文件写入与读取在工作线程执行，作业取消时排空剩余进程输出，避免密集进度阻塞服务或阻碍进程退出。写入失败会反馈为失败，游标不会确认未落盘的进度。
+
+原生事件参与现有 SSE 游标重放及已持久化会话恢复，训练曲线从事件重建；早停的最佳指标不会覆盖实际 epoch 指标。该机制保留进度记录，计算进程重启后的作业处置仍由既有执行控制与恢复协议负责。
+
+## 10. 源码与验证入口
+
+| 范围 | 主要文件 |
+| --- | --- |
+| 前端入口与工作台 | `frontend/src/main.tsx`、`frontend/src/construction.ts`、`frontend/src/components/GraphConstructionPanel.tsx`、`DatasetPanel.tsx`、`ProjectWorkspace.tsx`、`GraphWorkspace.tsx` |
+| 前端请求和类型 | `frontend/src/api.ts`、`frontend/src/types.ts` |
+| BFF 数据源与目录 | `backend/project_datasets.py`、`backend/construction.py`、`backend/app.py` |
+| 构图范围授权 | `construction_access.py`、`backend/construction_access.py`、`graph_data_service/construction_access.py` |
+| 构图与优化核心 | `graph_data_service/construction.py` |
+| Engine API、会话与读取适配 | `graph_data_service/app.py`、`graph_data_service/adapters.py`、`graph_data_service/compute.py` |
+| 工具契约与 MCP 转发 | `graph_engine/construction_catalog.py`、`graph_data_service/tool_catalog.py`、`mcp_service/graph_data_client.py`、`mcp_service/server.py` |
+| Runtime 状态、指令和确认 | `agent_runtime/construction_state.py`、`agno_factory.py`、`instructions.py`、`approval_policy.py`、`resources/skills/graph_construction/SKILL.md` |
+
+针对该功能的测试包括：
+
+```bash
+python -m pytest \
+  tests/test_construction_coordinator.py \
+  tests/servers/test_construction_budget.py \
+  tests/test_worker_process.py \
+  tests/servers/test_graph_construction.py \
+  tests/servers/test_graph_construction_http.py \
+  tests/servers/test_property_graph_analysis.py \
+  tests/test_isolated_compute.py \
+  tests/test_construction_api.py \
+  tests/test_construction_access.py \
+  tests/test_construction_scope_http.py \
+  tests/test_graph_construction_runtime.py \
+  tests/test_construction_state_hook.py \
+  tests/test_construction_native_hook.py \
+  tests/test_construction_attachment_state.py
+```
+
+Engine 测试覆盖三种格式未实现状态、测试专用算法注入成功路径、源副本保留、重启读取、用户隔离、六种操作、属性冲突、非法批次不保存、并发 revision 冲突、HTTP 鉴权、session 快照加载、平行关系属性和可视化输出。成功路径中的小图仅用于自动化测试，不会被装入生产算法注册表。
+
+范围隔离测试覆盖同账号两个项目及个人空间、未知与外用户会话、伪造范围、旧会话缓存、未构图源、并发与排队请求、已完成作业重放、删除/迁移后的撤权、内部 HTTP 入口、权限服务超时和异常响应。`test_construction_scope_http.py` 使用真实 HTTP 服务、MCP 协议、原生 Agno 会话数据库及项目删除协调器；构图算法和模型供应商为测试专用实现。
+
+前端测试入口为 `construction.api.test.ts`、`components/ConstructionEntrypoints.test.tsx` 和 `components/GraphConstructionPanel.test.tsx`；另应继续运行既有上传、图会话、数据集与 Runtime 回归，验证旧 CSV/TXT 已加载数据集的兼容性。
+
+## 11. 本次验收（2026-09-07）
+
+本地前端 TypeScript / Vite 构建成功；Vitest 全量 **166 项通过**。最后两次 CSS 调整针对桌面高度和移动端 flex 压缩，并在浏览器重新加载构建产物验证。
+
+服务器使用独立目录 `/home/tanjiarui/igraph-construction-01a079d6`、Compose 项目 `igraph-construction`、专用网络及数据卷。复用现有各模块镜像作为依赖环境，源码挂载到独立容器；现有 `igraph`、`igraph-front` 服务未替换。测试服务不配置可用的模型供应商凭据。
+
+| 服务器测试组 | 结果 |
+| --- | --- |
+| 构图 BFF、附件状态、项目数据集、Runtime 公共契约 | 39 通过 |
+| 构图核心 / HTTP / session、图结构、既有图加载、项目资源 | 78 通过、1 跳过、17 子测试通过 |
+| 真实 Agno / MCP / hook / 确认策略及工具模块 | 38 通过、17 子测试通过 |
+
+真实 Agno 测试使用确定性测试 Model、真实 MCP entrypoint / ToolResult 包装和 SQLite，验证含/不含取消 hook 的成功、失败、跨范围拒绝三个分支，并关闭数据库重新打开确认状态持久化。测试没有请求真实模型。
+
+下面命令在该服务器目录执行；`.test-deps` 是专用于验收的 pytest 安装目录。
+
+```bash
+docker run --rm --user 0 -v "$PWD:/work" -w /work \
+  -e PYTHONPATH=/work/.test-deps:/work:/work/tests \
+  --entrypoint python igraph-front-backend:local -m pytest \
+  tests/test_construction_api.py tests/test_construction_attachment_state.py \
+  tests/test_projects.py tests/test_runtime_contracts.py -q
+
+docker run --rm --user 0 -v "$PWD:/work" -w /work \
+  -e PYTHONPATH=/work/.test-deps:/work:/work/tests \
+  --entrypoint python igraph-front-graph-engine:local -m pytest \
+  tests/servers/test_graph_construction.py tests/servers/test_graph_construction_http.py \
+  tests/servers/test_graph_structure.py tests/servers/test_graph_data_app.py \
+  tests/servers/test_graph_data_json_load.py tests/test_project_resources.py -q
+
+docker run --rm --user 0 -v "$PWD:/work" -w /work \
+  -e PYTHONPATH=/work/.test-deps:/work:/work/tests \
+  --entrypoint python igraph-front-agent-runtime:local -m pytest \
+  tests/test_construction_native_hook.py tests/test_construction_state_hook.py \
+  tests/test_graph_construction_runtime.py tests/test_graph_tool_approval_policy.py \
+  tests/servers/test_mcp_modules.py -q
+```
+
+额外尝试的全栈 `test_project_deletion.py` 因拆分镜像缺少对方模块依赖未完成收集（Backend 缺 SQLAlchemy，Runtime 缺 NumPy），不计入上述已通过测试；本次未宣称全仓库回归或真实模型训练已通过。
+
+浏览器验收在 SSH 转发的 `http://127.0.0.1:22128` 完成：
+
+- 数据集行内构图入口、SQL 算法待接入状态、禁止把原文件视为已构图。
+- 明确标注的测试图执行“节点转成边”：8 节点 / 8 边预览为 7 / 7，保存版本由 1 升到 2；关闭工作台及重启服务后仍能读取。
+- 两个新会话分别加载保存版本 2，保留电话号码等属性及压缩节点的溯源记录；服务本身的 CSV 算法仍为不可用。
+- 1280×720 桌面、390×844 移动布局、浅色 / 深色主题，以及浏览器控制台无错误。
+
+示例图仅在隔离验收数据卷中由测试专用 callable 创建，生产注册表没有任何 SQL/CSV/TXT 算法。真实语义转换仍需按第 7 节接入。
+
+停止此验收栈（保留数据卷）可在服务器目录执行：
+
+```bash
+docker compose -p igraph-construction -f compose.yaml -f compose.test.yaml --env-file test.env stop
+```

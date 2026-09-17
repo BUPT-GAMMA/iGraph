@@ -7,6 +7,8 @@ them into the active user directory.
 
 from __future__ import annotations
 
+import io
+import zipfile
 import json
 import re
 import shutil
@@ -14,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from agent_runtime.config import AgentRuntimeConfig
@@ -140,6 +142,67 @@ def _iter_skills(root: Path, source: str):
 def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
     router = APIRouter(prefix="/internal/skills", tags=["iGraph Skills"])
 
+    @router.post("/upload")
+    async def upload_skill(request: Request, file: UploadFile = File(...)):
+        uid = _user_id(request)
+        if not (file.filename or "").lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="Skill 上传必须是 .zip 文件")
+        raw = await file.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Skill 压缩包不能超过 2MB")
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(raw))
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(status_code=400, detail="Skill 压缩包无效") from exc
+        members = archive.infolist()
+        if len(members) > 256 or sum(item.file_size for item in members) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Skill 解压后不能超过 10MB 或 256 个文件")
+        if any(chr(92) in item.filename or chr(0) in item.filename or item.flag_bits & 1 for item in members):
+            raise HTTPException(status_code=400, detail="Skill 压缩包包含不支持的条目")
+        if any(
+            Path(item.filename).is_absolute()
+            or ".." in Path(item.filename).parts
+            or ((item.external_attr >> 16) & 0o170000) == 0o120000
+            for item in members
+        ):
+            raise HTTPException(status_code=400, detail="Skill 压缩包包含不安全路径")
+        skill_files = [item for item in members if Path(item.filename).name == "SKILL.md"]
+        if len(skill_files) != 1:
+            raise HTTPException(status_code=400, detail="压缩包必须且只能包含一个 SKILL.md")
+        root = Path(skill_files[0].filename).parent
+        # Derive the skill name strictly from the directory name inside the zip.
+        # Never fall back to the client-supplied filename — that lets the uploader
+        # influence the resulting path on disk.
+        dir_name = root.name
+        if not dir_name:
+            raise HTTPException(status_code=400, detail="压缩包内 SKILL.md 必须放在一个命名子目录下")
+        name = _safe_name(dir_name)
+        target = candidate_skills_path(config, uid) / name
+        if target.exists():
+            raise HTTPException(status_code=409, detail="Skill 已存在")
+        target.mkdir(parents=True)
+        try:
+            for item in members:
+                rel = Path(item.filename)
+                if rel.parts[:len(root.parts)] != root.parts:
+                    continue
+                if item.is_dir() or item.filename.endswith("/"):
+                    continue
+                destination = target / Path(*rel.parts[len(root.parts):])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(archive.read(item))
+            skill_file = target / "SKILL.md"
+            if not skill_file.is_file():
+                raise HTTPException(status_code=400, detail="Skill 缺少 SKILL.md")
+            skill_file.write_text(_normalize_body_name(skill_file.read_text(encoding="utf-8"), name), encoding="utf-8")
+        except (UnicodeError, zipfile.BadZipFile, RuntimeError, OSError) as exc:
+            shutil.rmtree(target, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="Skill 压缩包内容无效") from exc
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+        return {"success": True, "name": name, "source": "review_queue"}
+
     @router.get("")
     def list_skills(request: Request, source: str = "all"):
         uid = _user_id(request)
@@ -153,14 +216,25 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
         return {"success": True, "skills": rows}
 
     @router.get("/{name}")
-    def get_skill(name: str, request: Request):
+    def get_skill(name: str, request: Request, source: str = "all"):
         uid = _user_id(request)
         normalized = _safe_name(name)
-        candidates = [
-            (bundled_skills_path(config) / normalized, "bundled"),
-            (user_skills_path(config, uid) / normalized, "user"),
-            (candidate_skills_path(config, uid) / normalized, "review_queue"),
-        ]
+        roots = {
+            "bundled": (bundled_skills_path(config), "bundled"),
+            "user": (user_skills_path(config, uid), "user"),
+            "review_queue": (candidate_skills_path(config, uid), "review_queue"),
+        }
+        if source == "all":
+            candidates = [
+                (bundled_skills_path(config), "bundled"),
+                (user_skills_path(config, uid), "user"),
+                (candidate_skills_path(config, uid), "review_queue"),
+            ]
+        elif source in roots:
+            candidates = [roots[source]]
+        else:
+            raise HTTPException(status_code=400, detail="Invalid Skill source")
+        candidates = [(root / normalized, skill_source) for root, skill_source in candidates]
         for skill_dir, source in candidates:
             skill_file = skill_dir / "SKILL.md"
             if skill_file.is_file():
@@ -187,15 +261,25 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
 
     @router.delete("/users/{target_user_id}/all")
     def delete_user_skills(target_user_id: str, request: Request):
-        # This route is private to Backend; consuming the request identity keeps
-        # accidental anonymous calls out when the service is exposed directly.
+        # This route is internal-only; the caller must present a valid service
+        # token via X-Service-Token to prevent lateral deletion of other users'
+        # skills when the runtime is inadvertently reachable from the outside.
         _user_id(request)
+        service_token = request.headers.get("X-Service-Token", "").strip()
+        expected = str(getattr(config, "internal_service_token", "") or "").strip()
+        if expected and service_token != expected:
+            raise HTTPException(status_code=403, detail="forbidden: internal route requires service token")
+        # Sanitise target_user_id to guard against path-traversal variants
+        # that survive _user_component (e.g. "...", ". .").
+        cleaned = target_user_id.strip()
+        if not cleaned or cleaned in {".", ".."} or cleaned.startswith("/") or ".." in cleaned.split("/"):
+            raise HTTPException(status_code=400, detail="invalid user id")
         removed: list[str] = []
-        for root in (user_skills_path(config, target_user_id), candidate_skills_path(config, target_user_id)):
+        for root in (user_skills_path(config, cleaned), candidate_skills_path(config, cleaned)):
             if root.is_dir():
                 shutil.rmtree(root)
                 removed.append(str(root))
-        return {"success": True, "user_id": target_user_id, "removed": removed}
+        return {"success": True, "user_id": cleaned, "removed": removed}
 
     @router.put("/{name}")
     def update_skill(name: str, req: SkillUpdate, request: Request):
@@ -210,6 +294,10 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
     @router.delete("/{name}")
     def delete_skill(name: str, request: Request, source: str = "user", reason: str = ""):
         uid = _user_id(request)
+        if source == "bundled":
+            raise HTTPException(status_code=403, detail="Bundled Skill cannot be deleted")
+        if source not in {"user", "review_queue"}:
+            raise HTTPException(status_code=400, detail="Invalid Skill source")
         root = user_skills_path(config, uid) if source == "user" else candidate_skills_path(config, uid)
         skill_dir = root / _safe_name(name)
         if not skill_dir.is_dir():

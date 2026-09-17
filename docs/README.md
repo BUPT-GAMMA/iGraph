@@ -8,7 +8,18 @@
 
 ## 文档列表
 
+- [AGENT_ORCHESTRATION_INTEGRATION.md](AGENT_ORCHESTRATION_INTEGRATION.md)：基于 dev 的编排功能移植、兼容修复、测试证据和部署条件。
+
 - `AGENTOS_FOUR_MODULE_REFACTOR.md`：**当前主文档**。四模块职责、AgentOS 映射、迁移阶段和依赖方向。
+- [CI_QUALITY_POLICY.md](CI_QUALITY_POLICY.md)：当前 CI 强制检查、覆盖率过渡底线、改善目标和 PR 补测约定。
+- [TOOL_DAG_EXECUTION.md](TOOL_DAG_EXECUTION.md)：工具资源目录、DAG 并行调度、后台作业与并发配置。
+- [TOOL_DAG_VERIFICATION.md](TOOL_DAG_VERIFICATION.md)：真实模型问答、算法并行正确性和构图/前端回归验收记录。
+- [GRAPH_CONSTRUCTION.md](GRAPH_CONSTRUCTION.md)：构图接口、数据集复用、优化预览与提交。
+- [CONSTRUCTION_P1_VERIFICATION.md](CONSTRUCTION_P1_VERIFICATION.md)：构图资源隔离、候选扫描与超时修复的回归及性能验证。
+- [CONSTRUCTION_P2_VERIFICATION.md](CONSTRUCTION_P2_VERIFICATION.md)：业务属性编辑、重试状态与 SQLite 外键修复的回归及基线差异。
+- [STREAM_RECOVERY.md](STREAM_RECOVERY.md)：断流续传、完整快照、审批安全、依赖契约、故障测试与排障。
+- [RUN_CANCELLATION.md](RUN_CANCELLATION.md)：当前任务终止、作业隔离、持久控制、故障验收及剩余发布门禁。
+- [RUN_CANCELLATION_REVIEW_FIXES.md](RUN_CANCELLATION_REVIEW_FIXES.md)：终止功能审查问题的修复、故障回归与性能复测记录。
 - `DESIGN.md`：重构前完整系统设计，作为兼容行为参考。
 - `SKILLS_MEMORY.md`：重构前自研 Skills / Memory / Tools Selector 机制，保留用于数据映射和行为对照。
 - `RUN_AND_TEST.md`：环境准备、`.env` 配置、启动方式、API 联调、测试命令与常见问题。
@@ -57,6 +68,6 @@
 
 ## 快速开始
 
-1. 复制 `.env.example` 为 `.env` 并配置模型与 embedding 端点。
+1. 复制 `.env.example` 为 `.env`，配置模型与 embedding 端点，并为四个服务设置同一随机 `IGRAPH_CONTROL_SERVICE_KEY`（完整部署必填）。
 2. 使用 `docker compose up --build -d` 启动四个业务模块及 PostgreSQL。
 3. 打开 `http://localhost:21108`。

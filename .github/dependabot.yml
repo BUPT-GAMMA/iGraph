@@ -2,6 +2,8 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    # Activate when this configuration reaches the default branch via release.
+    target-branch: dev
     schedule:
       interval: weekly
       day: monday

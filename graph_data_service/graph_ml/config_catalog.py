@@ -78,6 +78,8 @@ def model_architecture_view(
     layers = int(cfg.get("num_layers", meta_cfg.get("num_layers", 2)))
     dropout = float(cfg.get("dropout", meta_cfg.get("dropout", 0.2)))
     heads = int(cfg.get("gat_heads", meta_cfg.get("gat_heads", 2)))
+    appnp_k = int(cfg.get("appnp_k", meta_cfg.get("appnp_k", 10)))
+    appnp_alpha = float(cfg.get("appnp_alpha", meta_cfg.get("appnp_alpha", 0.1)))
     use_residual = _as_bool(
         cfg.get("use_residual_connection", meta_cfg.get("use_residual_connection")),
         False,
@@ -88,8 +90,10 @@ def model_architecture_view(
     head_desc = "Linear Classifier Head" if task == "node_classification" else "DotProduct Decoder"
 
     conv_label = model_name
-    if model_name == "GAT":
-        conv_label = f"GAT (heads={heads})"
+    if model_name in {"GAT", "GATV2", "TRANSFORMER"}:
+        conv_label = f"{model_name} (heads={heads})"
+    elif model_name == "APPNP":
+        conv_label = f"APPNP (K={appnp_k}, alpha={appnp_alpha:g})"
     layer_annotations = []
     if use_residual:
         layer_annotations.append("residual")
@@ -127,6 +131,8 @@ def model_architecture_view(
                 "num_layers": layers,
                 "dropout": dropout,
                 "gat_heads": heads,
+                "appnp_k": appnp_k,
+                "appnp_alpha": appnp_alpha,
                 "num_tasks": num_tasks,
                 "pooling": pooling,
                 "uses_edge_features": uses_edge_features,
@@ -144,6 +150,8 @@ def model_architecture_view(
                     "model": model_name,
                     "num_layers": layers,
                     "hidden_dim": hidden,
+                    "appnp_k": appnp_k,
+                    "appnp_alpha": appnp_alpha,
                     "use_residual_connection": use_residual,
                     "use_normalization": use_norm,
                     "norm_pos": norm_pos,
@@ -185,6 +193,8 @@ def model_architecture_view(
             "num_layers": layers,
             "dropout": dropout,
             "gat_heads": heads,
+            "appnp_k": appnp_k,
+            "appnp_alpha": appnp_alpha,
             "use_residual_connection": use_residual,
             "use_normalization": use_norm,
             "norm_pos": norm_pos,
@@ -196,6 +206,8 @@ def model_architecture_view(
                 "model": model_name,
                 "num_layers": layers,
                 "hidden_dim": hidden,
+                "appnp_k": appnp_k,
+                "appnp_alpha": appnp_alpha,
                 "use_residual_connection": use_residual,
                 "use_normalization": use_norm,
                 "norm_pos": norm_pos,

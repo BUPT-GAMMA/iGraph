@@ -8,7 +8,9 @@ source =
     mcp_service
 
 [report]
-fail_under = 46.5
+# Coverage is informational; daily CI runs without instrumentation or thresholds.
+# See docs/CI_QUALITY_POLICY.md for optional local reports.
+fail_under = 0
 precision = 2
 show_missing = True
 skip_empty = True

@@ -25,13 +25,108 @@ function lastMessage(state: ConversationState, sessionId: string) {
 }
 
 describe('conversationReducer session/run isolation', () => {
+  it('streams reasoning between tools without leaking it into the answer or duplicating replay', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    const frames = [
+      batch('A', 'r', 0, [{ type: 'token', content: '', event_index: 0 }, { type: 'thinking', content: '先', event_index: 0 }]),
+      batch('A', 'r', 1, [{ type: 'token', content: '', event_index: 1 }, { type: 'thinking', content: '检查', event_index: 1 }]),
+      batch('A', 'r', 2, [{ type: 'tool_call', call_id: 't', tool: 'get_graph_info', event_index: 2 }]),
+      batch('A', 'r', 3, [{ type: 'token', content: '', event_index: 3 }, { type: 'thinking', content: '再分析', event_index: 3 }]),
+      batch('A', 'r', 4, [{ type: 'token', content: '说明', event_index: 4 }]),
+      batch('A', 'r', 5, [{ type: 'tool_call', call_id: 't2', tool: 'degree_analysis', event_index: 5 }]),
+    ];
+    for (const frame of frames) {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: frame });
+    }
+    const process = lastMessage(state, 'A').processItems;
+    expect(process?.map(item => [item.kind, item.content, item.sequence])).toEqual([
+      ['reasoning', '先检查', 0], ['tool', undefined, 2], ['reasoning', '再分析', 3], ['text', '说明', 4], ['tool', undefined, 5],
+    ]);
+    expect(lastMessage(state, 'A').content).toBe('说明');
+    const duplicate = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: frames[5] });
+    expect(lastMessage(duplicate, 'A').processItems).toEqual(process);
+    state = conversationReducer(state, { type: 'BEGIN_REPLAY', sessionId: 'A', generation: 'g' });
+    for (const frame of frames) state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: frame });
+    state = conversationReducer(state, { type: 'REPLAY_CAUGHT_UP', sessionId: 'A', generation: 'g' });
+    expect(lastMessage(state, 'A').processItems).toEqual(process);
+    expect(lastMessage(state, 'A').content).toBe('说明');
+  });
+
+  it('shows a friendly notice for a cancelled run with no answer', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g',
+      batch: batch('A', 'r', 0, [{ type: 'error', cancelled: true, error: 'Run r was cancelled' }]) });
+    expect(lastMessage(state, 'A').content).toBe('已停止本轮对话');
+    expect(state.viewsBySessionId.A.error).toBeUndefined();
+    state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g',
+      batch: batch('A', 'r', 1, [{ type: 'done', content: 'Run r was cancelled' }]) });
+    expect(lastMessage(state, 'A').content).toBe('已停止本轮对话');
+  });
+  it.each([false, true])('keeps an immediately stopped first message (run identity already known: %s)', known => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    if (known) state = conversationReducer(state, { type: 'SET_RUN_ID', sessionId: 'A', generation: 'g', runId: 'r' });
+    state = conversationReducer(state, { type: 'REQUEST_CANCEL', sessionId: 'A', generation: 'g', cancelRequestId: 'c' });
+    const control = { run_id: 'r', start_request_id: 'g', registration_status: 'registered' as const,
+      run_status: 'cancelled', cancel_status: 'confirmed' as const, execution_stopped: true,
+      terminal_persisted: true, native_run_created: false, can_send: true, revision: 2, active_run: null };
+    for (let index = 0; index < 2; index++) {
+      state = conversationReducer(state, { type: 'APPLY_CONTROL', sessionId: 'A', generation: 'g', control });
+      expect(selectMessages(state.viewsBySessionId.A).map(message => message.content)).toEqual(['question', '已停止本轮对话']);
+      expect(state.viewsBySessionId.A.draft).toBe('');
+      expect(lastMessage(state, 'A').streaming).toBe(false);
+      expect(selectRunGate(state.viewsBySessionId.A).canStartRun).toBe(true);
+    }
+    state = start(state, 'A', 'next');
+    expect(selectMessages(state.viewsBySessionId.A).map(message => message.content)).toEqual(['question', '已停止本轮对话', 'question', '']);
+  });
+  it('still rolls back a send that fails before native execution', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    state = conversationReducer(state, { type: 'APPLY_CONTROL', sessionId: 'A', generation: 'g', control: {
+      run_id: 'r', start_request_id: 'g', registration_status: 'registered', run_status: 'failed', cancel_status: 'none',
+      execution_stopped: true, terminal_persisted: true, native_run_created: false, can_send: true, revision: 2, active_run: null,
+    } });
+    expect(selectMessages(state.viewsBySessionId.A)).toEqual([]);
+    expect(state.viewsBySessionId.A.draft).toBe('question');
+  });
+  it('normalizes saved cancellation notices without changing user text or real errors', () => {
+    const state = session(initialConversationState, 'A');
+    const notice = 'Run c865e4a4-be91-4af2-b4d0-90fcf777b35f was cancelled';
+    const view = { ...state.viewsBySessionId.A, messageOrder: ['u', 'a', 'e'], messagesById: {
+      u: { id: 'u', role: 'user' as const, content: notice },
+      a: { id: 'a', role: 'assistant' as const, content: notice },
+      e: { id: 'e', role: 'assistant' as const, content: 'Connection failed' },
+    } };
+    expect(selectMessages(view).map(message => message.content)).toEqual([notice, '已停止本轮对话', 'Connection failed']);
+  });
+  it('does not unlock a cancelling preparation when its old upload fails', () => {
+    let state = session(initialConversationState, 'A');
+    state = conversationReducer(state, { type: 'BEGIN_RUN_PREPARATION', sessionId: 'A', generation: 'g' });
+    state = conversationReducer(state, { type: 'REQUEST_CANCEL', sessionId: 'A', generation: 'g', cancelRequestId: 'c' });
+    state = conversationReducer(state, { type: 'PREPARE_RUN_FAILED', sessionId: 'A', generation: 'g', error: 'late error' });
+    state = conversationReducer(state, { type: 'ROLLBACK_RUN_START', sessionId: 'A', generation: 'g' });
+    expect(state.viewsBySessionId.A.activeRun?.cancellation).toBe('requested');
+    expect(selectRunGate(state.viewsBySessionId.A).canStartRun).toBe(false);
+  });
+  it('keeps cancellation terminal when native completion fills partial output', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    for (const [index, event] of [
+      { type: 'token', content: 'A' },
+      { type: 'error', cancelled: true, error: '用户终止了当前任务' },
+      { type: 'done', content: 'AB' },
+    ].entries()) {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: batch('A', 'r', index, [event]) });
+    }
+    expect(state.viewsBySessionId.A.activeRun?.status).toBe('cancelled');
+    expect(lastMessage(state, 'A').content).toBe('AB');
+    expect(state.viewsBySessionId.A.error).toBeUndefined();
+  });
   it('keeps one local draft per project without creating a session view', () => {
     const draftA = { draftId: 'draft-a', projectId: 'project-a', phase: 'editing' as const, text: 'hello', model: 'model-a', activeDatasetId: null, attachments: [] };
     let state = conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft: draftA });
     state = conversationReducer(state, { type: 'OPEN_DRAFT', draft: { ...draftA, draftId: 'replacement', text: '' } });
 
-    expect(state.draftsByProjectId['project-a']).toEqual(draftA);
-    expect(state.activeDraftProjectId).toBe('project-a');
+    expect(state.draftsByScope['project-a']).toEqual(draftA);
+    expect(state.activeDraftKey).toBe('project-a');
     expect(state.activeSessionId).toBeNull();
     expect(state.viewsBySessionId).toEqual({});
   });
@@ -40,9 +135,9 @@ describe('conversationReducer session/run isolation', () => {
     let state = conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft: { draftId: 'A', projectId: 'project-a', phase: 'editing', text: 'A text', model: 'm', activeDatasetId: null, attachments: [] } });
     state = conversationReducer(state, { type: 'OPEN_DRAFT', draft: { draftId: 'B', projectId: 'project-b', phase: 'editing', text: 'B text', model: 'm', activeDatasetId: null, attachments: [] } });
 
-    expect(state.activeDraftProjectId).toBe('project-b');
-    expect(state.draftsByProjectId['project-a'].text).toBe('A text');
-    expect(state.draftsByProjectId['project-b'].text).toBe('B text');
+    expect(state.activeDraftKey).toBe('project-b');
+    expect(state.draftsByScope['project-a'].text).toBe('A text');
+    expect(state.draftsByScope['project-b'].text).toBe('B text');
   });
 
   it('materializes a draft atomically into one preparing session', () => {
@@ -58,8 +153,8 @@ describe('conversationReducer session/run isolation', () => {
     });
     state = conversationReducer(state, { type: 'MATERIALIZE_DRAFT', projectId: 'project-a', draftId: 'session-new', sessionId: 'session-new', generation: 'gen', model: 'm', activeDatasetId: 'dataset-a' });
 
-    expect(state.draftsByProjectId['project-a']).toBeUndefined();
-    expect(state.activeDraftProjectId).toBeNull();
+    expect(state.draftsByScope['project-a']).toBeUndefined();
+    expect(state.activeDraftKey).toBeNull();
     expect(state.activeSessionId).toBe('session-new');
     expect(state.viewsBySessionId['session-new']).toEqual(expect.objectContaining({
       draft: 'first turn',
@@ -76,11 +171,29 @@ describe('conversationReducer session/run isolation', () => {
     state = start(start(state, 'A', 'gen-a'), 'B', 'gen-b');
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen-a',
-      batch: batch('A', 'run-a', 1, [{ type: 'token', message_id: 'assistant:run-a', content: 'A only' }]),
+      batch: batch('A', 'run-a', 0, [{ type: 'token', message_id: 'assistant:run-a', content: 'A only' }]),
     });
 
     expect(lastMessage(state, 'A')?.content).toBe('A only');
     expect(lastMessage(state, 'B')?.content).toBe('');
+  });
+
+  it('adopts an authoritative run id without discarding live tools or messages', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'gen');
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+      batch: batch('A', '', 0, [{ type: 'tool_call', tool: 'degree_analysis', call_id: 'call-1' }]),
+    });
+    const messageOrder = state.viewsBySessionId.A.messageOrder;
+
+    state = conversationReducer(state, {
+      type: 'SET_RUN_ID', sessionId: 'A', generation: 'gen', runId: 'run-authoritative', lastAppliedEventIndex: 4,
+    });
+
+    expect(state.viewsBySessionId.A.activeRun?.runId).toBe('run-authoritative');
+    expect(state.viewsBySessionId.A.activeRun?.lastAppliedEventIndex).toBe(0);
+    expect(state.viewsBySessionId.A.activeRun?.toolOrder).toEqual(['call-1']);
+    expect(state.viewsBySessionId.A.messageOrder).toEqual(messageOrder);
   });
 
   it('ignores events from an older generation in the same session', () => {
@@ -88,19 +201,19 @@ describe('conversationReducer session/run isolation', () => {
     state = start(state, 'A', 'old');
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'old',
-      batch: batch('A', 'old-run', 1, [{ type: 'done' }]),
+      batch: batch('A', 'old-run', 0, [{ type: 'done' }]),
     });
     state = start(state, 'A', 'new');
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'old',
-      batch: batch('A', 'old-run', 1, [{ type: 'token', content: 'stale' }]),
+      batch: batch('A', 'old-run', 0, [{ type: 'token', content: 'stale' }]),
     });
 
     expect(lastMessage(state, 'A')?.content).toBe('');
   });
 
   it('blocks START_RUN in every active state without touching draft, attachments, or messages', () => {
-    const statuses = ['awaiting_feedback', 'submitting_feedback', 'reconnecting', 'detached'] as const;
+    const statuses = ['awaiting_feedback', 'submitting_feedback', 'streaming', 'starting'] as const;
     for (const status of statuses) {
       let state = start(session(initialConversationState, 'A'), 'A', 'gen');
       state = conversationReducer(state, { type: 'SET_RUN_STATUS', sessionId: 'A', generation: 'gen', status });
@@ -123,7 +236,7 @@ describe('conversationReducer session/run isolation', () => {
     let state = start(session(initialConversationState, 'A'), 'A', 'gen');
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
-      batch: batch('A', 'run', 3, [{
+      batch: batch('A', 'run', 0, [{
         type: 'await_user_feedback',
         request: { run_id: 'run', request_id: 'run', call_id: 'call-1', tool_name: 'train', proposed_args: { epochs: 2 } },
       }]),
@@ -167,7 +280,7 @@ describe('conversationReducer session/run isolation', () => {
 
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
-      batch: batch('A', 'run', 4, [{
+      batch: batch('A', 'run', 0, [{
         type: 'await_user_feedback',
         request: { run_id: 'run', call_id: 'call-1', tool_name: 'train' },
       }]),
@@ -194,19 +307,19 @@ describe('conversationReducer session/run isolation', () => {
 
   it('deduplicates an entire v2 event_index batch', () => {
     let state = start(session(initialConversationState, 'A'), 'A', 'gen');
-    const value = batch('A', 'run', 7, [{ type: 'token', message_id: 'assistant:run', content: 'hello' }]);
+    const value = batch('A', 'run', 0, [{ type: 'token', message_id: 'assistant:run', content: 'hello' }]);
     state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen', batch: value });
     state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen', batch: value });
 
     expect(lastMessage(state, 'A')?.content).toBe('hello');
-    expect(state.viewsBySessionId.A.activeRun?.lastEventIndex).toBe(7);
+    expect(state.viewsBySessionId.A.activeRun?.lastAppliedEventIndex).toBe(0);
   });
 
   it('updates messages and tools by stable ids inside one atomic batch', () => {
     let state = start(session(initialConversationState, 'A'), 'A', 'gen');
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
-      batch: batch('A', 'run', 2, [
+      batch: batch('A', 'run', 0, [
         { type: 'token', message_id: 'assistant:run', content: 'answer' },
         { type: 'tool_call', tool: 'train', call_id: 'call-1', args: { epochs: 2 } },
         { type: 'plan_step', step: { step_id: 1, goal: 'train', status: 'done' } },
@@ -224,15 +337,15 @@ describe('conversationReducer session/run isolation', () => {
     let state = start(session(initialConversationState, 'A'), 'A', 'gen');
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
-      batch: batch('A', 'run', 3, [{ type: 'done' }]),
+      batch: batch('A', 'run', 0, [{ type: 'done' }]),
     });
-    state = conversationReducer(state, { type: 'SET_RUN_STATUS', sessionId: 'A', generation: 'gen', status: 'reconnecting' });
+    state = conversationReducer(state, { type: 'SET_RUN_STATUS', sessionId: 'A', generation: 'gen', status: 'streaming' });
     expect(state.viewsBySessionId.A.activeRun?.status).toBe('completed');
 
     state = conversationReducer(state, { type: 'REMOVE_SESSION', sessionId: 'A' });
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
-      batch: batch('A', 'run', 4, [{ type: 'token', content: 'late' }]),
+      batch: batch('A', 'run', 0, [{ type: 'token', content: 'late' }]),
     });
     expect(state.viewsBySessionId.A).toBeUndefined();
   });
@@ -286,7 +399,7 @@ describe('conversationReducer session/run isolation', () => {
     let state = start(session(initialConversationState, 'A'), 'A', 'gen');
     state = conversationReducer(state, {
       type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
-      batch: batch('A', 'run', 1, [{
+      batch: batch('A', 'run', 0, [{
         type: 'graph_visualize',
         data: {
           nodes: [{ id: 'a' }, { id: 'b' }],
@@ -357,5 +470,48 @@ describe('conversationReducer session/run isolation', () => {
     expect(state.viewsBySessionId.S0).toBeDefined();
     expect(state.viewsBySessionId.S1).toBeDefined();
     expect(state.viewsBySessionId.S2).toBeDefined();
+  });
+});
+
+describe('background job progress', () => {
+  it('keeps same-name calls separate and replays epoch frames exactly once', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    const apply = (index: number, events: StreamEvent[]) => {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: batch('A', 'r', index, events) });
+    };
+    apply(0, [
+      { type: 'tool_call', tool: 'train', call_id: 'first', args: {} },
+      { type: 'tool_call', tool: 'train', call_id: 'second', args: {} },
+    ]);
+    const progress: StreamEvent = { type: 'tool_progress', tool: 'train', call_id: 'first',
+      progress: { kind: 'train_epoch', epoch: 1, val_acc: 0.5, job_id: 'job-first', progress_seq: 1, status: 'running' } };
+    apply(1, [progress]);
+    apply(1, [progress]);
+    apply(2, [{ type: 'tool_progress', tool: 'train', call_id: 'second',
+      progress: { kind: 'train_epoch', epoch: 1, val_acc: 0.9, job_id: 'job-second', progress_seq: 1, status: 'running' } }]);
+    const tools = state.viewsBySessionId.A.activeRun!.toolsById;
+    expect(tools.first.history).toHaveLength(1);
+    expect(tools.first.history?.[0].val_acc).toBe(0.5);
+    expect(tools.second.history?.[0].val_acc).toBe(0.9);
+    expect(tools.first.done).toBe(false);
+  });
+
+  it('waits for the job terminal event after early stopping and retains the curve', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'g');
+    const events: StreamEvent[][] = [
+      [{ type: 'tool_call', tool: 'train', call_id: 'train', args: {} }],
+      [{ type: 'tool_progress', tool: 'train', call_id: 'train', progress: { kind: 'train_epoch', epoch: 1, val_acc: .7 } }],
+      [{ type: 'tool_progress', tool: 'train', call_id: 'train', progress: { kind: 'train_early_stop', status: 'running' } }],
+      [{ type: 'tool_progress', tool: 'train', call_id: 'train', progress: { kind: 'train_done', status: 'done', progress: 1 } },
+       { type: 'tool_result', tool: 'train', call_id: 'train', result: { success: true, model_id: 'm' }, done: true }],
+    ];
+    for (const [index, value] of events.entries()) {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'g', batch: batch('A', 'r', index, value) });
+      if (index === 2) expect(state.viewsBySessionId.A.activeRun!.toolsById.train.done).toBe(false);
+    }
+    const tool = state.viewsBySessionId.A.activeRun!.toolsById.train;
+    expect(tool.done).toBe(true);
+    expect(tool.history).toHaveLength(1);
+    expect(tool.result).toEqual({ success: true, model_id: 'm' });
   });
 });

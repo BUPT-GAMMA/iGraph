@@ -1,6 +1,7 @@
 """Training loop for HIV/PCBA whole-graph classification baselines."""
 
 from __future__ import annotations
+from graph_data_service.worker_signals import check_cancelled
 
 import math
 from dataclasses import dataclass
@@ -104,6 +105,7 @@ class GraphClassificationTrainer:
             ml_log = get_service_logger(session_id, "graph_ml")
 
             for epoch_index in range(epochs):
+                check_cancelled()
                 trained_epochs = epoch_index + 1
                 train_loss, skipped_train_batches = self._train_epoch(
                     model,
@@ -272,6 +274,7 @@ class GraphClassificationTrainer:
         num_valid_labels = 0
         skipped_batches = 0
         for cpu_batch in loader:
+            check_cancelled()
             batch_info = validate_graph_classification_batch(cpu_batch, bundle)
             if not batch_info.has_valid_labels:
                 skipped_batches += 1
@@ -309,6 +312,7 @@ class GraphClassificationTrainer:
         skipped_batches = 0
         with torch.no_grad():
             for cpu_batch in loader:
+                check_cancelled()
                 validate_graph_classification_batch(cpu_batch, bundle)
                 batch = cpu_batch.to(device)
                 logits = model(batch)

@@ -1,0 +1,8 @@
+# Portable shared compute stack for Agent sessions and the graph engine.
+numpy==2.5.1
+networkx==3.6.1
+scipy==1.17.1
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.12.1+cpu
+torchvision==0.27.1+cpu
+torch-geometric==2.8.0

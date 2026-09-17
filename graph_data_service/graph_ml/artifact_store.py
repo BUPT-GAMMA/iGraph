@@ -7,7 +7,9 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import time
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
 
@@ -30,6 +32,62 @@ class ArtifactStore:
 
     def _session_dir(self, session_id: str) -> str:
         return os.path.join(self.root_dir, _dp.safe_path_component(session_id))
+
+    def record_owner(self, runtime_id: str, user_id: str, session_id: str, project_id: str | None) -> None:
+        from execution_lifecycle import atomic_json
+        path = Path(self.root_dir) / '_owners' / (_dp.safe_path_component(runtime_id) + '.json')
+        if path.exists():
+            previous = json.loads(path.read_text())
+            if previous.get('user_id') != user_id or previous.get('session_id') != session_id:
+                raise ValueError('ARTIFACT_OWNER_CONFLICT')
+        atomic_json(path, {'runtime_id': runtime_id, 'user_id': user_id,
+                          'session_id': session_id, 'project_id': project_id})
+
+    def project_targets(self, user_id: str, project_id: str, session_ids: list[str]) -> dict[str, dict]:
+        """Trusted membership covers legacy artifacts; receipts cover deleted chats."""
+        owners = Path(self.root_dir) / '_owners'
+        targets = {}
+        for path in owners.glob('*.json'):
+            owner = json.loads(path.read_text())
+            if owner.get('user_id') == user_id and owner.get('project_id') == project_id:
+                targets[owner['runtime_id']] = owner
+        for sid in session_ids:
+            runtime_id = f'{user_id}:{sid}' if user_id else sid
+            receipt = owners / (_dp.safe_path_component(runtime_id) + '.json')
+            if receipt.exists():
+                owner = json.loads(receipt.read_text())
+                if owner.get('user_id') != user_id or owner.get('project_id') != project_id:
+                    raise ValueError('ARTIFACT_OWNER_CONFLICT')
+            targets.setdefault(runtime_id, {'session_id': sid})
+        return targets
+
+    def delete_project(self, user_id: str, project_id: str, session_ids: list[str]) -> int:
+        targets = self.project_targets(user_id, project_id, session_ids)
+        root = Path(self.root_dir).resolve()
+        for runtime_id in targets:
+            # Resolve both current encoded paths and verified legacy paths.
+            paths = {Path(self._session_dir(runtime_id))}
+            legacy = root / runtime_id
+            if legacy.resolve().parent == root:
+                paths.add(legacy)
+            for target in paths:
+                resolved = target.resolve()
+                if resolved.parent != root:
+                    raise ValueError('ARTIFACT_PATH_OUTSIDE_STORAGE')
+                if target.exists():
+                    shutil.rmtree(target)
+            receipt = root / '_owners' / (_dp.safe_path_component(runtime_id) + '.json')
+            receipt.unlink(missing_ok=True)
+        return len(targets)
+
+    def ownership_report(self) -> dict:
+        root = Path(self.root_dir)
+        known = set()
+        for path in (root / '_owners').glob('*.json'):
+            owner = json.loads(path.read_text())
+            known.update((_dp.safe_path_component(owner['runtime_id']), owner['runtime_id']))
+        return {'unattributed_directories': sorted(path.name for path in root.iterdir()
+                if path.is_dir() and path.name != '_owners' and path.name not in known)}
 
     def create_model_dir(self, session_id: str, task: str) -> ArtifactRef:
         ts = int(time.time())

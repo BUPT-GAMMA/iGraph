@@ -1,0 +1,9 @@
+# Shared GPU compute stack for every Agent session and the graph engine.
+# CUDA 13.0 wheels support RTX 5090 with the server's 580.x driver.
+numpy==2.5.1
+networkx==3.6.1
+scipy==1.17.1
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.14.0+cu130
+torchvision==0.29.0+cu130
+torch-geometric==2.8.0

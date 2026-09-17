@@ -7,6 +7,7 @@ import numpy as np
 from typing import Optional, Dict, List, Any, Tuple, Union, Sequence
 
 from graph_data_service.adapters import graph_to_networkx
+from graph_data_service.property_graph import property_weights
 from graph_data_service.graph_structure import (
     GraphStructureInfo,
     compute_node_degrees,
@@ -28,7 +29,7 @@ class GraphData:
         [基础]
         edge_index  : np.ndarray, shape [2, E], dtype int64
                       edge_index[0] = 源节点, edge_index[1] = 目标节点
-        edge_weight : np.ndarray, shape [E], dtype float32, 边权重 (可选)
+        edge_weight : np.ndarray, shape [E], dtype float32（构图属性图为 float64）, 边权重 (可选)
         node_feat   : np.ndarray, shape [N, *], dtype float32, 节点特征 (可选)
         edge_feat   : np.ndarray, shape [E, *], dtype float32, 边特征 (可选)
         graph_desc  : str, 图的文本描述 (可选)
@@ -159,8 +160,13 @@ class GraphData:
         self._edge_feat: Optional[np.ndarray] = (
             np.asarray(edge_feat, dtype=np.float32) if edge_feat is not None else None
         )
+        # Hydrate older property snapshots too; weights must agree with their
+        # retained JSON properties and retain JSON double precision.
+        constructed_weights = property_weights(self._graph_metadata, self._edge_names)
+        if constructed_weights is not None:
+            edge_weight = constructed_weights
         self._edge_weight: Optional[np.ndarray] = (
-            np.asarray(edge_weight, dtype=np.float32).ravel()
+            np.asarray(edge_weight, dtype=np.float64 if constructed_weights is not None else np.float32).ravel()
             if edge_weight is not None
             else None
         )
@@ -186,7 +192,7 @@ class GraphData:
             num_nodes=self._num_nodes,
             semantic_type=self._semantic_type,
             storage_type=self._storage_type,
-            edge_type=self._edge_type,
+            edge_type=self._relationship_keys(),
             semantic_source=self._semantic_source,
         )
         if self._semantic_type == "unknown":
@@ -206,7 +212,7 @@ class GraphData:
                     num_nodes=self._num_nodes,
                     semantic_type=self._semantic_type,
                     storage_type=self._storage_type,
-                    edge_type=self._edge_type,
+                    edge_type=self._relationship_keys(),
                     semantic_source=self._semantic_source,
                 )
         if self._storage_type is None:
@@ -343,16 +349,18 @@ class GraphData:
     def _build_edge_lookup(self) -> None:
         """
         根据 edge_index / edge_weight / edge_feat / edge_names / edge_label / edge_type
-        全量构建两张 O(1) 查找表：
+        全量构建 O(1) 查找表：
 
             _edge_lookup      : (src, dst) -> 属性字典
             _edge_name_lookup : edge_name  -> (src, dst)
+            _edge_entries_by_name : edge_name -> 属性字典
 
         无向图对 (src, dst) 和 (dst, src) 分别存储独立副本。
-        存在重边时，后出现的边覆盖前面的条目。
+        按端点查询保留最后一条边；按边名称查询保留各条关系。
         """
         self._edge_lookup = {}
         self._edge_name_lookup = {}
+        self._edge_entries_by_name = {}
 
         if self._edge_index.size == 0:
             return
@@ -393,6 +401,7 @@ class GraphData:
 
             if ename is not None:
                 self._edge_name_lookup[ename] = (src, dst)
+                self._edge_entries_by_name[ename] = entry
 
     def _build_type_lookups(self) -> None:
         """构建节点类型和边类型的快速查找表。"""
@@ -803,8 +812,7 @@ class GraphData:
         return self.get_edge(self.name_to_id(src_name), self.name_to_id(dst_name))
 
     def get_edge_by_edge_name(self, edge_name: str) -> Optional[Dict[str, Any]]:
-        pair = self._edge_name_lookup.get(edge_name)
-        return self._edge_lookup.get(pair) if pair is not None else None
+        return self._edge_entries_by_name.get(edge_name)
 
     def has_edge(self, src: int, dst: int) -> bool:
         return (src, dst) in self._edge_lookup
@@ -851,8 +859,10 @@ class GraphData:
         )
 
     def get_edge_feat_by_edge_name(self, edge_name: str) -> Optional[np.ndarray]:
-        pair = self._edge_name_lookup.get(edge_name)
-        return self.get_edge_feat(*pair) if pair is not None else None
+        entry = self.get_edge_by_edge_name(edge_name)
+        if entry is None or self._edge_feat is None:
+            return None
+        return self._edge_feat[entry["edge_idx"]]
 
     # ── 边名称 ──────────────────────────────────────────────────────
 
@@ -938,11 +948,17 @@ class GraphData:
         src, dst = self._edge_index
         return [(int(src[i]), int(dst[i])) for i in range(self.num_edges)]
 
+    def _relationship_keys(self):
+        """Constructed graphs identify relationships by ID, ordinary graphs by type."""
+        if self._graph_metadata.get("construction_graph") is not None and self._edge_names is not None:
+            return self._edge_names
+        return self._edge_type
+
     def logical_edges(self) -> List[Tuple[int, int]]:
         return logical_edge_pairs(
             self._edge_index,
             self._semantic_type,
-            edge_type=self._edge_type,
+            edge_type=self._relationship_keys(),
         )
 
     def all_edges_by_name(self) -> List[Tuple[str, str]]:
@@ -973,7 +989,7 @@ class GraphData:
                 self._edge_index,
                 self._num_nodes,
                 self._semantic_type,
-                edge_type=self._edge_type,
+                edge_type=self._relationship_keys(),
             )
         return self._degree_cache
 
@@ -1063,26 +1079,22 @@ class GraphData:
     def get_incident_edges(self, node_id: int) -> List[Dict[str, Any]]:
         src_arr, dst_arr = self._edge_index
         results = []
-        if self._semantic_type == "undirected":
-            seen: set[Tuple[int, int, Any]] = set()
-            for i in np.where((src_arr == node_id) | (dst_arr == node_id))[0]:
-                s, d = int(src_arr[i]), int(dst_arr[i])
-                rel = self._edge_type[i] if self._edge_type is not None and len(self._edge_type) > i else None
-                key = tuple(sorted((s, d))) + (rel,)
+        seen = set()
+        relationship_keys = self._relationship_keys()
+        constructed = self._graph_metadata.get("construction_graph") is not None and self._edge_names is not None
+        mask = (src_arr == node_id) | (dst_arr == node_id)
+        for i in np.where(mask)[0]:
+            source, target = int(src_arr[i]), int(dst_arr[i])
+            if self._semantic_type == "undirected":
+                relation = relationship_keys[i] if relationship_keys is not None else None
+                key = tuple(sorted((source, target))) + (relation,)
                 if key in seen:
                     continue
                 seen.add(key)
-                entry = self._edge_lookup.get((s, d)) or self._edge_lookup.get((d, s))
-                if entry is not None:
-                    results.append({"src": s, "dst": d, **entry})
-            return results
-
-        mask = (src_arr == node_id) | (dst_arr == node_id)
-        for i in np.where(mask)[0]:
-            s, d = int(src_arr[i]), int(dst_arr[i])
-            entry = self._edge_lookup.get((s, d))
+            entry = (self.get_edge_by_edge_name(str(self._edge_names[i])) if constructed
+                     else self._edge_lookup.get((source, target)))
             if entry is not None:
-                results.append({"src": s, "dst": d, **entry})
+                results.append({"src": source, "dst": target, **entry})
         return results
 
     def get_incident_edges_by_name(self, node_name: str) -> List[Dict[str, Any]]:
@@ -1204,10 +1216,18 @@ class GraphData:
                 return tuple(_freeze(item) for item in value)
             return value
 
-        def _storage_key(src_id: int, dst_id: int, relation: Any) -> tuple[Any, ...]:
-            return int(src_id), int(dst_id), _freeze(relation)
+        constructed = self._graph_metadata.get("construction_graph") is not None and self._edge_names is not None
+
+        def _storage_key(record, *, reverse=False) -> tuple[Any, ...]:
+            src, dst = int(record["src"]), int(record["dst"])
+            if reverse:
+                src, dst = dst, src
+            identity = record["name"] if constructed else _freeze(record["type"])
+            return src, dst, identity
 
         def _exact_signature(record: dict[str, Any]) -> tuple[Any, ...]:
+            if constructed:
+                return _storage_key(record)
             return (
                 int(record["src"]),
                 int(record["dst"]),
@@ -1243,14 +1263,14 @@ class GraphData:
             edge_records.append(record)
 
         present_storage_keys = {
-            _storage_key(record["src"], record["dst"], record["type"])
+            _storage_key(record)
             for record in edge_records
         }
         added_reverse_edges = 0
         for record in list(edge_records):
             if record["src"] == record["dst"]:
                 continue
-            reverse_key = _storage_key(record["dst"], record["src"], record["type"])
+            reverse_key = _storage_key(record, reverse=True)
             if reverse_key in present_storage_keys:
                 continue
             reverse = dict(record)

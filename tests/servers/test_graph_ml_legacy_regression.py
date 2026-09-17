@@ -55,6 +55,52 @@ def _request(task: str, *, model: str = "GCN", method: str | None = None):
 
 
 class LegacyGraphMLRegressionTest(unittest.TestCase):
+    def test_gin_and_appnp_train_infer_roundtrip(self) -> None:
+        graph = _legacy_graph()
+
+        def graph_loader(_session_id: str):
+            return 7, graph
+
+        with tempfile.TemporaryDirectory() as artifact_root:
+            store = ArtifactStore(artifact_root)
+            trainer = GraphMLTrainer(graph_loader, store)
+            inferencer = GraphMLInferencer(graph_loader, store)
+
+            for model, task in (
+                ("GIN", "node_classification"),
+                ("APPNP", "link_prediction"),
+            ):
+                with self.subTest(model=model, task=task):
+                    trained = trainer.train(
+                        "new-backbone-roundtrip",
+                        _request(task, model=model),
+                    )
+                    query = (
+                        {"nodes": ["n0", "n1"]}
+                        if task == "node_classification"
+                        else {"edges": [["n0", "n3"]]}
+                    )
+                    inferred = inferencer.infer(
+                        "new-backbone-roundtrip",
+                        InferRequest(
+                            model_id=trained["model_id"],
+                            graph_version=7,
+                            query=query,
+                            infer_config={"device": "cpu"},
+                        ),
+                    )
+                    self.assertTrue(trained["success"])
+                    self.assertEqual(inferred["task"], task)
+                    ref = store.resolve_model(
+                        "new-backbone-roundtrip",
+                        trained["model_id"],
+                    )
+                    assert ref is not None
+                    meta = store.load_json(ref.model_dir, "meta.json")
+                    self.assertEqual(meta["model"], model)
+                    self.assertEqual(meta["model_config"]["appnp_k"], 10)
+                    self.assertEqual(meta["model_config"]["appnp_alpha"], 0.1)
+
     def test_node_link_and_pretrain_train_infer_remain_compatible(self) -> None:
         graph = _legacy_graph()
         graph_loads: list[str] = []

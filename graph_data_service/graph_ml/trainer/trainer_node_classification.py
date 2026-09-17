@@ -3,6 +3,7 @@
 """
 
 from __future__ import annotations
+from graph_data_service.worker_signals import check_cancelled
 
 import math
 from typing import Any, Callable, Dict
@@ -88,6 +89,7 @@ class NodeClassificationTrainer:
         best_backbone_state: Dict[str, torch.Tensor] | None = None
         best_head_state: Dict[str, torch.Tensor] | None = None
         for epoch in range(epochs):
+            check_cancelled()
             trained_epochs = epoch + 1
             backbone.train()
             head.train()
@@ -102,6 +104,7 @@ class NodeClassificationTrainer:
             backbone.eval()
             head.eval()
             with torch.no_grad():
+                check_cancelled()
                 eval_logits = head(backbone(x, eidx))
                 eval_pred = torch.argmax(eval_logits, dim=1)
                 epoch_train_acc = self._accuracy(eval_pred, y, tr_idx)

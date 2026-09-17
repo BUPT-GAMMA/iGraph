@@ -76,8 +76,12 @@ class SkillManager:
         body_text = self._render_skill_body(name=name, body=body, metadata=metadata)
         self._validate_content(body_text)
         skill_dir.mkdir(parents=True, exist_ok=False)
-        (skill_dir / "SKILL.md").write_text(body_text, encoding="utf-8")
-        self._check_total_size(skill_dir)
+        try:
+            (skill_dir / "SKILL.md").write_text(body_text, encoding="utf-8")
+            self._check_total_size(skill_dir)
+        except Exception:
+            shutil.rmtree(skill_dir, ignore_errors=True)
+            raise
         clear_skill_caches()
         self._event("skill_created", {"skill_name": name, "destination": destination})
         return {"ok": True, "action": "create", "name": name, "destination": destination, "path": str(skill_dir)}
@@ -94,7 +98,11 @@ class SkillManager:
         self._validate_content(content)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        self._check_total_size(skill_dir)
+        try:
+            self._check_total_size(skill_dir)
+        except ValueError:
+            target.unlink(missing_ok=True)
+            raise
         clear_skill_caches()
         self._event("skill_file_written", {"skill_name": name, "destination": destination, "file_path": file_path})
         return {"ok": True, "action": "write_file", "name": name, "file_path": file_path}

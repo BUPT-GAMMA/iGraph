@@ -129,6 +129,43 @@ def feedback_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def graph_job_progress_payload(payload: dict[str, Any]) -> dict | None:
+    if payload.get("event") != "CustomEvent":
+        return None
+    content = _decoded_container(payload.get("content"))
+    if not isinstance(content, dict) or content.get("kind") != "graph_job_progress":
+        return None
+    job = content.get("job")
+    if not isinstance(job, dict) or not job.get("job_id"):
+        return None
+    return content
+
+
+def _graph_job_progress_events(payload: dict[str, Any], content: dict) -> list[dict]:
+    job = content["job"]
+    name = str(content.get("tool_name") or job.get("tool_name") or "")
+    common = {key: payload[key] for key in ("run_id", "session_id", "event_index") if payload.get(key) is not None}
+    identity = {"type": "tool_progress", "tool": name,
+                "call_id": str(payload.get("tool_call_id") or job["job_id"]), **common}
+    updates = [row for row in (content.get("progress_updates") or []) if isinstance(row, dict)]
+    rows = [{**identity, "progress": {**update, "job_id": job["job_id"], "status": job.get("status"),
+                                     "progress": update.get("progress", job.get("progress", 0)),
+                                     "message": update.get("message", job.get("message", ""))}}
+            for update in updates]
+    terminal = _terminal_job_status(job.get("status")) and not content.get("progress_has_more") and not content.get("job_chain_continues")
+    if terminal or not updates:
+        state = job.get("status")
+        kind = "job_queued" if state == "queued" else "job_progress"
+        if terminal:
+            kind = ("train_done" if name == "train" else "job_done") if state == "done" else "job_" + str(state)
+        rows.append({**identity, "progress": {
+            "kind": kind, "job_id": job["job_id"], "status": state,
+            "progress": 1 if terminal and state == "done" else job.get("progress", 0),
+            "message": job.get("message", ""),
+        }})
+    return rows
+
+
 def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
     variants = _payload_variants(payload)
     event = str(_first_value(variants, "event", "type", "event_name") or "")
@@ -144,6 +181,8 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
                 common[key] = value
     if event in {"RunStarted", "TeamRunStarted"}:
         return {"type": "model_turn_start", **common}
+    if event in {"RunContinued", "TeamRunContinued"}:
+        return {"type": "run_continued", **common}
     if event in {"RunContent", "TeamRunContent"}:
         run_id = str(common.get("run_id") or "")
         message_id = str(_first_value(variants, "message_id", "messageId") or f"assistant:{run_id}")
@@ -205,14 +244,17 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "type": "done",
             "message_id": message_id,
-            "content": payload.get("content") or "",
+            **({"content": payload["content"]} if isinstance(payload.get("content"), str) else {}),
             "context_usage": payload.get("metrics") or {},
             **common,
         }
     if event in {"RunError", "RunCancelled", "TeamRunError", "TeamRunCancelled", "error"}:
-        return {"type": "error", "error": str(payload.get("content") or payload.get("error") or event), **common}
+        return {"type": "error", "cancelled": 'Cancelled' in event, "error": str(payload.get("content") or payload.get("error") or event), **common}
+    if event == "stream_recovery_required":
+        return {"type": event, "reason": payload.get("reason"), "code": payload.get("code"), **common}
     if event in {"catch_up", "replay", "subscribed"}:
-        return {"type": "stream_status", "status": event, **common}
+        return {"type": "stream_status", "status": event, "run_status": payload.get("status"),
+                "remaining_events": payload.get("missed_events", payload.get("total_events")), **common}
     return {"type": "agent_event", "event": event, "payload": payload, **common}
 
 
@@ -220,6 +262,17 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Restore product UI events that used to be emitted by the legacy runtime."""
 
     event = str(payload.get("event") or payload.get("type") or "")
+    if event in {"RunContent", "TeamRunContent"}:
+        # Provider reasoning deltas share a native event with ordinary content.
+        # Keep both in the same V2 envelope so replay applies them atomically.
+        reasoning = payload.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            return [{"type": "thinking", "phase": "reasoning", "content": reasoning,
+                     **{key: payload[key] for key in ("run_id", "session_id", "event_index") if payload.get(key) is not None}}]
+        return []
+    progress_content = graph_job_progress_payload(payload)
+    if progress_content is not None:
+        return _graph_job_progress_events(payload, progress_content)
     if "ToolCallCompleted" not in event:
         return []
     tool = _tool(payload)
@@ -306,7 +359,8 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if name == "visualize_subgraph":
         graph = result.get("data") if isinstance(result.get("data"), dict) else result
         if isinstance(graph.get("nodes"), list) and isinstance(graph.get("links", graph.get("edges")), list):
-            graph = {**graph, "links": graph.get("links", graph.get("edges", []))}
+            graph = {**graph, "links": graph.get("links", graph.get("edges", [])),
+                     "edges": graph.get("edges", graph.get("links", []))}
             return [{"type": "graph_visualize", "data": graph, "call_id": tool.get("tool_call_id") or "", **common}]
     if name == "create_analysis_report" and isinstance(result.get("report"), dict):
         return [{
@@ -368,6 +422,9 @@ async def translate_sse(
     planning_step_id = 0
     current_run_id = run_id
     async for line in lines:
+        if line.startswith(":"):
+            yield line + "\n\n"
+            continue
         if not line.startswith("data:"):
             continue
         raw = line[5:].strip()
@@ -394,7 +451,7 @@ async def translate_sse(
                 plan_events.append({
                     "type": "plan_step",
                     "plan_id": plan_id,
-                    "step": _native_reasoning_step(event_payload, planning_step_id),
+                    "step": _native_reasoning_step(event_payload, event_payload.get("event_index", planning_step_id)),
                 })
             elif event_name in {"ReasoningCompleted", "TeamReasoningCompleted"} and planning_started:
                 plan_events.append({
@@ -433,3 +490,80 @@ async def translate_sse(
             continue
         for event in derived_events:
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+def project_run(run: dict[str, Any]) -> dict[str, Any]:
+    """Project persisted AgentOS events into the ordered visible workbench Items."""
+    events = run.get("events") or []
+    if not isinstance(events, list):
+        events = []
+    pending: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    final_parts: list[str] = []
+    def event_index(raw: dict, fallback: int) -> int:
+        try:
+            return int(raw.get("event_index"))
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+    def flush_text() -> None:
+        if not pending:
+            return
+        items.append({"id": f"text:{pending[0]['sequence']}", "kind": "text", "sequence": pending[0]["sequence"], "content": "".join(entry["content"] for entry in pending)})
+        pending.clear()
+    def add_reasoning(content: str, sequence: int) -> None:
+        if items and items[-1]["kind"] == "reasoning":
+            items[-1]["content"] += content
+            return
+        items.append({"id": f"reasoning:{sequence}", "kind": "reasoning", "sequence": sequence, "content": content})
+    for index, raw in enumerate(events):
+        if not isinstance(raw, dict):
+            continue
+        payload = {**raw, "event_index": event_index(raw, index), "run_id": raw.get("run_id", run.get("run_id", ""))}
+        event = str(payload.get("event") or payload.get("type") or "")
+        if event in {"RunContent", "TeamRunContent"}:
+            content = payload.get("content")
+            if content not in (None, ""):
+                pending.append({"content": str(content), "sequence": int(payload["event_index"])})
+            reasoning = payload.get("reasoning_content")
+            if reasoning:
+                add_reasoning(str(reasoning), int(payload["event_index"]))
+            continue
+        if event in {"ReasoningContent", "RunReasoningContent", "ReasoningStep", "TeamReasoningStep"}:
+            reasoning = str(payload.get("reasoning_content") or payload.get("content") or "")
+            if reasoning:
+                add_reasoning(reasoning, int(payload["event_index"]))
+            continue
+        if "ToolCallStarted" in event:
+            flush_text()
+            tool = _tool(payload)
+            name = str(tool.get("tool_name") or tool.get("name") or "")
+            call_id = str(tool.get("tool_call_id") or "")
+            items.append({"id": f"tool:{call_id or payload['event_index']}", "kind": "tool", "sequence": int(payload["event_index"]), "tool": {"tool": name, "call_id": call_id, "args": tool.get("tool_args") or tool.get("arguments") or {}, "done": False, "status": "running"}})
+            continue
+        if "ToolCallCompleted" in event:
+            tool = _tool(payload)
+            call_id = str(tool.get("tool_call_id") or "")
+            for item in items:
+                if item["kind"] == "tool" and item["tool"].get("call_id") == call_id:
+                    result = _decoded_tool_result(payload)
+                    failed = bool(tool.get("tool_call_error")) or isinstance(result, dict) and result.get("success") is False
+                    item["tool"].update({"done": True, "status": "failed" if failed else "completed", "result": result})
+            continue
+        if event == "RunContentCompleted":
+            continue
+        if event == "RunCompleted":
+            if pending:
+                final_parts.append("".join(entry["content"] for entry in pending))
+                pending.clear()
+            elif payload.get("content"):
+                final_parts.append(str(payload["content"]))
+    status = str(run.get("status") or "").lower()
+    if status in {"completed", "error", "failed", "cancelled", "canceled"}:
+        for item in items:
+            if item.get("kind") == "tool" and not item["tool"].get("done"):
+                item["tool"].update(done=True, status="cancelled" if status in {"cancelled", "canceled"} else "failed")
+    if not final_parts and pending:
+        final_parts.extend(entry["content"] for entry in pending)
+    if not final_parts:
+        value = run.get("content")
+        if isinstance(value, str): final_parts.append(value)
+    return {"processItems": sorted(items, key=lambda item: item["sequence"]), "content": "".join(final_parts), "last_event_index": max((event_index(item, index) for index, item in enumerate(events) if isinstance(item, dict)), default=-1)}

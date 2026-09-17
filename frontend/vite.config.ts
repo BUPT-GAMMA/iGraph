@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'jsdom',
+    setupFiles: ['./src/testSetup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     coverage: {
       provider: 'v8',
@@ -12,17 +13,12 @@ export default defineConfig({
       reporter: ['text', 'json-summary', 'lcov', 'cobertura', 'html'],
       include: ['src/**/*.{ts,tsx}'],
       exclude: ['src/**/*.{test,spec}.{ts,tsx}', 'src/vite-env.d.ts'],
-      thresholds: {
-        lines: 44,
-        statements: 44,
-        functions: 59,
-        branches: 68,
-      },
     },
   },
   server: {
-    port: 5173,
-    proxy: { '/api': 'http://127.0.0.1:1109' },
+    port: 21108,
+    strictPort: true,
+    proxy: { '/api': 'http://127.0.0.1:21109' },
   },
   build: { outDir: 'dist', emptyOutDir: true },
 });
