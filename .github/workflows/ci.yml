@@ -14,10 +14,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  # Feature-branch runs may be superseded. A production deployment must finish
-  # before a newer main run starts, otherwise an interrupted SSH session could
-  # leave the host between releases.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -42,7 +39,7 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       CI: "true"
-      # Disposable test credential; production supplies its own random secret.
+      # Disposable test credential; non-CI environments supply their own random secret.
       IGRAPH_CONTROL_SERVICE_KEY: ci-service-configuration-only
       IGRAPH_CONTROL_TEST_DATABASE_URL: postgresql+psycopg://postgres:cancellation-ci-only@127.0.0.1:5432/cancellation_tests
       IGRAPH_CANCEL_TEST_REPETITIONS: ${{ inputs.full == true && '20' || '1' }}
@@ -266,7 +263,7 @@ jobs:
           docker cp "$container:/marker" "$RUNNER_TEMP/pulled-marker"
           cmp "$RUNNER_TEMP/docker-smoke/marker" "$RUNNER_TEMP/pulled-marker"
 
-      - name: Check production Dockerfiles without building or publishing images
+      - name: Check service Dockerfiles without building or publishing images
         run: |
           for dockerfile in frontend/Dockerfile deploy/docker/backend.Dockerfile \
             deploy/docker/agent-runtime.Dockerfile deploy/docker/graph-data.Dockerfile \
@@ -302,176 +299,3 @@ jobs:
             exit 1
           fi
           echo "All required CI jobs succeeded."
-
-  publish-images:
-    name: Publish ${{ matrix.name }} image
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs:
-      - gate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        include:
-          - name: frontend
-            dockerfile: frontend/Dockerfile
-            image: ghcr.io/bupt-gamma/igraph-frontend
-          - name: backend
-            dockerfile: deploy/docker/backend.Dockerfile
-            image: ghcr.io/bupt-gamma/igraph-backend
-          - name: agent-runtime
-            dockerfile: deploy/docker/agent-runtime.Dockerfile
-            image: ghcr.io/bupt-gamma/igraph-agent-runtime
-          - name: graph-engine-api
-            dockerfile: deploy/docker/graph-data.Dockerfile
-            image: ghcr.io/bupt-gamma/igraph-graph-engine-api
-          - name: graph-engine-mcp
-            dockerfile: deploy/docker/mcp.Dockerfile
-            image: ghcr.io/bupt-gamma/igraph-graph-engine-mcp
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and publish immutable image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
-          push: true
-          tags: ${{ matrix.image }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-
-  deploy-production:
-    name: Deploy production
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs:
-      - gate
-      - publish-images
-    runs-on: ubuntu-24.04
-    # The first pull includes large ML layers and the server's GHCR route is slow.
-    # The deployment script retries transient resets, so leave enough time for it.
-    timeout-minutes: 60
-    concurrency:
-      group: production-deploy
-      cancel-in-progress: false
-    permissions:
-      contents: read
-      packages: read
-    env:
-      DEPLOY_HOST: hdssh01.casdao.com
-      DEPLOY_PORT: "63125"
-      DEPLOY_USER: keyuyang
-      DEPLOY_ROOT: /home/keyuyang/apps/igraph
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Configure pinned SSH identity
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-        run: |
-          if [[ -z "$DEPLOY_SSH_KEY" ]]; then
-            echo "Repository secret DEPLOY_SSH_KEY is required." >&2
-            exit 1
-          fi
-          install -d -m 700 "$HOME/.ssh"
-          install -m 600 /dev/null "$RUNNER_TEMP/igraph_cd"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/igraph_cd"
-          ssh-keygen -y -P '' -f "$RUNNER_TEMP/igraph_cd" >/dev/null
-          install -m 600 deploy/production/known_hosts "$RUNNER_TEMP/known_hosts"
-
-      - name: Upload release and deploy
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -Eeuo pipefail
-
-          remote="${DEPLOY_USER}@${DEPLOY_HOST}"
-          release_dir="${DEPLOY_ROOT}/releases/${GITHUB_SHA}"
-          ssh_options=(
-            -p "$DEPLOY_PORT"
-            -i "$RUNNER_TEMP/igraph_cd"
-            -o "UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
-            -o StrictHostKeyChecking=yes
-            -o IdentitiesOnly=yes
-            -o BatchMode=yes
-            -o ConnectTimeout=20
-            -o ServerAliveInterval=30
-            -o ServerAliveCountMax=10
-          )
-          scp_options=(
-            -P "$DEPLOY_PORT"
-            -i "$RUNNER_TEMP/igraph_cd"
-            -o "UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
-            -o StrictHostKeyChecking=yes
-            -o IdentitiesOnly=yes
-            -o BatchMode=yes
-            -o ConnectTimeout=20
-            -o ServerAliveInterval=30
-            -o ServerAliveCountMax=10
-          )
-
-          # shellcheck disable=SC2029
-          ssh "${ssh_options[@]}" "$remote" "install -d -m 700 '$release_dir'"
-          scp "${scp_options[@]}" \
-            compose.yaml \
-            deploy/production/compose.production.yaml \
-            deploy/production/deploy.sh \
-            "${remote}:${release_dir}/"
-
-          logout_registry() {
-            ssh "${ssh_options[@]}" "$remote" \
-              "export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock; docker logout ghcr.io >/dev/null 2>&1 || true" \
-              || true
-          }
-          trap logout_registry EXIT
-
-          # shellcheck disable=SC2029
-          printf '%s' "$GHCR_TOKEN" | ssh "${ssh_options[@]}" "$remote" \
-            "export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock; docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin"
-
-          deploy_succeeded=false
-          for attempt in 1 2 3; do
-            echo "Starting remote deployment (SSH attempt ${attempt}/3)."
-            # shellcheck disable=SC2029
-            if ssh "${ssh_options[@]}" "$remote" \
-              "chmod 700 '$release_dir/deploy.sh' && DEPLOY_ROOT='$DEPLOY_ROOT' '$release_dir/deploy.sh' '$GITHUB_SHA'"; then
-              deploy_succeeded=true
-              break
-            fi
-
-            if ((attempt < 3)); then
-              delay=$((attempt * 15))
-              echo "SSH deployment command was interrupted; retrying in ${delay}s." >&2
-              sleep "$delay"
-            fi
-          done
-
-          if [[ "$deploy_succeeded" != true ]]; then
-            echo "Remote deployment failed after 3 SSH attempts." >&2
-            exit 1
-          fi
