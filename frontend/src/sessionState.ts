@@ -38,6 +38,7 @@ export type SessionRunState = {
   replay?: Pick<SessionViewState, 'messagesById' | 'messageOrder' | 'graph'>;
   assistantMessageId?: string;
   submittedInput?: string;
+  preserveComposer?: boolean;
   editBackup?: { runId: string; messages: Message[] };
   replaceRunId?: string;
   toolsById: Record<string, ToolCall>;
@@ -96,6 +97,7 @@ export type ConversationAction =
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
       model: string; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
       activeRun?: ActiveRun | null; generation?: string; preserveMessages?: boolean;
+      preserveComposer?: boolean;
       control?: RunControl | null;
       datasetView?: DatasetView | null; hasGraph?: boolean;
     }
@@ -108,7 +110,7 @@ export type ConversationAction =
   | { type: 'SET_PENDING_ATTACHMENT'; sessionId: string; localId: string; status: DraftAttachment['status']; error?: string; progress?: number }
   | { type: 'RESOLVE_PENDING_ATTACHMENT'; sessionId: string; localId: string; attachment: AttachmentRef }
   | { type: 'REMOVE_PENDING_ATTACHMENT'; sessionId: string; localId: string }
-  | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message; replaceRunId?: string }
+  | { type: 'START_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message; replaceRunId?: string; preserveComposer?: boolean }
   | { type: 'ROLLBACK_RUN_START'; sessionId: string; generation: string; restoreDraft?: string; restoreAttachments?: AttachmentRef[] }
   | { type: 'ADOPT_RUN'; sessionId: string; generation: string; activeRun: ActiveRun; feedback?: FeedbackRequest | null }
   | { type: 'SET_RUN_ID'; sessionId: string; generation: string; runId: string; lastAppliedEventIndex?: number }
@@ -801,6 +803,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
           status: 'starting', lastAppliedEventIndex: -1, reception: 'idle', synchronized: true,
           toolsById: {}, toolOrder: [], plan: null, feedback: null };
       } else activeRun = null;
+      if (activeRun && action.preserveComposer) activeRun = { ...activeRun, preserveComposer: true };
       const graph = graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, action.hasGraph);
       const latestGraph = action.preserveMessages ? null : latestMessageGraph(action.messages);
       const hydratedGraph: GraphViewState = latestGraph ? { status: 'ready', data: latestGraph } : graph;
@@ -901,13 +904,14 @@ export function conversationReducer(state: ConversationState, action: Conversati
       view = appendMessages(view, [action.userMessage, action.assistantMessage]);
       view = {
         ...view,
-        draft: editBackup ? view.draft : '',
+        draft: editBackup || action.preserveComposer ? view.draft : '',
         error: undefined,
         activeRun: {
           generation: action.generation,
           startRequestId: action.generation,
           status: 'starting',
           submittedInput: action.userMessage.content,
+          preserveComposer: action.preserveComposer,
           editBackup,
           replaceRunId: action.replaceRunId,
           lastAppliedEventIndex: -1,
@@ -928,7 +932,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
         ...view,
         messagesById,
         messageOrder: view.messageOrder.filter(id => !removeIds.has(id)),
-        draft: backup ? view.draft : view.draft.trim() ? view.draft : action.restoreDraft || view.draft,
+        draft: backup || view.activeRun.preserveComposer ? view.draft : view.draft.trim() ? view.draft : action.restoreDraft || view.draft,
         attachments: [
           ...view.attachments,
           ...(backup ? [] : action.restoreAttachments || []).filter(item => !view.attachments.some(current => current.file_token === item.file_token)),

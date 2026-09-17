@@ -32,6 +32,7 @@ class ProjectDatasetRecord:
     status: str = "ready"
     created_at: float = 0.0
     updated_at: float = 0.0
+    description: str = ""
 
 
 class ProjectDatasetDirectory:
@@ -111,7 +112,9 @@ class ProjectDatasetDirectory:
         name: str,
         original_filename: str,
         content: bytes,
+        description: str = "",
     ) -> ProjectDatasetRecord:
+        description = self._description(description)
         with self._lock:
             records = self._load()
             dataset_id = str(uuid.uuid4())
@@ -142,6 +145,7 @@ class ProjectDatasetDirectory:
                 status="ready",
                 created_at=now,
                 updated_at=now,
+                description=description,
             )
             if record.file_type in {"sql", "csv", "txt"}:
                 record.status = "source_ready"
@@ -164,6 +168,7 @@ class ProjectDatasetDirectory:
         original_filename: str,
         files: list[tuple[str, Any]],
         schema: dict[str, Any],
+        description: str | None = None,
     ) -> ProjectDatasetRecord:
         """Persist several CSV files as one server-authored construction source.
 
@@ -175,6 +180,7 @@ class ProjectDatasetDirectory:
             raise ValueError("CSV_BUNDLE_FILE_COUNT")
         if not isinstance(schema, dict) or schema.get("version") != "csv_bundle.v1":
             raise ValueError("CSV_BUNDLE_SCHEMA")
+        description = self._description(schema.get("description", "") if description is None else description)
         definitions = schema.get("tables")
         if not isinstance(definitions, list) or len(definitions) != len(files):
             raise ValueError("CSV_BUNDLE_SCHEMA")
@@ -260,6 +266,7 @@ class ProjectDatasetDirectory:
                     status="source_ready",
                     created_at=now,
                     updated_at=now,
+                    description=description,
                     metadata={
                         "construction": {"status": "not_built", "revision": 0, "source_type": "csv"},
                         "dataset_kind": "construction_source",
@@ -290,6 +297,7 @@ class ProjectDatasetDirectory:
         name: str | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
+        description: str | None = None,
     ) -> ProjectDatasetRecord | None:
         with self._lock:
             records = self._load()
@@ -304,10 +312,18 @@ class ProjectDatasetDirectory:
                 item.status = status
             if metadata is not None:
                 item.metadata = dict(metadata)
+            if description is not None:
+                item.description = self._description(description)
             item.updated_at = time.time()
             records[dataset_id] = item
             self._write(records)
             return item
+
+    @staticmethod
+    def _description(value: str) -> str:
+        if not isinstance(value, str) or len(value) > 4000:
+            raise ValueError("DATASET_DESCRIPTION_INVALID")
+        return value.strip()
 
     def delete(self, dataset_id: str, user_id: str, project_id: str | None = None) -> bool:
         with self._lock:

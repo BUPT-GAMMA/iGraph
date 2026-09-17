@@ -6,6 +6,7 @@ import { degreeRadius } from '../graphPreview';
 import { labelBudget } from '../graphLabels';
 import { communityColor, DEFAULT_HIGHLIGHT_COLORS, highlightEdgePairs, highlightedEdgeColor, paddedHullPath, schemaEdgeLabel } from '../graphAppearance';
 import { useI18n } from '../i18n';
+import { highlightNodeIds } from '../graphExploration';
 
 type Props = {
   active: boolean; schema?: boolean; preview: GraphPreview; directed?: boolean; highlights: Highlight[]; communities: Map<string, string>;
@@ -51,7 +52,7 @@ export function GraphCanvas(props: Props) {
     const visibleHighlights = p.highlights;
     const pathPairs = new Map<string, string>(), subPairs = new Map<string, string>(), nodeColors = new Map<string, string>();
     visibleHighlights.forEach(h => {
-      (h.nodes || []).forEach(id => nodeColors.set(String(id), h.color || DEFAULT_HIGHLIGHT_COLORS[h.type || 'node']));
+      highlightNodeIds([h]).forEach(id => nodeColors.set(id, h.color || DEFAULT_HIGHLIGHT_COLORS[h.type || 'node']));
       if (h.type === 'path' || h.type === 'subgraph') highlightEdgePairs(h).forEach(key => (h.type === 'path' ? pathPairs : subPairs).set(key, h.color || DEFAULT_HIGHLIGHT_COLORS[h.type!]));
     });
     const hulls = visibleHighlights.filter(h => h.type === 'subgraph').map(h => ({ h, path: viewport.append('path').attr('class', 'graph-subgraph-hull').attr('fill', h.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('stroke', h.color || DEFAULT_HIGHLIGHT_COLORS.subgraph) }));
@@ -187,7 +188,7 @@ export function GraphCanvas(props: Props) {
         return ((a.y || 0) + (b.y || 0)) / 2 + dx / len * e.lane * 12 * (a.id < b.id ? 1 : -1) - 5;
       });
       node.attr('transform', n => `translate(${n.x},${n.y})`);
-      hulls.forEach(({ h, path }) => path.attr('d', paddedHullPath((h.nodes || []).map(id => byId.get(String(id))).filter((n): n is Node => Boolean(n)).map(n => [n.x || 0, n.y || 0]), 20)));
+      hulls.forEach(({ h, path }) => path.attr('d', paddedHullPath([...highlightNodeIds([h])].map(id => byId.get(id)).filter((n): n is Node => Boolean(n)).map(n => [n.x || 0, n.y || 0]), 20)));
       if (!zooming && performance.now() - lastLabels > 100) paintLabels();
     }
     function resizeNodes() {

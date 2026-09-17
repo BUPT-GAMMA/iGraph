@@ -127,6 +127,10 @@ class ConstructionOptimizeReq(BaseModel):
     operations: list[dict[str, Any]] = Field(min_length=1, max_length=100)
 
 
+class ConstructionImportReq(BaseModel):
+    source_dataset_id: str = Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
 class ConstructionLoadReq(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dataset_id: str = Field(min_length=1)
@@ -3808,6 +3812,19 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         # An omitted path keeps the registered source/ready-result reuse contract.
         source_path = grant.source.source_path if req.source_path is not None else None
         return await svc._construction_coordinator.build(uid, dataset_id, source_path, grant.source.source_filename, req.options)
+
+    @app.post("/construction/{dataset_id}/import")
+    async def construction_import(dataset_id: str, req: ConstructionImportReq, request: Request):
+        require_service(request)
+        uid, target_grant = await construction_grant(request, dataset_id)
+        if not target_grant.scope.startswith("project:") or target_grant.source is None:
+            raise HTTPException(403, "导入目标必须为已授权项目数据集")
+        await svc._construction_access.authorize(uid, scope="personal", dataset_id=req.source_dataset_id)
+        svc._construction_coordinator.ensure_writable(uid, dataset_id)
+        svc._construction_coordinator.ensure_writable(uid, req.source_dataset_id)
+        from graph_data_service.construction_import import copy_constructed_graph
+        return await run_sync(copy_constructed_graph, svc._construction, uid, req.source_dataset_id,
+            dataset_id, target_grant.source.source_path, target_grant.source.source_filename)
 
     @app.get("/construction/{dataset_id}/graph")
     async def constructed_graph(dataset_id: str, request: Request):
