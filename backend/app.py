@@ -3440,10 +3440,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         content = await file.read(2 * 1024 * 1024 + 1)
         if len(content) > 2 * 1024 * 1024:
-            raise HTTPException(413, "Skill 压缩包不能超过 2MB")
+            raise HTTPException(413, "Skill 文件不能超过 2MB")
         return await runtime.request("POST", "/internal/skills/upload",
             headers=forwarded_headers(request, user.user_id),
-            files={"file": (file.filename or "skill.zip", content, file.content_type or "application/zip")})
+            files={"file": (file.filename or "", content, file.content_type or "application/octet-stream")})
 
     @app.api_route("/api/skills/{name}", methods=["GET", "PUT", "DELETE"])
     async def skill_item(name: str, request: Request):
