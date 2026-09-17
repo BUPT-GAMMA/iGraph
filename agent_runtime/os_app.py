@@ -14,6 +14,7 @@ from agent_runtime.agno_factory import create_db, create_igraph_factory
 from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.custom_models import register_custom_model, remove_custom_model
 from agent_runtime.skill_api import create_skill_router
+from agent_runtime.memory_api import create_memory_router
 from agent_runtime.recovery import create_recovery_router
 from agent_runtime.execution_control import ExecutionController, create_control_router
 from agent_runtime.execution_store import ExecutionStore, ControlError
@@ -61,6 +62,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         return JSONResponse({"detail": {"code": exc.code}}, status_code=exc.status,
                             headers={"Retry-After": "2"} if exc.status == 429 else None)
     base_app.include_router(create_skill_router(settings))
+    base_app.include_router(create_memory_router(db))
     base_app.include_router(create_recovery_router(db))
 
     @base_app.get("/internal/health")

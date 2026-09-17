@@ -267,3 +267,52 @@ def test_skill_zip_rejects_expansion_bomb(skill_client):
         archive.writestr("graph-reader/SKILL.md", "reader")
         archive.writestr("graph-reader/large", b"x" * (10 * 1024 * 1024))
     assert client.post("/internal/skills/upload", headers=_headers(), files={"file": ("graph-reader.zip", buffer.getvalue())}).status_code == 413
+
+
+@pytest.mark.parametrize("filename,body,name", [
+    ("graph-reader.md", "# Read graphs\nInspect the supplied graph.", "graph-reader"),
+    ("SKILL.md", "---\nname: graph-reader\ndescription: Inspect graphs\n---\nRead the graph.", "graph-reader"),
+    ("Graph_Reader.MD", "\ufeff# Read graphs\r\nInspect the graph.", "graph-reader"),
+])
+def test_markdown_upload_is_readable_after_approval(skill_client, filename, body, name):
+    from agno.skills import LocalSkills
+
+    client, config = skill_client
+    response = client.post("/internal/skills/upload", headers=_headers(),
+                           files={"file": (filename, body.encode("utf-8"), "text/markdown")})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"success": True, "name": name, "source": "review_queue"}
+    assert not (user_skills_path(config, "alice") / name).exists()
+    assert client.get(f"/internal/skills/{name}", headers=_headers("bob")).status_code == 404
+    duplicate = client.post("/internal/skills/upload", headers=_headers(),
+                            files={"file": (filename, body.encode("utf-8"))})
+    assert duplicate.status_code == 409
+    approved = client.post(f"/internal/skills/{name}/approve", headers=_headers(), json={})
+    assert approved.status_code == 200
+    loaded = LocalSkills(str(user_skills_path(config, "alice"))).load()
+    assert [skill.name for skill in loaded] == [name]
+    assert loaded[0].instructions.strip()
+    assert loaded[0].description.strip()
+
+
+@pytest.mark.parametrize("filename,body,status", [
+    ("reader.txt", b"instructions", 400),
+    ("reader.md", b" \n\t", 400),
+    ("reader.md", b"\xff\xfe", 400),
+    ("reader.md", b"binary\x00data", 400),
+    ("reader.md", b"---\nname: reader\nmissing close", 400),
+    ("reader.md", b"---\nname: [\n---\nInstructions", 400),
+    ("reader.md", b"---\n- reader\n---\nInstructions", 400),
+    ("reader.md", b"---\nname: 123\n---\nInstructions", 400),
+    ("reader.md", b"---\nname: ../escape\n---\nInstructions", 400),
+    ("../escape.md", b"Instructions", 400),
+    ("reader.md", b"---\nname: reader\n---\n", 400),
+    ("reader.md", b"x" * (2 * 1024 * 1024 + 1), 413),
+])
+def test_markdown_upload_rejects_invalid_files_without_writing(skill_client, filename, body, status):
+    client, config = skill_client
+    response = client.post("/internal/skills/upload", headers=_headers(),
+                           files={"file": (filename, body, "text/markdown")})
+    assert response.status_code == status, response.text
+    root = candidate_skills_path(config, "alice")
+    assert not root.exists() or not list(root.iterdir())
