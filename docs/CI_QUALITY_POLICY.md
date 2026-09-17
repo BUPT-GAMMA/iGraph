@@ -2,18 +2,20 @@
 
 ## 日常检查
 
-每次 push，以及未勾选 `full` 的手动运行，执行两个并行任务：
+每次 push，以及未勾选 `full` 的手动运行，执行三个并行任务：
 
 | 任务 | 检查范围 |
 | --- | --- |
 | `Python tests` | 后端基础及业务回归、Graph ML、协议和断流恢复、PostgreSQL 控制并发、任务取消及进程退出；四种真实链路取消场景各执行一次；Docker Compose 配置校验 |
-| `Frontend checks` | 全部 Vitest 单元/组件测试、TypeScript 类型检查、Vite 生产构建 |
+| `Frontend checks` | 全部 Vitest 单元/组件测试、TypeScript 类型检查、Vite 构建和普通 Playwright E2E |
+| `Docker action compatibility` | 在 runner 本机临时仓库中验证 Docker 登录、构建、推送、拉取和缓存，并静态检查各服务 Dockerfile；不会访问外部镜像仓库 |
 
-`Required checks` 要求两个任务均成功；测试断言、类型检查、构建和配置错误仍会阻断。
-保留这些检查名称，兼容现有分支保护。main 的镜像发布和生产部署继续依赖该汇总检查。
+`Required checks` 要求三个任务均成功；测试断言、类型检查、构建和配置错误仍会阻断。
+保留这些检查名称，兼容现有分支保护。流水线在汇总检查后结束，不发布 GHCR
+镜像，也不连接或部署任何服务器。
 
 日常 CI 不启用覆盖率采集、覆盖率硬门槛、Python 分片及覆盖率汇总，
-也不安装浏览器。Python 输出最慢的 10 项测试，便于定位耗时。
+Python 输出最慢的 10 项测试，便于定位耗时。
 
 ## 手动完整回归
 
@@ -24,11 +26,11 @@
   - `tests/test_isolated_compute.py`：隔离计算、图版本与产物发布、跨模型训练推理等。
   - `tests/test_cancellation_failures.py`：数据库故障、请求丢失、辅助模型取消等故障注入。
   - `tests/test_execution_restart.py`：强制退出、重启、后代进程清理及提交恢复。
-- Python 任务追加真实 Factory 恢复及取消浏览器回归；前端任务追加普通 Playwright E2E。
+- Python 任务追加真实 Factory 恢复及取消浏览器回归；前端任务继续执行普通 Playwright E2E。
 - 完整模式中任何测试失败均使本次运行失败，浏览器失败时保留 trace 和截图。
 
 测试文件与原有断言均保留。日常模式验证基本功能；上述故障场景、完整产物矩阵和
-浏览器交互仅在完整模式验证。修改执行器、取消/恢复协议或重要交互后，以及发布前，
+额外的真实 Factory 与取消浏览器场景仅在完整模式验证。修改执行器、取消/恢复协议或重要交互后，以及重要合并前，
 建议对目标提交执行完整模式；当前流程不自动强制这一步。
 
 ## 覆盖率
