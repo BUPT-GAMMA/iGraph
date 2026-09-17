@@ -125,6 +125,8 @@ def _markdown_upload(raw: bytes, filename: str) -> tuple[str, str]:
             raise HTTPException(status_code=400, detail="Skill YAML 头部格式无效") from exc
         if not isinstance(metadata, dict):
             raise HTTPException(status_code=400, detail="Skill YAML 头部必须是键值对象")
+        if not all(isinstance(key, str) for key in metadata):
+            raise HTTPException(status_code=400, detail="Skill YAML 头部字段名必须是字符串")
         instructions = match.group(2).strip()
     if not instructions:
         raise HTTPException(status_code=400, detail="Skill Markdown 必须包含指令正文")

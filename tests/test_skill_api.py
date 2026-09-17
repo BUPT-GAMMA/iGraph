@@ -303,6 +303,7 @@ def test_markdown_upload_is_readable_after_approval(skill_client, filename, body
     ("reader.md", b"---\nname: reader\nmissing close", 400),
     ("reader.md", b"---\nname: [\n---\nInstructions", 400),
     ("reader.md", b"---\n- reader\n---\nInstructions", 400),
+    ("reader.md", b"---\n1: value\nname: reader\ndescription: Read graphs\n---\nInstructions", 400),
     ("reader.md", b"---\nname: 123\n---\nInstructions", 400),
     ("reader.md", b"---\nname: ../escape\n---\nInstructions", 400),
     ("../escape.md", b"Instructions", 400),
