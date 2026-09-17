@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from workspace_storage import delete_user_workspaces, delete_workspace, visible_files, derived_file, save_upload
@@ -3110,8 +3110,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             },
         )
 
+    async def learned_memory_items(request: Request, user_id: str) -> list[dict]:
+        payload = await runtime.request("GET", "/internal/memory", headers={**forwarded_headers(request, user_id), **service_headers(user_id)})
+        return payload["items"]
+
     @app.get("/api/memory")
-    async def list_memory(request: Request, scope: str = "long_term", query: str = "", limit: int = 100):
+    async def list_memory(request: Request, scope: str = "long_term", query: str = "", limit: int = Query(100, ge=1, le=1000)):
         user = current_user(request, users)
         payload = await runtime.request(
             "GET", "/memories", headers=forwarded_headers(request, user.user_id),
@@ -3143,7 +3147,15 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             elif scope == "user_profile":
                 item["profile_id"] = row.get("memory_id")
             items.append(item)
-        return {"success": True, "scope": scope, "items": items}
+        if scope == "long_term":
+            learned = await learned_memory_items(request, user.user_id)
+            search = query.strip().casefold()
+            if search:
+                learned = [item for item in learned if search in " ".join(
+                    str(item.get(field) or "") for field in ("key", "value", "category")
+                ).casefold()]
+            items = learned + items
+        return {"success": True, "scope": scope, "items": items[:limit]}
 
     @app.post("/api/memory")
     async def write_memory(req: MemoryWriteReq, request: Request):
@@ -3157,6 +3169,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.patch("/api/memory/{memory_id}")
     async def update_memory(memory_id: str, req: MemoryPatchReq, request: Request):
         user = current_user(request, users)
+        if memory_id.startswith("learning:"):
+            return await runtime.request(
+                "PATCH", f"/internal/memory/{memory_id}", headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)},
+                json_body={"value": req.value, "key": req.key},
+            )
         payload = await runtime.request(
             "PATCH", f"/memories/{memory_id}", headers=forwarded_headers(request, user.user_id),
             json_body={"memory": req.value, "user_id": user.user_id, "topics": [req.scope, "fact", req.key]},
@@ -3166,6 +3183,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.delete("/api/memory/{memory_id}")
     async def delete_memory(memory_id: str, request: Request, scope: str = "long_term", reason: str = ""):
         user = current_user(request, users)
+        if memory_id.startswith("learning:"):
+            await runtime.request(
+                "DELETE", f"/internal/memory/{memory_id}", headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)},
+            )
+            return {"success": True, "memory_id": memory_id, "scope": "long_term", "reason": reason}
         await runtime.request(
             "DELETE", f"/memories/{memory_id}", headers=forwarded_headers(request, user.user_id), params={"user_id": user.user_id}
         )
@@ -3210,11 +3232,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         payload = await runtime.request("GET", "/memories", headers=forwarded_headers(request, user.user_id), params={"user_id": user.user_id, "limit": 1000})
         meta = (payload.get("meta") or {}) if isinstance(payload, dict) else {}
         rows = _data_rows(payload)
-        included_ids = [str(item.get("memory_id")) for item in rows if item.get("memory_id")]
+        learned = await learned_memory_items(request, user.user_id)
+        included_ids = [str(item.get("memory_id")) for item in [*learned, *rows] if item.get("memory_id")]
         return {
             "success": True,
-            "count": meta.get("total_count", len(rows)),
-            "snapshot_char_count": sum(len(str(item.get("memory") or "")) for item in rows),
+            "count": meta.get("total_count", len(rows)) + len(learned),
+            "snapshot_char_count": sum(len(str(item.get("memory") or "")) for item in rows)
+                + sum(len(item["value"]) for item in learned),
             "snapshot": "",
             "frozen": False,
             "included_item_ids": included_ids,
@@ -3242,6 +3266,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         skills = await runtime.request("GET", "/internal/skills", headers=headers)
         memory_meta = memories.get("meta") if isinstance(memories, dict) else {}
         memory_count = (memory_meta or {}).get("total_count", len(_data_rows(memories)))
+        memory_count += len(await learned_memory_items(request, user.user_id))
         skill_rows = skills.get("skills", []) if isinstance(skills, dict) else []
         skill_counts: dict[str, int] = {}
         for item in skill_rows if isinstance(skill_rows, list) else []:
