@@ -71,7 +71,7 @@ export function schemaEdgeLabel(edge: Record<string, unknown>, compact = false, 
     : {};
   const type = String(edge.type ?? edge.label ?? edge.relationship_type ?? translate('Relationship', '关系'));
   const count = Number(edge.relationship_count ?? properties.relationship_count ?? edge.count ?? properties.count);
-  const visibleType = compact ? compactLabel(type, /^fk_[0-9a-f]{20,}$/i.test(type) ? 14 : 18) : type;
+  const visibleType = compact ? compactLabel(type, properties.schema_kind === 'foreign_key' ? 38 : /^fk_[0-9a-f]{20,}$/i.test(type) ? 14 : 18) : type;
   const locale = currentLanguage() === 'zh' ? 'zh-CN' : 'en-US';
   return Number.isFinite(count) ? `${visibleType} · ${count.toLocaleString(locale)}` : visibleType;
 }

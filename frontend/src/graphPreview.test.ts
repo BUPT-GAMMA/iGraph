@@ -28,4 +28,12 @@ describe('graph preview', () => {
     expect(previewGraph(index, [], '', false, false, 'a', 1).nodes.map(n => n.id)).toEqual(['a', 'b']);
     expect(previewGraph(index, [], '', false, false, 'a', 2).nodes.map(n => n.id)).toEqual(['a', 'b', 'c']);
   });
+  it('isolates an edge-defined result subgraph and reports unloaded highlights', () => {
+    const index = graphIndex({ nodes: ['a', 'b', 'c'].map(id => ({ id })), edges: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }] });
+    const highlights = [{ type: 'path', edges: [['a', 'b'], ['b', 'not-loaded']] }];
+    const preview = previewGraph(index, highlights, '', false, false, '', 0, true);
+    expect(preview.nodes.map(node => node.id)).toEqual(['a', 'b']);
+    expect(preview.edges.map(edge => [edge.source, edge.target])).toEqual([['a', 'b']]);
+    expect(preview.omittedHighlights).toBe(1);
+  });
 });

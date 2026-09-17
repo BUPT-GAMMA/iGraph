@@ -1,20 +1,31 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { WorkspaceFiles, fetchArtifact } from './WorkspaceFiles';
 import { bindRequestAccount, setUserId } from '../api';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
+let unbindRequestAccount: (() => void) | undefined;
+afterEach(() => { cleanup(); unbindRequestAccount?.(); unbindRequestAccount = undefined; vi.unstubAllGlobals(); localStorage.clear(); });
+
+function readBlobText(blob: Blob): Promise<string> {
+  if (typeof blob.text === 'function') return blob.text();
+  // jsdom's Blob has no text() method; FileReader keeps the content assertion.
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(blob);
+  });
+}
 
 it('sends the pinned identity for downloads and rejects cross-zone paths', async () => {
   setUserId('alice');
-  const unbind = bindRequestAccount('alice');
+  unbindRequestAccount = bindRequestAccount('alice');
   const fetchMock = vi.fn().mockResolvedValue(new Response('report'));
   vi.stubGlobal('fetch', fetchMock);
-  expect(await (await fetchArtifact('session', 'Derived/a b.txt')).text()).toBe('report');
+  expect(await readBlobText(await fetchArtifact('session', 'Derived/a b.txt'))).toBe('report');
   expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-User-ID')).toBe('alice');
   expect(fetchMock.mock.calls[0][0]).toContain('/workspace/derived/a%20b.txt');
   await expect(fetchArtifact('session', 'Derived/../Ephemeral/private')).rejects.toThrow();
-  unbind();
 });
 
 it('refreshes files after an upload event without changing the session', async () => {

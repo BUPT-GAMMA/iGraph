@@ -105,6 +105,7 @@ export type GraphHighlights = Highlight[] | {
 };
 
 export type GraphData = {
+  schema_kind?: 'tables';
   degree_scope?: 'full_graph' | 'subgraph';
   success?: boolean;
   nodes: Array<Record<string, unknown>>;
@@ -166,6 +167,7 @@ export type Dataset = {
   dataset_id: string;
   project_id: string | null;
   name: string;
+  description?: string;
   original_filename: string;
   file_type: string;
   metadata?: Record<string, unknown>;
@@ -189,6 +191,7 @@ export type CsvBundleTableSchema = {
 };
 export type CsvBundleSchema = {
   version: 'csv_bundle.v1';
+  description?: string;
   tables: CsvBundleTableSchema[];
 };
 
@@ -281,7 +284,15 @@ export type ConstructionSchemaEdgeType = {
   relationship_count: number;
   property_paths?: ConstructionSchemaPropertyPath[];
 };
+export type ConstructionSourceTable = {
+  name: string;
+  columns: string[];
+  column_types?: Record<string, string>;
+  primary_key: string[];
+  foreign_keys: CsvForeignKey[];
+};
 export type ConstructionSchema = {
+  source_tables?: ConstructionSourceTable[];
   directed?: boolean;
   node_count?: number;
   edge_count?: number;

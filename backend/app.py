@@ -33,6 +33,7 @@ from backend.dataset_api import DATASET_API_MIGRATION, MIGRATION_GUIDE_PATH, leg
 from backend.construction_access import install_construction_access
 from construction_access import scope_headers
 from backend.construction import install_construction_routes, sync_record as sync_construction_record
+from backend.constructed_import import install_constructed_import_routes
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, project_run, translate_sse
 from backend.identity import current_user, public_user, require_admin
@@ -68,7 +69,8 @@ class ProjectPatchReq(BaseModel):
 
 
 class ProjectDatasetPatchReq(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=4000)
 
 
 class SessionDatasetReq(BaseModel):
@@ -1810,6 +1812,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         files: list[UploadFile] | None = File(None),
         csv_schema: str = Form(""),
         name: str = Form(""),
+        description: str = Form("", max_length=4000),
         set_as_default: bool = Form(False),
         session_id: str = Form(""),
     ):
@@ -1847,6 +1850,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                     original_filename=(re.sub(r"[^A-Za-z0-9._-]+", "_", bundle_name).strip("._") or "csv-bundle") + ".csv",
                     files=[(Path(item.filename or "").name, item.file) for item in selected_files],
                     schema=schema,
+                    description=description or str(schema.get("description") or ""),
                 )
             except ValueError as exc:
                 code = str(exc) if str(exc).startswith("CSV_BUNDLE_") else "CSV_BUNDLE_SCHEMA"
@@ -1863,6 +1867,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 name=name or Path(filename).stem,
                 original_filename=filename,
                 content=content,
+                description=description,
             )
         previous_default_dataset_id = default_dataset_id
         if dataset.status == "ready" and project and (project.default_dataset_id is None or set_as_default):
@@ -1912,6 +1917,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             user.user_id,
             project_id=project_id,
             name=req.name,
+            description=req.description,
         )
         return {
             "success": True,
@@ -1995,9 +2001,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def create_personal_dataset(request: Request, file: UploadFile | None = File(None),
                                       files: list[UploadFile] | None = File(None),
                                       csv_schema: str = Form(""), name: str = Form(""),
+                                      description: str = Form("", max_length=4000),
                                       session_id: str = Form("")):
         return await create_project_dataset(request, file=file, files=files, csv_schema=csv_schema,
-                                            name=name, session_id=session_id,
+                                            name=name, description=description, session_id=session_id,
                                             set_as_default=False)
 
     @app.patch("/api/personal-datasets/{dataset_id}")
@@ -3627,6 +3634,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return {"success": True, "workspace_path": workspace_path, "filename": filename, "file_token": file_token, "graph_engine": payload,
                 "dataset": _project_dataset_row(dataset) if dataset else None,
                 "construction_required": dataset is not None}
+
+    install_constructed_import_routes(app, graph=graph, directory=project_datasets, projects=projects,
+        user_for=lambda request: current_user(request, users), project_for=project_or_404,
+        dataset_row=_project_dataset_row)
 
     install_construction_access(app, directory=project_datasets, projects=projects,
         session_for=get_session, state_for=_state)

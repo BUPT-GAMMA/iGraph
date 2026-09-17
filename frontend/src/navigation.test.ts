@@ -5,6 +5,7 @@ describe('workspace navigation', () => {
   it('parses home, graph creation, project, draft and session routes', () => {
     expect(parseWorkspaceRoute('')).toEqual({ kind: 'home' });
     expect(parseWorkspaceRoute('?view=create-graph')).toEqual({ kind: 'create-graph' });
+    expect(parseWorkspaceRoute('?view=help')).toEqual({ kind: 'help' });
     expect(parseWorkspaceRoute('?project=project-1')).toEqual({ kind: 'project', id: 'project-1' });
     expect(parseWorkspaceRoute('?project=project-1&new=1')).toEqual({ kind: 'new-session', projectId: 'project-1' });
     expect(parseWorkspaceRoute('?session=session-1')).toEqual({ kind: 'session', id: 'session-1' });
@@ -20,6 +21,7 @@ describe('workspace navigation', () => {
     expect(workspaceRouteUrl('http://localhost:21108/?session=old', { kind: 'project', id: 'project-2' })).toBe('/?project=project-2');
     expect(workspaceRouteUrl('http://localhost:21108/?session=old', { kind: 'new-session', projectId: 'project-2' })).toBe('/?project=project-2&new=1');
     expect(workspaceRouteUrl('http://localhost:21108/?session=old&project=old&new=1', { kind: 'create-graph' })).toBe('/?view=create-graph');
+    expect(workspaceRouteUrl('http://localhost:21108/?session=old&project=old&new=1', { kind: 'help' })).toBe('/?view=help');
     expect(workspaceRouteUrl('http://localhost:21108/?view=create-graph', { kind: 'session', id: 'next' })).toBe('/?session=next');
   });
 

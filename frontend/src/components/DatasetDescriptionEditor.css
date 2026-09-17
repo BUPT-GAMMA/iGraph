@@ -1,0 +1,7 @@
+.dataset-description-editor { display: grid; gap: 8px; padding: 12px 0; font-size: 12px; }
+.dataset-description-editor label { display: grid; gap: 7px; font-weight: 600; }
+.dataset-description-editor textarea { box-sizing: border-box; width: 100%; padding: 10px; resize: vertical; min-height: 76px; color: inherit; font: inherit; font-weight: 400; background: var(--construction-bg, var(--bg, #fff)); border: 1px solid var(--construction-line, var(--border, #dbe3ec)); border-radius: 7px; }
+.dataset-description-editor > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dataset-description-editor small, .dataset-description-editor p { margin: 0; color: var(--construction-muted, var(--text-muted, #64748b)); }
+.dataset-description-editor p[role="alert"] { color: #c2413a; }
+[data-theme="dark"] .dataset-description-editor textarea { background: #111827; border-color: #334155; }

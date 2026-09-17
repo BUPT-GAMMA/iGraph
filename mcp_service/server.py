@@ -191,6 +191,10 @@ def _build_handler_with_signature(
         raw_type = pschema.get("type", "string")
         type_key = raw_type[0] if isinstance(raw_type, list) else raw_type
         py_type = schema_parameter_type(type_key)
+        if tool_name == "visualize_subgraph" and pname == "node_names":
+            # Some providers encode nested arguments as JSON strings. Decode
+            # and validate this representation before forwarding to GraphData.
+            py_type = list[str] | str
         if pname == "operations" and tool_name in {"preview_graph_optimization", "commit_graph_optimization"}:
             # Agno providers may serialize nested operation arrays as JSON.
             # construction_request decodes and validates this representation.
