@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import os
 import time
@@ -101,6 +102,8 @@ _GRAPH_MUTATION_TOOLS = frozenset({
     "undo_graph",
     "to_undirected",
     "subgraph_extraction",
+    # Snapshot publication creates a new durable graph representation/version.
+    "prepare_large_graph",
 })
 _CORE_TOOL_NAMES_TEXT = ", ".join(sorted(CORE_TOOL_NAMES))
 _COMPACT_JSON = {"ensure_ascii": False, "separators": (",", ":")}
@@ -755,14 +758,38 @@ class IGraph:
                 args=args,
                 progress_callback=progress_callback,
             )
-        elif name in {"load_graph_from_text", "load_graph_from_upload"}:
+        elif name in {
+            "load_graph_from_text",
+            "load_graph_from_upload",
+            "prepare_large_graph",
+            "run_large_graph_algorithm",
+        }:
             result = await self._execute_text2graph_tool_with_progress(
                 tool_name=name,
                 args=args,
                 progress_callback=progress_callback,
             )
         else:
-            result = await self._mcp_client.call_tool(name, args)
+            # Legacy GraphCompute tools can be transparently routed to the
+            # durable large-graph engine.  Detect that response generically so
+            # callers still get polling/progress/result semantics without
+            # submitting the original operation a second time.
+            initial = await self._mcp_client.call_tool(name, args)
+            initial_payload = self._decode_mcp_payload(initial)
+            initial_job_id = (
+                str(initial_payload.get("job_id") or "").strip()
+                if isinstance(initial_payload, dict)
+                and initial_payload.get("async") is True
+                else ""
+            )
+            if initial_job_id.startswith("lg_"):
+                result = await self._poll_text2graph_job(
+                    initial_job_id,
+                    tool_name=name,
+                    progress_callback=progress_callback,
+                )
+            else:
+                result = initial
         duration_ms = int((asyncio.get_running_loop().time() - started_at) * 1000)
         result_str = self._format_mcp_tool_result(result)
 
@@ -781,7 +808,11 @@ class IGraph:
         }:
             try:
                 payload = json.loads(result_str)
-                if payload.get("success"):
+                changes_current_graph = not (
+                    name == "subgraph_extraction"
+                    and payload.get("current_graph_replaced") is False
+                )
+                if payload.get("success") and changes_current_graph:
                     self._has_graph = True
                     self._graph_node_count = int(payload.get("num_nodes") or 0)
                     self._graph_edge_count = int(payload.get("num_edge_entries") or payload.get("num_edges") or 0)
@@ -1067,6 +1098,7 @@ class IGraph:
         is_upload = tool_name == "load_graph_from_upload"
         poll_interval = 5.0 if is_upload else 1.0
         last_delivered_kind = ""
+        last_synthesized_progress_fingerprint = ""
         while True:
             try:
                 status_payload = self._decode_mcp_payload(
@@ -1079,6 +1111,7 @@ class IGraph:
             if not isinstance(job, dict):
                 return {"success": False, "error": f"后台图任务不存在: {job_id}", "job_id": job_id}
 
+            status = str(job.get("status") or "").lower()
             pending_updates = status_payload.get("progress_updates") or []
             if pending_updates:
                 poll_interval = 5.0 if is_upload else 0.5
@@ -1092,20 +1125,127 @@ class IGraph:
                     progress_callback(update)
                     last_delivered_kind = str(update.get("kind") or "")
 
-            status = str(job.get("status") or "").lower()
+            if status not in {"done", "failed", "cancelled"}:
+                detail = job.get("detail") if isinstance(job.get("detail"), dict) else {}
+                progress = (
+                    job.get("progress")
+                    if job.get("progress") is not None
+                    else detail.get("progress", 0)
+                )
+                synthesized_update = {
+                    **detail,
+                    "kind": str(detail.get("kind") or "job_progress"),
+                    "job_id": job_id,
+                    "status": status,
+                    "stage": (
+                        job.get("stage")
+                        if job.get("stage") is not None
+                        else detail.get("stage")
+                    ),
+                    "progress": progress,
+                    "message": str(
+                        job.get("message")
+                        if job.get("message") is not None
+                        else detail.get("message") or ""
+                    ),
+                }
+                fingerprint_payload = json.dumps(
+                    synthesized_update,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+                fingerprint = hashlib.sha256(fingerprint_payload).hexdigest()
+                if (
+                    not pending_updates
+                    and progress_callback is not None
+                    and fingerprint != last_synthesized_progress_fingerprint
+                ):
+                    progress_callback(synthesized_update)
+                    last_delivered_kind = str(synthesized_update.get("kind") or "")
+                # A queued progress event and the status/detail view describe
+                # the same durable checkpoint.  Remember the checkpoint even
+                # when the queued event was delivered, otherwise the next
+                # empty poll would synthesize and emit it a second time.
+                last_synthesized_progress_fingerprint = fingerprint
+
             if status == "done":
                 result = job.get("result")
-                if progress_callback is not None and last_delivered_kind != "text2graph_done":
+                is_large_job = job_id.startswith("lg_") or job.get("tool_name") in {
+                    "prepare_large_graph", "run_large_graph_algorithm"
+                }
+                if is_large_job:
+                    # Large job status is intentionally result-free. Fetch the
+                    # bounded Summary/Preview/Artifact reference separately.
+                    try:
+                        result_payload = self._decode_mcp_payload(
+                            await self._mcp_client.call_tool(
+                                "get_job_result", {"job_id": job_id}
+                            )
+                        )
+                    except Exception as exc:
+                        return {
+                            "success": False,
+                            "error": f"获取大图作业结果失败: {exc}",
+                            "job_id": job_id,
+                        }
+                    if (
+                        not isinstance(result_payload, dict)
+                        or result_payload.get("success") is False
+                    ):
+                        return {
+                            "success": False,
+                            "error": str(
+                                result_payload.get("error") or ""
+                                if isinstance(result_payload, dict)
+                                else ""
+                            )
+                            or "大图作业结果查询失败",
+                            "job_id": job_id,
+                        }
+                    result = result_payload.get("result")
+                    if not isinstance(result, dict):
+                        return {
+                            "success": False,
+                            "error": "大图作业已完成，但结果记录缺失或格式无效",
+                            "job_id": job_id,
+                        }
+                    if isinstance(result, dict):
+                        result = dict(result)
+                        result.setdefault("success", result.get("status") == "done")
+                large_tool_name = str(job.get("tool_name") or "")
+                done_kind = (
+                    "large_graph_prepare_done"
+                    if large_tool_name == "prepare_large_graph"
+                    else "large_graph_compute_done"
+                    if is_large_job
+                    else "text2graph_done"
+                )
+                if progress_callback is not None and last_delivered_kind != done_kind:
                     detail = job.get("detail") if isinstance(job.get("detail"), dict) else {}
                     progress_callback({
                         **detail,
-                        "kind": "text2graph_done",
+                        "kind": done_kind,
+                        "stage": job.get("stage", detail.get("stage")),
                         "progress": 1.0,
                         "message": "done",
                         "job_id": job_id,
                     })
                 return result if isinstance(result, dict) else {"success": True, "result": result, "job_id": job_id}
             if status in {"failed", "cancelled"}:
+                terminal_kind = f"job_{status}"
+                if progress_callback is not None and last_delivered_kind != terminal_kind:
+                    detail = job.get("detail") if isinstance(job.get("detail"), dict) else {}
+                    progress_callback({
+                        **detail,
+                        "kind": terminal_kind,
+                        "status": status,
+                        "stage": job.get("stage", detail.get("stage")),
+                        "progress": job.get("progress", detail.get("progress", 0)),
+                        "message": str(job.get("message") or status),
+                        "job_id": job_id,
+                    })
                 return {
                     "success": False,
                     "error": str(job.get("message") or status),

@@ -1,6 +1,6 @@
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
-import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
 import { currentLanguage, tr } from './i18n';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -196,6 +196,15 @@ function datasetScopeUrl(projectId: string | null) {
 }
 export async function listProjectDatasets(projectId: string | null, signal?: AbortSignal) {
   return json<{ success?: boolean; project_id: string | null; default_dataset_id?: string | null; datasets?: Dataset[] }>(datasetScopeUrl(projectId), { signal });
+}
+export async function listServerDatasets(signal?: AbortSignal) {
+  return json<{ success?: boolean; datasets?: ServerDataset[] }>('/api/server-datasets', { signal });
+}
+export async function importServerDataset(projectId: string, serverDatasetId: string, sessionId?: string) {
+  return json<{ success?: boolean; created?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/from-server`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ server_dataset_id: serverDatasetId, session_id: sessionId || '' }),
+  });
 }
 export async function uploadProjectDataset(projectId: string | null, file: File | File[], sessionId?: string, csvSchema?: CsvBundleSchema, name?: string, description?: string) {
   const body = new FormData();

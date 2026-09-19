@@ -6,6 +6,7 @@ GraphSession — 单会话图数据状态容器（纯存储）
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -69,12 +70,13 @@ class GraphSession:
         self._remote_graph: Optional[dict] = None
         self._graph_version: int = 0
         self._uploads_by_name: Dict[str, UploadFileRecord] = {}
+        session_component = _dp.safe_path_component(session_id, "_session")
         if self.user_id:
             storage_root = _dp.user_sessions_dir(self.user_id)
             storage_root.mkdir(parents=True, exist_ok=True)
-            self._session_dir = storage_root / session_id
+            self._session_dir = storage_root / session_component
         else:
-            self._session_dir = Path(self._graph_storage_root()) / session_id
+            self._session_dir = Path(self._graph_storage_root()) / session_component
         self._session_dir.mkdir(parents=True, exist_ok=True)
         self._snapshots_dir = self._session_dir / "snapshots"
         self._snapshots_dir.mkdir(parents=True, exist_ok=True)
@@ -85,7 +87,7 @@ class GraphSession:
         return self._graph_version
 
     def _bump_version(self) -> None:
-        max_existing = self._graph_version
+        max_existing = max(self._graph_version, self._load_version_floor())
         for path in self._snapshots_dir.glob("v*.npz"):
             try:
                 max_existing = max(max_existing, int(path.stem[1:]))
@@ -162,7 +164,7 @@ class GraphSession:
 
     def next_graph_version(self) -> int:
         """Return the next durable version without mutating session state."""
-        max_existing = self._graph_version
+        max_existing = max(self._graph_version, self._load_version_floor())
         for path in self._snapshots_dir.glob("v*.npz"):
             try:
                 max_existing = max(max_existing, int(path.stem[1:]))
@@ -174,6 +176,49 @@ class GraphSession:
             except Exception:
                 continue
         return max_existing + 1
+
+    def _version_floor_path(self) -> Path:
+        return self._session_dir / "graph_version_floor.json"
+
+    def _load_version_floor(self) -> int:
+        try:
+            payload = json.loads(
+                self._version_floor_path().read_text(encoding="utf-8")
+            )
+            return max(0, int(payload.get("reserved_through", 0)))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return 0
+
+    def reserve_version_floor(self, graph_version: int) -> int:
+        """Persist a version occupied by another graph representation.
+
+        Large partitioned snapshots and GraphData/Nebula versions share one
+        logical namespace. This durable high-water mark prevents a later small
+        graph mutation (including after restart) from reusing a large version.
+        """
+        reserved = max(self._load_version_floor(), int(graph_version))
+        if reserved <= 0:
+            return self._load_version_floor()
+        path = self._version_floor_path()
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {"reserved_through": reserved},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+        return reserved
+
+    def version_source(self, graph_version: int) -> dict:
+        """Return the recorded source binding for one small/Nebula version."""
+        for row in self.list_versions():
+            if int(row.get("graph_version", -1)) == int(graph_version):
+                source = row.get("source")
+                return dict(source) if isinstance(source, dict) else {}
+        return {}
 
     @property
     def remote_graph(self) -> Optional[dict]:
@@ -432,6 +477,26 @@ class GraphSession:
     ) -> bool:
         """Persist the upload identity that produced a graph version."""
         records = self._load_version_records()
+        source_identity: dict[str, object] = {}
+        try:
+            path = Path(upload.saved_path)
+            stat = path.stat()
+            digest = hashlib.sha256()
+            with path.open("rb") as source_file:
+                while True:
+                    block = source_file.read(8 * 1024 * 1024)
+                    if not block:
+                        break
+                    digest.update(block)
+            source_identity = {
+                "size": int(stat.st_size),
+                "mtime_ns": int(stat.st_mtime_ns),
+                "content_sha256": digest.hexdigest(),
+            }
+        except OSError:
+            # Without a content fingerprint this historical version will not
+            # be automatically bound to a partitioned representation.
+            source_identity = {}
         updated = False
         for row in records:
             if int(row.get("graph_version", -1)) != int(graph_version):
@@ -441,6 +506,7 @@ class GraphSession:
                 "file_token": str(upload.file_token),
                 "original_filename": str(upload.original_filename),
                 "saved_name": os.path.basename(upload.saved_path),
+                **source_identity,
             }
             updated = True
             break
@@ -618,7 +684,9 @@ class GraphSession:
     def _legacy_session_dirs(self) -> list[Path]:
         if not self.user_id:
             return []
-        legacy = _dp.user_uploads_dir(self.user_id) / self.session_id
+        legacy = _dp.user_uploads_dir(self.user_id) / _dp.safe_path_component(
+            self.session_id, "_session"
+        )
         if legacy.resolve() == self._session_dir.resolve():
             return []
         return [legacy]
@@ -634,7 +702,10 @@ class GraphSession:
 
         targets = (
             (self._session_dir, self._session_dir.parent),
-            (upload_root / self.session_id, upload_root),
+            (
+                upload_root / _dp.safe_path_component(self.session_id, "_session"),
+                upload_root,
+            ),
         )
         for target, expected_parent in targets:
             resolved = target.resolve()

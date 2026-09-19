@@ -56,6 +56,7 @@ PostgreSQL + pgvector
 
 - 图数据、GraphML、图算法、图机器学习、数据集、上传、Job 和制品；
 - 同一业务模块提供 HTTP 与 MCP 两个进程适配器；
+- 超大图使用持久队列、分区快照和独立 `graph-engine-worker`，API/Agent 不全量加载；
 - MCP 优先使用 `X-User-ID/X-Session-ID/X-Run-ID`，旧 `register_session` 只用于兼容。
 
 入口：
@@ -63,7 +64,41 @@ PostgreSQL + pgvector
 ```text
 python -m graph_engine api
 python -m graph_engine mcp http
+python -m graph_data_service.large_graph.worker
 ```
+
+超大图边列表/三元组上传文件可显式调用 `prepare_large_graph`；通过
+`load_graph_from_upload` 加载时，字节数、流式边计数或固定内存节点基数探测达到任一阈值，
+也会在构造 `GraphData` 前自动进入同一准备路径。完成后以返回的 `graph_version` 调用
+`run_large_graph_algorithm`。大图能力目录会同步检查小图计算目录的 24 个算法入口、
+展开后的 109 个具体算法/模式；全部入口均已接入大图路径，包括路径、流/割、生成树、
+社区、全部中心性、连通性、环、拓扑、度分析、子图、链路预测、路径分析、团、可达性、
+全局指标，以及 dev 新增的结构、高级连通性、树/DAG、匹配/着色和扩展距离 5 组算子，
+并保留四个底层度计算入口。新增分组算子以 SQLite 外存状态为主；平面性、通用加权匹配、
+均衡着色采用资源上限内精确内核，超限时不会无界物化整图，近似模式会在结果和能力目录中
+明确标记。准备阶段同时限制单条记录、排序批次
+字节数和多级归并 fan-in，约束内存与文件描述符；拓扑与算法状态使用节点归属的
+SQLite 邻接分片，不回退到
+GraphData/NetworkX；社区、采样中心性和语义替代模式
+会在能力目录与结果中显式标记 `approximate`、复杂度和实际执行算法。社区传播采用
+多进程节点分区与 SQLite 标签归并；可分解的度、Brandes/距离中心性、平均距离、
+直径/半径、三角指标、全局最小割、环枚举/最大环、极大团枚举与聚合、传递闭包和
+全图链路预测使用多进程 map/reduce；依赖严格顺序的模式使用外存串行内核，并由 capabilities 和
+Artifact 的 `parallel_strategy` 如实标记。可物化全量结果由有界队列的并行分区 writer
+写出。全图链路预测、Yen 候选路径、团/环枚举和全局最小割默认经过复杂度准入；
+精确最大团与逐节点团计数另有更保守的穷举阈值；每个底层作业还受从进程启动时刻
+起算、可配置的 wall-time 看门狗约束，超时会终止完整进程树并按租约清理暂存输出；
+Yen 的实际常驻候选路径另受硬字节预算保护；`allow_expensive=true`
+只绕过对应算法的默认阈值，任务仍受全局工作量和资源预算约束。状态、摘要与全量结果相互
+分离：`get_job_status` 查询进度，`get_job_result` 返回有界摘要和 Artifact 引用，
+`get_large_graph_artifact` 返回结果文件总数、有界的“下载序号—相对路径”预览和完整序号范围，
+结果文件再通过返回的 `download_url_template` 按序号流式下载；需要严格小图语义时可在参数中设置
+`strict_semantics=true`，近似映射以及有界枚举/截断模式会在入队前拒绝。
+项目数据集自动进入大图路径时，Backend 会持久化准备作业的 `job_id/graph_id/graph_version`
+并立即返回分区快照状态；会话恢复只轮询这一作业，发布后把准确版本写入
+`session_state.large_graph_context`，不会因普通 `GraphData` 为空而重复准备。React 工作台只展示
+有界的节点数、边数、分区数、版本和存储摘要，不尝试把快照装入浏览器画布。快照与 Artifact
+发布会依次同步文件、目录和托管祖先目录，再原子改名并同步父目录，确保进程或机器崩溃后目录状态可恢复。
 
 ## 目录
 
@@ -118,18 +153,57 @@ docker compose up --build -d
 [数据集接口迁移](docs/DATASET_API_MIGRATION.md)。旧 HTTP 入口目前保留兼容，
 响应头和 OpenAPI 会标注弃用；Agent 数据集工具继续维护。
 
-Compose 启动六个进程容器，但仍是四个业务模块：
+### 服务器预置大图数据
+
+浏览器无需上传大文件。管理员可先把支持的
+`.txt/.csv/.tsv/.edgelist/.dat/.json/.pt/.npz` 文件放入
+`BACKEND_SERVER_DATASETS_DIR`（默认 `data/server_datasets`）。Compose 部署使用持久卷中的
+`/data/server_datasets`。建议先复制到隐藏的临时文件，再原子重命名，避免扫描器读到尚未
+复制完成的文件：
+
+```text
+docker compose exec backend mkdir -p /data/server_datasets
+docker compose cp /服务器上的路径/large-graph.edgelist backend:/data/server_datasets/.large-graph.edgelist.uploading
+docker compose exec backend mv /data/server_datasets/.large-graph.edgelist.uploading /data/server_datasets/large-graph.edgelist
+```
+
+文本边表默认按有向图处理。无向图必须在发布边表前同时放置一个同名方向 sidecar，例如
+`U-10M-100M.edgelist.meta.json`：
+
+```json
+{"directed": false}
+```
+
+建议先把 sidecar 和边表都复制成隐藏临时文件，先发布 sidecar，最后再原子重命名边表；这样
+扫描器第一次看到边表时就能按正确方向预处理。方向会进入文件修订标识，修改 sidecar 后会生成
+新的不可变预处理快照，不会错误复用旧方向的快照。未提供 sidecar 时可通过
+`BACKEND_SERVER_DATASET_DEFAULT_DIRECTED` 设置全局默认值（默认 `true`）。
+
+Backend 默认每 30 秒扫描一次目录。达到 64 MiB 的文本边表会立刻进入服务器级大图预处理
+队列；刷新项目页也会触发同一个幂等检查。前端会显示排队、进度、完成或失败状态，只有完成
+后才能“添加到项目/使用”。阈值和扫描周期可通过
+`BACKEND_SERVER_DATASET_PREPROCESS_MIN_BYTES`、`BACKEND_SERVER_DATASET_SCAN_SECONDS`
+调整。
+
+预处理快照位于 `/data/large_graph/snapshots`，同一文件修订只解析、清洗和分区一次。会话使用
+时只在目录中创建指向该不可变快照的独立逻辑版本，不传输原文件、不复制分区文件；会话后续
+生成的派生版本和算法产物仍归该用户会话所有。删除项目数据集或消费会话不会删除管理员源文件
+和仍可复用的服务器快照。小于阈值的文本文件以及 `.json/.pt/.npz` 仍使用原有会话加载路径。
+
+Compose 启动七个进程容器，但仍是四个业务模块：
 
 ```text
 frontend
 backend
 agent-runtime
 graph-engine-api
+graph-engine-worker
 graph-engine-mcp
 postgres
 ```
 
-Graph Engine 的 HTTP/MCP 是同一代码模块的两个协议适配器；PostgreSQL 是基础设施。
+Graph Engine 的 HTTP/MCP/Worker 属于同一代码模块；Worker 与 API 共享持久目录但拥有
+独立生命周期，PostgreSQL 是基础设施。
 
 ## 依赖清单
 
@@ -138,7 +212,7 @@ Graph Engine 的 HTTP/MCP 是同一代码模块的两个协议适配器；Postgr
 | Backend | `deploy/requirements/backend.txt` | FastAPI、Uvicorn、Pydantic、HTTPX、python-multipart |
 | Agent Runtime | `deploy/requirements/agent-runtime.txt` | `agno[os,mcp,openai,postgres,pgvector,opentelemetry]==2.9.0`、psycopg、SQLAlchemy、pgvector |
 | Agent / Graph 共用计算栈 | `deploy/requirements/compute-cpu.txt` / `compute-gpu.txt` | 默认 CPU；可选 PyTorch 2.14.0 + CUDA 13.0、PyG、NumPy、SciPy、NetworkX |
-| Graph Engine HTTP | `deploy/requirements/graph-data.txt` | FastAPI、OpenAI SDK、NetworkX、iGraph、Leiden、Nebula、PyTorch/PyG |
+| Graph Engine HTTP / Worker | `deploy/requirements/graph-data.txt` | 同一镜像；FastAPI、OpenAI SDK、NetworkX、iGraph、Leiden、Nebula、PyTorch/PyG |
 | Graph Engine MCP | `deploy/requirements/mcp.txt` | FastMCP、MCP、HTTPX |
 | Frontend | `frontend/Dockerfile` | Nginx；页面依赖 D3、Marked、KaTeX、Mermaid、Tailwind CDN |
 

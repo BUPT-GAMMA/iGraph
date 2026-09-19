@@ -333,6 +333,26 @@ describe('conversationReducer session/run isolation', () => {
     expect(state.viewsBySessionId.A.activeRun?.plan?.steps?.[0]?.goal).toBe('train');
   });
 
+  it('replaces partial content with a persisted message snapshot on fallback resume', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'gen');
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+      batch: batch('A', 'run', 0, [
+        { type: 'token', message_id: 'assistant:run', content: 'partial' },
+      ]),
+    });
+    state = conversationReducer(state, {
+      type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+      batch: batch('A', 'run', 1, [
+        { type: 'message_snapshot', message_id: 'assistant:run', content: 'complete answer' },
+        { type: 'done', message_id: 'assistant:run' },
+      ]),
+    });
+
+    expect(lastMessage(state, 'A')?.content).toBe('complete answer');
+    expect(state.viewsBySessionId.A.activeRun?.status).toBe('completed');
+  });
+
   it('does not reactivate a terminal run and ignores events after deletion', () => {
     let state = start(session(initialConversationState, 'A'), 'A', 'gen');
     state = conversationReducer(state, {
@@ -450,6 +470,28 @@ describe('conversationReducer session/run isolation', () => {
     expect(state.viewsBySessionId.A.graph?.data?.edges?.[0]).toEqual(expect.objectContaining({ src: 'a', dst: 'b' }));
     expect(state.viewsBySessionId.A.graph?.data?.community?.node_community).toEqual({ a: 0, b: 1 });
     expect(state.viewsBySessionId.A.graph?.data?.highlights).toEqual([{ type: 'node', nodes: ['a'], color: '#22c55e' }]);
+  });
+
+  it('restores a partitioned snapshot as non-visualizable even with an older graph artifact', () => {
+    let state = session(initialConversationState, 'A');
+    state = conversationReducer(state, { type: 'HYDRATE_START', sessionId: 'A', requestVersion: 1 });
+    state = conversationReducer(state, {
+      type: 'HYDRATE_SUCCESS', sessionId: 'A', requestVersion: 1, model: 'qwen3.6-plus',
+      activeDatasetId: 'large-dataset', hasGraph: true,
+      datasetView: {
+        kind: 'partitioned_graph',
+        visualization: { supported: false, code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE' },
+        summary: { num_nodes: 12_000_000, num_edges: 48_000_000, graph_version: 7, partitions: 16 },
+      },
+      messages: [{ role: 'assistant', content: 'older result', graphs: [{ nodes: [{ id: 'stale' }], edges: [] }] }],
+    });
+
+    expect(state.viewsBySessionId.A.graph).toEqual({
+      status: 'unsupported',
+      data: null,
+      code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE',
+      summary: { num_nodes: 12_000_000, num_edges: 48_000_000, graph_version: 7, partitions: 16 },
+    });
   });
 
   it('rejects stale hydration responses and protects active/draft/running LRU entries', () => {

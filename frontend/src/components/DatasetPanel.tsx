@@ -1,6 +1,7 @@
 import { useRef } from 'react';
-import type { Dataset } from '../types';
+import type { Dataset, ServerDataset } from '../types';
 import { constructionLabel, supportsConstruction } from '../construction';
+import { serverDatasetActionLabel, serverDatasetPreparationLabel, serverDatasetReady } from '../serverDatasets';
 import { DrawerShell } from './DrawerShell';
 import { Icon } from './Icon';
 import { DatasetDescriptionEditor } from './DatasetDescriptionEditor';
@@ -13,6 +14,8 @@ type Props = {
   busy?: boolean;
   onSelect: (dataset: Dataset) => void;
   onUpload: (file: File) => void;
+  serverDatasets?: ServerDataset[];
+  onUseServer?: (dataset: ServerDataset) => void;
   onRename: (dataset: Dataset) => void;
   onDelete: (dataset: Dataset) => void;
   onConstruct?: (dataset: Dataset) => void;
@@ -46,10 +49,22 @@ function displayConstructionLabel(dataset: Dataset, t: Translate) {
   return t(english[label] || label, label);
 }
 
-export function DatasetPanel({ datasets, projectName, activeDatasetId, busy, onSelect, onUpload, onRename, onDelete, onConstruct, onLoadConstructed, onDatasetUpdated, onClose }: Props) {
+function fileSize(size: number) {
+  if (!Number.isFinite(size) || size < 0) return '-';
+  if (size < 1024) return `${size} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = size;
+  let index = -1;
+  do { value /= 1024; index += 1; } while (value >= 1024 && index < units.length - 1);
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`;
+}
+
+export function DatasetPanel({ datasets, serverDatasets = [], projectName, activeDatasetId, busy, onSelect, onUpload, onUseServer, onRename, onDelete, onConstruct, onLoadConstructed, onDatasetUpdated, onClose }: Props) {
   const { language, t } = useI18n();
   const title = projectName ? t('Project datasets', '项目数据集') : t('Personal datasets', '个人数据集');
   const inputRef = useRef<HTMLInputElement>(null);
+  const importedServerIds = new Set(datasets.map(dataset => dataset.source_id).filter(Boolean));
+  const availableServerDatasets = serverDatasets.filter(dataset => !importedServerIds.has(dataset.server_dataset_id));
   return <DrawerShell ariaLabel={title} className="dataset-drawer" onClose={onClose}>{requestClose => <>
       <div className="drawer-head"><div><strong>{title}</strong>{projectName && <span>{projectName}</span>}</div><button className="plain-icon" onClick={requestClose} aria-label={t('Close', '关闭')} title={t('Close', '关闭')}><Icon name="close" size={17} /></button></div>
       <div className="dataset-drawer-actions">
@@ -69,6 +84,16 @@ export function DatasetPanel({ datasets, projectName, activeDatasetId, busy, onS
             <button className="danger" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete', '删除')} aria-label={t(`Delete ${dataset.name}`, `删除 ${dataset.name}`)}><Icon name="trash" size={14} /></button>
           </div>
         </div><details className="dataset-description"><summary>{t('Dataset description', '数据集描述')}</summary><DatasetDescriptionEditor dataset={dataset} disabled={busy} onSaved={onDatasetUpdated} /></details></div>) : <div className="drawer-empty"><Icon name="database" size={24} /><strong>{t('No datasets', '暂无数据集')}</strong></div>}
+      </div>
+      <div className="server-dataset-section">
+        <div className="server-dataset-heading"><strong>服务器数据源</strong><span>{onUseServer ? '服务器端只预处理一次；使用时为当前会话绑定独立逻辑版本' : '请先创建或选择项目，再将服务器数据源添加到项目'}</span></div>
+        <div className="server-dataset-list">
+          {availableServerDatasets.length ? availableServerDatasets.map(dataset => <div className="server-dataset-row" key={dataset.server_dataset_id}>
+            <span className="project-dataset-icon"><Icon name="database" size={15} /></span>
+            <span className="server-dataset-copy"><strong>{dataset.name}</strong><small>{dataset.relative_path} · {fileSize(dataset.size_bytes)} · {dataset.directed === false ? '无向图' : '有向图'}</small>{serverDatasetPreparationLabel(dataset) && <em className={`server-preparation ${dataset.preparation?.status || ''}`} title={dataset.preparation?.error || dataset.metadata_error || undefined}>{serverDatasetPreparationLabel(dataset)}</em>}</span>
+            <button className="text-button" onClick={() => onUseServer?.(dataset)} disabled={busy || !onUseServer || !serverDatasetReady(dataset)}>{onUseServer ? serverDatasetActionLabel(dataset, '使用') : '选择项目后使用'}</button>
+          </div>) : <div className="server-dataset-empty">{onUseServer ? '暂无可添加的服务器数据源' : '暂无服务器数据源'}</div>}
+        </div>
       </div>
   </>}</DrawerShell>;
 }

@@ -309,6 +309,27 @@ describe('ConversationInputArea', () => {
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('preserved draft');
   });
 
+  it('hides internal runtime metadata annotations from assistant messages only', () => {
+    const { container } = render(<ChatPane
+      {...baseChatProps}
+      messages={[
+        { id: 'user-1', role: 'user', content: '请解释 graph_version: 1' },
+        {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: '这是一个非常大的图，当前已通过分区快照方式加载（graph_version: 1）。分区数量（16 个）保持可见。',
+        },
+      ]}
+    />);
+
+    const userRow = container.querySelector('.message-row.user');
+    const assistantRow = container.querySelector('.message-row.assistant');
+    expect(userRow?.textContent).toContain('graph_version: 1');
+    expect(assistantRow?.textContent).toContain('当前已通过分区快照方式加载。');
+    expect(assistantRow?.textContent).toContain('分区数量（16 个）保持可见。');
+    expect(assistantRow?.textContent).not.toContain('graph_version');
+  });
+
   it('shows a jump-to-latest button without interrupting a user who scrolled up', () => {
     const initialMessages = [
       { id: 'user-1', role: 'user' as const, content: 'question' },

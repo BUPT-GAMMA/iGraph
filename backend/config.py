@@ -23,6 +23,7 @@ class BackendConfig:
     default_admin_model: str
     default_user_model: str
     custom_models_file: Path | None = None
+    stream_heartbeat_seconds: float = 15.0
 
     @classmethod
     def from_env(cls) -> "BackendConfig":
@@ -46,4 +47,8 @@ class BackendConfig:
             default_admin_model=os.getenv("IGRAPH_DEFAULT_ADMIN_MODEL", "qwen3.6-plus").strip(),
             default_user_model=os.getenv("IGRAPH_DEFAULT_USER_MODEL", "qwen3.6-plus").strip(),
             custom_models_file=Path(os.getenv("BACKEND_CUSTOM_MODELS_FILE", str(data_root / "backend" / "custom_models.json"))).resolve(),
+            stream_heartbeat_seconds=max(
+                1.0,
+                float(os.getenv("BACKEND_STREAM_HEARTBEAT_SECONDS", "15")),
+            ),
         )

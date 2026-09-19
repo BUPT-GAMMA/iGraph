@@ -10,6 +10,7 @@ MCP Server — 图分析工具服务（动态注册版）
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
@@ -19,6 +20,7 @@ from typing import Any, Dict, List, Optional
 from contextlib import asynccontextmanager
 
 from fastmcp import Context, FastMCP
+from fastmcp.tools import FunctionTool
 
 from graph_engine.observability import get_service_logger, close_service_loggers
 import graph_engine.paths as _dp
@@ -247,7 +249,18 @@ def _register_graph_tools(tool_specs: List[dict]) -> None:
         handler.__doc__ = description
 
         try:
-            mcp.tool(description=description)(handler)
+            # FastMCP normally regenerates JSON Schema from Python type hints.
+            # That loses enum/minimum/nested-object constraints from our
+            # canonical tool catalog.  Build the callable tool normally (so
+            # Context injection still works), then retain the original schema
+            # verbatim for every MCP client.
+            tool = FunctionTool.from_function(
+                handler,
+                name=tool_name,
+                description=description,
+            )
+            tool.parameters = copy.deepcopy(input_schema)
+            mcp.add_tool(tool)
             logger.debug("Registered tool: %s", tool_name)
         except Exception as e:
             logger.warning("Failed to register tool %s: %s", tool_name, e)

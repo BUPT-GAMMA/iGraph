@@ -28,6 +28,8 @@ class ProjectDatasetRecord:
     original_filename: str
     storage_path: str
     file_type: str
+    source_kind: str = "upload"
+    source_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     status: str = "ready"
     created_at: float = 0.0
@@ -142,6 +144,7 @@ class ProjectDatasetDirectory:
                 original_filename=Path(original_filename).name or safe_name,
                 storage_path=str(source_path.resolve()),
                 file_type=Path(safe_name).suffix.lower().lstrip(".") or "binary",
+                source_kind="upload",
                 status="ready",
                 created_at=now,
                 updated_at=now,
@@ -288,6 +291,51 @@ class ProjectDatasetDirectory:
                 shutil.rmtree(dataset_dir, ignore_errors=True)
                 raise
 
+    def create_reference(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        name: str,
+        original_filename: str,
+        storage_path: Path,
+        source_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[ProjectDatasetRecord, bool]:
+        """Register a server-owned source without copying or taking ownership."""
+
+        with self._lock:
+            records = self._load()
+            for item in records.values():
+                if (
+                    item.project_id == project_id
+                    and item.user_id == user_id
+                    and item.source_kind == "server"
+                    and item.source_id == source_id
+                ):
+                    return item, False
+            dataset_id = str(uuid.uuid4())
+            safe_name = self._safe_filename(original_filename)
+            now = time.time()
+            record = ProjectDatasetRecord(
+                dataset_id=dataset_id,
+                project_id=project_id,
+                user_id=user_id,
+                name=name.strip() or Path(safe_name).stem or "Dataset",
+                original_filename=Path(original_filename).name or safe_name,
+                storage_path=str(storage_path.resolve()),
+                file_type=Path(safe_name).suffix.lower().lstrip(".") or "binary",
+                source_kind="server",
+                source_id=source_id,
+                metadata=dict(metadata or {}),
+                status="ready",
+                created_at=now,
+                updated_at=now,
+            )
+            records[dataset_id] = record
+            self._write(records)
+            return record, True
+
     def update(
         self,
         dataset_id: str,
@@ -334,11 +382,12 @@ class ProjectDatasetDirectory:
             if item.project_id != project_id:
                 return False
             # Keep metadata until files are removed, so a failed cleanup can retry.
-            target = Path(item.storage_path).parent.resolve()
-            if not target.is_relative_to(self.storage_root.resolve()):
-                raise ValueError("DATASET_PATH_OUTSIDE_STORAGE")
-            if target.exists():
-                shutil.rmtree(target)
+            if item.source_kind != "server":
+                target = Path(item.storage_path).parent.resolve()
+                if not target.is_relative_to(self.storage_root.resolve()):
+                    raise ValueError("DATASET_PATH_OUTSIDE_STORAGE")
+                if target.exists():
+                    shutil.rmtree(target)
             del records[dataset_id]
             self._write(records)
             return True

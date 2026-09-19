@@ -383,17 +383,20 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     run = { ...run, status: 'streaming', feedback: null, feedbackSubmission: undefined, error: undefined };
   }
 
-  if (eventType === 'token') {
+  if (eventType === 'token' || eventType === 'message_snapshot') {
     const requestedId = String(event.message_id || run.assistantMessageId || `assistant:${run.runId || run.generation}`);
     const renamed = renameAssistantMessage(view, run, requestedId);
     view = renamed.view;
     run = renamed.run;
     const current = view.messagesById[requestedId] || { id: requestedId, role: 'assistant' as const, content: '' };
+    const content = eventType === 'message_snapshot'
+      ? String(event.content || '')
+      : current.content + String(event.content || '');
     view = {
       ...view,
       messagesById: {
         ...view.messagesById,
-        [requestedId]: { ...current, content: current.content + String(event.content || ''), streaming: true },
+        [requestedId]: { ...current, content, streaming: true },
       },
       messageOrder: view.messageOrder.includes(requestedId) ? view.messageOrder : [...view.messageOrder, requestedId],
     };
@@ -452,7 +455,13 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
         };
       } else {
         const progress = event.progress && typeof event.progress === 'object' ? event.progress as Record<string, unknown> : {};
-        const terminal = ['train_done', 'job_done', 'job_failed', 'job_cancelled'].includes(String(progress.kind || ''));
+        const kind = String(progress.kind || '').toLowerCase();
+        const status = String(progress.status || '').toLowerCase();
+        const terminal = [
+          'train_done', 'text2graph_done',
+          'job_done', 'job_failed', 'job_cancelled',
+          'large_graph_prepare_done', 'large_graph_compute_done',
+        ].includes(kind) || ['done', 'failed', 'cancelled'].includes(status);
         run = {
           ...run,
           toolsById: {
@@ -666,6 +675,14 @@ function graphStateAfterHydration(
   if (datasetView?.kind === 'graph_collection') {
     return { status: 'unsupported', data: null, code: 'NON_SINGLE_GRAPH', summary: datasetView.summary || {} };
   }
+  if (datasetView?.kind === 'partitioned_graph') {
+    return {
+      status: 'unsupported',
+      data: null,
+      code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE',
+      summary: datasetView.summary || {},
+    };
+  }
   const datasetChanged = view.activeDatasetId !== activeDatasetId;
   if (hasGraph) {
     if (!datasetChanged && view.graph.status === 'ready') return view.graph;
@@ -805,7 +822,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
       } else activeRun = null;
       if (activeRun && action.preserveComposer) activeRun = { ...activeRun, preserveComposer: true };
       const graph = graphStateAfterHydration(view, action.datasetView, action.activeDatasetId, action.hasGraph);
-      const latestGraph = action.preserveMessages ? null : latestMessageGraph(action.messages);
+      const latestGraph = action.preserveMessages || graph.status === 'unsupported'
+        ? null
+        : latestMessageGraph(action.messages);
       const hydratedGraph: GraphViewState = latestGraph ? { status: 'ready', data: latestGraph } : graph;
       view = {
         ...view,
