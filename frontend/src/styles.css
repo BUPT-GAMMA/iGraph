@@ -1115,17 +1115,17 @@ body.is-resizing-columns .app-body { transition: none; }
   .drawer-overlay, .drawer-overlay > .drawer { animation-duration: .01ms !important; }
 }
 
-.graph-overview-status {
-  margin: 8px 12px 0;
-  padding: 7px 9px;
-  border: 1px solid var(--accent-border, #bfdbfe);
-  border-radius: 7px;
-  background: var(--accent-soft, #eff6ff);
-  color: #64748b;
-  font-size: 10px;
-  line-height: 1.45;
-}
-.graph-overview-status strong { color: var(--accent-strong, #1d4ed8); font-weight: 650; }
+.graph-coverage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; flex-shrink: 0; margin: 0 12px 16px; padding: 2px 1px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.graph-coverage-metric { min-width: 0; }
+.graph-coverage-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 8px; font-size: 11px; line-height: 1.5; }
+.graph-coverage-heading > span:first-child { overflow-wrap: anywhere; }
+.graph-coverage-percent { color: var(--text-primary); font-weight: 500; white-space: nowrap; }
+.graph-coverage-count { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; margin: 3px 0 8px; line-height: 1.25; }
+.graph-coverage-count strong { color: var(--text-primary); font-size: 20px; font-weight: 600; letter-spacing: -.025em; }
+.graph-coverage-count > span { font-size: 12px; overflow-wrap: anywhere; }
+.graph-coverage-track { height: 3px; overflow: hidden; border-radius: 3px; background: var(--border); }
+.graph-coverage-track > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.graph-coverage-edges .graph-coverage-track > span { background: var(--text-secondary); }
 .graph-schema-edge-label {
   fill: #64748b;
   paint-order: stroke;
@@ -1137,7 +1137,6 @@ body.is-resizing-columns .app-body { transition: none; }
   pointer-events: none;
 }
 .graph-schema-link { fill: none; }
-[data-theme="dark"] .graph-overview-status { color: #a8b6ca; }
 [data-theme="dark"] .graph-schema-edge-label { fill: #cbd5e1; stroke: #111c2c; }
 [data-theme="dark"] .graph-subgraph-hull { fill-opacity: .16; }
 .graph-link.is-path-highlight { stroke-width: 3.2; stroke-dasharray: 7 3; }
@@ -1821,7 +1820,6 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .graph-search-results button { display: flex; justify-content: space-between; gap: 8px; padding: 5px 8px; text-align: left; color: var(--text-primary); background: transparent; font-size: 11px; }
 .graph-search-results button:hover { background: var(--accent-soft); }
 .graph-search-results small, .graph-search-results > span { color: var(--text-secondary); }
-.graph-preview-note { padding: 0 12px 8px; font-size: 10px; color: var(--text-secondary); line-height: 1.6; }
 .graph-preview-empty { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 12px; color: var(--text-secondary); }
 .graph-neighborhood { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 8px 0; }
 .graph-neighborhood > span { font-size: 10px; color: var(--text-secondary); }
