@@ -72,6 +72,14 @@ _POLICIES = {
     "retrieve_context": _policy(reads={"documents"}),
     "get_job_status": _policy(reads={"jobs"}),
     "cancel_job": _policy(writes={"jobs"}, barrier=True),
+    # Large-graph operations use their own persistent snapshot/job catalog.
+    # Keep their pre-existing conservative barrier behavior explicit until
+    # that catalog exposes resource identities to the shared DAG scheduler.
+    **{name: _policy(barrier=True) for name in {
+        "get_job_result", "prepare_large_graph", "run_large_graph_algorithm",
+        "list_large_graph_versions", "get_large_graph_artifact",
+        "get_large_graph_capabilities",
+    }},
     "nebula_status": _policy(reads={"graph", "nebula"}),
     "nebula_sync_graph": _policy(reads={"graph"}, writes={"nebula"}, background=True),
     "nebula_get_node_info": _policy(reads={"graph", "nebula"}),
