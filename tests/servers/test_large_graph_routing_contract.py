@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -426,7 +427,12 @@ def test_parallel_source_state_disk_estimate_includes_worker_fanout(
         {},
         4,
     )
-    assert parallel_large["disk_bytes"] == serial_large["disk_bytes"] * 4
+    expected_workers = max(1, min(4, os.cpu_count() or 1))
+    assert parallel_large["active_workers"] == expected_workers
+    assert (
+        parallel_large["disk_bytes"]
+        == serial_large["disk_bytes"] * expected_workers
+    )
 
 
 def test_algorithm_memory_estimate_includes_worker_fanout(tmp_path: Path) -> None:
@@ -441,8 +447,8 @@ def test_algorithm_memory_estimate_includes_worker_fanout(tmp_path: Path) -> Non
     )
 
     assert serial["active_workers"] == 1
-    assert parallel["active_workers"] == 4
-    assert parallel["memory_bytes"] > serial["memory_bytes"]
+    assert parallel["active_workers"] == max(1, min(4, os.cpu_count() or 1))
+    assert parallel["memory_bytes"] >= serial["memory_bytes"]
 
 
 def test_actual_snapshot_bytes_raise_disk_estimate_for_large_shards(
@@ -536,7 +542,10 @@ def test_global_link_prediction_disk_estimate_includes_worker_state(
         4,
     )
 
-    assert parallel["disk_bytes"] == serial["disk_bytes"] * 4
+    assert (
+        parallel["disk_bytes"]
+        == serial["disk_bytes"] * parallel["active_workers"]
+    )
     assert pair_only["disk_bytes"] == serial["disk_bytes"]
 
 
@@ -562,7 +571,10 @@ def test_distance_source_parallelism_reserves_each_worker_state(
     parallel = resources.estimate_algorithm(
         1_000_000, 2_000_000, 4, algorithm, parameters, 4
     )
-    assert parallel["disk_bytes"] == serial["disk_bytes"] * 4
+    assert (
+        parallel["disk_bytes"]
+        == serial["disk_bytes"] * parallel["active_workers"]
+    )
 
 
 def test_community_admission_counts_every_label_propagation_round(

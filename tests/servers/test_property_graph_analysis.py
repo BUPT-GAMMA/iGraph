@@ -270,7 +270,8 @@ def test_negative_weights_and_degenerate_flows_fail_explicitly():
     assert run_nx_tool('minimum_spanning_tree', graph, {})['total_weight'] == -2
     graph = property_graph([('a', 'A', 'B', 2), ('b', 'A', 'B', 1)]).to_networkx()
     result = run_nx_tool('maximum_flow', graph, {'source': 'A', 'sink': 'A'})
-    assert result['success'] is False and result['code'] == 'GRAPH_ALGORITHM_FAILED'
+    assert result['success'] is False
+    assert result['error'] == '源点与汇点不能相同'
 
 
 @pytest.mark.parametrize('directed', [True, False])

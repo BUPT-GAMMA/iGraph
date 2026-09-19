@@ -51,8 +51,12 @@ def test_delete_running_session_stops_execution_and_hides_before_cleanup(tmp_pat
                     if mode == 'train':
                         return any(job.tool_name == 'train' and job.progress > 0 for job in graph._job_manager._jobs.values())
                     if mode == 'approval':
-                        response = await client.get(f'/api/sessions/{sid}/runs/control', params=key)
-                        return response.json().get('run_status') == 'paused'
+                        # This test exercises session deletion, while the public
+                        # control endpoint is covered by test_cancellation_http.
+                        # Reading the shared store avoids flooding a constrained
+                        # CI runner with nested HTTP polls while approval pauses.
+                        row = controller.store.get('admin', sid, **key)
+                        return row is not None and row['state'].get('run_status') == 'paused'
                     return metrics['calls'].get(question)
                 await eventually(entered, 40)
                 other = (await client.post('/api/sessions', json={'model': 'qwen3.6-plus'})).json()['session_id']

@@ -12,6 +12,7 @@ export const helpCategories: Record<string, HelpText> = {
   structure: text('Structure & connectivity', '结构与连通性'),
   metrics: text('Centrality & graph metrics', '中心性与图指标'),
   communities: text('Communities & subgraphs', '社区与子图'),
+  largeGraph: text('Large-graph computation', '大图计算'),
   learning: text('Graph learning tools', '图学习工具'),
   visualization: text('Visualization & reports', '可视化与报告'),
 };
@@ -51,6 +52,8 @@ export const helpTools: HelpTool[] = [
   tool('community_detection', 'communities', 'Identify densely connected communities and inspect modularity.', '识别连接紧密的社区，查看社区规模与模块度。'),
   tool('subgraph_extraction', 'communities', 'Preview or save an ego neighborhood, core, truss or node-induced subgraph.', '预览或保存 ego 邻域、核、truss、corona 及节点诱导子图。'),
   tool('link_prediction_score', 'communities', 'Rank potential edges by neighborhood similarity, without training a model.', '使用邻域相似度和节点度为候选边评分，无需训练模型。'),
+  tool('run_large_graph_algorithm', 'largeGraph', 'Run a supported algorithm on a prepared partitioned graph snapshot.', '在已准备的分区大图快照上运行受支持的算法。'),
+  tool('get_large_graph_artifact', 'largeGraph', 'Inspect bounded previews and download metadata for large-graph results.', '查看大图计算结果的有界预览与分区下载信息。'),
   tool('retrieve_context', 'inspection', 'Retrieve supporting passages from documents uploaded to the session.', '从当前会话上传的文档中检索相关背景片段。'),
   tool('nebula_get_node_info', 'inspection', 'Read node properties directly from configured NebulaGraph storage.', '从已配置的 NebulaGraph 存储直接读取节点属性。'),
   tool('nebula_get_neighbors', 'inspection', 'Query one-hop neighbors directly in configured NebulaGraph storage.', '从已配置的 NebulaGraph 存储直接查询一跳邻居。'),
