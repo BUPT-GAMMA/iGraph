@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import unittest
 
+import pytest
+
 from backend.app import _messages_from_runs
 from backend.event_mapper import map_agentos_event, map_product_events
 
@@ -16,6 +18,53 @@ def _completed_tool_event(name: str, result: dict, call_id: str = "call-status")
             "tool_call_id": call_id,
             "result": json.dumps(result),
         },
+    }
+
+
+@pytest.mark.parametrize("source_tool", ["prepare_large_graph", "run_large_graph_algorithm"])
+@pytest.mark.parametrize(
+    ("status", "expected_kind", "expected_progress"),
+    [
+        ("done", "job_done", 1),
+        ("failed", "job_failed", 0.4),
+        ("cancelled", "job_cancelled", 0.4),
+    ],
+)
+def test_large_graph_terminal_status_emits_terminal_progress(
+    source_tool: str,
+    status: str,
+    expected_kind: str,
+    expected_progress: float,
+) -> None:
+    event = _completed_tool_event(
+        "get_job_status",
+        {
+            "success": True,
+            "job": {
+                "job_id": "large-job-1",
+                "tool_name": source_tool,
+                "status": status,
+                "progress": 0.4,
+                "message": f"job {status}",
+                "detail": {"kind": "partition_scan", "partition": 3},
+            },
+            "progress_updates": [],
+        },
+    )
+
+    events = map_product_events(event)
+
+    assert len(events) == 1
+    assert events[0]["type"] == "tool_progress"
+    assert events[0]["tool"] == source_tool
+    assert events[0]["call_id"] == "large-job-1"
+    assert events[0]["progress"] == {
+        "kind": expected_kind,
+        "partition": 3,
+        "job_id": "large-job-1",
+        "status": status,
+        "progress": expected_progress,
+        "message": f"job {status}",
     }
 
 

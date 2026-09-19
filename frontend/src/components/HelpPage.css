@@ -1,0 +1,40 @@
+.help-page { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; background: var(--canvas, #f6f7f9); color: #1e293b; }
+.help-page-inner { max-width: 1180px; margin: 0 auto; padding: 38px 34px 56px; }
+.help-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.help-page h1 { margin: 0; font-size: 28px; line-height: 1.3; }
+.help-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin-top: 26px; padding-bottom: 18px; border-bottom: 1px solid #e2e8f0; }
+.help-tabs { display: flex; gap: 4px; padding: 4px; border-radius: 10px; background: #e8edf4; }
+.help-tabs button { display: flex; align-items: center; gap: 8px; border-radius: 7px; padding: 10px 12px; color: #64748b; background: transparent; font-size: 13px; }
+.help-tabs button[aria-selected="true"] { color: var(--accent-strong); background: #fff; box-shadow: 0 1px 4px #0f172a10; }
+.help-tabs button > span { padding: 1px 5px; border-radius: 5px; background: var(--accent-soft); font-size: 11px; }
+.help-search { display: flex; gap: 9px; align-items: center; padding: 10px 12px; flex: 1 1 210px; max-width: 350px; border: 1px solid #dbe2ed; border-radius: 9px; background: #fff; color: #64748b; }
+.help-search input { min-width: 0; width: 100%; border: 0; outline: none; color: inherit; background: transparent; font-size: 13px; }
+.help-search:focus-within { outline: 2px solid var(--accent-border); }
+.help-filter-row { display: flex; align-items: center; gap: 10px; margin-top: 20px; font-size: 12px; }
+.help-filter-row select { padding: 8px 10px; max-width: 70%; border: 1px solid #dbe2ed; border-radius: 7px; color: inherit; background: #fff; }
+.help-filter-row > span { margin-left: auto; color: #64748b; white-space: nowrap; }
+.help-requirements { margin: 18px 0; color: #64748b; font-size: 12px; line-height: 1.7; }
+.help-requirements > summary { cursor: pointer; }
+.help-requirements p { margin: 8px 0 0; }
+.help-tool-list { margin-top: 18px; }
+.help-tool-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.help-tool-card, .help-model-card { min-width: 0; padding: 18px; border: 1px solid #e2e8f0; border-radius: 11px; background: #fff; }
+.help-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.help-page .help-tool-card h2 { margin: 0 0 6px; font-size: 14px; font-weight: 650; text-transform: capitalize; }
+.help-card-heading > span { flex-shrink: 0; font-size: 10px; color: #64748b; }
+.help-tool-card > code { font-size: 11px; color: var(--accent-strong); overflow-wrap: anywhere; }
+.help-tool-card p, .help-model-card p { margin: 10px 0 0; color: #64748b; font-size: 12px; line-height: 1.75; }
+.help-model-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.help-model-card { display: flex; flex-direction: column; }
+.help-model-card h2 { margin: 0 0 4px; font-size: 20px; }
+.help-model-card > strong { font-size: 11px; color: #64748b; font-weight: 500; }
+.help-task-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: auto; padding-top: 18px; }
+.help-task-tags span { padding: 4px 6px; border-radius: 5px; font-size: 10px; color: #475569; background: #f1f5f9; }
+.help-empty { padding: 44px 18px; text-align: center; font-size: 13px; color: #64748b; }
+[data-theme="dark"] .help-page { color: #e2e8f0; }
+[data-theme="dark"] .help-toolbar { border-color: #334155; }
+[data-theme="dark"] .help-tool-card, [data-theme="dark"] .help-model-card, [data-theme="dark"] .help-search, [data-theme="dark"] .help-filter-row select, [data-theme="dark"] .help-tabs button[aria-selected="true"] { color: #e2e8f0; background: #172033; border-color: #334155; }
+[data-theme="dark"] .help-tabs, [data-theme="dark"] .help-task-tags span { background: #243047; }
+[data-theme="dark"] .help-requirements, [data-theme="dark"] .help-tool-card p, [data-theme="dark"] .help-model-card p, [data-theme="dark"] .help-model-card > strong, [data-theme="dark"] .help-card-heading > span, [data-theme="dark"] .help-task-tags span { color: #a5b4c9; }
+@media (max-width: 1100px) { .help-model-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .help-card-heading { display: block; } .help-card-heading > span { display: block; margin-bottom: 7px; } }
+@media (max-width: 720px) { .help-page-inner { padding: 25px 16px 40px; } .help-page h1 { font-size: 24px; } .help-tool-list, .help-model-grid { grid-template-columns: 1fr; } .help-search { max-width: none; } .help-tabs { width: 100%; } .help-tabs button { flex: 1; justify-content: center; padding: 10px 5px; font-size: 12px; } }

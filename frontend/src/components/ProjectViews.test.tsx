@@ -56,7 +56,6 @@ describe('project dialogs', () => {
     await waitFor(() => expect(onConfirm).toHaveBeenNthCalledWith(2));
   });
 });
-
 describe('top bar', () => {
   it('opens the mobile navigation from the top bar', () => {
     const onMenu = vi.fn();

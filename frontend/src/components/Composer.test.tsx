@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ChatPane } from './ChatPane';
+import { ChatPane, sanitizeAssistantContent } from './ChatPane';
 import { Composer } from './Composer';
 
 const noop = () => undefined;
@@ -36,6 +36,14 @@ const approval = {
 };
 
 describe('ConversationInputArea', () => {
+  it('preserves letters and code when cleaning assistant metadata', () => {
+    for (const value of ['Result: test.', 'weight: 10', 'correct?', 'print: result;', '节点数：3']) {
+      expect(sanitizeAssistantContent(value)).toBe(value);
+    }
+    expect(sanitizeAssistantContent('test \t.')).toBe('test.');
+    expect(sanitizeAssistantContent('结果（job_id: lg_test）。')).toBe('结果。');
+  });
+
   it('uses a project-aware heading only for project drafts', () => {
     const { rerender } = render(<ChatPane {...baseChatProps} />);
     expect(screen.getByRole('heading', { name: '开始图分析' })).toBeTruthy();
@@ -307,6 +315,27 @@ describe('ConversationInputArea', () => {
 
     rerender(<ChatPane {...baseChatProps} value="preserved draft" interaction={{ kind: 'composer' }} />);
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('preserved draft');
+  });
+
+  it('hides internal runtime metadata annotations from assistant messages only', () => {
+    const { container } = render(<ChatPane
+      {...baseChatProps}
+      messages={[
+        { id: 'user-1', role: 'user', content: '请解释 graph_version: 1' },
+        {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: '这是一个非常大的图，当前已通过分区快照方式加载（graph_version: 1）。分区数量（16 个）保持可见。',
+        },
+      ]}
+    />);
+
+    const userRow = container.querySelector('.message-row.user');
+    const assistantRow = container.querySelector('.message-row.assistant');
+    expect(userRow?.textContent).toContain('graph_version: 1');
+    expect(assistantRow?.textContent).toContain('当前已通过分区快照方式加载。');
+    expect(assistantRow?.textContent).toContain('分区数量（16 个）保持可见。');
+    expect(assistantRow?.textContent).not.toContain('graph_version');
   });
 
   it('shows a jump-to-latest button without interrupting a user who scrolled up', () => {

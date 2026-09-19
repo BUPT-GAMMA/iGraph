@@ -20,6 +20,11 @@ describe('create graph workspace', () => {
     const { container } = render(<CreateGraphWorkspace datasets={[]} onUpload={vi.fn()} onConstruct={vi.fn()} />);
     expect(screen.getByRole('heading', { name: '构图工作台' })).toBeTruthy();
     expect(screen.getByText('还没有可构图的数据源')).toBeTruthy();
+    expect(container.querySelector('.create-graph-title p')).toBeNull();
+    expect(container.querySelector('.create-graph-intro-copy p')).toBeNull();
+    expect(container.querySelector('.create-graph-section-head p')).toBeNull();
+    expect(container.querySelector('.create-graph-kicker')).toBeNull();
+    expect(screen.getByText('SQL / CSV / TXT')).toBeTruthy();
     expect(container.querySelector('input[type="file"]')?.getAttribute('accept')).toBe('.sql,.csv,.txt');
     expect(container.querySelector('input[type="file"]')?.hasAttribute('multiple')).toBe(true);
   });
@@ -33,6 +38,12 @@ describe('create graph workspace', () => {
     expect(onConstruct).toHaveBeenNthCalledWith(2, datasets[1]);
     expect(screen.queryByRole('button', { name: /Cora/ })).toBeNull();
     expect(screen.getByText('另有 1 个现成图数据集无需构图，可在分析任务中直接使用。')).toBeTruthy();
+  });
+
+  it('keeps user descriptions and graph counts after removing introductory copy', () => {
+    render(<CreateGraphWorkspace datasets={[{ ...datasets[1], description: '客户与订单关系，用于分析复购。' }]} onUpload={vi.fn()} onConstruct={vi.fn()} />);
+    expect(screen.getByText('客户与订单关系，用于分析复购。')).toBeTruthy();
+    expect(screen.getByText('12 个节点 · 18 条边')).toBeTruthy();
   });
 
   it('prefers construction metadata for active and failed source states', () => {
@@ -82,14 +93,24 @@ describe('create graph workspace', () => {
     const orders = new File(['order_id,customer_id\no1,c1\n'], 'orders.csv', { type: 'text/csv' });
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [customers, orders] } });
     expect(await screen.findByRole('heading', { name: '配置主键与外键' })).toBeTruthy();
+    const guide = container.querySelector<HTMLDetailsElement>('.csv-key-guide');
+    expect(guide?.open).toBe(false);
+    expect(guide?.querySelector('summary')?.textContent).toBe('PK/FK 配置说明');
+    expect(guide?.textContent).toContain('唯一标识一条记录');
+    expect(guide?.textContent).toContain('复合键按界面显示的列顺序');
+    expect(screen.getByText('主外键建议仅基于列名，请核对。')).toBeTruthy();
     expect((screen.getByLabelText('数据集名称') as HTMLInputElement).value).toBe('customers and 1 more table');
     const submit = await screen.findByRole('button', { name: '上传 2 张表' });
     await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText('数据集描述'), { target: { value: '  客户及订单关系  ' } });
+    expect(screen.getByLabelText('orders 字段角色').textContent).toContain('FK');
+    expect(screen.getByText('orders.customer_id → customers.customer_id')).toBeTruthy();
     fireEvent.click(submit);
     expect(onUpload).toHaveBeenCalledOnce();
     const [files, schema] = onUpload.mock.calls[0];
     expect(files).toEqual([customers, orders]);
     expect(schema.version).toBe('csv_bundle.v1');
+    expect(schema.description).toBe('客户及订单关系');
     expect(schema.tables.map((table: { name: string }) => table.name)).toEqual(['customers', 'orders']);
     expect(schema.tables[1].foreign_keys).toEqual([{
       columns: ['customer_id'], ref_table: 'customers', ref_columns: ['customer_id'],

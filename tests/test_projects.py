@@ -5,6 +5,7 @@ import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -19,32 +20,120 @@ class FakeServiceClient:
     runtime_runs: dict[str, list[dict]] = {}
     graph_loaded: dict[str, bool] = {}
     graph_sources: dict[str, str] = {}
+    graph_ingests: dict[str, list[dict]] = {}
+    graph_stream_calls: list[dict] = []
+    graph_stream_closed: list[str] = []
     graph_deletes: list[str] = []
     runtime_stream_calls: list[dict] = []
     runtime_stream_error: HTTPException | None = None
     graph_job_status: dict[str, dict] = {}
+    graph_job_results: dict[str, dict] = {}
+    graph_load_results: dict[str, dict] = {}
     graph_status_calls: list[str] = []
+    graph_result_calls: list[str] = []
+    server_prepare_calls: list[dict] = []
+    graph_server_attach_calls: list[dict] = []
+    server_preparations: dict[str, dict] = {}
     custom_model_requests: list[dict] = []
 
     def __init__(self, base_url: str, *_args) -> None:
         self.is_runtime = "runtime" in base_url
 
-    async def request(self, method: str, path: str, *, headers: dict, params=None, json_body=None, **_kwargs):
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict,
+        params=None,
+        json_body=None,
+        data=None,
+        files=None,
+        timeout=None,
+        **_kwargs,
+    ):
         user_id = headers.get("X-User-ID", "")
         if not self.is_runtime:
+            if method == "POST" and path == "/server-datasets/prepare":
+                request_body = dict(json_body or {})
+                self.server_prepare_calls.append(request_body)
+                server_dataset_id = str(request_body.get("server_dataset_id") or "")
+                return dict(
+                    self.server_preparations.get(
+                        server_dataset_id,
+                        {
+                            "success": True,
+                            "status": "ready",
+                            "progress": 1.0,
+                            "graph_version": 1,
+                            "num_nodes": 10_000_000,
+                            "num_edges": 100_000_000,
+                            "partitions": 16,
+                            "directed": True,
+                            "storage_bytes": 1_234_567,
+                        },
+                    )
+                )
             parts = path.strip("/").split("/")
             session_id = parts[1] if len(parts) > 1 and parts[0] == "sessions" else ""
+            if method == "POST" and path.endswith("/server-datasets/attach"):
+                request_body = dict(json_body or {})
+                self.graph_server_attach_calls.append(
+                    {"session_id": session_id, **request_body}
+                )
+                return {
+                    "success": True,
+                    "representation": "partitioned_snapshot",
+                    "format_detected": "edgelist",
+                    "graph_id": session_id,
+                    "graph_version": 1,
+                    "num_nodes": 10_000_000,
+                    "num_edges": 100_000_000,
+                    "summary": {
+                        "directed": True,
+                        "partitions": 16,
+                        "storage_bytes": 1_234_567,
+                    },
+                }
             if method == "POST" and path.endswith("/tools/get_job_status"):
                 job_id = str(((json_body or {}).get("arguments") or {}).get("job_id") or "")
                 self.graph_status_calls.append(job_id)
                 return self.graph_job_status.get(job_id, {"success": False, "job": None})
+            if method == "POST" and path.endswith("/tools/get_job_result"):
+                job_id = str(((json_body or {}).get("arguments") or {}).get("job_id") or "")
+                self.graph_result_calls.append(job_id)
+                return self.graph_job_results.get(
+                    job_id, {"success": False, "result": None}
+                )
             if method == "GET" and path.endswith("/graph/info"):
                 loaded = self.graph_loaded.get(session_id, False)
                 return {"loaded": loaded, "num_nodes": 3 if loaded else 0, "num_edges": 2 if loaded else 0}
             if method == "POST" and path.endswith("/uploads/register"):
                 self.graph_sources[session_id] = str((json_body or {}).get("saved_path") or "")
                 return {"success": True}
+            if method == "POST" and path.endswith("/uploads/ingest"):
+                upload = (files or {}).get("file")
+                assert isinstance(upload, tuple) and len(upload) >= 2
+                upload_content = (
+                    upload[1]
+                    if isinstance(upload[1], bytes)
+                    else upload[1].read()
+                )
+                self.graph_ingests.setdefault(session_id, []).append({
+                    "data": dict(data or {}),
+                    "filename": str(upload[0]),
+                    # Read while Backend still owns the open source handle.  A
+                    # fake that retains the handle would hide close/lifetime bugs.
+                    "content": upload_content,
+                    "content_type": str(upload[2]) if len(upload) > 2 else "",
+                    "timeout": timeout,
+                })
+                return {"success": True}
             if method == "POST" and path.endswith("/graph/load_upload"):
+                custom = self.graph_load_results.get(session_id)
+                if custom is not None:
+                    self.graph_loaded[session_id] = not bool(custom.get("async"))
+                    return dict(custom)
                 self.graph_loaded[session_id] = True
                 return {"success": True, "num_nodes": 3, "num_edges": 2}
             if method == "POST" and path.endswith("/graph/visualize"):
@@ -94,6 +183,37 @@ class FakeServiceClient:
                 return None
         raise AssertionError(f"Unexpected fake request: {method} {path}")
 
+    async def open_stream(self, method: str, path: str, *, headers: dict, params=None):
+        if self.is_runtime:
+            raise AssertionError(f"Unexpected runtime stream: {method} {path}")
+        self.graph_stream_calls.append({
+            "method": method,
+            "path": path,
+            "headers": dict(headers),
+            "params": params,
+        })
+
+        owner = self
+
+        class UpstreamClient:
+            async def aclose(self):
+                owner.graph_stream_closed.append("client")
+
+        class UpstreamResponse:
+            headers = {
+                "content-type": "application/x-ndjson; charset=utf-8",
+                "content-disposition": 'attachment; filename="part-00000.jsonl"',
+            }
+
+            async def aiter_bytes(self):
+                yield b'{"node":"A"}\n'
+                yield b'{"node":"B"}\n'
+
+            async def aclose(self):
+                owner.graph_stream_closed.append("response")
+
+        return UpstreamClient(), UpstreamResponse()
+
     @asynccontextmanager
     async def stream(self, method: str, path: str, *, headers: dict, data=None):
         if not self.is_runtime:
@@ -124,14 +244,26 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     FakeServiceClient.graph_loaded = {}
     FakeServiceClient.runtime_runs = {}
     FakeServiceClient.graph_sources = {}
+    FakeServiceClient.graph_ingests = {}
+    FakeServiceClient.graph_stream_calls = []
+    FakeServiceClient.graph_stream_closed = []
     FakeServiceClient.graph_deletes = []
     FakeServiceClient.runtime_stream_calls = []
     FakeServiceClient.runtime_stream_error = None
     FakeServiceClient.graph_job_status = {}
+    FakeServiceClient.graph_job_results = {}
+    FakeServiceClient.graph_load_results = {}
     FakeServiceClient.graph_status_calls = []
+    FakeServiceClient.graph_result_calls = []
+    FakeServiceClient.server_prepare_calls = []
+    FakeServiceClient.graph_server_attach_calls = []
+    FakeServiceClient.server_preparations = {}
     FakeServiceClient.custom_model_requests = []
     seed = tmp_path / "supported.txt"
     seed.write_text("admin\nalice\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "BACKEND_SERVER_DATASETS_DIR", str(tmp_path / "server_datasets")
+    )
     config = BackendConfig(
         host="127.0.0.1",
         port=0,
@@ -401,7 +533,18 @@ def test_project_dataset_upload_inheritance_switch_and_isolation(client: TestCli
     activated = client.post(f"/api/sessions/{session_b}/activate", headers=headers())
     assert activated.status_code == 200
     assert activated.json()["has_graph"] is True
-    assert FakeServiceClient.graph_sources[session_a] == FakeServiceClient.graph_sources[session_b]
+    ingest_a = FakeServiceClient.graph_ingests[session_a]
+    ingest_b = FakeServiceClient.graph_ingests[session_b]
+    assert len(ingest_a) == len(ingest_b) == 1
+    assert ingest_a[0]["content"] == ingest_b[0]["content"] == b"A B\nB C\n"
+    assert ingest_a[0]["filename"] == ingest_b[0]["filename"] == "cora.edgelist"
+    assert ingest_a[0]["content_type"] == ingest_b[0]["content_type"] == "application/octet-stream"
+    assert ingest_a[0]["data"] == ingest_b[0]["data"] == {
+        "file_token": f"project-{dataset['dataset_id']}",
+        "original_filename": "cora.edgelist",
+    }
+    assert isinstance(ingest_a[0]["timeout"], httpx.Timeout)
+    assert isinstance(ingest_b[0]["timeout"], httpx.Timeout)
 
     other = client.post("/api/projects", headers=headers(), json={"name": "Other"}).json()["project"]
     other_session = client.post(
@@ -415,6 +558,273 @@ def test_project_dataset_upload_inheritance_switch_and_isolation(client: TestCli
         json={"active_dataset_id": dataset["dataset_id"]},
     )
     assert rejected.status_code == 404
+
+
+def test_server_dataset_is_listed_by_opaque_id_and_streamed_only_when_used(
+    client: TestClient, tmp_path: Path
+) -> None:
+    server_root = tmp_path / "server_datasets"
+    nested = server_root / "public"
+    nested.mkdir(parents=True)
+    source = nested / "large-graph.edgelist"
+    source.write_bytes(b"A B\nB C\n")
+    (server_root / "ignore.exe").write_bytes(b"not a graph")
+    (server_root / ".hidden.csv").write_bytes(b"A,B\n")
+    symlink = server_root / "outside.csv"
+    try:
+        symlink.symlink_to(tmp_path / "supported.txt")
+    except OSError:
+        pass
+
+    listed = client.get("/api/server-datasets", headers=headers())
+
+    assert listed.status_code == 200
+    assert len(listed.json()["datasets"]) == 1
+    server_dataset = listed.json()["datasets"][0]
+    assert server_dataset["server_dataset_id"].startswith("server-")
+    assert server_dataset["relative_path"] == "public/large-graph.edgelist"
+    assert server_dataset["size_bytes"] == source.stat().st_size
+    assert "storage_path" not in server_dataset
+    assert FakeServiceClient.graph_ingests == {}
+
+    project = client.post(
+        "/api/projects", headers=headers(), json={"name": "Server graphs"}
+    ).json()["project"]
+    imported = client.post(
+        f"/api/projects/{project['project_id']}/datasets/from-server",
+        headers=headers(),
+        json={"server_dataset_id": server_dataset["server_dataset_id"]},
+    )
+
+    assert imported.status_code == 200
+    dataset = imported.json()["dataset"]
+    assert imported.json()["created"] is True
+    assert dataset["source_kind"] == "server"
+    assert dataset["source_id"] == server_dataset["server_dataset_id"]
+    assert imported.json()["default_dataset_id"] == dataset["dataset_id"]
+    assert FakeServiceClient.graph_ingests == {}
+
+    duplicate = client.post(
+        f"/api/projects/{project['project_id']}/datasets/from-server",
+        headers=headers(),
+        json={"server_dataset_id": server_dataset["server_dataset_id"]},
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["created"] is False
+    assert duplicate.json()["dataset"]["dataset_id"] == dataset["dataset_id"]
+
+    session_id = client.post(
+        "/api/sessions",
+        headers=headers(),
+        json={"project_id": project["project_id"]},
+    ).json()["session_id"]
+    activated = client.post(
+        f"/api/sessions/{session_id}/activate", headers=headers()
+    )
+
+    assert activated.status_code == 200
+    assert activated.json()["has_graph"] is True
+    assert FakeServiceClient.graph_ingests[session_id][0]["content"] == source.read_bytes()
+    assert FakeServiceClient.graph_ingests[session_id][0]["data"] == {
+        "file_token": f"project-{dataset['dataset_id']}",
+        "original_filename": "large-graph.edgelist",
+    }
+
+    deleted = client.delete(
+        f"/api/projects/{project['project_id']}/datasets/{dataset['dataset_id']}",
+        headers=headers(),
+    )
+    assert deleted.status_code == 200
+    assert source.read_bytes() == b"A B\nB C\n"
+
+
+def test_large_server_dataset_is_prepared_once_and_attached_without_streaming(
+    client: TestClient, tmp_path: Path
+) -> None:
+    server_root = tmp_path / "server_datasets"
+    server_root.mkdir()
+    source = server_root / "huge.edgelist"
+    with source.open("wb") as output:
+        output.truncate(64 * 1024 * 1024)
+
+    listed = client.get("/api/server-datasets", headers=headers())
+    assert listed.status_code == 200
+    server_dataset = listed.json()["datasets"][0]
+    assert len(server_dataset["revision"]) == 64
+    assert server_dataset["preparation"]["status"] == "ready"
+    assert FakeServiceClient.server_prepare_calls == [
+        {
+            "server_dataset_id": server_dataset["server_dataset_id"],
+            "revision": server_dataset["revision"],
+            "relative_path": "huge.edgelist",
+            "original_filename": "huge.edgelist",
+            "source_path": str(source),
+            "directed": True,
+        }
+    ]
+
+    project = client.post(
+        "/api/projects", headers=headers(), json={"name": "Prepared server graph"}
+    ).json()["project"]
+    session_id = client.post(
+        "/api/sessions",
+        headers=headers(),
+        json={"project_id": project["project_id"]},
+    ).json()["session_id"]
+    imported = client.post(
+        f"/api/projects/{project['project_id']}/datasets/from-server",
+        headers=headers(),
+        json={
+            "server_dataset_id": server_dataset["server_dataset_id"],
+            "session_id": session_id,
+        },
+    )
+
+    assert imported.status_code == 200
+    payload = imported.json()
+    assert payload["dataset"]["metadata"]["source_revision"] == server_dataset["revision"]
+    assert payload["dataset_view"]["kind"] == "partitioned_graph"
+    assert FakeServiceClient.graph_ingests == {}
+    assert FakeServiceClient.graph_server_attach_calls == [
+        {
+            "session_id": session_id,
+            "server_dataset_id": server_dataset["server_dataset_id"],
+            "revision": server_dataset["revision"],
+        }
+    ]
+
+
+def test_server_dataset_import_rejects_unknown_id_and_wrong_project_session(
+    client: TestClient, tmp_path: Path
+) -> None:
+    server_root = tmp_path / "server_datasets"
+    server_root.mkdir()
+    (server_root / "graph.csv").write_text("A,B\n", encoding="utf-8")
+    server_dataset_id = client.get(
+        "/api/server-datasets", headers=headers()
+    ).json()["datasets"][0]["server_dataset_id"]
+    first = client.post(
+        "/api/projects", headers=headers(), json={"name": "First"}
+    ).json()["project"]
+    second = client.post(
+        "/api/projects", headers=headers(), json={"name": "Second"}
+    ).json()["project"]
+    second_session = client.post(
+        "/api/sessions",
+        headers=headers(),
+        json={"project_id": second["project_id"]},
+    ).json()["session_id"]
+
+    missing = client.post(
+        f"/api/projects/{first['project_id']}/datasets/from-server",
+        headers=headers(),
+        json={"server_dataset_id": "server-missing"},
+    )
+    wrong_session = client.post(
+        f"/api/projects/{first['project_id']}/datasets/from-server",
+        headers=headers(),
+        json={
+            "server_dataset_id": server_dataset_id,
+            "session_id": second_session,
+        },
+    )
+
+    assert missing.status_code == 404
+    assert wrong_session.status_code == 400
+    assert FakeServiceClient.graph_ingests == {}
+
+
+def test_project_large_dataset_persists_pending_job_then_fetches_bounded_result(
+    client: TestClient,
+) -> None:
+    project = client.post(
+        "/api/projects", headers=headers(), json={"name": "Large graph"}
+    ).json()["project"]
+    session_id = client.post(
+        "/api/sessions",
+        headers=headers(),
+        json={"project_id": project["project_id"]},
+    ).json()["session_id"]
+    FakeServiceClient.graph_load_results[session_id] = {
+        "success": True,
+        "async": True,
+        "job_id": "lg_prepare_project",
+        "graph_id": session_id,
+        "graph_version": 4,
+        "status": "queued",
+        "format_detected": "edgelist",
+    }
+    FakeServiceClient.graph_job_status["lg_prepare_project"] = {
+        "success": True,
+        "job": {
+            "job_id": "lg_prepare_project",
+            "tool_name": "prepare_large_graph",
+            "status": "done",
+            "progress": 1,
+        },
+        "progress_updates": [],
+    }
+    FakeServiceClient.graph_job_results["lg_prepare_project"] = {
+        "success": True,
+        "result": {
+            "job_id": "lg_prepare_project",
+            "status": "done",
+            "representation": "partitioned_snapshot",
+            "graph_id": session_id,
+            "graph_version": 4,
+            "num_nodes": 1_250_000,
+            "num_edges": 7_500_000,
+            "summary": {"directed": True},
+            "current_graph_replaced": False,
+        },
+    }
+
+    uploaded = client.post(
+        f"/api/projects/{project['project_id']}/datasets",
+        headers=headers(),
+        data={"session_id": session_id},
+        files={"file": ("large.edgelist", b"A B\n", "text/plain")},
+    )
+
+    assert uploaded.status_code == 200
+    pending_payload = uploaded.json()
+    metadata = pending_payload["dataset"]["metadata"]
+    assert metadata["dataset_kind"] == "partitioned_graph"
+    assert metadata["representation"] == "partitioned_snapshot"
+    assert metadata["graph_version"] == 4
+    assert metadata["preparation_job_id"] == "lg_prepare_project"
+    assert metadata["preparation_status"] == "queued"
+    assert pending_payload["dataset_view"]["summary"]["preparation_status"] == "queued"
+    assert FakeServiceClient.graph_status_calls == []
+    assert FakeServiceClient.graph_result_calls == []
+
+    # Simulate a Backend crash between the project metadata write and the
+    # session-state write. Activation must recover and poll the same job.
+    FakeServiceClient.runtime_sessions[session_id]["session_state"].pop(
+        "large_graph_prepare"
+    )
+    activated = client.post(
+        f"/api/sessions/{session_id}/activate", headers=headers()
+    )
+
+    assert activated.status_code == 200
+    assert activated.json()["has_graph"] is True
+    datasets = client.get(
+        f"/api/projects/{project['project_id']}/datasets", headers=headers()
+    ).json()["datasets"]
+    metadata = next(
+        item["metadata"]
+        for item in datasets
+        if item["dataset_id"] == pending_payload["dataset"]["dataset_id"]
+    )
+    assert metadata["num_nodes"] == 1_250_000
+    assert metadata["num_edges"] == 7_500_000
+    assert metadata["directed"] is True
+    assert "preparation_job_id" not in metadata
+    assert "preparation_status" not in metadata
+    assert FakeServiceClient.graph_loaded[session_id] is False
+    assert FakeServiceClient.graph_status_calls == ["lg_prepare_project"]
+    assert FakeServiceClient.graph_result_calls == ["lg_prepare_project"]
 
 
 def test_project_dataset_delete_clears_sessions_but_conversation_delete_preserves_source(client: TestClient, tmp_path: Path):
@@ -448,6 +858,30 @@ def test_project_dataset_delete_clears_sessions_but_conversation_delete_preserve
     assert FakeServiceClient.runtime_sessions[inheriting]["session_state"]["active_dataset_id"] is None
     assert inheriting in FakeServiceClient.graph_deletes
     assert not source.exists()
+
+
+def test_large_graph_artifact_download_is_streamed_through_authenticated_proxy(client: TestClient):
+    session_id = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+
+    response = client.get(
+        f"/api/sessions/{session_id}/large-graph/artifacts/artifact-1/partitions/0",
+        headers=headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.content == b'{"node":"A"}\n{"node":"B"}\n'
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    assert response.headers["content-disposition"] == 'attachment; filename="part-00000.jsonl"'
+    assert FakeServiceClient.graph_stream_calls == [{
+        "method": "GET",
+        "path": (
+            f"/sessions/{session_id}/large-graph/artifacts/"
+            "artifact-1/partitions/0"
+        ),
+        "headers": {"X-User-ID": "admin"},
+        "params": None,
+    }]
+    assert FakeServiceClient.graph_stream_closed == ["response", "client"]
 
 
 def test_activate_returns_active_run_and_new_chat_is_rejected(client: TestClient):

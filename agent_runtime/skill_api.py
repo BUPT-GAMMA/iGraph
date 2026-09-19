@@ -13,6 +13,9 @@ import json
 import re
 import shutil
 import time
+
+import yaml
+from agno.skills.validator import validate_metadata
 from pathlib import Path
 from typing import Literal
 
@@ -103,6 +106,45 @@ def _normalize_body_name(body: str, name: str) -> str:
     return f"---\nname: {name}\ndescription: 用户维护的 iGraph Skill\n---\n\n{body}"
 
 
+def _markdown_upload(raw: bytes, filename: str) -> tuple[str, str]:
+    try:
+        body = raw.decode("utf-8-sig").replace("\r\n", "\n").strip()
+    except UnicodeError as exc:
+        raise HTTPException(status_code=400, detail="Skill Markdown 必须使用 UTF-8 编码") from exc
+    if not body or "\x00" in body:
+        raise HTTPException(status_code=400, detail="Skill Markdown 内容不能为空或包含二进制数据")
+    metadata = {}
+    instructions = body
+    if body.splitlines()[0].strip() == "---":
+        match = re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*(?:\n|$)(.*)$", body, re.DOTALL)
+        if not match:
+            raise HTTPException(status_code=400, detail="Skill YAML 头部必须用 --- 闭合")
+        try:
+            metadata = yaml.safe_load(match.group(1)) or {}
+        except yaml.YAMLError as exc:
+            raise HTTPException(status_code=400, detail="Skill YAML 头部格式无效") from exc
+        if not isinstance(metadata, dict):
+            raise HTTPException(status_code=400, detail="Skill YAML 头部必须是键值对象")
+        if not all(isinstance(key, str) for key in metadata):
+            raise HTTPException(status_code=400, detail="Skill YAML 头部字段名必须是字符串")
+        instructions = match.group(2).strip()
+    if not instructions:
+        raise HTTPException(status_code=400, detail="Skill Markdown 必须包含指令正文")
+    # A name in frontmatter takes precedence. The filename is only a name
+    # candidate, never a filesystem path; both pass the same strict validator.
+    name = metadata.get("name", filename[:-3])
+    if not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="Skill name 必须是字符串")
+    name = _safe_name(name)
+    metadata["name"] = name
+    metadata.setdefault("description", "用户维护的 iGraph Skill")
+    errors = validate_metadata(metadata)
+    if errors:
+        raise HTTPException(status_code=400, detail="Skill 元数据无效：" + "; ".join(errors))
+    header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
+    return name, f"---\n{header}\n---\n\n{instructions}\n"
+
+
 def _entry(skill_dir: Path, source: str) -> dict:
     skill_file = skill_dir / "SKILL.md"
     meta = _frontmatter(skill_file)
@@ -145,11 +187,25 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
     @router.post("/upload")
     async def upload_skill(request: Request, file: UploadFile = File(...)):
         uid = _user_id(request)
-        if not (file.filename or "").lower().endswith(".zip"):
-            raise HTTPException(status_code=400, detail="Skill 上传必须是 .zip 文件")
+        filename = file.filename or ""
+        if not filename.lower().endswith((".md", ".zip")):
+            raise HTTPException(status_code=400, detail="Skill 上传支持 .md 或 .zip 文件")
         raw = await file.read(2 * 1024 * 1024 + 1)
         if len(raw) > 2 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="Skill 压缩包不能超过 2MB")
+            raise HTTPException(status_code=413, detail="Skill 文件不能超过 2MB")
+        if filename.lower().endswith(".md"):
+            name, body = _markdown_upload(raw, filename)
+            target = candidate_skills_path(config, uid) / name
+            try:
+                target.mkdir(parents=True)
+            except FileExistsError as exc:
+                raise HTTPException(status_code=409, detail="Skill 已存在") from exc
+            try:
+                (target / "SKILL.md").write_text(body, encoding="utf-8")
+            except OSError:
+                shutil.rmtree(target, ignore_errors=True)
+                raise
+            return {"success": True, "name": name, "source": "review_queue"}
         try:
             archive = zipfile.ZipFile(io.BytesIO(raw))
         except zipfile.BadZipFile as exc:

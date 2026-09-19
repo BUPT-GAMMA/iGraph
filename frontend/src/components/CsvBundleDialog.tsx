@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
 import type { CsvBundleSchema, CsvBundleTableSchema, CsvForeignKey } from '../types';
 import { Icon } from './Icon';
+import './ConstructionSchemaFields.css';
 
 type DraftForeignKey = CsvForeignKey & { id: number };
 type DraftTable = Omit<CsvBundleTableSchema, 'foreign_keys'> & { foreign_keys: DraftForeignKey[] };
@@ -92,6 +93,7 @@ export function CsvBundleDialog({ files, onCancel, onSubmit }: Props) {
     ? `${firstTableName} and ${additionalTableCount} more table${additionalTableCount === 1 ? '' : 's'}`
     : firstTableName);
   const [error, setError] = useState('');
+  const [description, setDescription] = useState('');
   const [loading, setLoading] = useState(true);
   const sequence = useRef(0);
   const nextId = () => ++sequence.current;
@@ -147,7 +149,7 @@ export function CsvBundleDialog({ files, onCancel, onSubmit }: Props) {
         }
       }
     }
-    const schema: CsvBundleSchema = { version: 'csv_bundle.v1', tables: tables.map(table => ({
+    const schema: CsvBundleSchema = { version: 'csv_bundle.v1', description: description.trim(), tables: tables.map(table => ({
       file_name: table.file_name, name: table.name.trim(), columns: table.columns,
       primary_key: table.primary_key, foreign_keys: table.foreign_keys.map(({ id: _id, ...fk }) => fk),
     })) };
@@ -159,22 +161,25 @@ export function CsvBundleDialog({ files, onCancel, onSubmit }: Props) {
       <header><div><span>{t('MULTI-TABLE CSV', '多表 CSV')}</span><h2 id="csv-bundle-title">{t('Configure primary and foreign keys', '配置主键与外键')}</h2></div><button onClick={onCancel} aria-label={t('Close', '关闭')}><Icon name="close" size={18} /></button></header>
       <div className="csv-bundle-body">
         <label className="csv-bundle-name">{t('Dataset name', '数据集名称')}<input value={datasetName} onChange={event => setDatasetName(event.target.value)} /></label>
-        <p className="csv-bundle-help">{t('Each CSV is one table. Select one or more primary-key columns, then map foreign-key columns to another table. Suggested mappings are based on column names and must be reviewed.', '每个 CSV 对应一张表。请选择一个或多个主键列，再把外键列映射到目标表。系统仅按列名给出建议，请在上传前核对。')}</p>
+        <label className="csv-bundle-name">{t('Dataset description', '数据集描述')}<textarea rows={3} maxLength={4000} value={description} onChange={event => setDescription(event.target.value)} placeholder={t('Describe the data source, entities, and relationships.', '描述数据来源、实体含义和关系。')} /></label>
+        <p className="csv-bundle-help">{t('Key suggestions use column names only; please review them.', '主外键建议仅基于列名，请核对。')}</p>
+        <details className="csv-key-guide"><summary>{t('PK/FK configuration guide', 'PK/FK 配置说明')}</summary><p><b>PK · {t('Primary key', '主键')}</b> {t('Uniquely identifies one row (or a combination of columns). Values must be unique and non-null.', '唯一标识一条记录，可由多个字段组成；值必须唯一且不能为空。')}</p><p><b>FK · {t('Foreign key', '外键')}</b> {t('References another table’s key to create graph relationships. Composite key columns are paired in the displayed order.', '引用另一张表的键以生成图中的连接；复合键按界面显示的列顺序一一对应。')}</p><p>{t('Example: orders.customer_id → customers.customer_id. Blank PK uses conservative detection; if no safe key is found, row identities are generated.', '例如：orders.customer_id → customers.customer_id。PK 留空将尝试保守识别；没有可靠主键时生成行标识。')}</p></details>
         {loading && <div className="csv-bundle-loading">{t('Reading CSV headers…', '正在读取 CSV 表头…')}</div>}
         {!loading && tables.map((table, tableIndex) => <article className="csv-table-card" key={table.file_name}>
           <div className="csv-table-head"><div><strong>{table.file_name}</strong><small>{table.columns.length} {t('columns', '列')}</small></div><label>{t('Table name', '表名')}<input value={table.name} onChange={event => renameTable(tableIndex, event.target.value)} /></label></div>
           <fieldset><legend>{t('Primary key', '主键')} <small>{t('(multiple columns allowed; blank means safe auto-detection)', '（可多选；留空时安全自动识别）')}</small></legend><div className="csv-column-options">{table.columns.map(column => <label key={column}><input type="checkbox" checked={table.primary_key.includes(column)} onChange={event => replaceTable(tableIndex, current => ({ ...current, primary_key: event.target.checked ? [...current.primary_key, column] : current.primary_key.filter(value => value !== column) }))} />{column}</label>)}</div></fieldset>
+          <div className="csv-field-summary" aria-label={t(`Field roles for ${table.name}`, `${table.name} 字段角色`)}>{table.columns.map(column => <span key={column}><code>{column}</code>{table.primary_key.includes(column) && <b>PK</b>}{table.foreign_keys.some(fk => fk.columns.includes(column)) && <b>FK</b>}{!table.primary_key.includes(column) && !table.foreign_keys.some(fk => fk.columns.includes(column)) && <small>{t('Attribute', '特征属性')}</small>}</span>)}</div>
           <div className="csv-fk-heading"><strong>{t('Foreign keys', '外键')}</strong><button className="secondary-command" onClick={() => addForeignKey(tableIndex)}><Icon name="plus" size={13} />{t('Add relationship', '添加关系')}</button></div>
           {table.foreign_keys.length === 0 && <small className="csv-no-fk">{t('No foreign keys configured for this table.', '此表尚未配置外键。')}</small>}
           {table.foreign_keys.map(fk => {
             const parent = tables.find(candidate => candidate.name === fk.ref_table) || tables[0];
-            return <div className="csv-fk-row" key={fk.id}>
+            return <div className="csv-fk-entry" key={fk.id}><div className="csv-fk-row">
               <label>{t('Source columns', '来源列')}<select multiple value={fk.columns} onChange={event => updateForeignKey(tableIndex, fk.id, { columns: Array.from(event.target.selectedOptions, option => option.value) })}>{table.columns.map(column => <option key={column}>{column}</option>)}</select></label>
               <span>→</span>
               <label>{t('Target table', '目标表')}<select value={fk.ref_table} onChange={event => { const target = tables.find(candidate => candidate.name === event.target.value)!; updateForeignKey(tableIndex, fk.id, { ref_table: target.name, ref_columns: (target.primary_key.length ? target.primary_key : target.columns).slice(0, 1) }); }}>{tableNames.map(name => <option key={name}>{name}</option>)}</select></label>
               <label>{t('Target columns', '目标列')}<select multiple value={fk.ref_columns} onChange={event => updateForeignKey(tableIndex, fk.id, { ref_columns: Array.from(event.target.selectedOptions, option => option.value) })}>{parent.columns.map(column => <option key={column}>{column}</option>)}</select></label>
               <button className="danger" onClick={() => replaceTable(tableIndex, current => ({ ...current, foreign_keys: current.foreign_keys.filter(item => item.id !== fk.id) }))} aria-label={t('Remove foreign key', '删除外键')}><Icon name="trash" size={14} /></button>
-            </div>;
+            </div><small className="csv-key-mapping">{fk.columns.map((column, index) => `${table.name}.${column} → ${fk.ref_table}.${fk.ref_columns[index] || '?'}`).join(' · ')}</small></div>;
           })}
         </article>)}
         {error && <div className="csv-bundle-error" role="alert">{error}</div>}

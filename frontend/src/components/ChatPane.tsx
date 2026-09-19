@@ -17,6 +17,35 @@ function formatBytes(size?: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const INTERNAL_METADATA_KEYS = [
+  'graph_version',
+  'graph_id',
+  'session_id',
+  'run_id',
+  'request_id',
+  'job_id',
+  'tool_call_id',
+  'call_id',
+  'event_index',
+  'protocol_version',
+].join('|');
+
+const CLOSED_INTERNAL_METADATA_ANNOTATION = new RegExp(
+  `\\s*[（(]\\s*(?=[^()（）]*\\x60?(?:${INTERNAL_METADATA_KEYS})\\x60?\\s*[:：=])[^()（）]*[)）]`,
+  'gi',
+);
+const STREAMING_INTERNAL_METADATA_ANNOTATION = new RegExp(
+  `\\s*[（(]\\s*\\x60?(?:${INTERNAL_METADATA_KEYS})\\x60?\\s*[:：=][^()（）]*$`,
+  'gi',
+);
+
+export function sanitizeAssistantContent(content: string) {
+  return content
+    .replace(CLOSED_INTERNAL_METADATA_ANNOTATION, '')
+    .replace(STREAMING_INTERNAL_METADATA_ANNOTATION, '')
+    .replace(/[ \t]+([，。！？；：,.!?;:])/g, '$1');
+}
+
 /** Deliverables the agent published this turn, downloadable inline. */
 function ArtifactList({ artifacts, sessionId }: { artifacts: ArtifactRef[]; sessionId?: string }) {
   const { t } = useI18n();
@@ -175,7 +204,11 @@ function MarkdownContent({ content }: { content: string }) {
   return <div className="markdown-content">{blocks}</div>;
 }
 
-function renderContent(content: string, role: Message['role']) { return role === 'assistant' ? <MarkdownContent content={content} /> : <span className="plain-content">{content}</span>; }
+function renderContent(content: string, role: Message['role']) {
+  return role === 'assistant'
+    ? <MarkdownContent content={sanitizeAssistantContent(content)} />
+    : <span className="plain-content">{content}</span>;
+}
 
 function MessageCopyAction({ content, onEdit }: { content: string; onEdit?: () => void }) {
   const { t } = useI18n();
@@ -332,7 +365,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
 
   return <main className="chat-pane">
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1><p>{t('Paste graph edges, upload a file, or ask in natural language', '粘贴图的边数据、上传文件，或直接用自然语言提问')}</p>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></div> : null}</div> : messages.map((message, index) => {
+      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable ? <div className="suggestions"><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></div> : null}</div> : messages.map((message, index) => {
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
         const versions = isAssistant ? answerVersions(message, messages) : [message];

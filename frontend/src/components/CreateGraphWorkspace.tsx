@@ -90,7 +90,7 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
     <header className="create-graph-header">
       <div className="create-graph-title">
         <span className="context-icon"><Icon name="graph" size={23} /></span>
-        <div><span>{t('CREATE YOUR GRAPH', '创建你的图')}</span><h1>{t('Graph Construction Workspace', '构图工作台')}</h1><p>{t('Upload source files to build, inspect, and optimize reusable graph data.', '上传源文件，构建、检查并优化可复用的图数据。')}</p></div>
+        <div><h1>{t('Graph Construction Workspace', '构图工作台')}</h1></div>
       </div>
       <input ref={inputRef} type="file" hidden multiple accept=".sql,.csv,.txt" onChange={event => { selected(event.currentTarget.files); event.currentTarget.value = ''; }} />
       <button className="primary-command create-graph-upload-button" onClick={chooseFile} disabled={busy}><Icon name="upload" size={16} /> {t('Upload source', '上传数据源')}</button>
@@ -99,29 +99,27 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
     <div className="create-graph-content">
       <section className="create-graph-intro" aria-labelledby="create-graph-intro-title">
         <div className="create-graph-intro-copy">
-          <span className="create-graph-kicker">{t('Start with structured data', '从结构化数据开始')}</span>
           <h2 id="create-graph-intro-title">{t('Turn a data source into an analysis-ready graph', '把数据源变成可以分析的图')}</h2>
-          <p>{t('Choose an existing source, upload SQL or TXT, or select several CSV tables and configure their primary and foreign keys. The result is saved in your personal datasets.', '选择已有数据源，上传 SQL、TXT，或一次选择多张 CSV 表并配置主外键。构图结果会保存在个人数据集中。')}</p>
           {selectionError && <div className="csv-bundle-error" role="alert">{selectionError}</div>}
           <button className="primary-command" onClick={chooseFile} disabled={busy}><Icon name="plus" size={16} /> {t('Choose source file', '选择源文件')}</button>
         </div>
         <div className="create-graph-flow" aria-label={t('Graph construction workflow', '构图流程')}>
           <div><span>01</span><Icon name="file" size={20} /><strong>{t('Add a data source', '添加数据源')}</strong><small>SQL / CSV / TXT</small></div>
           <Icon name="arrow-right" size={18} />
-          <div><span>02</span><Icon name="graph" size={20} /><strong>{t('Generate and validate', '生成并验证')}</strong><small>{t('Nodes, relationships, and properties', '节点、关系与属性')}</small></div>
+          <div><span>02</span><Icon name="graph" size={20} /><strong>{t('Generate and validate', '生成并验证')}</strong></div>
           <Icon name="arrow-right" size={18} />
-          <div><span>03</span><Icon name="check" size={20} /><strong>{t('Save and optimize', '保存与优化')}</strong><small>{t('Create reusable graph data', '形成可复用图数据')}</small></div>
+          <div><span>03</span><Icon name="check" size={20} /><strong>{t('Save and optimize', '保存与优化')}</strong></div>
         </div>
       </section>
 
       <section className="create-graph-sources" aria-labelledby="create-graph-sources-title">
-        <div className="create-graph-section-head"><div><h2 id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2><p>{t('Select a data source to open the graph editor.', '点击一个数据源进入构图编辑器。')}</p></div><span>{t(`${formatNumber(constructible.length)} available`, `${formatNumber(constructible.length)} 个可用`)}</span></div>
+        <div className="create-graph-section-head"><div><h2 id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2></div><span>{t(`${formatNumber(constructible.length)} available`, `${formatNumber(constructible.length)} 个可用`)}</span></div>
         {constructible.length ? <div className="create-graph-source-grid">{constructible.map(dataset => <article className="create-graph-source-card" key={dataset.dataset_id}>
           <div className="create-graph-source-icon"><Icon name="database" size={20} /></div>
-          <div className="create-graph-source-copy"><div><strong title={dataset.name}>{dataset.name}</strong><span>{sourceType(dataset)}</span></div><p>{sourceSummary(dataset, t, formatNumber)}</p></div>
+          <div className="create-graph-source-copy"><div><strong title={dataset.name}>{dataset.name}</strong><span>{sourceType(dataset)}</span></div><p>{sourceSummary(dataset, t, formatNumber)}</p>{dataset.description && <p title={dataset.description}>{dataset.description}</p>}</div>
           <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${dataset.name}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>
         </article>)}</div> : <div className="create-graph-empty">
-          <span><Icon name="graph" size={34} /></span><strong>{t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong><p>{t('Upload SQL/TXT or select one or more CSV tables to configure PK/FK relationships.', '上传 SQL/TXT，或选择一张、多张 CSV 表配置 PK/FK 关系。')}</p><button className="secondary-command" onClick={chooseFile} disabled={busy}>{t('Upload your first source', '上传第一个数据源')}</button>
+          <span><Icon name="graph" size={34} /></span><strong>{t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong><button className="secondary-command" onClick={chooseFile} disabled={busy}>{t('Upload your first source', '上传第一个数据源')}</button>
         </div>}
         {otherDatasets.length > 0 && <div className="create-graph-other-sources"><Icon name="database" size={15} /><span>{t(`${formatNumber(otherDatasets.length)} existing graph ${otherDatasets.length === 1 ? 'dataset is' : 'datasets are'} ready to use directly in analysis tasks without construction.`, `另有 ${formatNumber(otherDatasets.length)} 个现成图数据集无需构图，可在分析任务中直接使用。`)}</span></div>}
       </section>

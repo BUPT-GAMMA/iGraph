@@ -285,7 +285,15 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for key in ("run_id", "session_id", "event_index")
         if payload.get(key) is not None
     }
-    progress_tools = {"train", "load_graph_from_text", "load_graph_from_upload", "load_graph_classification_dataset"}
+    progress_tools = {
+        "train",
+        "load_graph_from_text",
+        "load_graph_from_upload",
+        "load_graph_classification_dataset",
+        # Large-graph jobs publish bounded progress through the same event shape.
+        "prepare_large_graph",
+        "run_large_graph_algorithm",
+    }
     if name in progress_tools and result.get("async") and result.get("job_id"):
         return [{
             "type": "tool_progress",
@@ -316,12 +324,14 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     "progress": update.get("progress", job.get("progress", 0)),
                     "message": update.get("message", job.get("message", "")),
                 }
-                if job.get("status") == "done":
-                    progress["progress"] = 1
+                terminal_status = str(job.get("status") or "").lower()
+                if terminal_status in {"done", "failed", "cancelled"}:
+                    if terminal_status == "done":
+                        progress["progress"] = 1
                     progress["kind"] = (
-                        "train_done" if source_tool == "train" else
-                        "text2graph_done" if source_tool in {"load_graph_from_text", "load_graph_from_upload"} else
-                        "job_done"
+                        "train_done" if terminal_status == "done" and source_tool == "train" else
+                        "text2graph_done" if terminal_status == "done" and source_tool in {"load_graph_from_text", "load_graph_from_upload"} else
+                        f"job_{terminal_status}"
                     )
                 rows.append({
                     "type": "tool_progress",

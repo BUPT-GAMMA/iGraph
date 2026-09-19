@@ -4,12 +4,12 @@ vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => {} }) })
 vi.mock('./components/GraphWorkspace', () => ({ GraphWorkspace: () => null }));
 vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   validateUser: vi.fn(), createProject: vi.fn(), listProjectConversations: vi.fn(), listProjects: vi.fn(), listSessions: vi.fn(), listCustomModels: vi.fn(),
-  listProjectDatasets: vi.fn(), activateSession: vi.fn(), getCapabilities: vi.fn(), createSession: vi.fn(),
+  listProjectDatasets: vi.fn(), listServerDatasets: vi.fn(), activateSession: vi.fn(), getCapabilities: vi.fn(), createSession: vi.fn(),
   uploadProjectDataset: vi.fn(), uploadFile: vi.fn(), streamChat: vi.fn(), visualizeGraph: vi.fn(), getRunControl: vi.fn(),
 }));
 import App from './main';
 import { USER_KEY, activateSession, createProject, createSession, listProjectConversations, getCapabilities, getRunControl, listCustomModels, listProjectDatasets,
-  listProjects, listSessions, streamChat, uploadFile, uploadProjectDataset, validateUser, visualizeGraph } from './api';
+  listProjects, listServerDatasets, listSessions, streamChat, uploadFile, uploadProjectDataset, validateUser, visualizeGraph } from './api';
 import { composerStorageKey, readComposerDraft, writeComposerDraft } from './composerDrafts';
 const placeholder = '今天帮你分析什么？粘贴边列表，或直接用自然语言提问';
 beforeEach(() => {
@@ -19,6 +19,7 @@ beforeEach(() => {
   vi.mocked(listSessions).mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }] });
   vi.mocked(listProjects).mockResolvedValue({ projects: [] }); vi.mocked(listCustomModels).mockResolvedValue({ models: [] });
   vi.mocked(listProjectDatasets).mockResolvedValue({ project_id: null, datasets: [] });
+  vi.mocked(listServerDatasets).mockResolvedValue({ datasets: [] });
   vi.mocked(activateSession).mockResolvedValue({ model: 'qwen3.6-plus', has_graph: false, messages: [], active_run: null });
   vi.mocked(getCapabilities).mockResolvedValue({ run_cancel_v1: false, job_cancel_v1: false });
   vi.mocked(visualizeGraph).mockRejectedValue(new Error('no graph'));

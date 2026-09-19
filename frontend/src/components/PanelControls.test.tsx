@@ -243,11 +243,47 @@ describe('docked panel controls', () => {
     expect(container.querySelector('.graph-toolbar')).toBeNull();
     expect(container.querySelector('.node-inspector')).toBeNull();
 
-    rerender(<GraphWorkspace {...graphProps} data={null} tab="Overview" collapsed={false} onToggle={noop} />);
-    expect(screen.getByText('暂无图')).toBeTruthy();
+    rerender(<GraphWorkspace {...graphProps} data={null} view={view} tab="Overview" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('多图分类数据集已就绪')).toBeTruthy();
+    expect(screen.getByText('41,127')).toBeTruthy();
 
-    rerender(<GraphWorkspace {...graphProps} data={null} tab="Data" collapsed={false} onToggle={noop} />);
-    expect(screen.getByText('暂无图')).toBeTruthy();
+    rerender(<GraphWorkspace {...graphProps} data={null} view={view} tab="Graph" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('非独立图，无法直接可视化')).toBeTruthy();
+    expect(container.querySelector('.graph-canvas svg')).toBeNull();
+
+    rerender(<GraphWorkspace {...graphProps} data={null} view={view} tab="Data" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('数据集划分与特征')).toBeTruthy();
+  });
+
+  it('shows partitioned large-graph metadata without requesting a browser canvas', () => {
+    const view = {
+      status: 'unsupported' as const,
+      data: null,
+      code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE' as const,
+      summary: {
+        num_nodes: 12_000_000,
+        num_edges: 48_000_000,
+        directed: true,
+        graph_version: 7,
+        partitions: 16,
+        representation: 'partitioned_snapshot',
+        has_weights: true,
+        storage_bytes: 2_147_483_648,
+      },
+    };
+    const { rerender, container } = render(<GraphWorkspace {...graphProps} view={view} datasetName="social.csv" tab="Overview" collapsed={false} onToggle={noop} />);
+
+    expect(screen.getByText('大图分区计算快照已就绪')).toBeTruthy();
+    expect(screen.getByText('12,000,000')).toBeTruthy();
+    expect(screen.getByText('48,000,000')).toBeTruthy();
+    expect(container.querySelector('.graph-canvas svg')).toBeNull();
+
+    rerender(<GraphWorkspace {...graphProps} view={view} datasetName="social.csv" tab="Graph" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('大图分区快照不支持全量画布渲染')).toBeTruthy();
+
+    rerender(<GraphWorkspace {...graphProps} view={view} datasetName="social.csv" tab="Data" collapsed={false} onToggle={noop} />);
+    expect(screen.getByText('分区快照元数据')).toBeTruthy();
+    expect(screen.getByText('2.00 GB')).toBeTruthy();
   });
 
   it('keeps the graph canvas stable across unrelated renders and supports zoom gestures', async () => {
@@ -299,6 +335,74 @@ describe('docked panel controls', () => {
     expect(screen.getByRole('button', { name: /^Cora/ }).getAttribute('aria-current')).toBe('true');
     expect(screen.getByRole('button', { name: '重命名 Cora' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '删除 Cora' })).toBeTruthy();
+  });
+
+  it('offers server datasets without exposing a browser file upload', () => {
+    const onUseServer = vi.fn();
+    render(<DatasetPanel
+      datasets={[]}
+      serverDatasets={[{ server_dataset_id: 'server-1', name: 'Huge graph', original_filename: 'huge.edgelist', relative_path: 'benchmarks/huge.edgelist', file_type: 'edgelist', size_bytes: 2 * 1024 * 1024 * 1024 }]}
+      onSelect={noop}
+      onUpload={noop}
+      onUseServer={onUseServer}
+      onRename={noop}
+      onDelete={noop}
+      onClose={noop}
+    />);
+
+    expect(screen.getByText('服务器数据源')).toBeTruthy();
+    expect(screen.getByText('benchmarks/huge.edgelist · 2.00 GB · 有向图')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '使用' }));
+    expect(onUseServer).toHaveBeenCalledWith(expect.objectContaining({ server_dataset_id: 'server-1' }));
+  });
+
+  it('shows server datasets and a project requirement outside project context', () => {
+    render(<DatasetPanel
+      datasets={[]}
+      serverDatasets={[{ server_dataset_id: 'server-1', name: 'Undirected graph', original_filename: 'graph.edgelist', relative_path: 'graph.edgelist', file_type: 'edgelist', size_bytes: 1024, directed: false }]}
+      onSelect={noop}
+      onUpload={noop}
+      onRename={noop}
+      onDelete={noop}
+      onClose={noop}
+    />);
+
+    expect(screen.getByText('请先创建或选择项目，再将服务器数据源添加到项目')).toBeTruthy();
+    expect(screen.getByText('graph.edgelist · 1.00 KB · 无向图')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '选择项目后使用' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('暂无可添加的服务器数据源')).toBeNull();
+  });
+
+  it('waits for server preprocessing before allowing a large dataset to be used', () => {
+    const onUseServer = vi.fn();
+    const { rerender } = render(<DatasetPanel
+      datasets={[]}
+      serverDatasets={[{ server_dataset_id: 'server-1', name: 'Huge graph', original_filename: 'huge.edgelist', relative_path: 'huge.edgelist', file_type: 'edgelist', size_bytes: 1024, preparation: { status: 'running', progress: 0.42 } }]}
+      onSelect={noop}
+      onUpload={noop}
+      onUseServer={onUseServer}
+      onRename={noop}
+      onDelete={noop}
+      onClose={noop}
+    />);
+
+    expect(screen.getByText('服务器预处理中 42%')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '预处理中' }) as HTMLButtonElement).disabled).toBe(true);
+
+    rerender(<DatasetPanel
+      datasets={[]}
+      serverDatasets={[{ server_dataset_id: 'server-1', name: 'Huge graph', original_filename: 'huge.edgelist', relative_path: 'huge.edgelist', file_type: 'edgelist', size_bytes: 1024, preparation: { status: 'ready', num_nodes: 10_000_000, num_edges: 100_000_000 } }]}
+      onSelect={noop}
+      onUpload={noop}
+      onUseServer={onUseServer}
+      onRename={noop}
+      onDelete={noop}
+      onClose={noop}
+    />);
+
+    expect(screen.getByText('已预处理 · 10,000,000 nodes · 100,000,000 edges')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '使用' }));
+    expect(onUseServer).toHaveBeenCalledOnce();
   });
 });
 

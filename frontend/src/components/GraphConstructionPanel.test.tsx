@@ -80,14 +80,59 @@ describe('graph construction workflow', () => {
     expect((screen.getByRole('button', { name: '应用并预览' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('renders as an in-page workbench with a source switch action', () => {
+  it('renders as an in-page workbench with an explicit return action', () => {
     mocks.state.mockReturnValue(new Promise(() => undefined));
     const close = vi.fn();
     render(<GraphConstructionPanel dataset={dataset} embedded onClose={close} onSaved={vi.fn()} />);
     expect(screen.getByRole('region', { name: '客户关系' })).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '更换数据源' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回构图' }));
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('returns after saving, but protects unsaved edits before returning', async () => {
+    const close = vi.fn();
+    render(<GraphConstructionPanel dataset={dataset} embedded onClose={close} onSaved={vi.fn()} />);
+    await screen.findByLabelText('测试图画布');
+    choose('选择节点', 'b'); choose('新关系类型', '关联');
+    fireEvent.click(screen.getByRole('button', { name: '应用并预览' }));
+    await screen.findByText('1 项修改待保存');
+    fireEvent.click(screen.getByRole('button', { name: '返回构图' }));
+    expect(close).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toContain('返回后将丢弃这些修改');
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存到数据集' }));
+    await screen.findByText(/已保存版本 3/);
+    fireEvent.click(screen.getByRole('button', { name: '返回构图' }));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each(['csv', 'sql'])('defaults %s to source tables and shows only the clicked table fields, not record values', async fileType => {
+    mocks.schema.mockResolvedValue({ ...schema, schema: { ...schema.schema, source_tables: [
+      { name: 'customers', columns: ['id', 'name'], column_types: { id: 'INTEGER', name: 'TEXT' }, primary_key: ['id'], foreign_keys: [] },
+      { name: 'orders', columns: ['order_id', 'customer_id'], column_types: { order_id: 'INTEGER', customer_id: 'INTEGER' }, primary_key: ['order_id'], foreign_keys: [{ columns: ['customer_id'], ref_table: 'customers', ref_columns: ['id'] }] },
+    ] } });
+    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph: { ...graph, nodes: [...graph.nodes,
+      { id: 'secret', type: 'customers', properties: { data: { id: 1, name: 'DO_NOT_RENDER_RECORD' } } }] } });
+    render(<GraphConstructionPanel dataset={{ ...dataset, file_type: fileType, original_filename: `source.${fileType}` }} embedded onClose={vi.fn()} onSaved={vi.fn()} />);
+    await screen.findByLabelText('测试图画布');
+    expect(screen.getByRole('button', { name: '表关联模式' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: '图节点 customers' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '图节点 Person' })).toBeNull();
+    expect(screen.getByText('点击表节点查看字段与主外键')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '图节点 orders' }));
+    const inspector = screen.getByLabelText('表节点属性');
+    expect(inspector.textContent).toContain('order_id');
+    expect(inspector.textContent).toContain('INTEGER');
+    expect(inspector.textContent).toContain('PK');
+    expect(inspector.textContent).toContain('FK');
+    expect(inspector.textContent).toContain('→ customers.id');
+    expect(screen.queryByText('DO_NOT_RENDER_RECORD')).toBeNull();
+    expect(screen.queryByText('name', { exact: true })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '优化后结构' }));
+    expect(screen.getByRole('button', { name: '图节点 Person' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '表关联模式' }));
+    expect(screen.getByRole('button', { name: '图节点 customers' })).toBeTruthy();
   });
 
   it('allows closing while the initial state request is pending', () => {
@@ -486,6 +531,15 @@ describe('long-running graph construction', () => {
       query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
     });
     expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the saved dataset description as construction context when domain is blank', async () => {
+    const described = { ...sourceDataset, description: '客户与订单关系' };
+    mocks.state.mockResolvedValue(notBuilt);
+    mocks.build.mockResolvedValue(ready);
+    await act(async () => { render(<GraphConstructionPanel dataset={described} onClose={vi.fn()} onSaved={vi.fn()} />); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(described, expect.objectContaining({ domain: '客户与订单关系' }));
   });
 
   it('resets domain and experience controls when switching to another dataset', async () => {

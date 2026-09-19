@@ -3,10 +3,12 @@ import { GraphCanvas } from './GraphCanvas';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
 import { listProjectTrainingRuns } from '../api';
-import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, ProjectTrainingRun, ToolCall } from '../types';
+import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, PartitionedGraphSummary, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
 import { SlidingTabs } from './SlidingTabs';
 import { WorkspaceFiles } from './WorkspaceFiles';
+import { GraphExplorePanel } from './GraphExplorePanel';
+import { NodeProperties, nodePropertyType } from './NodeProperties';
 import { useI18n } from '../i18n';
 import type { Language, Translate } from '../i18n';
 
@@ -44,6 +46,9 @@ type GraphWorkspaceProps = {
   embedded?: boolean;
   onConstruct?: () => void;
   constructionLabel?: string;
+  onGraphQuery?: (prompt: string) => void;
+  onGraphReset?: () => void;
+  graphQueryPending?: boolean;
 };
 
 function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWorkspaceProps) {
@@ -59,6 +64,9 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
     && previous.onTab === next.onTab
     && previous.onToggle === next.onToggle
     && previous.sessionId === next.sessionId
+    && previous.onGraphQuery === next.onGraphQuery
+    && previous.onGraphReset === next.onGraphReset
+    && previous.graphQueryPending === next.graphQueryPending
     && previous.onStopJob === next.onStopJob;
   if (previous.embedded !== next.embedded || previous.onConstruct !== next.onConstruct || previous.constructionLabel !== next.constructionLabel || previous.datasetName !== next.datasetName) return false;
   if (!coreEqual) return false;
@@ -86,7 +94,7 @@ function sameWorkspaceGraph(left: GraphData | null, right: GraphData | null) {
     && left.edges.every((edge, index) => sameRecord(edge, right.edges[index]));
 }
 
-export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob, embedded, onConstruct, constructionLabel }: GraphWorkspaceProps) {
+export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob, embedded, onConstruct, constructionLabel, onGraphQuery, onGraphReset, graphQueryPending = false }: GraphWorkspaceProps) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
   const resolvedConstructionLabel = constructionLabel || t('Build graph', '构图');
@@ -105,6 +113,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   const [focusId, setFocusId] = useState('');
   const [depth, setDepth] = useState(0);
   const [fitVersion, setFitVersion] = useState(0);
+  const [exploreOpen, setExploreOpen] = useState(false);
+  const [resultsOnly, setResultsOnly] = useState(false);
+  const [resultIndex, setResultIndex] = useState(-1);
   const [projectTrainingRuns, setProjectTrainingRuns] = useState<ProjectTrainingRun[]>([]);
   const [projectTrainingLoading, setProjectTrainingLoading] = useState(false);
   const [projectTrainingError, setProjectTrainingError] = useState('');
@@ -115,10 +126,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     const mapping = raw?.node_community;
     return mapping && typeof mapping === 'object' ? new Map(Object.entries(mapping).map(([id, value]) => [String(id), String(value)])) : new Map<string, string>();
   }, [renderedData]);
-  const highlights = useMemo(() => normalizeHighlights(renderedData?.highlights), [renderedData]);
+  const allHighlights = useMemo(() => normalizeHighlights(renderedData?.highlights), [renderedData]);
+  const highlights = useMemo(() => resultIndex >= 0 && allHighlights[resultIndex] ? [allHighlights[resultIndex]] : allHighlights, [allHighlights, resultIndex]);
   const index = useMemo(() => graphIndex(renderedData || { nodes: [], edges: [] }, t), [renderedData, t]);
-  const preview = useMemo(() => previewGraph(index, highlights, query, filterMatches, connectedOnly, focusId, depth),
-    [index, highlights, query, filterMatches, connectedOnly, focusId, depth]);
+  const preview = useMemo(() => previewGraph(index, highlights, query, filterMatches, connectedOnly, focusId, depth, resultsOnly),
+    [index, highlights, query, filterMatches, connectedOnly, focusId, depth, resultsOnly]);
   useEffect(() => {
     const id = String(selected?.id ?? '');
     if (id && index.nodes.has(id) && !preview.nodes.some(node => node.id === id) && !filterMatches && !depth) setFocusId(id);
@@ -127,7 +139,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   const sourcePartial = !!renderedData && (renderedData.truncated === true || (renderedData.total_nodes ?? 0) > index.nodes.size || (renderedData.total_edges ?? 0) > index.edges.length);
   const selectedInfo = selected ? index.nodes.get(String(selected.id)) : undefined;
   const locate = (id: string) => { setFocusId(id); const node = index.nodes.get(id); if (node) onSelect(node); };
-  useEffect(() => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); }, [sessionId, datasetName]);
+  useEffect(() => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); setResultsOnly(false); setResultIndex(-1); setExploreOpen(false); }, [sessionId, datasetName]);
+  useEffect(() => { setResultIndex(-1); if (!allHighlights.length) setResultsOnly(false); }, [allHighlights]);
+  const resetGraphFilters = () => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); setConnectedOnly(false); setResultsOnly(false); setResultIndex(-1); onSelect(null); setFitVersion(current => current + 1); };
 
   useEffect(() => {
     if (tab !== 'ML' || !projectId) {
@@ -166,7 +180,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     };
   }, [projectId, tab, hasPendingLiveTraining]);
 
-  const tabs: Tab[] = embedded ? ['Graph', 'Overview', 'Data'] : ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
+  const tablesMode = renderedData?.schema_kind === 'tables';
+  const tabs: Tab[] = tablesMode ? ['Graph'] : embedded ? ['Graph', 'Overview', 'Data'] : ['Overview', 'Graph', 'Data', 'ML', 'Artifacts'];
   const trainingError = projectTrainingError === PROJECT_TRAINING_SYNC_ERROR
     ? t('Failed to sync training results', '训练结果同步失败')
     : projectTrainingError;
@@ -180,21 +195,31 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
       <button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={panelToggleLabel} title={panelToggleLabel}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={21} /></button>
     </div>
     <div className="workspace-panel-content" aria-hidden={collapsed}>
-      <SlidingTabs ariaLabel={t('Graph workspace views', '图工作台视图')} className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: t(TAB_LABELS[item][0], TAB_LABELS[item][1]) }))} value={tab} onChange={onTab} />
+      {!tablesMode && <SlidingTabs ariaLabel={t('Graph workspace views', '图工作台视图')} className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: t(TAB_LABELS[item][0], TAB_LABELS[item][1]) }))} value={tab} onChange={onTab} />}
       {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={trainingError} />
         : tab === 'Artifacts' ? <><WorkspaceFiles key={sessionId} sessionId={sessionId} revision={JSON.stringify([messages.length, ...[...messages.flatMap(message => message.tools || []), ...liveTools].filter(tool => tool.tool?.startsWith('workspace_')).map(tool => [tool.call_id, tool.done, tool.result])])} /><ArtifactsTab messages={messages} /></>
-          : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>{t('This graph collection cannot be visualized directly', '非独立图，无法直接可视化')}</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />)
+          : view?.status === 'unsupported' ? (tab === 'Graph'
+            ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>{view.code === 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE' ? t('Partitioned large graphs cannot be rendered on the full canvas', '大图分区快照不支持全量画布渲染') : t('This graph collection cannot be visualized directly', '非独立图，无法直接可视化')}</strong>{view.code === 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE' ? <span>{t('Run a large-graph algorithm from the conversation and inspect bounded results under Artifacts.', '请从中央对话运行大图算法，并在分析产物中查看有界结果。')}</span> : null}</div>
+            : view.code === 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE'
+              ? <PartitionedGraphTab tab={tab} datasetName={datasetName} summary={view.summary} />
+              : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />)
             : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>{t('Loading graph', '正在加载图')}</strong></div>
               : view?.status === 'failed' ? <div className="graph-empty"><strong>{t('Failed to load graph', '图加载失败')}</strong><span>{view.error}</span></div>
                 : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>{t('No graph yet', '暂无图')}</strong><span>{t('Load data or request a graph to see analysis results here.', '加载数据或发送建图请求后，这里会显示图分析结果。')}</span></div>
                   : tab === 'Graph' ? <>
                     <div className="graph-toolbar">
                       <button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> {t('Search nodes', '搜索节点')}</button>
+                      {onGraphQuery && <button onClick={() => setExploreOpen(current => !current)} aria-expanded={exploreOpen}><Icon name="spark" size={14} />{t('Explore graph', '图探索')}</button>}
                       <button onClick={() => setLayout(current => current === 'force' ? 'radial' : current === 'radial' ? 'circle' : 'force')} title={t('Change graph layout', '切换图布局')}>{t(`Layout: ${layoutLabel}`, `布局：${layoutLabel}`)} <Icon name="chevron" size={12} /></button>
                       <button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>{connectedOnly ? t('Filter: connected', '过滤：有连接') : t('Filter', '过滤')}</button>
                       <button onClick={() => setFitVersion(current => current + 1)}>{t('Fit to canvas', '适应画布')}</button>
                       <button aria-expanded={displayOpen} onClick={() => setDisplayOpen(value => !value)}>{t('Display settings', '显示设置')}</button>
                     </div>
+                    {exploreOpen && onGraphQuery && <GraphExplorePanel key={`${sessionId}:${datasetName || ''}`} schema={schemaMode} selectedId={String(selected?.id ?? '')} pending={graphQueryPending} onQuery={prompt => { resetGraphFilters(); onGraphQuery(prompt); }} />}
+                    {!schemaMode && (allHighlights.length > 0 || onGraphReset) && <div className="graph-result-controls">
+                      {allHighlights.length > 0 && <><span>{t('Analysis results', '分析结果')}</span>{allHighlights.length > 1 && <select aria-label={t('Result layer', '结果图层')} value={resultIndex} onChange={event => { setResultIndex(Number(event.target.value)); setFitVersion(current => current + 1); }}><option value={-1}>{t('All results', '全部结果')}</option>{allHighlights.map((item, index) => <option key={index} value={index}>{item.label || t(`Result ${index + 1}`, `结果 ${index + 1}`)}</option>)}</select>}<button aria-pressed={resultsOnly} onClick={() => { setResultsOnly(current => !current); setDepth(0); setFilterMatches(false); setConnectedOnly(false); setFocusId(''); onSelect(null); setFitVersion(current => current + 1); }}>{t('Result subgraph only', '仅看结果子图')}</button></>}
+                      {onGraphReset && <button disabled={graphQueryPending} onClick={() => { resetGraphFilters(); onGraphReset(); }}>{t('Restore full graph', '恢复全图')}</button>}
+                    </div>}
                     {displayOpen && <div className="graph-display-settings">
                       <label>{t('Node size', '节点大小')}<select value={sizeMode} onChange={e => setSizeMode(e.target.value as typeof sizeMode)}><option value="degree">{t('By degree', '按度数')}</option><option value="uniform">{t('Uniform', '统一大小')}</option></select></label>
                       <label>{t('Node labels', '节点标签')}<select value={labels} onChange={e => setLabels(e.target.value as typeof labels)}><option value="auto">{t('Automatic', '自动')}</option><option value="all">{t('All', '全部')}</option><option value="hidden">{t('Hidden', '隐藏')}</option></select></label>
@@ -207,20 +232,22 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
                     </div> : null}
                     <div className={`graph-canvas ${schemaMode ? 'is-schema' : ''}`}><GraphCanvas schema={schemaMode} active={!collapsed} key={`${sessionId}:${datasetName || ''}`} preview={preview} directed={renderedData?.directed} communities={communityById} highlights={highlights} selected={selected} onSelect={node => { onSelect(node); if (!node) { setFocusId(''); setDepth(0); } }} layout={layout} layoutVersion={layoutVersion} sizeMode={sizeMode} labels={labels} edgeWidth={edgeWidth} fitVersion={fitVersion} focusId={focusId} />{!preview.nodes.length && <div className="graph-preview-empty">{t('No nodes match the current filters', '没有符合条件的节点')}</div>}</div>
                     <div className="graph-preview-note graph-overview-status" role="status">
-                      {schemaMode
+                      {tablesMode
+                        ? t(`Table relationships · ${preview.nodes.length.toLocaleString(locale)} / ${index.nodes.size.toLocaleString(locale)} tables · ${preview.edges.length.toLocaleString(locale)} / ${index.edges.length.toLocaleString(locale)} foreign keys`, `表关联模式 · ${preview.nodes.length.toLocaleString(locale)} / ${index.nodes.size.toLocaleString(locale)} 张表 · ${preview.edges.length.toLocaleString(locale)} / ${index.edges.length.toLocaleString(locale)} 条外键关系`)
+                        : schemaMode
                         ? t(`Graph Schema · ${preview.nodes.length.toLocaleString(locale)} node types · ${preview.edges.length.toLocaleString(locale)} relationships`, `Graph Schema · ${preview.nodes.length.toLocaleString(locale)} 种节点类型 · ${preview.edges.length.toLocaleString(locale)} 种关系`)
-                        : <>{sourcePartial
+                        : <>{resultsOnly && t('Result subgraph · ', '结果子图 · ')}{sourcePartial
                           ? t(`Partial upstream graph · Loaded ${index.nodes.size.toLocaleString(locale)} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString(locale)} nodes · `, `上游部分图 · 已载入 ${index.nodes.size.toLocaleString(locale)} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString(locale)} 个节点 · `)
-                          : preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length ? t('Smart overview · ', '智能概览 · ') : t('Complete graph · ', '完整图 · ')}
+                          : preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length ? t('Smart overview · ', '智能概览 · ') : !resultsOnly ? t('Current graph view · ', '当前图视图 · ') : ''}
                           {t(`Showing ${preview.nodes.length.toLocaleString(locale)} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString(locale)} nodes · ${preview.edges.length.toLocaleString(locale)} / ${(renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length).toLocaleString(locale)} edges`, `显示 ${preview.nodes.length.toLocaleString(locale)} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString(locale)} 个节点 · ${preview.edges.length.toLocaleString(locale)} / ${(renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length).toLocaleString(locale)} 条边`)}
                           {(preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length) && t(' · Local smart overview (bounded preview)', ' · 本地智能概览（有界预览）')}
                           {depth > 0 && t(` · ${depth} hop neighborhood`, ` · ${depth} 跳邻域`)}
                           {sizeMode === 'degree' && t(` · Size: ${preview.nodes[0]?.degreeLabel || 'Degree'}`, ` · 大小：${preview.nodes[0]?.degreeLabel || '度数'}`)}</>}
                       {preview.omittedHighlights > 0 && t(` · ${preview.omittedHighlights.toLocaleString(locale)} highlighted nodes are outside the preview`, ` · ${preview.omittedHighlights.toLocaleString(locale)} 个高亮节点超出预览范围`)}
-                      {schemaMode && (preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length) && t(` · Bounded preview of ${index.nodes.size.toLocaleString(locale)} node types and ${index.edges.length.toLocaleString(locale)} relationships`, ` · 有界预览，共 ${index.nodes.size.toLocaleString(locale)} 种节点类型、${index.edges.length.toLocaleString(locale)} 种关系`)}
+                      {schemaMode && !tablesMode && (preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length) && t(` · Bounded preview of ${index.nodes.size.toLocaleString(locale)} node types and ${index.edges.length.toLocaleString(locale)} relationships`, ` · 有界预览，共 ${index.nodes.size.toLocaleString(locale)} 种节点类型、${index.edges.length.toLocaleString(locale)} 种关系`)}
                     </div>
                     {(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">{t('Legend', '图例')}</span>{communityById.size ? <span><i className="legend-dot community" />{t('Community colors', '社区着色')}</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />{t('Highlighted nodes', '节点高亮')}</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />{t('Highlighted paths', '路径高亮')}</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />{t('Highlighted subgraphs', '子图高亮')}</span> : null}</div> : null}
-                    <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? t('Selected node', '已选节点'))}</strong><span>{t('Selected', '已选择')}</span></div><div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String(selected.type ?? selected.category ?? t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div><div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
+                    <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? t('Selected node', '已选节点'))}</strong><span>{t('Selected', '已选择')}</span></div><div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String(nodePropertyType(selectedInfo || selected) ?? t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div>{!schemaMode && <NodeProperties node={selectedInfo || selected} />}<div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
                   </>
                     : <WorkspaceTab tab={tab} data={data} messages={messages} previewNodes={preview.nodes.length} previewEdges={preview.edges.length} />}
     </div>
@@ -232,12 +259,40 @@ function displayCount(value: unknown, locale: string) {
   return Number.isFinite(count) ? count.toLocaleString(locale) : '-';
 }
 
+function displayBytes(value: unknown, locale: string) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  if (bytes < 1024) return `${bytes.toLocaleString(locale)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let scaled = bytes;
+  let unit = -1;
+  do {
+    scaled /= 1024;
+    unit += 1;
+  } while (scaled >= 1024 && unit < units.length - 1);
+  return `${scaled.toFixed(scaled >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+
+function PartitionedGraphTab({ tab, datasetName, summary }: { tab: Tab; datasetName?: string; summary: PartitionedGraphSummary }) {
+  const { language, t } = useI18n();
+  const locale = localeFor(language);
+  const waiting = summary.preparation_status === 'not_started';
+  const preparing = Boolean(summary.preparation_status) && !waiting;
+  const statusLabel = waiting
+    ? t('Waiting to prepare this session snapshot', '等待准备当前会话的分区快照')
+    : preparing
+      ? t('Preparing partitioned compute snapshot', '正在准备分区计算快照')
+      : t('Partitioned compute snapshot ready', '大图分区计算快照已就绪');
+  if (tab === 'Overview') return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">{t('Large graph snapshot', '大图快照')}</span><h2>{datasetName || t('Current dataset', '当前数据集')}</h2><strong>{statusLabel}</strong></div><div className="stat-grid"><div><span>{t('Nodes', '节点数')}</span><strong>{displayCount(summary.num_nodes, locale)}</strong></div><div><span>{t('Edges', '边数')}</span><strong>{displayCount(summary.num_edges, locale)}</strong></div><div><span>{t('Partitions', '分区数')}</span><strong>{displayCount(summary.partitions, locale)}</strong></div><div><span>{t('Version', '版本')}</span><strong>{displayCount(summary.graph_version, locale)}</strong></div></div><div className="workspace-note"><Icon name="spark" size={15} /> {waiting ? t('Activating this dataset creates an independent partitioned snapshot for the current session.', '激活该数据集后会为当前会话创建独立的分区快照。') : preparing ? t('Once preparation finishes, submit large-graph algorithms from the conversation.', '准备完成后，可从中央对话提交大图算法。') : t('The snapshot remains partitioned on disk; run algorithms from the conversation without loading it into the regular canvas.', '快照保留在磁盘分区中；请从中央对话运行大图算法，无需加载到普通图画布。')}</div></div>;
+  return <div className="tab-content collection-data"><div className="tab-title"><strong>{t('Partition snapshot metadata', '分区快照元数据')}</strong><span>{t(`${displayCount(summary.num_nodes, locale)} nodes`, `${displayCount(summary.num_nodes, locale)} 个节点`)}</span></div><div className="collection-section"><strong>{t('Compute storage', '计算存储')}</strong><div className="stat-grid"><div><span>{t('Representation', '表示')}</span><strong>{summary.representation || '-'}</strong></div><div><span>{t('Storage', '存储')}</span><strong>{displayBytes(summary.storage_bytes, locale)}</strong></div><div><span>{t('Direction', '方向')}</span><strong>{summary.directed == null ? '-' : summary.directed ? t('Directed', '有向') : t('Undirected', '无向')}</strong></div><div><span>{t('Weights', '权重')}</span><strong>{summary.has_weights == null ? '-' : summary.has_weights ? t('Yes', '有') : t('No', '无')}</strong></div></div></div><div className="workspace-note">{t('Nodes and edges are not expanded in full in the browser; algorithms return bounded summaries or Artifacts.', '节点和边不会在浏览器中全量展开；算法结果通过有界摘要或分析产物返回。')}</div></div>;
+}
+
 function CollectionTab({ tab, datasetName, summary }: { tab: Tab; datasetName?: string; summary: GraphCollectionSummary }) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
   const splits = summary.split_sizes || {};
   const validationSize = splits.val ?? splits.valid;
-  if (tab === 'Overview') return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">{t('Graph collection', '图集合')}</span><h2>{datasetName || t('Current dataset', '当前数据集')}</h2><strong>{t('Graph classification dataset ready', '多图分类数据集已就绪')}</strong></div><div className="stat-grid"><div><span>{t('Graphs', '图数量')}</span><strong>{displayCount(summary.num_graphs, locale)}</strong></div><div><span>{t('Tasks', '任务数')}</span><strong>{displayCount(summary.num_tasks, locale)}</strong></div><div><span>{t('Metric', '评估指标')}</span><strong>{summary.metric || '-'}</strong></div><div><span>{t('Data splits', '数据划分')}</span><strong>{Object.keys(splits).length || '-'}</strong></div></div><div className="workspace-note"><Icon name="spark" size={15} /> {t('This dataset contains multiple sample graphs and can be used for graph classification training and inference.', '该数据集包含多张独立样本图，可继续用于图分类训练和推理。')}</div></div>;
+  if (tab === 'Overview') return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">{t('Graph collection', '图集合')}</span><h2>{datasetName || t('Current dataset', '当前数据集')}</h2><strong>{t('Graph classification dataset ready', '多图分类数据集已就绪')}</strong></div><div className="stat-grid"><div><span>{t('Graphs', '图数量')}</span><strong>{displayCount(summary.num_graphs, locale)}</strong></div><div><span>{t('Tasks', '任务数')}</span><strong>{displayCount(summary.num_tasks, locale)}</strong></div><div><span>{t('Metric', '评估指标')}</span><strong>{summary.metric || '-'}</strong></div><div><span>{t('Data splits', '数据划分')}</span><strong>{Object.keys(splits).length || '-'}</strong></div></div></div>;
   const missingRate = Number(summary.missing_label_rate);
   return <div className="tab-content collection-data"><div className="tab-title"><strong>{t('Dataset splits and features', '数据集划分与特征')}</strong><span>{t(`${displayCount(summary.num_graphs, locale)} graphs`, `${displayCount(summary.num_graphs, locale)} 张图`)}</span></div><div className="collection-section"><strong>{t('Data splits', '数据划分')}</strong><div className="stat-grid"><div><span>{t('Training', '训练集')}</span><strong>{displayCount(splits.train, locale)}</strong></div><div><span>{t('Validation', '验证集')}</span><strong>{displayCount(validationSize, locale)}</strong></div><div><span>{t('Test', '测试集')}</span><strong>{displayCount(splits.test, locale)}</strong></div><div><span>{t('Edgeless graphs', '无边图')}</span><strong>{displayCount(summary.num_edgeless_graphs, locale)}</strong></div></div></div><div className="collection-section"><strong>{t('Vocabularies and labels', '词表与标签')}</strong><div className="stat-grid"><div><span>{t('Node vocabulary', '节点词表')}</span><strong>{displayCount(summary.node_vocab_size, locale)}</strong></div><div><span>{t('Edge vocabulary', '边词表')}</span><strong>{displayCount(summary.edge_vocab_size, locale)}</strong></div><div><span>{t('Missing labels', '缺失标签')}</span><strong>{Number.isFinite(missingRate) ? `${(missingRate * 100).toFixed(2)}%` : '-'}</strong></div><div><span>{t('Edge features', '边特征')}</span><strong>{summary.uses_edge_features == null ? '-' : summary.uses_edge_features ? t('Yes', '是') : t('No', '否')}</strong></div></div></div></div>;
 }
@@ -249,7 +304,7 @@ function WorkspaceTab({ tab, data, messages, previewNodes, previewEdges }: { tab
     const totalNodes = data.total_nodes ?? data.num_nodes ?? data.nodes.length;
     const totalEdges = data.total_edges ?? data.num_edges ?? data.edges.length;
     const renderedNodes = previewNodes;
-    return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">{t('Current graph', '当前图')}</span><h2>{t('Current dataset', '当前数据集')}</h2><strong>{t('Graph analysis ready', '图分析已就绪')}</strong></div><div className="stat-grid"><div><span>{t('Nodes', '节点数')}</span><strong>{totalNodes.toLocaleString(locale)}</strong></div><div><span>{t('Edges', '边数')}</span><strong>{totalEdges.toLocaleString(locale)}</strong></div><div><span>{t('Direction', '方向')}</span><strong>{data.directed ? t('Directed', '有向图') : t('Undirected', '无向图')}</strong></div><div><span>{t('Canvas nodes', '画布节点')}</span><strong>{renderedNodes.toLocaleString(locale)}</strong></div></div>{renderedNodes < totalNodes || previewEdges < totalEdges ? <div className="workspace-note"><Icon name="spark" size={15} /> {t(`The canvas shows ${renderedNodes.toLocaleString(locale)} nodes and ${previewEdges.toLocaleString(locale)} edges; dataset totals remain complete.`, `画布当前展示 ${renderedNodes.toLocaleString(locale)} 个节点、${previewEdges.toLocaleString(locale)} 条边，数据集总量统计保持完整。`)}</div> : <div className="workspace-note"><Icon name="spark" size={15} /> {t('Run graph algorithms from the conversation; results will appear here.', '从中央对话发起图算法，结果会同步到这里。')}</div>}</div>;
+    return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">{t('Current graph', '当前图')}</span><h2>{t('Current dataset', '当前数据集')}</h2><strong>{t('Graph analysis ready', '图分析已就绪')}</strong></div><div className="stat-grid"><div><span>{t('Nodes', '节点数')}</span><strong>{totalNodes.toLocaleString(locale)}</strong></div><div><span>{t('Edges', '边数')}</span><strong>{totalEdges.toLocaleString(locale)}</strong></div><div><span>{t('Direction', '方向')}</span><strong>{data.directed ? t('Directed', '有向图') : t('Undirected', '无向图')}</strong></div><div><span>{t('Canvas nodes', '画布节点')}</span><strong>{renderedNodes.toLocaleString(locale)}</strong></div></div>{renderedNodes < totalNodes || previewEdges < totalEdges ? <div className="workspace-note"><Icon name="spark" size={15} /> {t(`The canvas shows ${renderedNodes.toLocaleString(locale)} nodes and ${previewEdges.toLocaleString(locale)} edges; dataset totals remain complete.`, `画布当前展示 ${renderedNodes.toLocaleString(locale)} 个节点、${previewEdges.toLocaleString(locale)} 条边，数据集总量统计保持完整。`)}</div> : null}</div>;
   }
   if (tab === 'Data') return <div className="tab-content"><div className="tab-title"><strong>{t('Node and edge data', '节点与边数据')}</strong><span>{t(`${(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString(locale)} nodes`, `${(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString(locale)} 个节点`)}</span></div><div className="data-list">{data.nodes.slice(0, 20).map((node, index) => <div key={index}><Icon name="project" size={14} /><span>{String(node.label ?? node.id ?? t(`Node ${index + 1}`, `节点 ${index + 1}`))}</span><small>{String(node.type ?? t('Node', '节点'))}</small></div>)}</div>{data.nodes.length < (data.total_nodes ?? data.num_nodes ?? data.nodes.length) ? <div className="workspace-note">{t(`This is a visualization preview with ${data.nodes.length.toLocaleString(locale)} loaded node samples.`, `当前为可视化预览，已加载 ${data.nodes.length.toLocaleString(locale)} 个节点样本。`)}</div> : null}</div>;
   return <ArtifactsTab messages={messages} />;
