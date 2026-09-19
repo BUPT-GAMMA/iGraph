@@ -2,13 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import os
+from unittest.mock import patch
 
 from graph_data_service.large_graph.compatibility import (
     SMALL_GRAPH_ALGORITHM_MODE_PARAMETERS,
     SMALL_GRAPH_ALGORITHM_MODES,
 )
 from graph_data_service.tool_catalog import get_all_public_tools
-from mcp_service.server import mcp
+
+
+# The production MCP server intentionally requires explicit network settings
+# at import time.  CI checks out the repository without a local .env, so keep
+# this schema-only test self-contained instead of depending on developer or
+# deployment configuration.
+with patch.dict(os.environ, {
+    "MCP_HOST": "127.0.0.1",
+    "MCP_PORT": "19110",
+    "GRAPH_DATA_SERVER_URL": "http://127.0.0.1:19111",
+}):
+    from mcp_service.server import mcp
 
 
 def test_mcp_preserves_canonical_graph_tool_json_schemas() -> None:
