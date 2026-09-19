@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 try:
     import httpx
-except ImportError:
+except ImportError:  # pragma: no cover - minimal dependency test environment
     fake_httpx = types.ModuleType("httpx")
 
     class _Request:
@@ -54,8 +54,7 @@ except ImportError:
     fake_httpx.ConnectError = _ConnectError
     fake_httpx.AsyncClient = object
     sys.modules["httpx"] = fake_httpx
-
-import httpx
+    httpx = fake_httpx
 
 import mcp_service.graph_data_client as graph_data_client
 import mcp_service.raw_client as raw_client

@@ -34,6 +34,23 @@ class ServiceClient:
         self.timeout = timeout
         self.stream_timeout = stream_timeout
 
+    def _streaming_timeout(self) -> httpx.Timeout:
+        """Keep response streams open while retaining bounded setup/write waits.
+
+        Agent runs can legitimately spend more than 30 minutes inside one
+        durable graph tool without emitting an upstream byte. A finite HTTP
+        read timeout would tear down an otherwise healthy background run.
+        The Backend sends downstream SSE heartbeats, so idle client/proxy
+        connections are still observable and can be closed by their owner.
+        """
+
+        return httpx.Timeout(
+            connect=self.timeout,
+            read=None,
+            write=self.stream_timeout,
+            pool=self.timeout,
+        )
+
     async def request(
         self,
         method: str,
@@ -44,13 +61,17 @@ class ServiceClient:
         json_body: Any = None,
         data: Any = None,
         files: Any = None,
-        timeout: float | None = None,
+        timeout: float | httpx.Timeout | None = None,
     ) -> Any:
         # A preparation contains multiple independent graph operations. Allocate
         # per HTTP operation, not per Run; keep caller-supplied retry keys intact.
         if headers.get("X-Run-ID") and not headers.get("X-Operation-ID"):
             headers = {**headers, "X-Operation-ID": str(uuid.uuid4())}
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout if timeout is None else timeout, trust_env=False) as client:
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=timeout if timeout is not None else self.timeout,
+            trust_env=False,
+        ) as client:
             response = await client.request(
                 method,
                 path,
@@ -74,6 +95,37 @@ class ServiceClient:
         except ValueError:
             return response.text
 
+    async def open_stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, Any] | None = None,
+    ) -> tuple[httpx.AsyncClient, httpx.Response]:
+        """Open a validated upstream stream; the caller owns both handles."""
+        client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(self.stream_timeout, connect=self.timeout),
+            trust_env=False,
+        )
+        try:
+            request = client.build_request(method, path, headers=headers, params=params)
+            response = await client.send(request, stream=True)
+            if response.status_code >= 400:
+                body = await response.aread()
+                await response.aclose()
+                await client.aclose()
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=body.decode("utf-8", "replace"),
+                )
+            return client, response
+        except BaseException:
+            if not client.is_closed:
+                await client.aclose()
+            raise
+
     @asynccontextmanager
     async def stream(
         self,
@@ -85,7 +137,7 @@ class ServiceClient:
     ) -> AsyncIterator[httpx.Response]:
         client = httpx.AsyncClient(
             base_url=self.base_url,
-            timeout=httpx.Timeout(self.stream_timeout, connect=self.timeout),
+            timeout=self._streaming_timeout(),
             trust_env=False,
         )
         try:

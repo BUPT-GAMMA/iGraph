@@ -115,6 +115,23 @@ async def completed_graph_result(result, poll, *, interval=1.0, tool_name=""):
 class GraphMCPTools(OwnedMCPTools):
     """Each concurrent call owns its MCP transport and background-job wait."""
 
+    def __init__(
+        self,
+        *args,
+        job_poll_interval_seconds: float = 1.0,
+        job_wait_timeout_seconds: float = 0.0,
+        **kwargs,
+    ):
+        # These are runtime policy knobs, not Agno Toolkit arguments.  Consume
+        # them here so they cannot leak into Toolkit.__init__.
+        self.job_poll_interval_seconds = max(
+            0.0, min(float(job_poll_interval_seconds), 60.0)
+        )
+        self.job_wait_timeout_seconds = max(
+            0.0, float(job_wait_timeout_seconds)
+        )
+        super().__init__(*args, **kwargs)
+
     async def build_tools(self):
         await super().build_tools()
         for function in self.functions.values():
@@ -129,7 +146,44 @@ class GraphMCPTools(OwnedMCPTools):
                 async with self.get_temporary_session_for_run(
                     run_context=_agno_run_context, agent=_agno_agent, team=_agno_team,
                 ) as session:
-                    return await session.call_tool("get_job_status", arguments={"job_id": job_id, "after_seq": after_seq})
+                    status_result = await session.call_tool(
+                        "get_job_status",
+                        arguments={"job_id": job_id, "after_seq": after_seq},
+                    )
+                    status_payload = _result_payload(status_result)
+                    job = status_payload.get("job") if isinstance(status_payload, dict) else None
+                    if (
+                        isinstance(job, dict)
+                        and str(job.get("status") or "").lower() == "done"
+                        and not isinstance(job.get("result"), dict)
+                    ):
+                        # Durable large-graph jobs deliberately keep status
+                        # responses bounded. Fetch their terminal Summary /
+                        # Preview / Artifact payload only after completion.
+                        result_payload = _result_payload(
+                            await session.call_tool(
+                                "get_job_result", arguments={"job_id": job_id}
+                            )
+                        )
+                        final = (
+                            result_payload.get("result")
+                            if isinstance(result_payload, dict)
+                            else None
+                        )
+                        if isinstance(final, dict):
+                            status_payload = {
+                                **status_payload,
+                                "job": {**job, "result": final},
+                            }
+                            return ToolResult(
+                                content=json.dumps(status_payload, ensure_ascii=False)
+                            )
+                    return status_result
 
-            return await completed_graph_result(result, poll, tool_name=tool_name)
+            return await completed_graph_result(
+                result,
+                poll,
+                interval=self.job_poll_interval_seconds,
+                tool_name=tool_name,
+            )
         return invoke

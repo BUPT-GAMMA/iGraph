@@ -17,6 +17,35 @@ function formatBytes(size?: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const INTERNAL_METADATA_KEYS = [
+  'graph_version',
+  'graph_id',
+  'session_id',
+  'run_id',
+  'request_id',
+  'job_id',
+  'tool_call_id',
+  'call_id',
+  'event_index',
+  'protocol_version',
+].join('|');
+
+const CLOSED_INTERNAL_METADATA_ANNOTATION = new RegExp(
+  `\\s*[（(]\\s*(?=[^()（）]*\\x60?(?:${INTERNAL_METADATA_KEYS})\\x60?\\s*[:：=])[^()（）]*[)）]`,
+  'gi',
+);
+const STREAMING_INTERNAL_METADATA_ANNOTATION = new RegExp(
+  `\\s*[（(]\\s*\\x60?(?:${INTERNAL_METADATA_KEYS})\\x60?\\s*[:：=][^()（）]*$`,
+  'gi',
+);
+
+export function sanitizeAssistantContent(content: string) {
+  return content
+    .replace(CLOSED_INTERNAL_METADATA_ANNOTATION, '')
+    .replace(STREAMING_INTERNAL_METADATA_ANNOTATION, '')
+    .replace(/[ \\t]+([，。！？；：,.!?;:])/g, '$1');
+}
+
 /** Deliverables the agent published this turn, downloadable inline. */
 function ArtifactList({ artifacts, sessionId }: { artifacts: ArtifactRef[]; sessionId?: string }) {
   const { t } = useI18n();
@@ -175,7 +204,11 @@ function MarkdownContent({ content }: { content: string }) {
   return <div className="markdown-content">{blocks}</div>;
 }
 
-function renderContent(content: string, role: Message['role']) { return role === 'assistant' ? <MarkdownContent content={content} /> : <span className="plain-content">{content}</span>; }
+function renderContent(content: string, role: Message['role']) {
+  return role === 'assistant'
+    ? <MarkdownContent content={sanitizeAssistantContent(content)} />
+    : <span className="plain-content">{content}</span>;
+}
 
 function MessageCopyAction({ content, onEdit }: { content: string; onEdit?: () => void }) {
   const { t } = useI18n();

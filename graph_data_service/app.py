@@ -7,17 +7,20 @@ from __future__ import annotations
 import asyncio
 import anyio
 import httpx
+import hashlib
 import json
 import os
+import shutil
 import threading
 import time
 import tempfile
-from pathlib import Path
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -40,7 +43,6 @@ from graph_data_service.codec import (
     node_type_values_for_graph,
 )
 import concurrent.futures
-
 from graph_data_service.compute import GraphCompute, NX_TOOL_NAMES, run_nx_tool
 from graph_data_service.embedding import default_provider
 from graph_data_service.graph_data import GraphData
@@ -53,6 +55,11 @@ from graph_data_service.worker_contract import ISOLATED_DATA_TOOLS
 from graph_data_service.async_work import run_sync
 from graph_data_service.tool_scheduler import ToolResourceScheduler
 from execution_protocol import controls_enabled, require_service, service_headers, validate_service_configuration
+from graph_data_service.large_graph import LargeGraphService
+from graph_data_service.large_graph.preflight import (
+    probe_binary_archive,
+    probe_structured_source,
+)
 from graph_data_service.rag import LightweightRAG
 from graph_data_service.property_graph import UnsupportedPropertyGraphAppend, require_lossless_append
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
@@ -72,6 +79,8 @@ _DATA_TOOLS = {
     "to_undirected", "get_graph_info", "list_datasets", "load_dataset",
     "save_as_dataset", "load_graph_from_text", "load_graph_from_triples",
     "upload_document", "nebula_status", "nebula_sync_graph",
+    # Large-graph data preparation stays separate from GraphData/Nebula import.
+    "prepare_large_graph", "list_large_graph_versions",
 }
 
 _GRAPH_ML_TOOL_NAMES = {spec.get("name", "").strip() for spec in GRAPH_ML_TOOLS}
@@ -102,6 +111,21 @@ class RegisterUploadReq(BaseModel):
 class LoadGraphUploadReq(BaseModel):
     filename: str
     append: bool = False
+    directed: bool = True
+
+
+class ServerDatasetPrepareReq(BaseModel):
+    server_dataset_id: str = Field(min_length=1, max_length=128)
+    revision: str = Field(min_length=64, max_length=64)
+    relative_path: str = Field(min_length=1, max_length=1024)
+    original_filename: str = Field(min_length=1, max_length=255)
+    source_path: str = Field(min_length=1, max_length=4096)
+    directed: bool = True
+
+
+class ServerDatasetAttachReq(BaseModel):
+    server_dataset_id: str = Field(min_length=1, max_length=128)
+    revision: str = Field(min_length=64, max_length=64)
 
 
 class ToolInvokeReq(BaseModel):
@@ -168,6 +192,131 @@ def _graph_data_upload_root() -> str:
     return os.path.abspath(root)
 
 
+def _regular_file_bytes(root: Path) -> int:
+    """Return managed upload usage without following directory symlinks."""
+    if not root.exists():
+        return 0
+    total = 0
+    for current_root, directory_names, file_names in os.walk(root, followlinks=False):
+        directory_names[:] = [
+            name for name in directory_names
+            if not (Path(current_root) / name).is_symlink()
+        ]
+        for name in file_names:
+            path = Path(current_root) / name
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _registered_upload_path(saved_path: str, user_id: str = "") -> Path | None:
+    """Resolve an internal upload reference without allowing arbitrary file reads.
+
+    ``/uploads/register`` is used by the backend to hand project-owned files to
+    Graph Engine. Treating ``saved_path`` as an unrestricted server path would
+    let a caller feed configuration/source files into the graph pipeline.
+    """
+    try:
+        resolved = Path(saved_path).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not resolved.is_file():
+        return None
+    # Never grant a caller the whole shared data root: it contains every
+    # user's project/dataset/session files. Authenticated uploads belong only
+    # to that user's Graph Engine-managed upload tree; legacy anonymous mode
+    # has its own isolated root.
+    allowed_roots = (
+        {_dp.user_uploads_dir(user_id).resolve()}
+        if user_id
+        else {Path(_graph_data_upload_root()).resolve()}
+    )
+    return resolved if any(resolved.is_relative_to(root) for root in allowed_roots) else None
+
+
+def _registered_server_dataset_path(
+    saved_path: str,
+    *,
+    relative_path: str,
+    server_dataset_id: str,
+    revision: str,
+    directed: bool = True,
+) -> Path | None:
+    """Resolve a Backend-owned public source without granting broad file reads."""
+
+    try:
+        root = Path(
+            os.getenv(
+                "GRAPH_ENGINE_SERVER_DATASETS_DIR",
+                str(_dp.data_root() / "server_datasets"),
+            )
+        ).resolve(strict=True)
+        candidate = root.joinpath(*Path(relative_path).parts)
+        if candidate.is_symlink():
+            return None
+        resolved = Path(saved_path).resolve(strict=True)
+        file_stat = resolved.stat()
+        actual_relative = resolved.relative_to(root).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not resolved.is_file() or resolved != candidate.resolve():
+        return None
+    expected_id = "server-" + hashlib.sha256(
+        actual_relative.encode("utf-8")
+    ).hexdigest()
+    revision_identity = (
+        f"{actual_relative}\0{int(file_stat.st_size)}\0{int(file_stat.st_mtime_ns)}"
+    )
+    if not directed:
+        revision_identity += "\0directed=false"
+    expected_revision = hashlib.sha256(revision_identity.encode("utf-8")).hexdigest()
+    if (
+        actual_relative != relative_path
+        or expected_id != server_dataset_id
+        or expected_revision != revision
+        or resolved.suffix.lower()
+        not in {".txt", ".csv", ".tsv", ".edgelist", ".dat"}
+    ):
+        return None
+    return resolved
+
+
+def _version_matches_upload(
+    session: GraphSession, graph_version: int, upload: UploadFileRecord
+) -> bool:
+    """Only reuse a logical version when its recorded source is identical."""
+    source = session.version_source(graph_version)
+    if not source or str(source.get("file_token") or "") != str(upload.file_token):
+        return False
+    try:
+        path = Path(upload.saved_path)
+        stat = path.stat()
+    except OSError:
+        return False
+    if source.get("size") is not None and int(source["size"]) != stat.st_size:
+        return False
+    if source.get("mtime_ns") is not None and int(source["mtime_ns"]) != stat.st_mtime_ns:
+        return False
+    expected_digest = str(source.get("content_sha256") or "")
+    if expected_digest:
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as source_file:
+                while True:
+                    block = source_file.read(8 * 1024 * 1024)
+                    if not block:
+                        break
+                    digest.update(block)
+        except OSError:
+            return False
+        if digest.hexdigest() != expected_digest:
+            return False
+    return True
+
+
 def _graph_classification_profile_hint(filename: str) -> str | None:
     stem = os.path.splitext(os.path.basename(filename or ""))[0].lower()
     if "pcba" in stem:
@@ -207,6 +356,56 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _is_global_nx_operation(
+    tool_name: str,
+    arguments: Dict[str, Any],
+    *,
+    remote_primary: bool = False,
+) -> bool:
+    """Classify legacy NetworkX tools before they can materialise a large graph."""
+    if tool_name in {
+        "maximum_flow", "minimum_cut", "global_minimum_cut",
+        "minimum_spanning_tree", "community_detection", "node_centrality",
+        "graph_connectivity", "find_cycles", "maximum_cycle", "topological_sort",
+        "clique_analysis", "global_metrics", "all_shortest_paths",
+    }:
+        return True
+    if tool_name == "degree_analysis":
+        # ``node`` is a native point-query optimization only for the Nebula
+        # primary representation.  The local GraphCompute implementation still
+        # scans every node, so the argument must not bypass the large-graph
+        # guard for a local graph.
+        return not (remote_primary and bool(arguments.get("node")))
+    if tool_name == "reachability":
+        return str(arguments.get("method") or "") == "transitive_closure"
+    if tool_name == "path_analysis":
+        return str(arguments.get("method") or "") == "average_shortest_path_length"
+    if tool_name == "link_prediction_score":
+        return not (
+            arguments.get("source") is not None
+            and arguments.get("target") is not None
+        )
+    if tool_name == "subgraph_extraction":
+        return str(arguments.get("method") or "") in {
+            "k_core", "k_truss", "k_corona"
+        }
+    if tool_name == "shortest_path":
+        return str(arguments.get("target") or "") == "all" or str(
+            arguments.get("algorithm") or ""
+        ) == "yen_k_shortest"
+    return False
+
+
+def _large_algorithm_for_legacy_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
+    """Preserve the public tool contract when entering the large-graph path.
+
+    Modified after the complete catalogue was implemented: aliases such as
+    degree_analysis -> degree changed the result schema and discarded modes.
+    The router now owns an explicit capability for every legacy tool name.
+    """
+    return tool_name
+
+
 def _detect_text_format_verbose(
     text: str,
 ) -> tuple[Literal["edgelist", "triples", "freetext"], dict]:
@@ -233,11 +432,6 @@ def _detect_text_format_verbose(
     detail["nl_lines"] = nl_lines
     detail["long_lines"] = long_lines
 
-    if nl_lines > len(sample) * 0.2:
-        return "freetext", detail
-    if long_lines > len(sample) * 0.2:
-        return "freetext", detail
-
     edgelist_votes = triple_votes = 0
     for line in sample:
         if "\t" in line:
@@ -262,6 +456,13 @@ def _detect_text_format_verbose(
         return "triples", detail
     if edgelist_votes >= total * 0.6:
         return "edgelist", detail
+    # CJK characters alone do not make a file natural language: Chinese node
+    # identifiers and relation names are valid structured fields. Prefer a
+    # consistent 2/3-column shape above, then use prose signals as fallback.
+    if nl_lines > len(sample) * 0.2:
+        return "freetext", detail
+    if long_lines > len(sample) * 0.2:
+        return "freetext", detail
     return "freetext", detail
 
 
@@ -336,6 +537,9 @@ class GraphDataService:
         )
         self._job_manager = JobManager(progress_root=_dp.data_root() / "graph_engine" / "job_progress")
         self._execution_host = GraphExecutionHost(self._job_manager) if controls_enabled() else None
+        # New large-graph path: durable catalog/worker state is intentionally
+        # independent from the in-memory JobManager used by legacy operations.
+        self._large_graph = LargeGraphService()
         self._nebula = nebula_repository or NebulaGraphRepository()
         backend = str(storage_backend or os.getenv("GRAPH_STORAGE_BACKEND", "local")).strip().lower()
         if backend not in {"local", "nebula"}:
@@ -542,6 +746,15 @@ class GraphDataService:
             if key not in self._sessions:
                 self._sessions[key] = GraphSession(session_id=session_id, user_id=user_id)
                 self._sessions[key].load_snapshot()
+                # Keep GraphData/Nebula versions above durable large-graph
+                # reservations after an API restart.
+                large_versions = self._large_graph.list_versions(
+                    user_id=user_id, session_id=session_id, graph_id=session_id
+                )
+                if large_versions:
+                    self._sessions[key].reserve_version_floor(
+                        max(int(row.get("graph_version", 0)) for row in large_versions)
+                    )
             return self._sessions[key]
 
     def get_required(self, session_id: str, user_id: str = "") -> GraphSession:
@@ -560,18 +773,83 @@ class GraphDataService:
                                        for job in self._job_manager.list_jobs(session_id)):
             raise HTTPException(409, {'code': 'SESSION_EXECUTION_ACTIVE'})
         key = self._session_key(session_id, user_id)
-        if permanent:
-            # Runtime supplies the durable fence after restart. This local fence
-            # also rejects requests admitted remotely just before deletion.
-            self._deleted_sessions.add(key)
-            self._job_manager.delete_progress(session_id, user_id)
-        self._graph_ml.release_session(key)
-        session = self._sessions.pop(key, None)
-        if session is None:
-            session = GraphSession(session_id=session_id, user_id=user_id)
-        session.delete_storage()
-        self._rag_cache.pop(key, None)
-        self._search_index_cache.pop(key, None)
+        with self._graph_write_lock(session_id, user_id):
+            large_cleanup = self._large_graph.delete_session(
+                user_id=user_id, session_id=session_id
+            )
+            if not large_cleanup.get("success"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": large_cleanup.get(
+                            "code", "LARGE_GRAPH_SESSION_DELETE_PENDING"
+                        ),
+                        "error": large_cleanup.get("error"),
+                        "active_job_ids": large_cleanup.get("active_job_ids", []),
+                    },
+                )
+            if permanent:
+                # Runtime supplies the durable fence after restart. This local
+                # fence rejects requests admitted remotely just before deletion.
+                self._deleted_sessions.add(key)
+                self._job_manager.delete_progress(session_id, user_id)
+            self._graph_ml.release_session(key)
+            session = self._sessions.pop(key, None)
+            if session is None:
+                session = GraphSession(session_id=session_id, user_id=user_id)
+            session.delete_storage()
+            self._rag_cache.pop(key, None)
+            self._search_index_cache.pop(key, None)
+
+    def ensure_server_dataset_prepared(
+        self,
+        *,
+        server_dataset_id: str,
+        revision: str,
+        source_path: str,
+        source_name: str,
+        relative_path: str,
+        directed: bool = True,
+    ) -> dict[str, Any]:
+        return self._large_graph.ensure_server_dataset_prepared(
+            server_dataset_id=server_dataset_id,
+            revision=revision,
+            source_path=source_path,
+            source_name=source_name,
+            relative_path=relative_path,
+            directed=directed,
+        )
+
+    def attach_server_dataset(
+        self,
+        session_id: str,
+        *,
+        user_id: str,
+        server_dataset_id: str,
+        revision: str,
+    ) -> dict[str, Any]:
+        session = self.get_or_create(session_id, user_id=user_id)
+        with self._graph_write_lock(session_id, user_id):
+            existing = self._large_graph.list_versions(
+                user_id=user_id,
+                session_id=session_id,
+                graph_id=session_id,
+            )
+            graph_version = max(
+                [session.graph_version]
+                + [int(row.get("graph_version", 0)) for row in existing]
+            ) + 1
+            result = self._large_graph.attach_server_dataset_snapshot(
+                user_id=user_id,
+                session_id=session_id,
+                graph_id=session_id,
+                graph_version=graph_version,
+                server_dataset_id=server_dataset_id,
+                revision=revision,
+            )
+            if result.get("success"):
+                session.reserve_version_floor(int(result["graph_version"]))
+            return result
 
     def _get_graph_ml_session(self, runtime_session_id: str):
         session = self._sessions.get(str(runtime_session_id))
@@ -627,6 +905,16 @@ class GraphDataService:
             try:
                 session = GraphSession(session_id=session_id, user_id=user_id)
                 if session.load_snapshot():
+                    large_versions = self._large_graph.list_versions(
+                        user_id=user_id, session_id=session_id, graph_id=session_id
+                    )
+                    if large_versions:
+                        session.reserve_version_floor(
+                            max(
+                                int(row.get("graph_version", 0))
+                                for row in large_versions
+                            )
+                        )
                     self._sessions[key] = session
             except Exception:
                 pass
@@ -800,8 +1088,15 @@ class GraphDataService:
         )
 
     @staticmethod
-    def _graph_from_edgelist(text: str, existing: Optional[GraphData] = None) -> GraphData:
+    def _graph_from_edgelist(
+        text: str,
+        existing: Optional[GraphData] = None,
+        *,
+        directed: bool = True,
+    ) -> GraphData:
         require_lossless_append(existing)
+        if existing is not None and existing.directed != directed:
+            raise ValueError("追加边列表的有向/无向语义必须与当前图一致")
         node2id: dict[str, int] = dict(existing.node2id) if existing is not None else {}
         id2node: dict[int, str] = dict(existing.id2node) if existing is not None else {}
         pairs: list[tuple[int, int]] = list(existing.all_edges()) if existing is not None else []
@@ -838,6 +1133,7 @@ class GraphDataService:
             id2node=id2node or None,
             node2id=node2id or None,
             edge_weight=np.asarray(weights, dtype=np.float32) if weights else None,
+            directed=directed,
         )
 
     # ── NebulaGraph 混合/主存储 ──────────────────────────────────────────────────────────
@@ -1130,7 +1426,15 @@ class GraphDataService:
                 "error": f"加载上传文件失败: {exc}",
             }
 
-    async def do_load_graph_from_upload(self, session_id: str, filename: str, append: bool, user_id: str = "") -> dict:
+    async def do_load_graph_from_upload(
+        self,
+        session_id: str,
+        filename: str,
+        append: bool,
+        user_id: str = "",
+        *,
+        directed: bool = True,
+    ) -> dict:
         svc_log = _service_logger(session_id, "graph_data", user_id=user_id)
         session = self.get_required(session_id, user_id=user_id)
         record = session.resolve_upload_by_name(filename)
@@ -1189,6 +1493,180 @@ class GraphDataService:
             result["filename"] = record.original_filename
             result["format_detected"] = "graph_classification_dataset"
             result["dataset_profile"] = graph_classification_profile
+            return result
+
+        # Route oversized uploads before any read_text/GraphData conversion.
+        # File bytes are only a conservative proxy until validation produces
+        # exact counts, but this guard prevents the API process from becoming
+        # the first component to fully materialise an obviously large source.
+        try:
+            source_bytes = os.path.getsize(record.saved_path)
+        except OSError as exc:
+            return {
+                "success": False,
+                "code": "SOURCE_NOT_FOUND",
+                "error": f"读取上传文件元数据失败: {exc}",
+            }
+        large_upload_threshold = _env_int(
+            "LARGE_GRAPH_UPLOAD_BYTES_THRESHOLD", 256 * 1024 * 1024
+        )
+        binary_upload_threshold = _env_int(
+            "LARGE_GRAPH_BINARY_UPLOAD_BYTES_THRESHOLD", 64 * 1024 * 1024
+        )
+        binary_suffix = lower_path.endswith((".npz", ".pt", ".json"))
+        archive_uncompressed_bytes = source_bytes
+        archive_entries = 0
+        binary_expansion_threshold_reached = False
+        if binary_suffix and lower_path.endswith((".npz", ".pt")):
+            try:
+                archive_probe = probe_binary_archive(record.saved_path)
+            except OSError as exc:
+                return {"success": False, "code": "SOURCE_NOT_FOUND", "error": str(exc)}
+            archive_uncompressed_bytes = archive_probe.uncompressed_bytes
+            archive_entries = archive_probe.entries
+            binary_expansion_threshold_reached = (
+                archive_probe.is_archive
+                and archive_uncompressed_bytes >= binary_upload_threshold
+            )
+        detected_stream_format: Literal["edgelist", "triples", "freetext"] | None = None
+        sample = ""
+        if not binary_suffix:
+            try:
+                with open(
+                    record.saved_path, "r", encoding="utf-8", errors="replace"
+                ) as sample_file:
+                    sample = sample_file.read(64 * 1024)
+            except OSError as exc:
+                return {"success": False, "code": "SOURCE_NOT_FOUND", "error": str(exc)}
+            detected_stream_format, _detail = _detect_text_format_verbose(sample)
+
+        # Compact numeric edge lists can contain millions of edges while still
+        # being far below the byte threshold. Count only until the routing
+        # threshold is reached; this remains streaming and never constructs a
+        # GraphData/NX object in the API process.
+        edge_threshold = max(
+            1, _env_int("LARGE_GRAPH_EDGE_THRESHOLD", 5_000_000)
+        )
+        edge_threshold_reached = False
+        node_threshold_reached = False
+        estimated_nodes = 0
+        structured_rows = 0
+        probe_estimator = "none"
+        if detected_stream_format in {"edgelist", "triples"}:
+            node_threshold = max(
+                1, _env_int("LARGE_GRAPH_NODE_THRESHOLD", 1_000_000)
+            )
+            try:
+                probe = probe_structured_source(
+                    record.saved_path,
+                    input_format=detected_stream_format,
+                    edge_threshold=edge_threshold,
+                    node_threshold=node_threshold,
+                )
+                structured_rows = probe.rows_scanned
+                estimated_nodes = probe.estimated_nodes
+                edge_threshold_reached = probe.edge_threshold_reached
+                node_threshold_reached = probe.node_threshold_reached
+                probe_estimator = probe.estimator
+            except OSError as exc:
+                return {"success": False, "code": "SOURCE_NOT_FOUND", "error": str(exc)}
+        else:
+            node_threshold = max(
+                1, _env_int("LARGE_GRAPH_NODE_THRESHOLD", 1_000_000)
+            )
+
+        if (
+            source_bytes >= large_upload_threshold
+            or edge_threshold_reached
+            or node_threshold_reached
+            or (
+                binary_suffix
+                and (
+                    source_bytes >= binary_upload_threshold
+                    or binary_expansion_threshold_reached
+                )
+            )
+        ):
+            if append:
+                return {
+                    "success": False,
+                    "code": "LARGE_GRAPH_APPEND_UNSUPPORTED",
+                    "error": "超大图快照是不可变版本，不能使用 append；请准备一个新版本。",
+                }
+            if binary_suffix:
+                return {
+                    "success": False,
+                    "code": "LARGE_GRAPH_FORMAT_UNSUPPORTED",
+                    "error": (
+                        "当前大图准备器只接受流式边列表或三元组文件；"
+                        "禁止将大型二进制/JSON 文件回退到 GraphData 全量加载。"
+                    ),
+                    "source_bytes": source_bytes,
+                    "archive_uncompressed_bytes": archive_uncompressed_bytes,
+                    "archive_entries": archive_entries,
+                    "binary_threshold_bytes": binary_upload_threshold,
+                }
+            detected = detected_stream_format or _detect_text_format_verbose(sample)[0]
+            if detected == "freetext":
+                return {
+                    "success": False,
+                    "code": "LARGE_GRAPH_FORMAT_UNSUPPORTED",
+                    "error": (
+                        "大型自然语言文件不能直接作为图快照；"
+                        "请先使用可流式处理的外部抽取流程生成边列表/三元组。"
+                    ),
+                }
+            with self._graph_write_lock(session_id, user_id):
+                existing_large_versions = self._large_graph.list_versions(
+                    user_id=user_id, session_id=session_id, graph_id=session_id
+                )
+                next_graph_version = max(
+                    [session.graph_version]
+                    + [
+                        int(row.get("graph_version", 0))
+                        for row in existing_large_versions
+                    ]
+                ) + 1
+                # Reserve before catalog submission while holding the same
+                # lock used by small graph commits. A failed submission may
+                # leave a harmless gap but can never create a collision.
+                session.reserve_version_floor(next_graph_version)
+                result = self._large_graph.submit_preparation(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_id=session_id,
+                    source_path=record.saved_path,
+                    source_name=record.original_filename,
+                    source_token=record.file_token,
+                    directed=directed,
+                    partitions=None,
+                    workers=None,
+                    delimiter="auto",
+                    input_format="triples" if detected == "triples" else "edgelist",
+                    quality_policy=None,
+                    graph_version=next_graph_version,
+                )
+            result["route_decision"] = {
+                "path": "large_graph",
+                "code": "LARGE_UPLOAD_STREAMING_PREPARATION",
+                "reason": (
+                    "结构化记录数达到大图边阈值"
+                    if edge_threshold_reached
+                    else (
+                        "流式节点基数估算达到大图节点阈值"
+                        if node_threshold_reached
+                        else "上传文件超过 API 全量读取阈值"
+                    )
+                ),
+                "source_bytes": source_bytes,
+                "threshold_bytes": large_upload_threshold,
+                "binary_threshold_bytes": binary_upload_threshold,
+                "edge_threshold": edge_threshold,
+                "node_threshold": node_threshold,
+                "structured_rows_scanned": structured_rows,
+                "estimated_nodes": estimated_nodes,
+                "node_estimator": probe_estimator,
+            }
             return result
 
         # Nebula 主存储下，二进制图的解析、CSV 生成和导入都在后台线程执行。
@@ -1276,6 +1754,7 @@ class GraphDataService:
             )
             try:
                 session.load_graph_from_upload_path(record.saved_path, append=append)
+                session.mark_version_upload_source(session.graph_version, record)
                 self._compute.invalidate(self._cache_key(session_id, user_id))
             except FileNotFoundError as exc:
                 svc_log.event(
@@ -1385,13 +1864,16 @@ class GraphDataService:
         if fmt == "edge_list":
             try:
                 existing = self._current_graph_for_update(session, user_id) if append else None
-                graph = self._graph_from_edgelist(text, existing=existing)
+                graph = self._graph_from_edgelist(
+                    text, existing=existing, directed=directed
+                )
                 commit = self._commit_graph(
                     session,
                     graph,
                     user_id=user_id,
                     description=f"从上传边列表加载图: {record.original_filename}",
                 )
+                session.mark_version_upload_source(session.graph_version, record)
                 n, e = graph.num_nodes, graph.num_edges
             except UnsupportedPropertyGraphAppend:
                 raise
@@ -1428,7 +1910,15 @@ class GraphDataService:
                 filename=record.original_filename,
                 triple_count=len(triples),
             )
-            result = self.do_load_graph_from_triples(session_id, triples, directed=True, append=append, user_id=user_id)
+            result = self.do_load_graph_from_triples(
+                session_id,
+                triples,
+                directed=directed,
+                append=append,
+                user_id=user_id,
+            )
+            if result.get("success"):
+                session.mark_version_upload_source(session.graph_version, record)
             result["filename"] = record.original_filename
             result["format_detected"] = "triple"
             svc_log.event(
@@ -1455,7 +1945,7 @@ class GraphDataService:
             session_id,
             user_id,
             text,
-            True,
+            directed,
             _progress_kwarg="progress_callback",
             _identity={"user_id": user_id},
             append=append,
@@ -2044,6 +2534,20 @@ class GraphDataService:
                 "graph_version": session.graph_version,
                 "error": "triples 不能为空。",
             }
+        max_control_rows = max(
+            1, _env_int("GRAPH_SMALL_MAX_STRUCTURED_ROWS", 1_000_000)
+        )
+        if len(triples) > max_control_rows:
+            return {
+                "success": False,
+                "code": "STRUCTURED_INPUT_TOO_LARGE",
+                "session_id": session_id,
+                "graph_version": session.graph_version,
+                "error": (
+                    f"结构化三元组数量 {len(triples)} 超过控制面上限 "
+                    f"{max_control_rows}；请上传流式三元组文件并调用 prepare_large_graph。"
+                ),
+            }
         valid_count = self._count_valid_triples(triples)
         skipped = len(triples) - valid_count
         graph = GraphBuilder.build_from_triples(triples, directed=directed)
@@ -2097,6 +2601,20 @@ class GraphDataService:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
         session = self.get_or_create(session_id, user_id=user_id)
+        max_text_bytes = max(
+            1, _env_int("TEXT2GRAPH_MAX_INPUT_BYTES", 16 * 1024 * 1024)
+        )
+        if text and len(text.encode("utf-8")) > max_text_bytes:
+            return {
+                "success": False,
+                "code": "TEXT_INPUT_TOO_LARGE",
+                "session_id": session_id,
+                "graph_version": session.graph_version,
+                "error": (
+                    f"文本请求超过 {max_text_bytes} 字节上限；"
+                    "请先上传文件，结构化大图请调用 prepare_large_graph。"
+                ),
+            }
         if filename and not text:
             record = session.resolve_upload_by_name(filename)
             if record is None:
@@ -2107,6 +2625,17 @@ class GraphDataService:
                     "error": f"未找到上传文件: {filename}",
                 }
             try:
+                if Path(record.saved_path).stat().st_size > max_text_bytes:
+                    return {
+                        "success": False,
+                        "code": "TEXT_INPUT_TOO_LARGE",
+                        "session_id": session_id,
+                        "graph_version": session.graph_version,
+                        "error": (
+                            f"文本文件超过 {max_text_bytes} 字节上限；"
+                            "结构化大图请调用 prepare_large_graph。"
+                        ),
+                    }
                 with open(record.saved_path, "r", encoding="utf-8") as _f:
                     text = _f.read()
             except OSError as _e:
@@ -2917,6 +3446,11 @@ class GraphDataService:
 
         if tool_name == "get_job_status":
             job_id = _required_str(arguments, "job_id")
+            if job_id.startswith("lg_"):
+                job = self._large_graph.job_status(
+                    job_id, user_id=user_id, session_id=session_id
+                )
+                return {"success": bool(job), "job": job, "progress_updates": []}
             job = self._job_manager.owned(job_id, session_id, user_id)
             if job is None:
                 return {"success": False, "job": None, "progress_updates": []}
@@ -2927,11 +3461,210 @@ class GraphDataService:
             except ValueError as exc:
                 return {"success": False, "code": "INVALID_PROGRESS_CURSOR", "error": str(exc)}
 
+        if tool_name == "get_job_result":
+            job_id = _required_str(arguments, "job_id")
+            if job_id.startswith("lg_"):
+                result = self._large_graph.job_result(
+                    job_id, user_id=user_id, session_id=session_id
+                )
+                status = str((result or {}).get("status") or "").lower()
+                # A failed/cancelled large job still has a useful, non-empty
+                # bounded result payload (status, summary and error).  Do not
+                # mistake that payload's truthiness for successful execution.
+                # Queued/running mirrors the legacy branch below: lookup was
+                # successful, but the caller must keep polling until terminal.
+                return {
+                    "success": bool(result) and status not in {"failed", "cancelled"},
+                    "result": result,
+                }
+            job = self._job_manager.status(job_id)
+            if job is None or job.session_id != session_id:
+                return {"success": False, "result": None}
+            if job.status not in {"done", "failed", "cancelled"}:
+                return {
+                    "success": True,
+                    "result": {"job_id": job_id, "status": job.status},
+                }
+            return {
+                "success": job.status == "done",
+                "result": {
+                    "job_id": job_id,
+                    "status": job.status,
+                    "result": job.result,
+                    "error": job.message if job.status == "failed" else None,
+                },
+            }
+
         if tool_name == "cancel_job":
             job_id = _required_str(arguments, "job_id")
+            if job_id.startswith("lg_"):
+                return {
+                    "success": self._large_graph.cancel(
+                        job_id, user_id=user_id, session_id=session_id
+                    ),
+                    "job_id": job_id,
+                }
             if not self._job_manager.owned(job_id, session_id, user_id):
                 return {"success": False, "error": "作业不存在", "job_id": job_id}
             return {"success": self._job_manager.cancel(job_id), "job_id": job_id}
+
+        if tool_name == "prepare_large_graph":
+            session = self.get_required(session_id, user_id=user_id)
+            filename = _required_str(arguments, "filename")
+            upload = session.resolve_upload_by_name(filename)
+            if upload is None:
+                return {
+                    "success": False,
+                    "code": "SOURCE_NOT_FOUND",
+                    "error": f"未找到已注册上传文件: {filename}",
+                }
+            graph_id = str(arguments.get("graph_id") or session_id)
+            requested_version = arguments.get("graph_version")
+            directed = _optional_bool(arguments, "directed", True)
+            input_format = str(arguments.get("input_format") or "edgelist")
+            quality_policy = (
+                arguments.get("quality_policy")
+                if isinstance(arguments.get("quality_policy"), dict)
+                else None
+            )
+            with self._graph_write_lock(session_id, user_id):
+                existing_large_versions = self._large_graph.list_versions(
+                    user_id=user_id, session_id=session_id, graph_id=graph_id
+                )
+                if requested_version is None and graph_id == session_id:
+                    if (
+                        session.has_graph()
+                        and session.graph_version > 0
+                        and _version_matches_upload(
+                            session, session.graph_version, upload
+                        )
+                        and session.graph_summary().directed == directed
+                    ):
+                        # Representations may share a version only when their
+                        # source fingerprint and graph orientation agree.
+                        requested_version = session.graph_version
+                    else:
+                        requested_version = max(
+                            [session.graph_version]
+                            + [
+                                int(row.get("graph_version", 0))
+                                for row in existing_large_versions
+                            ]
+                        ) + 1
+
+                requested_int = (
+                    int(requested_version) if requested_version is not None else None
+                )
+                if graph_id == session_id and requested_int is not None:
+                    small_versions = {
+                        int(row.get("graph_version", -1)): row
+                        for row in session.list_versions()
+                    }
+                    if requested_int in small_versions:
+                        if not _version_matches_upload(session, requested_int, upload):
+                            return {
+                                "success": False,
+                                "code": "GRAPH_VERSION_SOURCE_MISMATCH",
+                                "error": (
+                                    f"graph_version={requested_int} 已绑定另一数据源；"
+                                    "同一逻辑版本不能被不同图覆盖。"
+                                ),
+                            }
+                        if bool(small_versions[requested_int].get("is_directed", True)) != directed:
+                            return {
+                                "success": False,
+                                "code": "GRAPH_VERSION_SEMANTICS_MISMATCH",
+                                "error": "同一 graph_version 的有向/无向语义必须一致。",
+                            }
+                    # Reserve before catalog submission under the shared graph
+                    # write lock. Gaps after a rejected job are intentional.
+                    session.reserve_version_floor(requested_int)
+
+                result = self._large_graph.submit_preparation(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_id=graph_id,
+                    source_path=upload.saved_path,
+                    source_name=upload.original_filename,
+                    source_token=upload.file_token,
+                    directed=directed,
+                    partitions=arguments.get("partitions"),
+                    workers=arguments.get("workers"),
+                    delimiter=str(arguments.get("delimiter") or "auto"),
+                    input_format=input_format,
+                    quality_policy=quality_policy,
+                    graph_version=requested_int,
+                )
+            return result
+
+        if tool_name == "run_large_graph_algorithm":
+            session = self.get_required(session_id, user_id=user_id)
+            graph_id = str(arguments.get("graph_id") or session_id)
+            parameters = (
+                arguments.get("parameters")
+                if isinstance(arguments.get("parameters"), dict)
+                else {}
+            )
+            creates_derived_version = bool(
+                _required_str(arguments, "algorithm").strip().lower()
+                == "subgraph_extraction"
+                and _optional_bool(parameters, "create_version", True)
+            )
+            with self._graph_write_lock(session_id, user_id):
+                result = self._large_graph.submit_compute(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_id=graph_id,
+                    graph_version=int(arguments.get("graph_version", 0)),
+                    algorithm=_required_str(arguments, "algorithm"),
+                    parameters=parameters,
+                    workers=arguments.get("workers"),
+                    minimum_derived_version=(
+                        session.next_graph_version()
+                        if graph_id == session_id and creates_derived_version
+                        else None
+                    ),
+                )
+                new_version = result.get("new_graph_version")
+                if (
+                    result.get("success")
+                    and graph_id == session_id
+                    and new_version is not None
+                ):
+                    session.reserve_version_floor(int(new_version))
+                return result
+
+        if tool_name == "list_large_graph_versions":
+            return {
+                "success": True,
+                "graph_id": str(arguments.get("graph_id") or session_id),
+                "versions": self._large_graph.list_versions(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_id=str(arguments.get("graph_id") or session_id),
+                ),
+            }
+
+        if tool_name == "get_large_graph_artifact":
+            artifact_id = _required_str(arguments, "artifact_id")
+            artifact = self._large_graph.get_artifact(
+                artifact_id,
+                user_id=user_id,
+                session_id=session_id,
+                include_preview=_optional_bool(arguments, "include_preview", True),
+            )
+            return {
+                "success": bool(artifact),
+                "artifact": artifact,
+                "download_url_template": (
+                    f"/api/sessions/{session_id}/large-graph/artifacts/"
+                    f"{artifact_id}/partitions/{{partition}}"
+                    if artifact else None
+                ),
+            }
+
+        if tool_name == "get_large_graph_capabilities":
+            return {"success": True, "capabilities": self._large_graph.capabilities()}
 
         if tool_name == "create_analysis_report":
             return self.do_create_analysis_report(session_id, arguments, user_id=user_id)
@@ -3092,7 +3825,15 @@ class GraphDataService:
 
         if tool_name == "community_detection":
             algorithm = str(arguments.get("algorithm", "louvain"))
-            return self._compute.community_detection(nx_graph, algorithm)
+            return self._compute.community_detection(
+                nx_graph,
+                algorithm,
+                focus_nodes=(
+                    [str(node) for node in arguments.get("focus_nodes")]
+                    if isinstance(arguments.get("focus_nodes"), list)
+                    else None
+                ),
+            )
 
         if tool_name == "node_centrality":
             centrality_type = str(arguments.get("centrality_type", "degree"))
@@ -3559,7 +4300,14 @@ class GraphDataService:
         if tool_name == "load_graph_from_upload":
             filename = _required_str(arguments, "filename")
             append = _optional_bool(arguments, "append", False)
-            return await self.do_load_graph_from_upload(session_id, filename, append, user_id=user_id)
+            directed = _optional_bool(arguments, "directed", True)
+            return await self.do_load_graph_from_upload(
+                session_id,
+                filename,
+                append,
+                user_id=user_id,
+                directed=directed,
+            )
 
         if tool_name == "load_graph_from_text":
             text = str(arguments.get("text") or "")
@@ -3598,6 +4346,72 @@ class GraphDataService:
             if tool_name in _GRAPH_ML_HEAVY_TOOLS:
                 return await self._dispatch_heavy_graph_ml_tool_once(session_id, tool_name, arguments, user_id=user_id)
             return await run_sync(self._dispatch_graph_ml_tool, session_id, tool_name, arguments, user_id=user_id)
+        # Run the large-graph guard before every legacy special case.  The old
+        # ordering let subgraph_extraction(create_version=true) materialise or
+        # truncate a large graph before k-core/k-truss could reach this guard.
+        if tool_name in NX_TOOL_NAMES:
+            session = self.get_required(session_id, user_id=user_id)
+            graph_summary = session.graph_summary()
+            if (
+                _is_global_nx_operation(
+                    tool_name, arguments, remote_primary=session.is_remote
+                )
+                and self._large_graph.router.is_large(
+                    graph_summary.num_nodes, graph_summary.num_edges
+                )
+            ):
+                small_source = session.version_source(session.graph_version)
+                if not self._large_graph.version_matches_small_binding(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_id=session_id,
+                    graph_version=session.graph_version,
+                    small_source=small_source,
+                    directed=graph_summary.directed,
+                ):
+                    return {
+                        "success": False,
+                        "code": "GRAPH_VERSION_REPRESENTATION_MISMATCH",
+                        "error": (
+                            "当前小图版本没有同源、同指纹、同方向且语义兼容的已发布"
+                            "大图快照；为防止在错误数据上计算，已拒绝仅按版本号路由。"
+                        ),
+                        "graph_version": session.graph_version,
+                        "next_action": (
+                            "请对产生当前图版本的同一上传文件调用 prepare_large_graph，"
+                            "或显式调用 run_large_graph_algorithm 选择正确快照。"
+                        ),
+                    }
+                with self._graph_write_lock(session_id, user_id):
+                    creates_derived_version = bool(
+                        tool_name == "subgraph_extraction"
+                        and _optional_bool(arguments, "create_version", True)
+                    )
+                    result = self._large_graph.submit_compute(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_id=session_id,
+                        graph_version=session.graph_version,
+                        algorithm=_large_algorithm_for_legacy_tool(
+                            tool_name, arguments
+                        ),
+                        parameters={
+                            **arguments,
+                            "top_k": arguments.get(
+                                "top_k", arguments.get("limit", 20)
+                            ),
+                            "legacy_tool": tool_name,
+                        },
+                        minimum_derived_version=(
+                            session.next_graph_version()
+                            if creates_derived_version
+                            else None
+                        ),
+                    )
+                    new_version = result.get("new_graph_version")
+                    if result.get("success") and new_version is not None:
+                        session.reserve_version_floor(int(new_version))
+                    return result
         if tool_name == "shortest_path" and not _optional_bool(arguments, "use_weight", True):
             session = self.get_required(session_id, user_id=user_id)
             if session.is_remote:
@@ -3695,6 +4509,9 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             await asyncio.gather(*svc._tool_reservations, return_exceptions=True)
         # 不等待 ProcessPool worker 进程自然结束，直接让 OS 回收
         svc._process_pool.shutdown(wait=False, cancel_futures=True)
+        # Stop a running child process and leave its durable job queued so a
+        # replacement service can safely resume it.
+        svc._large_graph.close()
         svc._nebula.close()
 
     app = FastAPI(title="GraphDataServer", version="2.1.0", lifespan=lifespan)
@@ -4003,14 +4820,54 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             include_reporting=include_reporting,
         )
 
+    @app.post("/server-datasets/prepare")
+    def prepare_server_dataset(req: ServerDatasetPrepareReq):
+        source_path = _registered_server_dataset_path(
+            req.source_path,
+            relative_path=req.relative_path,
+            server_dataset_id=req.server_dataset_id,
+            revision=req.revision,
+            directed=req.directed,
+        )
+        if source_path is None:
+            raise HTTPException(
+                status_code=403,
+                detail="服务器数据源引用不在预置目录中或版本已经变化",
+            )
+        return svc.ensure_server_dataset_prepared(
+            server_dataset_id=req.server_dataset_id,
+            revision=req.revision,
+            source_path=str(source_path),
+            source_name=req.original_filename,
+            relative_path=req.relative_path,
+            directed=req.directed,
+        )
+
+    @app.post("/sessions/{session_id}/server-datasets/attach")
+    def attach_server_dataset(
+        session_id: str, req: ServerDatasetAttachReq, request: Request
+    ):
+        return svc.attach_server_dataset(
+            session_id,
+            user_id=_get_user_id(request),
+            server_dataset_id=req.server_dataset_id,
+            revision=req.revision,
+        )
+
     @app.post("/sessions/{session_id}/uploads/register")
     def register_upload(session_id: str, req: RegisterUploadReq, request: Request):
         user_id = _get_user_id(request)
+        registered_path = _registered_upload_path(req.saved_path, user_id)
+        if registered_path is None:
+            raise HTTPException(
+                status_code=403,
+                detail="上传引用必须是当前用户 Graph Engine 上传目录中的普通文件",
+            )
         session = svc.get_or_create(session_id, user_id=user_id)
         session.register_upload(
             file_token=req.file_token,
             original_filename=req.original_filename,
-            saved_path=req.saved_path,
+            saved_path=str(registered_path),
         )
         return {
             "success": True,
@@ -4030,37 +4887,78 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         user_id = _get_user_id(request)
         session = svc.get_or_create(session_id, user_id=user_id)
         if user_id:
-            upload_root = str(_dp.user_uploads_dir(user_id))
+            upload_root = _dp.user_uploads_dir(user_id)
         else:
-            upload_root = _graph_data_upload_root()
-        session_dir = os.path.join(upload_root, session_id)
-        os.makedirs(session_dir, exist_ok=True)
+            upload_root = Path(_graph_data_upload_root())
+        session_dir = upload_root / _dp.safe_path_component(session_id, "_session")
+        session_dir.mkdir(parents=True, exist_ok=True)
 
         safe_name = _sanitize_filename(original_filename or file.filename or "")
-        saved_path = os.path.abspath(os.path.join(session_dir, f"{file_token}_{safe_name}"))
-        content = await file.read()
-        with open(saved_path, "wb") as f:
-            f.write(content)
+        safe_token = _sanitize_filename(file_token or "upload").strip(".") or "upload"
+        saved_path = (session_dir / f"{safe_token}_{safe_name}").resolve()
+        if not saved_path.is_relative_to(session_dir.resolve()):
+            raise HTTPException(status_code=400, detail="非法上传路径")
+        size_bytes = 0
+        temporary_path = saved_path.with_name(f".{saved_path.name}.uploading")
+        max_upload_bytes = max(
+            1, _env_int("LARGE_GRAPH_UPLOAD_MAX_BYTES", 100 * 1024**3)
+        )
+        user_quota_bytes = max(
+            max_upload_bytes,
+            _env_int("LARGE_GRAPH_USER_UPLOAD_QUOTA_BYTES", 200 * 1024**3),
+        )
+        existing_size = saved_path.stat().st_size if saved_path.is_file() else 0
+        existing_usage = max(0, _regular_file_bytes(upload_root) - existing_size)
+        disk_reserve = max(
+            0, _env_int("LARGE_GRAPH_DISK_RESERVE_BYTES", 2 * 1024**3)
+        )
+        try:
+            with temporary_path.open("wb") as output:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size_bytes += len(chunk)
+                    if size_bytes > max_upload_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"单文件上传超过 {max_upload_bytes} 字节上限",
+                        )
+                    if existing_usage + size_bytes > user_quota_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"用户上传总量超过 {user_quota_bytes} 字节配额",
+                        )
+                    if shutil.disk_usage(upload_root).free < disk_reserve + len(chunk):
+                        raise HTTPException(
+                            status_code=507,
+                            detail="磁盘剩余空间已触及大图服务预留线",
+                        )
+                    output.write(chunk)
+            temporary_path.replace(saved_path)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
 
         session.register_upload(
             file_token=file_token,
             original_filename=original_filename,
-            saved_path=saved_path,
+            saved_path=str(saved_path),
         )
         _service_logger(session_id, "graph_data", user_id=user_id).event(
             "UPLOAD_INGEST",
             filename=original_filename,
             file_token=file_token,
-            saved_path=saved_path,
-            size_bytes=len(content),
+            saved_path=str(saved_path),
+            size_bytes=size_bytes,
         )
         return {
             "success": True,
             "session_id": session_id,
             "filename": original_filename,
             "file_token": file_token,
-            "saved_path": saved_path,
-            "size": len(content),
+            "saved_path": str(saved_path),
+            "size": size_bytes,
         }
 
     @app.post("/sessions/{session_id}/graph/load_text")
@@ -4133,6 +5031,30 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             "graph_version": session.graph_version,
             "graph": graph_data_to_document(gd),
         }
+
+    @app.get(
+        "/sessions/{session_id}/large-graph/artifacts/"
+        "{artifact_id}/partitions/{partition}"
+    )
+    def download_large_graph_artifact_partition(
+        session_id: str, artifact_id: str, partition: int, request: Request
+    ):
+        """Download one full-result partition outside the Agent/tool context."""
+        user_id = _get_user_id(request)
+        result_path = svc._large_graph.artifact_partition_path(
+            artifact_id,
+            partition,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if result_path is None:
+            raise HTTPException(status_code=404, detail="Artifact 分区不存在")
+        # NDJSON allows clients to stream the partition without loading it all.
+        return FileResponse(
+            result_path,
+            media_type="application/x-ndjson",
+            filename=f"{artifact_id}-part-{int(partition):05d}.jsonl",
+        )
 
     @app.post("/sessions/{session_id}/tools/{tool_name}")
     async def execute_tool(session_id: str, tool_name: str, req: ToolInvokeReq, request: Request):

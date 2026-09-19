@@ -3,7 +3,7 @@ import { GraphCanvas } from './GraphCanvas';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
 import { listProjectTrainingRuns } from '../api';
-import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, ProjectTrainingRun, ToolCall } from '../types';
+import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, PartitionedGraphSummary, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
 import { SlidingTabs } from './SlidingTabs';
 import { WorkspaceFiles } from './WorkspaceFiles';
@@ -198,7 +198,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
       {!tablesMode && <SlidingTabs ariaLabel={t('Graph workspace views', '图工作台视图')} className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: t(TAB_LABELS[item][0], TAB_LABELS[item][1]) }))} value={tab} onChange={onTab} />}
       {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={trainingError} />
         : tab === 'Artifacts' ? <><WorkspaceFiles key={sessionId} sessionId={sessionId} revision={JSON.stringify([messages.length, ...[...messages.flatMap(message => message.tools || []), ...liveTools].filter(tool => tool.tool?.startsWith('workspace_')).map(tool => [tool.call_id, tool.done, tool.result])])} /><ArtifactsTab messages={messages} /></>
-          : view?.status === 'unsupported' ? (tab === 'Graph' ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>{t('This graph collection cannot be visualized directly', '非独立图，无法直接可视化')}</strong></div> : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />)
+          : view?.status === 'unsupported' ? (tab === 'Graph'
+            ? <div className="graph-empty graph-unsupported"><div className="empty-icon small"><Icon name="graph" size={22} /></div><strong>{view.code === 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE' ? t('Partitioned large graphs cannot be rendered on the full canvas', '大图分区快照不支持全量画布渲染') : t('This graph collection cannot be visualized directly', '非独立图，无法直接可视化')}</strong>{view.code === 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE' ? <span>{t('Run a large-graph algorithm from the conversation and inspect bounded results under Artifacts.', '请从中央对话运行大图算法，并在分析产物中查看有界结果。')}</span> : null}</div>
+            : view.code === 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE'
+              ? <PartitionedGraphTab tab={tab} datasetName={datasetName} summary={view.summary} />
+              : <CollectionTab tab={tab} datasetName={datasetName} summary={view.summary} />)
             : view?.status === 'loading' ? <div className="graph-empty"><span className="loader" /><strong>{t('Loading graph', '正在加载图')}</strong></div>
               : view?.status === 'failed' ? <div className="graph-empty"><strong>{t('Failed to load graph', '图加载失败')}</strong><span>{view.error}</span></div>
                 : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>{t('No graph yet', '暂无图')}</strong><span>{t('Load data or request a graph to see analysis results here.', '加载数据或发送建图请求后，这里会显示图分析结果。')}</span></div>
@@ -253,6 +257,34 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
 function displayCount(value: unknown, locale: string) {
   const count = Number(value);
   return Number.isFinite(count) ? count.toLocaleString(locale) : '-';
+}
+
+function displayBytes(value: unknown, locale: string) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  if (bytes < 1024) return `${bytes.toLocaleString(locale)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let scaled = bytes;
+  let unit = -1;
+  do {
+    scaled /= 1024;
+    unit += 1;
+  } while (scaled >= 1024 && unit < units.length - 1);
+  return `${scaled.toFixed(scaled >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+
+function PartitionedGraphTab({ tab, datasetName, summary }: { tab: Tab; datasetName?: string; summary: PartitionedGraphSummary }) {
+  const { language, t } = useI18n();
+  const locale = localeFor(language);
+  const waiting = summary.preparation_status === 'not_started';
+  const preparing = Boolean(summary.preparation_status) && !waiting;
+  const statusLabel = waiting
+    ? t('Waiting to prepare this session snapshot', '等待准备当前会话的分区快照')
+    : preparing
+      ? t('Preparing partitioned compute snapshot', '正在准备分区计算快照')
+      : t('Partitioned compute snapshot ready', '大图分区计算快照已就绪');
+  if (tab === 'Overview') return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">{t('Large graph snapshot', '大图快照')}</span><h2>{datasetName || t('Current dataset', '当前数据集')}</h2><strong>{statusLabel}</strong></div><div className="stat-grid"><div><span>{t('Nodes', '节点数')}</span><strong>{displayCount(summary.num_nodes, locale)}</strong></div><div><span>{t('Edges', '边数')}</span><strong>{displayCount(summary.num_edges, locale)}</strong></div><div><span>{t('Partitions', '分区数')}</span><strong>{displayCount(summary.partitions, locale)}</strong></div><div><span>{t('Version', '版本')}</span><strong>{displayCount(summary.graph_version, locale)}</strong></div></div><div className="workspace-note"><Icon name="spark" size={15} /> {waiting ? t('Activating this dataset creates an independent partitioned snapshot for the current session.', '激活该数据集后会为当前会话创建独立的分区快照。') : preparing ? t('Once preparation finishes, submit large-graph algorithms from the conversation.', '准备完成后，可从中央对话提交大图算法。') : t('The snapshot remains partitioned on disk; run algorithms from the conversation without loading it into the regular canvas.', '快照保留在磁盘分区中；请从中央对话运行大图算法，无需加载到普通图画布。')}</div></div>;
+  return <div className="tab-content collection-data"><div className="tab-title"><strong>{t('Partition snapshot metadata', '分区快照元数据')}</strong><span>{t(`${displayCount(summary.num_nodes, locale)} nodes`, `${displayCount(summary.num_nodes, locale)} 个节点`)}</span></div><div className="collection-section"><strong>{t('Compute storage', '计算存储')}</strong><div className="stat-grid"><div><span>{t('Representation', '表示')}</span><strong>{summary.representation || '-'}</strong></div><div><span>{t('Storage', '存储')}</span><strong>{displayBytes(summary.storage_bytes, locale)}</strong></div><div><span>{t('Direction', '方向')}</span><strong>{summary.directed == null ? '-' : summary.directed ? t('Directed', '有向') : t('Undirected', '无向')}</strong></div><div><span>{t('Weights', '权重')}</span><strong>{summary.has_weights == null ? '-' : summary.has_weights ? t('Yes', '有') : t('No', '无')}</strong></div></div></div><div className="workspace-note">{t('Nodes and edges are not expanded in full in the browser; algorithms return bounded summaries or Artifacts.', '节点和边不会在浏览器中全量展开；算法结果通过有界摘要或分析产物返回。')}</div></div>;
 }
 
 function CollectionTab({ tab, datasetName, summary }: { tab: Tab; datasetName?: string; summary: GraphCollectionSummary }) {

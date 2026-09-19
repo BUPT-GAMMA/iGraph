@@ -2,8 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState }
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { readComposerDraft, writeComposerDraft, clearComposerDraft } from './composerDrafts';
-import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
-import type { ActiveRun, AttachmentRef, ConstructionState, CsvBundleSchema, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, Session, ToolCall } from './types';
+import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, importServerDataset, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listServerDatasets, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
+import type { ActiveRun, AttachmentRef, ConstructionState, CsvBundleSchema, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, ServerDataset, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
 import { RunCancellation } from './RunCancellation';
@@ -115,12 +115,25 @@ function requestWasAborted(cause: unknown) {
 }
 
 function unsupportedGraphView(datasetView: DatasetView | null | undefined): GraphViewState | null {
-  if (datasetView?.kind !== 'graph_collection') return null;
-  return { status: 'unsupported', data: null, code: 'NON_SINGLE_GRAPH', summary: datasetView.summary || {} };
+  if (datasetView?.kind === 'graph_collection') {
+    return { status: 'unsupported', data: null, code: 'NON_SINGLE_GRAPH', summary: datasetView.summary || {} };
+  }
+  if (datasetView?.kind === 'partitioned_graph') {
+    return {
+      status: 'unsupported',
+      data: null,
+      code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE',
+      summary: datasetView.summary || {},
+    };
+  }
+  return null;
 }
 
 function unsupportedGraphViewFromError(cause: unknown): GraphViewState | null {
-  if (!(cause instanceof ApiError) || cause.code !== 'GRAPH_NOT_VISUALIZABLE') return null;
+  if (!(cause instanceof ApiError) || (
+    cause.code !== 'GRAPH_NOT_VISUALIZABLE'
+    && cause.code !== 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE'
+  )) return null;
   const detail = cause.detail && typeof cause.detail === 'object' ? cause.detail as Record<string, unknown> : {};
   return unsupportedGraphView(detail.dataset_view as DatasetView | undefined);
 }
@@ -195,6 +208,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
   const [datasetsByProject, setDatasetsByProject] = useState<Record<string, Dataset[]>>({});
+  const [serverDatasets, setServerDatasets] = useState<ServerDataset[]>([]);
   const [datasetOpen, setDatasetOpen] = useState(false);
   const [datasetProjectId, setDatasetProjectId] = useState<string | undefined>();
   const [constructionDataset, setConstructionDataset] = useState<Dataset | null>(null);
@@ -287,6 +301,9 @@ function App() {
   const draftProject = activeDraft ? projects.find(project => project.project_id === activeDraft.projectId) || null : null;
   const visibleProjectId = activeDraft?.projectId || activeSession?.project_id || null;
   const datasets = datasetsByProject[draftScopeKey(visibleProjectId)] || [];
+  const hasPendingServerPreparation = serverDatasets.some(dataset =>
+    ['not_prepared', 'queued', 'running'].includes(dataset.preparation?.status || '')
+  );
   const messages = selectMessages(activeView);
   const graphView: GraphViewState = activeView?.graph || { status: 'empty', data: null };
   const graph = graphView.status === 'ready' ? graphView.data : null;
@@ -645,7 +662,7 @@ function App() {
         }).catch(() => undefined);
       }
 
-      if (response.has_graph && response.dataset_view?.kind !== 'graph_collection') {
+      if (response.has_graph && response.dataset_view?.visualization.supported !== false) {
         void refreshSessionGraph(id, { include_community: true }, false, graphVersion);
       } else {
         dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: unsupportedGraphView(response.dataset_view) || { status: 'empty', data: null } });
@@ -692,11 +709,16 @@ function App() {
     setConstructionDataset(null);
     setBusy(true); setWorkspaceError('');
     try {
-      const [conversationResponse, datasetResponse] = await Promise.all([listProjectConversations(id), listProjectDatasets(id)]);
+      const [conversationResponse, datasetResponse, serverDatasetResponse] = await Promise.all([
+        listProjectConversations(id),
+        listProjectDatasets(id),
+        listServerDatasets(),
+      ]);
       if (stale()) return;
       const conversations = conversationResponse.conversations || [];
       const nextProject = { ...project, conversation_count: conversations.length, default_dataset_id: datasetResponse.default_dataset_id };
       updateProjectDatasets(id, datasetResponse.datasets || []);
+      setServerDatasets(serverDatasetResponse.datasets || []);
       setSessions(current => mergeSessionLists(current, conversations));
       setProjects(current => current.map(item => item.project_id === id ? nextProject : item));
       newTask(id, source.map(item => item.project_id === id ? nextProject : item), false);
@@ -791,6 +813,23 @@ function App() {
     }).catch((cause: any) => { if (!stale()) setWorkspaceError(cause.message || tr('Could not load conversations', '无法加载会话')); });
     return () => { disposed = true; };
   }, [userId]);
+  useEffect(() => {
+    if (!userId || demoMode || !hasPendingServerPreparation) return;
+    let disposed = false;
+    let inFlight = false;
+    const timer = window.setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      listServerDatasets()
+        .then(response => { if (!disposed) setServerDatasets(response.datasets || []); })
+        .catch(() => undefined)
+        .finally(() => { inFlight = false; });
+    }, 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [userId, hasPendingServerPreparation]);
   useEffect(() => {
     if (!userId || demoMode) return;
     function handleHistoryNavigation() {
@@ -1017,6 +1056,7 @@ function App() {
     setProjects([]);
     setRecoveredDrafts([]);
     setDatasetsByProject({});
+    setServerDatasets([]);
     setCustomModels([]);
     setDatasetOpen(false);
     setConstructionDataset(null);
@@ -1661,9 +1701,13 @@ function App() {
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
     try {
-      const response = await listProjectDatasets(projectId);
+      const [response, serverResponse] = await Promise.all([
+        listProjectDatasets(projectId),
+        listServerDatasets(),
+      ]);
       if (accountIsStale(identity, accountEpoch)) return;
       updateProjectDatasets(projectId, response.datasets || []);
+      setServerDatasets(serverResponse.datasets || []);
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
       setWorkspaceError(cause.message || tr('Could not load datasets', '数据集加载失败'));
@@ -1707,7 +1751,7 @@ function App() {
       else nextGraph = await refreshSessionGraph(sessionId, {}, true, graphVersion);
       if (accountIsStale(identity, accountEpoch)) return;
       setDatasetOpen(false);
-      setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: dataset.dataset_id, has_graph: Boolean(nextGraph) } : session));
+      setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: dataset.dataset_id, has_graph: Boolean(nextGraph || unsupported) } : session));
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
       dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: previousGraph });
@@ -1754,7 +1798,7 @@ function App() {
         if (unsupported) dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: unsupported });
         else nextGraph = await refreshSessionGraph(sessionId, {}, true, graphVersion);
         if (stale()) return;
-        setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: response.dataset.dataset_id, has_graph: Boolean(nextGraph) } : session));
+        setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, active_dataset_id: response.dataset.dataset_id, has_graph: Boolean(nextGraph || unsupported) } : session));
       }
     } catch (cause: any) {
       if (stale()) return;
@@ -1763,6 +1807,66 @@ function App() {
         dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { selectedNode: previousSelected, error: cause.message || tr('Could not upload the project dataset', '项目数据集上传失败') } });
       }
       else setWorkspaceError(cause.message || tr('Could not upload the project dataset', '项目数据集上传失败'));
+    } finally {
+      if (accountIsStale(identity, accountEpoch)) return;
+      if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } });
+      else setBusy(false);
+    }
+  }
+  async function addServerDataset(source: ServerDataset, activateCurrentSession: boolean, targetProjectId?: string) {
+    const draftKey = conversationRef.current.activeDraftKey;
+    const draft = draftKey ? conversationRef.current.draftsByScope[draftKey] : null;
+    const projectId = targetProjectId ?? draft?.projectId ?? activeSession?.project_id ?? null;
+    if (!projectId) {
+      setWorkspaceError(tr('Choose a project before adding a server dataset', '请先选择项目，再添加服务器数据源'));
+      return;
+    }
+    const identity = identityRef.current;
+    const accountEpoch = accountEpochRef.current;
+    const stale = () => accountIsStale(identity, accountEpoch) || deletedProjectsRef.current.has(`${identity}:${projectId}`);
+    const sessionId = activateCurrentSession ? activeSession?.session_id : undefined;
+    if (sessionId && selectRunGate(conversationRef.current.viewsBySessionId[sessionId]).blocksSessionMutation) {
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('You cannot activate a server dataset until the active run finishes', '活动 Run 完成前不能激活服务器数据源') } });
+      return;
+    }
+    const targetView = sessionId ? conversationRef.current.viewsBySessionId[sessionId] : null;
+    const previousGraph = targetView?.graph || { status: 'empty' as const, data: null };
+    const previousSelected = targetView?.selectedNode || null;
+    const graphVersion = sessionId ? nextGraphVersion(sessionId) : undefined;
+    if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: true, error: undefined } });
+    else { setBusy(true); setWorkspaceError(''); }
+    try {
+      const response = await importServerDataset(projectId, source.server_dataset_id, sessionId);
+      if (stale()) return;
+      updateProjectDatasets(projectId, current => [
+        ...current.filter(item => item.dataset_id !== response.dataset.dataset_id),
+        response.dataset,
+      ].map(item => ({ ...item, is_default: item.dataset_id === response.default_dataset_id })));
+      setProjects(current => current.map(project => project.project_id === projectId
+        ? { ...project, default_dataset_id: response.default_dataset_id }
+        : project));
+      const currentDraft = conversationRef.current.draftsByScope[draftScopeKey(projectId)];
+      if (currentDraft) {
+        dispatchConversation({ type: 'PATCH_DRAFT', projectId, draftId: currentDraft.draftId, patch: { activeDatasetId: response.dataset.dataset_id, error: undefined } });
+      }
+      if (response.activated_session_id && sessionId && graphVersion !== undefined) {
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { activeDatasetId: response.dataset.dataset_id } });
+        const unsupported = unsupportedGraphView(response.dataset_view);
+        let nextGraph: GraphData | null = null;
+        if (unsupported) dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: unsupported });
+        else nextGraph = await refreshSessionGraph(sessionId, {}, true, graphVersion);
+        if (stale()) return;
+        setSessions(current => current.map(session => session.session_id === sessionId
+          ? { ...session, active_dataset_id: response.dataset.dataset_id, has_graph: Boolean(nextGraph || unsupported) }
+          : session));
+      }
+      setDatasetOpen(false);
+    } catch (cause: any) {
+      if (stale()) return;
+      if (sessionId && graphVersion !== undefined) {
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: graphVersion, graph: previousGraph });
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { selectedNode: previousSelected, error: cause.message || tr('Could not activate the server dataset', '服务器数据源加载失败') } });
+      } else setWorkspaceError(cause.message || tr('Could not add the server dataset', '服务器数据源添加失败'));
     } finally {
       if (accountIsStale(identity, accountEpoch)) return;
       if (sessionId) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { uploading: false } });
@@ -1934,14 +2038,14 @@ function App() {
           {activeDraft
             ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={() => void openDatasets()} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
-            ? <ChatPaneWithState artifactSessionId={activeSession.session_id} onEditLatest={editEnabled ? (message: Message, runId: string, content: string) => void send({ message: content, attachments: message.attachments || [], replaceRunId: runId }) : undefined} conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready'} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
+            ? <ChatPaneWithState artifactSessionId={activeSession.session_id} onEditLatest={editEnabled ? (message: Message, runId: string, content: string) => void send({ message: content, attachments: message.attachments || [], replaceRunId: runId }) : undefined} conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready' || (graphView.status === 'unsupported' && graphView.code === 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE')} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
             : <div className={`workspace-home ${userId ? '' : 'signed-out'}`}><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{userId ? t('Start a new graph analysis', '开始新的图分析') : t('Explore graph data, starting with a question', '探索图数据，从一个问题开始')}</h1>{!userId && <p>{t('Select the avatar in the lower-left corner to sign in.', '点击左下角头像登录。')}</p>}{userId ? <button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> {t('New task', '新建任务')}</button> : null}</div></div>}
         </>}
       </div>
       {activeSession && !createGraphOpen && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onGraphQuery={prompt => void send(undefined, prompt)} graphQueryPending={!runGate.canStartRun || uploading || busy} onGraphReset={() => void refreshSessionGraph(activeSession.session_id, {}, true, undefined, true)} onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : t('Build graph', '构图')} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
     </div>
     {activeDraft && !activeDraft.projectId && recoveredDrafts.length > 0 && <div className="recovered-draft-notice" role="status"><button className="text-button" onClick={recoverOldDraft}>{t(`Restore pre-upgrade drafts (${recoveredDrafts.length})`, `恢复升级前草稿（${recoveredDrafts.length}）`)}</button></div>}
-    {datasetOpen && <DatasetPanel onDatasetUpdated={datasetUpdated} onLoadConstructed={panelProject ? () => { setDatasetOpen(false); setImportProject(panelProject); } : undefined} onConstruct={openConstruction} datasets={panelDatasets} projectName={panelProject?.name} activeDatasetId={panelMatchesConversation ? activeDatasetId : null} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, panelMatchesConversation && Boolean(activeSession), datasetProjectId)} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
+    {datasetOpen && <DatasetPanel onDatasetUpdated={datasetUpdated} onLoadConstructed={panelProject ? () => { setDatasetOpen(false); setImportProject(panelProject); } : undefined} onConstruct={openConstruction} datasets={panelDatasets} serverDatasets={serverDatasets} projectName={panelProject?.name} activeDatasetId={panelMatchesConversation ? activeDatasetId : null} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, panelMatchesConversation && Boolean(activeSession), datasetProjectId)} onUseServer={panelProjectId ? dataset => addServerDataset(dataset, panelMatchesConversation && Boolean(activeSession), datasetProjectId) : undefined} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
     {constructionDataset && !createGraphOpen && <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} onUse={activeSession || activeDraft ? useConstructedDataset : undefined} />}
     {importProject && <ConstructedDatasetPicker key={`${userId}:${importProject.project_id}`} projectId={importProject.project_id} projectName={importProject.name} onImport={loadConstructedIntoProject} onClose={() => setImportProject(null)} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}

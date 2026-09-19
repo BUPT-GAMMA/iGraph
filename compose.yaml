@@ -38,6 +38,9 @@ services:
       GRAPH_DATA_UPLOAD_DIR: /data/graph_engine/uploads
       GRAPH_DATASET_DIR: /data/graph_engine/datasets
       GRAPH_ML_ARTIFACT_ROOT: /data/graph_engine/artifacts
+      GRAPH_ENGINE_SERVER_DATASETS_DIR: /data/server_datasets
+      # Heavy large-graph work is claimed by graph-engine-worker, not the API.
+      LARGE_GRAPH_EMBEDDED_WORKER: "false"
     volumes:
       - igraph-data:/data
     extra_hosts:
@@ -47,6 +50,31 @@ services:
     networks:
       - backplane
     shm_size: ${GRAPH_DATA_SHM_SIZE:-1gb}
+    restart: unless-stopped
+
+  graph-engine-worker:
+    image: ${IGRAPH_GRAPH_ENGINE_IMAGE:-igraph-graph-engine:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/graph-data.Dockerfile
+    pull_policy: never
+    env_file:
+      - .env
+    command: ["python", "-m", "graph_data_service.large_graph.worker"]
+    environment:
+      IGRAPH_DATA_ROOT: /data
+      GRAPH_ENGINE_SERVER_DATASETS_DIR: /data/server_datasets
+      LARGE_GRAPH_EMBEDDED_WORKER: "false"
+    volumes:
+      - igraph-data:/data
+    networks:
+      - backplane
+    shm_size: ${GRAPH_DATA_SHM_SIZE:-1gb}
+    # The shared image probes the HTTP API by default, while this service is a
+    # queue worker and intentionally does not listen on port 21111.
+    healthcheck:
+      disable: true
+    stop_grace_period: 15s
     restart: unless-stopped
 
   graph-engine-mcp:
@@ -126,6 +154,9 @@ services:
       IGRAPH_CONTROL_SERVICE_KEY: ${IGRAPH_CONTROL_SERVICE_KEY:?Set a shared random IGRAPH_CONTROL_SERVICE_KEY in .env}
       BACKEND_USERS_FILE: /data/backend/users.json
       BACKEND_PROJECTS_FILE: /data/backend/projects.json
+      BACKEND_SERVER_DATASETS_DIR: ${BACKEND_SERVER_DATASETS_DIR:-/data/server_datasets}
+      BACKEND_SERVER_DATASET_PREPROCESS_MIN_BYTES: ${BACKEND_SERVER_DATASET_PREPROCESS_MIN_BYTES:-67108864}
+      BACKEND_STREAM_HEARTBEAT_SECONDS: ${BACKEND_STREAM_HEARTBEAT_SECONDS:-15}
       IGRAPH_DATA_ROOT: /data
     volumes:
       - igraph-data:/data

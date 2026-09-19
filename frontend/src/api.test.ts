@@ -143,6 +143,17 @@ describe('SSE parser', () => {
     expect(onBatch.mock.calls[0][0].events[0].type).toBe('stream_status');
     expect(onBatch.mock.calls[1][0].events[0].type).toBe('token');
   });
+
+  it('ignores SSE heartbeat comments while preserving the next event', async () => {
+    const onBatch = vi.fn();
+    await consumeSseResponse(responseFromChunks([
+      ': keep-alive\n\n',
+      'data: {"protocol_version":2,"session_id":"A","run_id":"run-1","event_index":3,"events":[{"type":"done"}]}\n\n',
+    ]), 'A', { onBatch });
+
+    expect(onBatch).toHaveBeenCalledTimes(1);
+    expect(onBatch.mock.calls[0][0].events[0].type).toBe('done');
+  });
 });
 
 describe('graph response validation', () => {

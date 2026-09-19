@@ -42,6 +42,8 @@ class AgentRuntimeConfig:
     telemetry: bool
     tracing: bool
     authorization: bool
+    job_poll_interval_seconds: float = 2.0
+    job_wait_timeout_seconds: float = 0.0
 
     @classmethod
     def from_env(cls) -> "AgentRuntimeConfig":
@@ -75,4 +77,10 @@ class AgentRuntimeConfig:
             telemetry=_env_bool("AGNO_TELEMETRY", False),
             tracing=_env_bool("AGENT_RUNTIME_TRACING", True),
             authorization=_env_bool("AGENT_RUNTIME_AUTHORIZATION", False),
+            job_poll_interval_seconds=float(
+                os.getenv("AGENT_RUNTIME_JOB_POLL_INTERVAL_SECONDS", "2")
+            ),
+            job_wait_timeout_seconds=float(
+                os.getenv("AGENT_RUNTIME_JOB_WAIT_TIMEOUT_SECONDS", "0")
+            ),
         )
