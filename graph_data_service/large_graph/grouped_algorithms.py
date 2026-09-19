@@ -2798,7 +2798,7 @@ class GroupedAnalysisMixin:
             else:
                 reciprocal = 0
                 for source, target, _weight, _relation in self.graph.iter_edges():
-                    if self.graph.edge_weight(target, source) is not None:
+                    if source != target and self.graph.edge_weight(target, source) is not None:
                         reciprocal += 1
                 value = reciprocal / self.graph.edge_count
             return self._group_result({"success": True, "metric": metric, "value": round(value, 6)})

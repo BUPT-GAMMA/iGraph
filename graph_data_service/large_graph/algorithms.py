@@ -1660,7 +1660,7 @@ class LargeGraphAlgorithms(GroupedAnalysisMixin):
                 old = connection.execute(
                     "SELECT distance FROM distances WHERE node=?", (neighbor,)
                 ).fetchone()
-                if old is None or candidate < float(old[0]) - 1e-12:
+                if old is None or candidate < float(old[0]):
                     connection.execute(
                         """
                         INSERT INTO distances(node,distance,predecessor) VALUES (?,?,?)
@@ -1679,7 +1679,7 @@ class LargeGraphAlgorithms(GroupedAnalysisMixin):
                             "INSERT INTO predecessors(node,predecessor) VALUES (?,?)",
                             (neighbor, node),
                         )
-                elif collect_all_predecessors and abs(candidate - float(old[0])) <= 1e-12:
+                elif collect_all_predecessors and candidate == float(old[0]):
                     connection.execute(
                         "INSERT OR IGNORE INTO predecessors(node,predecessor) VALUES (?,?)",
                         (neighbor, node),

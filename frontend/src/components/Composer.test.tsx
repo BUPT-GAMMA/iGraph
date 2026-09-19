@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ChatPane } from './ChatPane';
+import { ChatPane, sanitizeAssistantContent } from './ChatPane';
 import { Composer } from './Composer';
 
 const noop = () => undefined;
@@ -36,6 +36,14 @@ const approval = {
 };
 
 describe('ConversationInputArea', () => {
+  it('preserves letters and code when cleaning assistant metadata', () => {
+    for (const value of ['Result: test.', 'weight: 10', 'correct?', 'print: result;', '节点数：3']) {
+      expect(sanitizeAssistantContent(value)).toBe(value);
+    }
+    expect(sanitizeAssistantContent('test \t.')).toBe('test.');
+    expect(sanitizeAssistantContent('结果（job_id: lg_test）。')).toBe('结果。');
+  });
+
   it('uses a project-aware heading only for project drafts', () => {
     const { rerender } = render(<ChatPane {...baseChatProps} />);
     expect(screen.getByRole('heading', { name: '开始图分析' })).toBeTruthy();

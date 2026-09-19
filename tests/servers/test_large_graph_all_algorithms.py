@@ -1321,6 +1321,31 @@ def test_directed_strong_average_path_matches_small_graph(tmp_path: Path) -> Non
     assert large["value"] == pytest.approx(small["value"], abs=1.0e-6)
 
 
+@pytest.mark.parametrize('scale', [1.0, 1e-10, 1e-14])
+def test_shortest_paths_preserve_improvements_at_every_weight_scale(tmp_path: Path, scale: float) -> None:
+    text = f'S T {20*scale}\nS A {scale}\nA T {scale}\n'
+    snapshot = _snapshot_from_text(tmp_path, text, stem='scaled-path')
+    graph = _networkx_from_text(text, directed=True)
+    for algorithm in ('shortest_path', 'all_shortest_paths'):
+        parameters = {'source': 'S', 'target': 'T'}
+        small = getattr(GraphCompute(), algorithm)(graph, **parameters)
+        large = _large_summary(tmp_path, snapshot, algorithm, parameters, workers=1)
+        if algorithm == 'shortest_path':
+            assert large['path'] == small['path'] == ['S', 'A', 'T']
+            assert large['total_length'] == small['total_length'] == 2*scale
+        else:
+            assert large['paths'] == small['paths'] == [['S', 'A', 'T']]
+            assert large['count_returned'] == 1
+
+
+@pytest.mark.parametrize('text', ['A A 1\nA B 1\n', 'A A 1\nA B 1\nB A 1\n'])
+def test_reciprocity_does_not_count_self_loops_as_reciprocal_edges(tmp_path: Path, text: str) -> None:
+    snapshot = _snapshot_from_text(tmp_path, text, stem='reciprocity-loops')
+    small = GraphCompute.distance_measures(_networkx_from_text(text, directed=True), metric='reciprocity')
+    large = _large_summary(tmp_path, snapshot, 'distance_measures', {'metric': 'reciprocity'}, workers=1)
+    assert large['value'] == small['value']
+
+
 def test_reciprocal_directed_mst_uses_minimum_weight_projection(tmp_path: Path) -> None:
     edge_text = "A B 10\nB A 1\nB C 2\nA C 100\n"
     snapshot = _snapshot_from_text(tmp_path, edge_text, stem="reciprocal-mst")
