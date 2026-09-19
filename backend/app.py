@@ -1547,6 +1547,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.post('/api/sessions/{session_id}/jobs/{job_id}/cancel')
     async def cancel_job(session_id: str, job_id: str, req: JobCancelRequest, request: Request):
         user = current_user(request, users)
+        if job_id.startswith('lg_'):
+            await get_session(session_id, request, user.user_id)
+            result = await graph.request('POST', f'/internal/sessions/{session_id}/large-jobs/{job_id}/cancel',
+                headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)},
+                json_body=req.model_dump(mode='json'))
+            return JSONResponse(result, status_code=200 if result.get('execution_stopped') else 202)
         result = await runtime.request('POST', f'/internal/sessions/{session_id}/jobs/{job_id}/cancel',
                                        headers=forwarded_headers(request, user.user_id), json_body=req.model_dump(mode='json'))
         return JSONResponse(result, status_code=200 if result.get('execution_stopped') else 202)
@@ -1554,6 +1560,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.get('/api/sessions/{session_id}/jobs/{job_id}/control')
     async def job_control(session_id: str, job_id: str, request: Request):
         user = current_user(request, users)
+        if job_id.startswith('lg_'):
+            await get_session(session_id, request, user.user_id)
+            return await graph.request('GET', f'/internal/sessions/{session_id}/large-jobs/{job_id}/control',
+                headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)})
         return await runtime.request('GET', f'/internal/sessions/{session_id}/jobs/{job_id}/summary',
                                      headers=forwarded_headers(request, user.user_id))
 

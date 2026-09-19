@@ -1750,6 +1750,27 @@ class LargeGraphCatalog:
             ),
         )
 
+    def execution_jobs(
+        self, *, user_id: str, session_id: str, job_id: str | None = None,
+        run_id: str | None = None, generation: int | None = None,
+        active_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Resolve durable work by its original execution owner, including after restart."""
+        clauses = ["user_id=?", "session_id=?"]
+        values: list[Any] = [user_id, session_id]
+        for key, value in (("job_id", job_id), ("run_id", run_id), ("generation", generation)):
+            if value is not None:
+                clauses.append(f"json_extract(request_json, '$.execution.{key}')=?")
+                values.append(value)
+        if active_only:
+            clauses.append("status IN ('queued','running','cancelling')")
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE " + " AND ".join(clauses) + " ORDER BY created_at,job_id",
+                values,
+            ).fetchall()
+        return [self._decode_job(row) for row in rows]
+
     def get_job(self, job_id: str, *, user_id: str, session_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(

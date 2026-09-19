@@ -43,7 +43,7 @@ export function sanitizeAssistantContent(content: string) {
   return content
     .replace(CLOSED_INTERNAL_METADATA_ANNOTATION, '')
     .replace(STREAMING_INTERNAL_METADATA_ANNOTATION, '')
-    .replace(/[ \\t]+([，。！？；：,.!?;:])/g, '$1');
+    .replace(/[ \t]+([，。！？；：,.!?;:])/g, '$1');
 }
 
 /** Deliverables the agent published this turn, downloadable inline. */

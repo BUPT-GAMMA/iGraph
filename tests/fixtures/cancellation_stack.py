@@ -142,7 +142,17 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
                     return 'data: ' + json.dumps({'id': 'test', 'object': 'chat.completion.chunk', 'created': 1,
                         'model': body['model'], 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}) + '\n\n'
                 try:
-                    if (key.startswith('train') or key.startswith('background') or key.startswith('approval')) and count == 1:
+                    if key.startswith('large-graph') and count == 1:
+                        args = {'filename': 'large.edges', 'workers': 1, 'partitions': 1}
+                        yield frame({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': 'large-prepare', 'type': 'function',
+                            'function': {'name': 'prepare_large_graph', 'arguments': json.dumps(args)}}]})
+                        yield frame({}, 'tool_calls')
+                        yield 'data: [DONE]\n\n'
+                    elif key.startswith('large-graph'):
+                        yield frame({'role': 'assistant', 'content': '大图处理完成'})
+                        yield frame({}, 'stop')
+                        yield 'data: [DONE]\n\n'
+                    elif (key.startswith('train') or key.startswith('background') or key.startswith('approval')) and count == 1:
                         tool = 'clear_graph' if key.startswith('approval') else 'train'
                         args = {} if tool == 'clear_graph' else _request('node_classification').model_dump(mode='json')
                         if tool == 'train': args['train_config']['epochs'] = training_epochs

@@ -540,6 +540,8 @@ class GraphDataService:
         # New large-graph path: durable catalog/worker state is intentionally
         # independent from the in-memory JobManager used by legacy operations.
         self._large_graph = LargeGraphService()
+        if self._execution_host:
+            self._execution_host.large_graph = self._large_graph
         self._nebula = nebula_repository or NebulaGraphRepository()
         backend = str(storage_backend or os.getenv("GRAPH_STORAGE_BACKEND", "local")).strip().lower()
         if backend not in {"local", "nebula"}:
@@ -1668,6 +1670,16 @@ class GraphDataService:
                 "node_estimator": probe_estimator,
             }
             return result
+
+        # Controlled uploads must pass the streaming guard too. Only small
+        # sources are delegated to the existing cancellable isolated loader.
+        if job_context.get() and self._execution_host and not session.is_remote:
+            from graph_data_service.isolated_compute import run_isolated
+            return await self._run_with_compute_limits(
+                user_id,
+                lambda: run_isolated(self, session_id, user_id, 'load_graph_from_upload',
+                                     {'filename': filename, 'append': append, 'directed': directed}),
+            )
 
         # Nebula 主存储下，二进制图的解析、CSV 生成和导入都在后台线程执行。
         if lower_path.endswith((".npz", ".pt", ".json")) and self.nebula_primary:
@@ -3477,8 +3489,8 @@ class GraphDataService:
                     "success": bool(result) and status not in {"failed", "cancelled"},
                     "result": result,
                 }
-            job = self._job_manager.status(job_id)
-            if job is None or job.session_id != session_id:
+            job = self._job_manager.owned(job_id, session_id, user_id)
+            if job is None:
                 return {"success": False, "result": None}
             if job.status not in {"done", "failed", "cancelled"}:
                 return {
@@ -4220,10 +4232,77 @@ class GraphDataService:
             ),
         )
 
+    def _route_large_graph_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str):
+        """Choose a representation before any legacy executor can materialise it."""
+        if tool_name in NX_TOOL_NAMES:
+            session = self.get_required(session_id, user_id=user_id)
+            graph_summary = session.graph_summary()
+            if (
+                _is_global_nx_operation(
+                    tool_name, arguments, remote_primary=session.is_remote
+                )
+                and self._large_graph.router.is_large(
+                    graph_summary.num_nodes, graph_summary.num_edges
+                )
+            ):
+                small_source = session.version_source(session.graph_version)
+                if not self._large_graph.version_matches_small_binding(
+                    user_id=user_id,
+                    session_id=session_id,
+                    graph_id=session_id,
+                    graph_version=session.graph_version,
+                    small_source=small_source,
+                    directed=graph_summary.directed,
+                ):
+                    return {
+                        "success": False,
+                        "code": "GRAPH_VERSION_REPRESENTATION_MISMATCH",
+                        "error": (
+                            "当前小图版本没有同源、同指纹、同方向且语义兼容的已发布"
+                            "大图快照；为防止在错误数据上计算，已拒绝仅按版本号路由。"
+                        ),
+                        "graph_version": session.graph_version,
+                        "next_action": (
+                            "请对产生当前图版本的同一上传文件调用 prepare_large_graph，"
+                            "或显式调用 run_large_graph_algorithm 选择正确快照。"
+                        ),
+                    }
+                with self._graph_write_lock(session_id, user_id):
+                    creates_derived_version = bool(
+                        tool_name == "subgraph_extraction"
+                        and _optional_bool(arguments, "create_version", True)
+                    )
+                    result = self._large_graph.submit_compute(
+                        user_id=user_id,
+                        session_id=session_id,
+                        graph_id=session_id,
+                        graph_version=session.graph_version,
+                        algorithm=_large_algorithm_for_legacy_tool(
+                            tool_name, arguments
+                        ),
+                        parameters={
+                            **arguments,
+                            "top_k": arguments.get(
+                                "top_k", arguments.get("limit", 20)
+                            ),
+                            "legacy_tool": tool_name,
+                        },
+                        minimum_derived_version=(
+                            session.next_graph_version()
+                            if creates_derived_version
+                            else None
+                        ),
+                    )
+                    new_version = result.get("new_graph_version")
+                    if result.get("success") and new_version is not None:
+                        session.reserve_version_floor(int(new_version))
+                    return result
+        return None
+
     async def dispatch_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "",
                             *, construction_scope: str | None = None) -> dict:
         """Admit independent tools concurrently and serialize resource conflicts."""
-        if tool_name == "get_job_status":
+        if tool_name in {"get_job_status", "get_job_result"}:
             # Cursor reads touch the durable journal without reserving the graph.
             return await run_sync(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id)
         if tool_name == "cancel_job":
@@ -4276,7 +4355,13 @@ class GraphDataService:
                 return await run_sync(self.do_load_constructed_graph, session_id, dataset_id, user_id)
             method = self.do_preview_graph_optimization if tool_name == "preview_graph_optimization" else self.do_commit_graph_optimization
             return await run_sync(method, dataset_id, arguments.get("base_revision"), arguments.get("operations"), user_id)
-        if job_context.get() and self._execution_host and tool_name in NX_TOOL_NAMES | ISOLATED_DATA_TOOLS:
+        if tool_name in NX_TOOL_NAMES:
+            routed = await run_sync(self._route_large_graph_tool, session_id, tool_name, arguments, user_id)
+            if routed is not None:
+                return routed
+        if (job_context.get() and self._execution_host
+                and tool_name in NX_TOOL_NAMES | ISOLATED_DATA_TOOLS
+                and tool_name != 'load_graph_from_upload'):
             session = self.get_required(session_id, user_id=user_id)
             if not session.is_remote:
                 cached = getattr(session, '_controlled_graph_info', None)
@@ -4346,72 +4431,6 @@ class GraphDataService:
             if tool_name in _GRAPH_ML_HEAVY_TOOLS:
                 return await self._dispatch_heavy_graph_ml_tool_once(session_id, tool_name, arguments, user_id=user_id)
             return await run_sync(self._dispatch_graph_ml_tool, session_id, tool_name, arguments, user_id=user_id)
-        # Run the large-graph guard before every legacy special case.  The old
-        # ordering let subgraph_extraction(create_version=true) materialise or
-        # truncate a large graph before k-core/k-truss could reach this guard.
-        if tool_name in NX_TOOL_NAMES:
-            session = self.get_required(session_id, user_id=user_id)
-            graph_summary = session.graph_summary()
-            if (
-                _is_global_nx_operation(
-                    tool_name, arguments, remote_primary=session.is_remote
-                )
-                and self._large_graph.router.is_large(
-                    graph_summary.num_nodes, graph_summary.num_edges
-                )
-            ):
-                small_source = session.version_source(session.graph_version)
-                if not self._large_graph.version_matches_small_binding(
-                    user_id=user_id,
-                    session_id=session_id,
-                    graph_id=session_id,
-                    graph_version=session.graph_version,
-                    small_source=small_source,
-                    directed=graph_summary.directed,
-                ):
-                    return {
-                        "success": False,
-                        "code": "GRAPH_VERSION_REPRESENTATION_MISMATCH",
-                        "error": (
-                            "当前小图版本没有同源、同指纹、同方向且语义兼容的已发布"
-                            "大图快照；为防止在错误数据上计算，已拒绝仅按版本号路由。"
-                        ),
-                        "graph_version": session.graph_version,
-                        "next_action": (
-                            "请对产生当前图版本的同一上传文件调用 prepare_large_graph，"
-                            "或显式调用 run_large_graph_algorithm 选择正确快照。"
-                        ),
-                    }
-                with self._graph_write_lock(session_id, user_id):
-                    creates_derived_version = bool(
-                        tool_name == "subgraph_extraction"
-                        and _optional_bool(arguments, "create_version", True)
-                    )
-                    result = self._large_graph.submit_compute(
-                        user_id=user_id,
-                        session_id=session_id,
-                        graph_id=session_id,
-                        graph_version=session.graph_version,
-                        algorithm=_large_algorithm_for_legacy_tool(
-                            tool_name, arguments
-                        ),
-                        parameters={
-                            **arguments,
-                            "top_k": arguments.get(
-                                "top_k", arguments.get("limit", 20)
-                            ),
-                            "legacy_tool": tool_name,
-                        },
-                        minimum_derived_version=(
-                            session.next_graph_version()
-                            if creates_derived_version
-                            else None
-                        ),
-                    )
-                    new_version = result.get("new_graph_version")
-                    if result.get("success") and new_version is not None:
-                        session.reserve_version_floor(int(new_version))
-                    return result
         if tool_name == "shortest_path" and not _optional_bool(arguments, "use_weight", True):
             session = self.get_required(session_id, user_id=user_id)
             if session.is_remote:
@@ -4556,7 +4575,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             import uuid
             cancel_id = str(uuid.UUID(request.headers['X-Operation-ID'])) if request.headers.get('X-Operation-ID') else str(uuid.uuid4())
             return await svc._execution_host.request_job_stop(uid, session_id, _required_str(arguments, 'job_id'), cancel_id)
-        if svc._execution_host and rid and tool_name not in {'get_job_status', 'cancel_job'}:
+        if svc._execution_host and rid and tool_name not in {'get_job_status', 'get_job_result', 'cancel_job'}:
             require_service(request)
             try:
                 import uuid
@@ -4700,8 +4719,44 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @app.post('/internal/sessions/{sid}/runs/{rid}/cancel')
     async def stop_owned_run(sid: str, rid: str, request: Request):
         require_service(request)
-        ids = svc._job_manager.cancel_run(_get_user_id(request), sid, rid)
-        return {'run_id': rid, 'pending_jobs': [jid for jid in ids if svc._job_manager.status(jid).status not in {'done', 'failed', 'cancelled'}]}
+        uid = _get_user_id(request)
+        ids = svc._job_manager.cancel_run(uid, sid, rid)
+        durable = await run_sync(svc._large_graph.catalog.execution_jobs,
+                                 user_id=uid, session_id=sid, run_id=rid, active_only=True)
+        for job in durable:
+            await run_sync(svc._large_graph.cancel, job['job_id'], user_id=uid, session_id=sid)
+        pending = [jid for jid in ids if svc._job_manager.status(jid).status not in {'done', 'failed', 'cancelled'}]
+        for job in durable:
+            state = await run_sync(svc._large_graph.job_control, job['job_id'], user_id=uid, session_id=sid)
+            if not state['execution_stopped']:
+                pending.append(job['job_id'])
+        return {'run_id': rid, 'pending_jobs': pending}
+
+    @app.post('/internal/sessions/{sid}/large-jobs/{jid}/cancel')
+    async def stop_large_job(sid: str, jid: str, request: Request):
+        require_service(request)
+        import uuid
+        body = await request.json()
+        try:
+            cancel_id = str(uuid.UUID(body['cancel_request_id']))
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(422, {'code': 'INVALID_CANCEL_IDENTITY'})
+        uid = _get_user_id(request)
+        if svc._execution_host:
+            return await svc._execution_host.request_job_stop(uid, sid, jid, cancel_id)
+        state = await run_sync(svc._large_graph.job_control, jid, user_id=uid, session_id=sid)
+        if state is None:
+            raise HTTPException(404, {'code': 'JOB_NOT_FOUND'})
+        await run_sync(svc._large_graph.cancel, jid, user_id=uid, session_id=sid)
+        return await run_sync(svc._large_graph.job_control, jid, user_id=uid, session_id=sid)
+
+    @app.get('/internal/sessions/{sid}/large-jobs/{jid}/control')
+    def large_job_control(sid: str, jid: str, request: Request):
+        require_service(request)
+        state = svc._large_graph.job_control(jid, user_id=_get_user_id(request), session_id=sid)
+        if state is None:
+            raise HTTPException(404, {'code': 'JOB_NOT_FOUND'})
+        return state
 
     @app.post('/internal/sessions/{sid}/jobs/{jid}/cancel')
     async def stop_owned_job(sid: str, jid: str, request: Request):
@@ -4716,6 +4771,10 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         uid = _get_user_id(request)
         pending = [job.job_id for job in svc._job_manager.list_jobs(sid)
                    if job.user_id == uid and job.status not in {'done', 'failed', 'cancelled'}]
+        pending.extend(row['job_id'] for row in svc._large_graph.catalog.execution_jobs(
+            user_id=uid, session_id=sid, active_only=True))
+        pending.extend(row['job_id'] for row in svc._large_graph.catalog.active_scope_jobs(user_id=uid, session_id=sid))
+        pending = sorted(set(pending))
         return {'execution_stopped': not pending, 'pending_jobs': pending}
 
     @app.post('/internal/artifacts/ownership')

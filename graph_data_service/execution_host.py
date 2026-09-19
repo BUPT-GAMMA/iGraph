@@ -49,6 +49,8 @@ class GraphExecutionHost:
         self.cleanups: set[asyncio.Task] = set()
         self.launches: dict[tuple, tuple[str, asyncio.Task]] = {}
         self.closed = False
+        self.closing = False
+        self.large_graph = None
         manager.execution_host = self
         manager.load_saved = self.load_job
 
@@ -118,19 +120,34 @@ class GraphExecutionHost:
         if ProcessLease.inspect(self.lease.root, row['state'].get('executor_instance')) != 'exited':
             return False
         ctx = JobContext(row['user_id'], row['session_id'], row['run_id'], row['generation'], row['operation_id'], row['job_id'])
-        if not await recover_worker(self.worker_root, ctx.job_id, row['state'].get('worker')):
+        durable = await self.large_jobs(ctx)
+        if durable:
+            # The API owner can die while a separate durable worker continues.
+            # A missing legacy worker lease is not evidence that this work exited.
+            while any(job['status'] not in {'done', 'failed', 'cancelled'} for job in durable):
+                if self.closing:
+                    return False  # Retain the ledger entry for the replacement API.
+                control = await self.request(ctx, 'GET', f'/jobs/{ctx.job_id}/control')
+                if control.get('cancel_requested'):
+                    await self.cancel_large_graph_work(ctx)
+                else:
+                    await asyncio.sleep(.2)
+                durable = await self.large_jobs(ctx)
+        elif not await recover_worker(self.worker_root, ctx.job_id, row['state'].get('worker')):
             logger.warning('job_executor_exit_pending job_id=%s', ctx.job_id)
             return False
         control = await self.request(ctx, 'GET', f'/jobs/{ctx.job_id}/control')
         job = self.load_job(ctx.job_id)
         if job is None:
-            cancelled = control.get('cancel_requested')
+            cancelled = control.get('cancel_requested') or any(j['status'] == 'cancelled' for j in durable)
+            completed = bool(durable) and all(j['status'] == 'done' for j in durable)
             job = Job(job_id=ctx.job_id, session_id=ctx.session_id, user_id=ctx.user_id, run_id=ctx.run_id,
                       execution_generation=ctx.generation, operation_id=ctx.operation_id,
                       parent_job_id=row['parent_id'] if row['parent_id'] != ctx.run_id else None,
                       tool_name=row['state'].get('tool_name') or '任务',
-                      status='cancelled' if cancelled else 'failed', message='执行者已退出')
-            job.result = self.committed_result(ctx)
+                      status='cancelled' if cancelled else 'done' if completed else 'failed', message='执行者已退出')
+            job.result = ({'success': True, 'async': True, 'job_id': durable[-1]['job_id']}
+                          if completed else self.committed_result(ctx))
         if (job.user_id, job.session_id, job.run_id, job.execution_generation) != (ctx.user_id, ctx.session_id, ctx.run_id, ctx.generation):
             raise ValueError('RECOVERY_OWNER_MISMATCH')
         self.manager._jobs[ctx.job_id] = job
@@ -230,7 +247,7 @@ class GraphExecutionHost:
         # Disconnecting an MCP/HTTP observer never kills independently owned work.
         if tool_name in {'load_graph_from_upload', 'load_graph_from_text'}:
             return {'success': True, 'async': True, 'job_id': jid, 'status': self.manager.status(jid).status}
-        await self.manager.wait(jid)
+        await self.manager.wait_submission(jid)
         job = self.manager.status(jid)
         if job.status in {'cancelled', 'cancelling'}:
             raise HTTPException(409, {'code': 'RUN_CANCELLED', 'job_id': jid})
@@ -262,6 +279,19 @@ class GraphExecutionHost:
             raise
 
     async def request_job_stop(self, uid, sid, jid, cancel_id):
+        if jid.startswith('lg_') and self.large_graph is not None:
+            row = await run_sync(self.large_graph.catalog.get_job, jid, user_id=uid, session_id=sid)
+            if row is None:
+                raise HTTPException(404, {'code': 'JOB_NOT_FOUND'})
+            binding = row['request'].get('execution') or {}
+            if binding.get('job_id') and binding.get('run_id'):
+                ctx = JobContext(uid, sid, binding['run_id'], binding['generation'],
+                                 binding['operation_id'], binding['job_id'])
+                # Record the stop in the run ledger before delivering it to
+                # the worker, so transport loss cannot revive the operation.
+                await self.request(ctx, 'POST', f'/jobs/{ctx.job_id}/cancel', {'cancel_request_id': cancel_id})
+            await run_sync(self.large_graph.cancel, jid, user_id=uid, session_id=sid)
+            return await run_sync(self.large_graph.job_control, jid, user_id=uid, session_id=sid)
         job = self.manager.owned(jid, sid, uid)
         if not job:
             raise HTTPException(404, {'code': 'JOB_NOT_FOUND'})
@@ -271,6 +301,58 @@ class GraphExecutionHost:
         # connection, and admission of every descendant is durably fenced.
         ctx = JobContext(uid, sid, job.run_id, job.execution_generation, job.operation_id, jid)
         return await self.request(ctx, 'POST', f'/jobs/{jid}/cancel', {'cancel_request_id': cancel_id})
+
+    async def large_jobs(self, ctx):
+        if self.large_graph is None:
+            return []
+        return await run_sync(self.large_graph.catalog.execution_jobs,
+                             user_id=ctx.user_id, session_id=ctx.session_id,
+                             job_id=ctx.job_id, run_id=ctx.run_id, generation=ctx.generation)
+
+    async def wait_large_graph(self, ctx, jid):
+        previous = None
+        while True:
+            job = await run_sync(self.large_graph.catalog.get_job, jid,
+                                 user_id=ctx.user_id, session_id=ctx.session_id)
+            if job is None or (job['request'].get('execution') or {}).get('job_id') != ctx.job_id:
+                raise RuntimeError('LARGE_GRAPH_EXECUTION_BINDING_MISMATCH')
+            progress = {**(job.get('summary') or {}), 'kind': 'job_progress',
+                        'durable_job_id': jid, 'stage': job['stage'],
+                        'progress': job['progress'], 'message': job['message']}
+            owner = self.manager.status(ctx.job_id)
+            if owner is not None and progress != previous:
+                await run_sync(self.manager._make_progress_callback(owner), progress)
+                previous = progress
+            if job['status'] == 'done':
+                return
+            if job['status'] == 'cancelled':
+                raise asyncio.CancelledError()
+            if job['status'] == 'failed':
+                raise RuntimeError(job.get('error') or job.get('message') or 'LARGE_GRAPH_JOB_FAILED')
+            await asyncio.sleep(.2)
+
+    async def cancel_large_graph_work(self, ctx):
+        if self.large_graph is None:
+            return
+
+        async def stop_and_wait():
+            jobs = await self.large_jobs(ctx)
+            for job in jobs:
+                await run_sync(self.large_graph.cancel, job['job_id'],
+                               user_id=ctx.user_id, session_id=ctx.session_id)
+            while any(job['status'] not in {'done', 'failed', 'cancelled'} for job in jobs):
+                await asyncio.sleep(.2)
+                jobs = await self.large_jobs(ctx)
+
+        # Repeated stop requests must not interrupt the actual exit handshake.
+        task = asyncio.create_task(stop_and_wait())
+        while True:
+            try:
+                await asyncio.shield(task)
+                return
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
 
     def retry_cleanup(self, path, jid):
         async def cleanup():
@@ -333,9 +415,18 @@ class GraphExecutionHost:
                 break
         for job_id in targets:
             self.manager.cancel(job_id)
-        return {'job_id': jid, 'execution_stopped': all(self.manager.status(j).status in {'done', 'failed', 'cancelled'} for j in targets)}
+        durable = []
+        if self.large_graph is not None:
+            for job_id in targets:
+                for row in self.large_graph.catalog.execution_jobs(user_id=uid, session_id=sid, job_id=job_id, active_only=True):
+                    self.large_graph.cancel(row['job_id'], user_id=uid, session_id=sid)
+                    durable.append(self.large_graph.job_control(row['job_id'], user_id=uid, session_id=sid))
+        return {'job_id': jid, 'execution_stopped':
+                all(self.manager.status(j).status in {'done', 'failed', 'cancelled'} for j in targets)
+                and all(row['execution_stopped'] for row in durable)}
 
     async def close(self):
+        self.closing = True
         if self.scanner:
             self.scanner.cancel()
             await asyncio.gather(self.scanner, return_exceptions=True)

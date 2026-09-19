@@ -77,6 +77,20 @@ class LargeGraphService:
     def _detect_delimiter(source: Path) -> str:
         return detect_delimiter(source)
 
+    @staticmethod
+    def _execution_binding(user_id: str, session_id: str) -> dict[str, Any]:
+        from graph_data_service.execution_host import job_context
+
+        ctx = job_context.get()
+        if ctx is None or (ctx.user_id, ctx.session_id) != (user_id, session_id):
+            return {}
+        return {
+            "job_id": ctx.job_id,
+            "run_id": ctx.run_id,
+            "generation": ctx.generation,
+            "operation_id": ctx.operation_id,
+        }
+
     def submit_preparation(
         self,
         *,
@@ -179,6 +193,7 @@ class LargeGraphService:
             "delimiter": delimiter,
             "input_format": input_format,
             "quality_policy": policy.to_dict(),
+            "execution": self._execution_binding(user_id, session_id),
         }
         try:
             job_id, reserved_version = self.catalog.reserve_preparation(
@@ -583,6 +598,7 @@ class LargeGraphService:
             "parameters": params,
             "workers": workers,
             "route_decision": decision.to_dict(),
+            "execution": self._execution_binding(user_id, session_id),
         }
         try:
             job_id, derived_version = self.catalog.enqueue_compute(
@@ -655,6 +671,21 @@ class LargeGraphService:
 
     def cancel(self, job_id: str, *, user_id: str, session_id: str) -> bool:
         return self.runtime.cancel(job_id, user_id=user_id, session_id=session_id)
+
+    def job_control(self, job_id: str, *, user_id: str, session_id: str) -> dict[str, Any] | None:
+        job = self.catalog.get_job(job_id, user_id=user_id, session_id=session_id)
+        if job is None:
+            return None
+        terminal = job['status'] in {'done', 'failed', 'cancelled'}
+        return {
+            'job_id': job_id,
+            'run_id': (job['request'].get('execution') or {}).get('run_id'),
+            'run_status': job['status'],
+            'execution_stopped': terminal,
+            'terminal_persisted': terminal,
+            'cancel_status': ('confirmed' if terminal else 'stopping') if job['cancel_requested'] else 'none',
+            'pending_components': [] if terminal else [job_id],
+        }
 
     def delete_session(
         self,
