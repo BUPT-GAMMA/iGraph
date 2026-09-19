@@ -27,6 +27,12 @@ _APPEND_COMPATIBILITY = (
     "返回 UNSUPPORTED_PROPERTY_GRAPH_APPEND 并保留原图。"
     "此时向用户说明限制；覆盖或清空图需要用户明确要求。"
 )
+try:
+    _LARGE_GRAPH_MAX_SAMPLE_SOURCES = max(
+        1, int(os.getenv("LARGE_GRAPH_MAX_SAMPLE_SOURCES", "10000"))
+    )
+except (TypeError, ValueError, OverflowError):
+    _LARGE_GRAPH_MAX_SAMPLE_SOURCES = 10_000
 
 # ─────────────────────────────────────────────────────────────────
 # 图分析工具（对外暴露给 LLM）
@@ -71,16 +77,19 @@ GRAPH_TOOLS: List[dict] = [
             "- HIV/PCBA 等多图 .pt 文件 → 自动路由到 load_graph_classification_dataset 异步加载；\n"
             "- 边列表（每行 `src dst [weight]`，空格/Tab/逗号分隔）→ 直接解析；\n"
             "- 三元组（每行 `source relation target`）→ 直接解析；\n"
+            "- 达到大图字节、边数或节点基数阈值的边列表/三元组 → 在全量读取前自动提交流式大图准备；\n"
             "- 自然语言文本（散文、文章、文档）→ LLM 预检提取 extraction_goal 后提交异步 text2graph 作业；\n"
             "- GRAPH_STORAGE_BACKEND=nebula 时，NPZ/PT/JSON 解析及大图 Importer 导入也作为后台作业执行。\n\n"
             "格式由 LLM 预检（FileFormatPreCheckSubAgent）自动判断，无需手动指定；LLM 不可用时降级为启发式检测。\n\n"
             "参数:\n"
             "- filename: 会话中已注册的上传文件名。\n"
+            "- directed(可选, 默认 true): 文本边表按有向图或无向图加载。\n"
             "- append(可选, 默认 false): false 覆盖当前图；true 追加到当前图。\n\n"
             "返回:\n"
             "- local 模式的 binary/edge_list/triple：加载状态、检测格式、图版本；\n"
-            "- freetext、graph_classification_dataset 或 nebula 模式的 binary："
-            "async=true、job_id、status='queued'；Agent 会在后端自动监控，直接 API 调用方可低频使用 get_job_status/get_job_result 查询，模型无需反复调用；\n"
+            "- freetext、graph_classification_dataset、超大图准备或 nebula 模式的 binary："
+            "async=true、job_id、status='queued'；Agent 会在后端自动监控，直接 API 调用方可低频"
+            "使用 get_job_status 查询到终态，再用 get_job_result 读取有界结果，期间不得重复提交；\n"
             "- 图规模/结构详情请调用 `get_graph_info`。" + _APPEND_COMPATIBILITY
         ),
         "inputSchema": {
@@ -94,6 +103,11 @@ GRAPH_TOOLS: List[dict] = [
                     "type": "boolean",
                     "description": "false: 覆盖；true: 追加",
                     "default": False,
+                },
+                "directed": {
+                    "type": "boolean",
+                    "description": "文本边表是否表示有向图",
+                    "default": True,
                 },
             },
             "required": ["filename"],
@@ -367,7 +381,8 @@ GRAPH_TOOLS: List[dict] = [
             '- target: 终点节点；当值为 `"all"` 时，返回 source 到所有可达节点的最短路径。\n'
             "- use_weight(可选, 默认 true):\n"
             "  - true: 按边权重计算（Dijkstra）；\n"
-            "  - false: 按跳数计算（BFS）。\n"
+            "  - false: 按跳数计算（单目标大图使用双向 BFS）。\n"
+            "  - 大图快照没有显式权重时，所有边成本视为 1，单目标自动使用双向 BFS。\n"
             "- algorithm(可选, 默认 \"default\"):\n"
             "  - \"default\": 返回单条最短路径；\n"
             "  - \"yen_k_shortest\": 返回前 k 条不重复的最短简单路径。\n"
@@ -382,7 +397,10 @@ GRAPH_TOOLS: List[dict] = [
                 "target": {"type": "string", "description": '终点节点，或 "all" 表示到所有可达节点'},
                 "use_weight": {
                     "type": "boolean",
-                    "description": "true: 按边权重计算（Dijkstra）；false: 按跳数计算（BFS）",
+                    "description": (
+                        "true: 按边权重计算；大图没有显式权重时按单位成本使用双向 BFS；"
+                        "false: 按跳数计算，单目标大图使用双向 BFS"
+                    ),
                     "default": True,
                 },
                 "algorithm": {
@@ -440,6 +458,7 @@ GRAPH_TOOLS: List[dict] = [
         "name": "maximum_flow",
         "description": (
             "计算 source 到 sink 的最大流。\n\n"
+            "边权作为容量，容量必须为非负有限数值。\n\n"
             "参数:\n"
             "- source: 源点节点。\n"
             "- sink: 汇点节点。\n\n"
@@ -460,6 +479,7 @@ GRAPH_TOOLS: List[dict] = [
         "name": "minimum_cut",
         "description": (
             "计算 source 到 sink 的最小割。\n\n"
+            "边权作为容量，容量必须为非负有限数值。\n\n"
             "参数:\n"
             "- source: 源点节点。\n"
             "- sink: 汇点节点。\n\n"
@@ -480,7 +500,7 @@ GRAPH_TOOLS: List[dict] = [
         "name": "global_minimum_cut",
         "description": (
             "计算当前图的全局最小割。\n\n"
-            "默认将有向图按无向图处理，并使用边权作为割容量；若图本身不连通，返回割值 0。"
+            "默认将有向图按无向图处理，并使用非负边权作为割容量；若图本身不连通，返回割值 0。"
             "适合回答“不指定源点/汇点时整张图最脆弱的割在哪里”。\n\n"
             "参数:\n"
             "- treat_as_undirected(可选, 默认 true): 有向图是否按无向图处理；false 时有向图会返回不支持。\n"
@@ -537,6 +557,8 @@ GRAPH_TOOLS: List[dict] = [
             '  - "asyn_fluidc": 异步流体社区发现，适合小图。\n\n'
             "返回:\n"
             "- JSON 字符串，包含社区数量、模块度（若可计算）及每个社区的节点集合。"
+            "传入 focus_nodes 时，还会返回这些节点的社区 ID、社区规模和社区代表节点；"
+            "适合把高入度/高中心性节点与一次全图社区检测结果直接关联。"
         ),
         "inputSchema": {
             "type": "object",
@@ -564,6 +586,21 @@ GRAPH_TOOLS: List[dict] = [
                     "type": ["integer", "string"],
                     "description": "展示的社区数上限，默认 5，最大 200；传 \"all\" 返回全部社区（大图慎用）。",
                     "default": 5,
+                },
+                "focus_nodes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 200,
+                    "description": (
+                        "需要查询社区归属的节点列表；不会为每个节点重复运行社区检测。"
+                    ),
+                },
+                "max_iterations": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 5,
+                    "description": "大图加权标签传播的最大迭代次数。",
                 },
             },
             "required": [],
@@ -833,7 +870,7 @@ GRAPH_TOOLS: List[dict] = [
             '- method:\n'
             '  - "all_simple_paths": 枚举 source 到 target 的所有简单路径（需要 source、target，受 cutoff 限制）；\n'
             '  - "has_path": 判断 source 到 target 是否可达（需要 source、target）；\n'
-            '  - "average_shortest_path_length": 计算图的平均最短路径长度（不需要 source/target，自动取最大连通分量）。\n'
+            '  - "average_shortest_path_length": 计算图的平均最短路径长度（不需要 source/target；有向图要求强连通，无向非连通图取最大连通分量）。\n'
             "- source(条件必填): all_simple_paths 和 has_path 需要。\n"
             "- target(条件必填): all_simple_paths 和 has_path 需要。\n"
             "- cutoff(可选, 默认 5): 仅 all_simple_paths 生效，限制路径最大长度。\n\n"
@@ -954,7 +991,10 @@ GRAPH_TOOLS: List[dict] = [
             '  - "degree_assortativity": 度同配性，相连节点度数的相关系数。\n\n'
             "注意: diameter 和 radius 在非连通图上自动取最大连通分量计算。\n\n"
             "返回:\n"
-            "- JSON 字符串，包含指标名称和计算结果。"
+            "- JSON 字符串，包含指标名称和计算结果。\n"
+            "- success=true 且 defined=false 表示指标在当前图上数学未定义，"
+            "不表示引擎不支持；必须依据 undefined_reason 解释，禁止表述为"
+            "“当前不支持”。度同配性常见原因是边端点度数方差为 0。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1219,12 +1259,31 @@ GRAPH_TOOLS: List[dict] = [
     },
     {
         "name": "get_job_status",
-        "description": "查询异步作业状态。传 after_seq=0 开始独立读取完整进度，再用 progress_cursor 读取后续页；progress_has_more=true 时继续读取。省略游标保留旧增量队列行为。",
+        "description": (
+            "查询异步作业的有界状态与进度。传 after_seq=0 开始独立读取完整进度，再用 "
+            "progress_cursor 读取后续页；progress_has_more=true 时继续读取。省略游标保留旧增量队列行为。"
+            "大图作业状态不内嵌完整结果，完成后使用 get_job_result。"
+        ),
         "inputSchema": {
             "type": "object",
-            "properties": {"job_id": {"type": "string"},
-                           "after_seq": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
-                           "progress_limit": {"type": "integer", "minimum": 1, "maximum": 1000}},
+            "properties": {
+                "job_id": {"type": "string"},
+                "after_seq": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
+                "progress_limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+            },
+            "required": ["job_id"],
+        },
+        "category": "system",
+    },
+    {
+        "name": "get_job_result",
+        "description": (
+            "获取已完成异步作业的结果。大图作业只返回 Summary、Preview 和 Artifact 引用，"
+            "不会把全量节点结果加载进 Agent 上下文。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
             "required": ["job_id"],
         },
         "category": "system",
@@ -1237,6 +1296,391 @@ GRAPH_TOOLS: List[dict] = [
             "properties": {"job_id": {"type": "string"}},
             "required": ["job_id"],
         },
+        "category": "system",
+    },
+    # ── 超大图分区计算路径 ──────────────────────────────────────────
+    {
+        "name": "prepare_large_graph",
+        "description": (
+            "将当前会话已注册的边列表/三元组上传文件分块准备为版本化大图快照。"
+            "任务会持久化排队，在独立 Worker 进程中并行读取、校验和跨分区去重；"
+            "不会创建完整 GraphData、节点列表、边列表或 NetworkX 图。\n\n"
+            "返回 async=true、job_id 和唯一 graph_version；用 get_job_status 查看进度，"
+            "用 get_job_result 获取质量摘要。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "已注册上传文件名"},
+                "graph_id": {"type": "string", "description": "逻辑图标识；默认当前 session_id"},
+                "graph_version": {"type": "integer", "minimum": 1, "description": "可选显式版本；不可覆盖"},
+                "input_format": {
+                    "type": "string", "enum": ["edgelist", "triples"], "default": "edgelist"
+                },
+                "delimiter": {
+                    "type": "string", "description": "auto/whitespace/comma/tab 或单字符", "default": "auto"
+                },
+                "directed": {"type": "boolean", "default": True},
+                "partitions": {"type": "integer", "minimum": 1, "maximum": 128},
+                "workers": {"type": "integer", "minimum": 1},
+                "quality_policy": {
+                    "type": "object",
+                    "description": "显式节点规范化、边唯一键、权重冲突、自环和无效记录策略",
+                    "properties": {
+                        "node_normalization": {"type": "string", "enum": ["nfkc_casefold", "exact"]},
+                        "edge_key": {
+                            "type": "string",
+                            "enum": ["endpoints", "endpoints_relation"],
+                            "default": "endpoints",
+                            "description": (
+                                "算法兼容快照使用 endpoints；endpoints_relation 保留多关系并行边，"
+                                "当前经典算法会明确拒绝该语义。"
+                            ),
+                        },
+                        "weight_conflict": {"type": "string", "enum": ["first", "last", "max", "min", "reject"]},
+                        "self_loops": {"type": "string", "enum": ["allow", "skip", "reject"]},
+                        "invalid_records": {"type": "string", "enum": ["skip", "reject"]},
+                    },
+                },
+            },
+            "required": ["filename"],
+        },
+        "category": "data",
+    },
+    {
+        "name": "run_large_graph_algorithm",
+        "description": (
+            "在已发布的分区快照上提交算法。能力目录跟踪小图计算目录的全部算法，另保留"
+            " degree/in_degree/out_degree/degree_centrality 快速入口；每个方法的"
+            " 参数、条件必填项和子模式见 parameters Schema，也可先调用"
+            " get_large_graph_capabilities 获取运行时能力。不支持的模式或资源不足会"
+            "明确拒绝，不回退到无界 NetworkX 路径。dev 新增的结构、连通性、树/DAG、"
+            "匹配/着色和扩展距离分组算子均已接入；结果会按能力标记"
+            " exact/approximate/bounded/mixed；"
+            "可物化的全量节点/边结果写入 Artifact，Agent 仅接收有界预览。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "graph_id": {"type": "string", "description": "逻辑图标识；默认当前 session_id"},
+                "graph_version": {"type": "integer", "minimum": 1},
+                "algorithm": {
+                    "type": "string",
+                    "enum": [
+                        "degree", "in_degree", "out_degree", "degree_centrality",
+                        "shortest_path", "all_shortest_paths", "maximum_flow",
+                        "minimum_cut", "global_minimum_cut", "minimum_spanning_tree",
+                        "community_detection", "node_centrality", "graph_connectivity",
+                        "find_cycles", "maximum_cycle", "topological_sort",
+                        "degree_analysis", "subgraph_extraction",
+                        "link_prediction_score", "path_analysis", "clique_analysis",
+                        "reachability", "global_metrics",
+                        "graph_structure_analysis", "connectivity_analysis",
+                        "tree_dag_analysis", "matching_coloring_analysis",
+                        "distance_measures"
+                    ],
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": (
+                        "算法参数。条件必填：shortest_path/all_shortest_paths 需要 source+target；"
+                        "maximum_flow/minimum_cut 需要 source+sink；各 method/metric 型算法需要"
+                        "相应选择器；ego_graph 另需 node，node_subset 另需 nodes；"
+                        "path_analysis 的 all_simple_paths/has_path 需 source+target；"
+                        "reachability 的 descendants/ancestors 需 node；链路预测的 source/target"
+                        "必须同时提供或同时省略；分组结构遍历需 source，局部连通度/割集需"
+                        " source+target，LCA 需 node1+node2，支配分析需 source，均衡着色需"
+                        " num_colors。保留 additionalProperties 以兼容后续引擎参数。"
+                    ),
+                    "additionalProperties": True,
+                    "properties": {
+                        "source": {
+                            "type": "string",
+                            "description": (
+                                "起点/源点。最短路与成对路径分析必填；最大流/最小割与 sink 配合；"
+                                "链路预测中必须与 target 同时提供。"
+                            ),
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": (
+                                "终点。最短路与成对路径分析必填；shortest_path 可传 'all'"
+                                "生成从 source 出发的距离 Artifact；链路预测中必须与 source 同时提供。"
+                            ),
+                        },
+                        "sink": {
+                            "type": "string",
+                            "description": "maximum_flow 和 minimum_cut 的汇点，与 source 同时必填。",
+                        },
+                        "algorithm": {
+                            "type": "string",
+                            "enum": [
+                                "default", "yen_k_shortest",
+                                "louvain", "greedy_modularity", "label_propagation",
+                                "label_propagation_asyn", "leiden", "girvan_newman",
+                                "asyn_fluidc",
+                            ],
+                            "description": (
+                                "shortest_path 子模式为 default/yen_k_shortest（默认 default）；"
+                                "community_detection 子模式为其余七项（默认 louvain，当前均为"
+                                "可扩展加权同步标签传播近似）。"
+                            ),
+                        },
+                        "centrality_type": {
+                            "type": "string",
+                            "enum": [
+                                "degree", "betweenness", "closeness", "pagerank",
+                                "eigenvector", "harmonic", "katz", "load", "voterank",
+                                "percolation",
+                            ],
+                            "default": "degree",
+                            "description": (
+                                "node_centrality 的指标。betweenness 可按 sample_sources 采样；"
+                                "load/percolation 使用显式标记的 Brandes 近似。"
+                            ),
+                        },
+                        "method": {
+                            "type": "string",
+                            "enum": [
+                                "ego_graph", "k_core", "k_truss", "k_corona", "node_subset",
+                                "jaccard", "adamic_adar", "resource_allocation",
+                                "preferential_attachment", "all_simple_paths", "has_path",
+                                "average_shortest_path_length", "find_cliques", "clique_number",
+                                "number_of_cliques", "transitive_closure", "descendants",
+                                "ancestors", "is_tree", "is_forest",
+                                "is_directed_acyclic_graph", "bfs_tree", "dfs_tree",
+                                "lexicographical_topological_sort", "all_topological_sorts",
+                                "is_at_free", "check_planarity", "is_tournament",
+                                "score_sequence", "is_bipartite",
+                                "weisfeiler_lehman_graph_hash", "node_connectivity",
+                                "edge_connectivity", "minimum_node_cut", "minimum_edge_cut",
+                                "articulation_points", "bridges", "local_bridges",
+                                "biconnected_component_edges", "bridge_components",
+                                "condensation", "maximum_spanning_tree",
+                                "random_spanning_tree", "lowest_common_ancestor",
+                                "immediate_dominators", "dominance_frontiers",
+                                "dag_longest_path", "dag_longest_path_length", "antichains",
+                                "is_aperiodic", "colliders", "v_structures",
+                                "max_weight_matching", "min_weight_matching",
+                                "maximal_matching", "min_edge_cover", "is_matching",
+                                "greedy_color", "equitable_color",
+                            ],
+                            "description": (
+                                "subgraph_extraction、link_prediction_score、path_analysis、"
+                                "clique_analysis、reachability 或 dev 扩展分析算子的子模式；"
+                                "必须选择与顶层 algorithm 对应的一项。"
+                            ),
+                        },
+                        "metric": {
+                            "type": "string",
+                            "enum": [
+                                "density", "diameter", "radius", "transitivity",
+                                "average_clustering", "degree_assortativity",
+                                "center", "periphery", "eccentricity", "wiener_index",
+                                "global_efficiency", "local_efficiency",
+                                "average_neighbor_degree", "average_degree_connectivity",
+                                "rich_club_coefficient", "reciprocity", "flow_hierarchy",
+                                "barycenter", "estrada_index", "girth",
+                            ],
+                            "description": "global_metrics 或 distance_measures 必填的图级指标。",
+                        },
+                        "node": {
+                            "type": "string",
+                            "description": (
+                                "ego_graph 的中心节点、descendants/ancestors 的查询节点，或"
+                                "number_of_cliques 的可选指定节点。"
+                            ),
+                        },
+                        "nodes": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "subgraph_extraction/method=node_subset 必填的节点标识数组；"
+                                "运行时默认控制面上限为 10000 项，可由部署配置收紧。"
+                            ),
+                        },
+                        "focus_nodes": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 200,
+                            "description": (
+                                "community_detection 完成后需要直接查询社区归属的节点数组；"
+                                "用于把前一步 Top-K 节点与同一次全图社区结果关联。"
+                            ),
+                        },
+                        "k": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": (
+                                "yen_k_shortest 的路径数（1..200，默认 3），或 ego_graph 半径及"
+                                "k_core/k_truss/k_corona 阈值（默认 2）。"
+                            ),
+                        },
+                        "cutoff": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10000,
+                            "default": 5,
+                            "description": "all_simple_paths 的最大边数/深度。",
+                        },
+                        "limit": {
+                            "anyOf": [
+                                {"type": "integer", "minimum": 1, "maximum": 200},
+                                {"const": "all"},
+                            ],
+                            "description": (
+                                "列表/路径/环/团/分区等结果的控制面上限；整数为 1..200。"
+                                "字符串仅支持 'all'，大图路径仍映射到 200 条硬上限；完整或有界"
+                                "物化结果以 Artifact 为准。"
+                            ),
+                        },
+                        "top_k": {
+                            "anyOf": [
+                                {"type": "integer", "minimum": 1, "maximum": 200},
+                                {"const": "all"},
+                            ],
+                            "description": (
+                                "degree 快速入口和全图链路预测的 top-k，整数为 1..200；"
+                                "字符串仅支持 'all' 且映射到 200 条控制面上限。省略时"
+                                "degree 默认为 20，link_prediction_score 默认为 10。"
+                            ),
+                        },
+                        "max_cycles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100000,
+                            "default": 10000,
+                            "description": "maximum_cycle 最多检查的简单环数量。",
+                        },
+                        "optimize_by": {
+                            "type": "string",
+                            "enum": ["length", "weight"],
+                            "default": "length",
+                            "description": "maximum_cycle 按环长度或边权总和优化。",
+                        },
+                        "treat_as_undirected": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "global_minimum_cut 在有向快照上是否按无向图计算。",
+                        },
+                        "max_iterations": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2000,
+                            "default": 5,
+                            "description": (
+                                "社区传播或迭代中心性的迭代上限；社区内核实际最多 500 次，"
+                                "中心性最多 2000 次。"
+                            ),
+                        },
+                        "sample_sources": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": _LARGE_GRAPH_MAX_SAMPLE_SOURCES,
+                            "description": (
+                                "betweenness/load/percolation 等 Brandes 类中心性的源点采样数；"
+                                "小于节点总数时结果会标记 approximate。部署硬上限由 "
+                                "LARGE_GRAPH_MAX_SAMPLE_SOURCES 配置（当前为 "
+                                f"{_LARGE_GRAPH_MAX_SAMPLE_SOURCES}），且不能由 "
+                                "allow_expensive 绕过。"
+                            ),
+                        },
+                        "damping": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "exclusiveMaximum": 1,
+                            "default": 0.85,
+                            "description": "PageRank 的有限阻尼系数。",
+                        },
+                        "alpha": {
+                            "type": "number",
+                            "default": 0.1,
+                            "description": "Katz 中心性的有限衰减系数（不接受 NaN/Infinity）。",
+                        },
+                        "beta": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Katz 中心性的有限外源偏置（不接受 NaN/Infinity）。",
+                        },
+                        "tolerance": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "default": 1e-6,
+                            "description": "PageRank/eigenvector/Katz 的有限正收敛容差。",
+                        },
+                        "use_weight": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "shortest_path 是否使用边权；all_shortest_paths 当前固定使用权重，"
+                                "其他算法会忽略该参数。"
+                            ),
+                        },
+                        "create_version": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": (
+                                "仅用于 subgraph_extraction。默认 true：在同一持久作业中基于"
+                                "筛选结果发布新的分区快照版本；该版本不会物化为 GraphData，也不会"
+                                "静默切换当前小图表示，后续请显式使用返回的 new_graph_version。"
+                                "设为 false 时只生成子图 Artifact。"
+                            ),
+                        },
+                        "allow_expensive": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "允许绕过 O(V²)/指数级算法的默认安全准入；仅在确认单机资源足够时使用。",
+                        },
+                        "strict_semantics": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "拒绝大图路径中的近似算法映射，要求与小图算法语义一致。",
+                        },
+                    },
+                },
+                "workers": {"type": "integer", "minimum": 1},
+            },
+            "required": ["graph_version", "algorithm"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "list_large_graph_versions",
+        "description": "列出当前会话逻辑图的分区快照版本、发布状态和质量摘要。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"graph_id": {"type": "string"}},
+            "required": [],
+        },
+        "category": "data",
+    },
+    {
+        "name": "get_large_graph_artifact",
+        "description": (
+            "获取大图算法 Artifact 的元数据和有界预览；"
+            "不会读取或返回全量分区结果。Artifact 会返回结果文件总数、有界的文件路径/"
+            "下载序号预览及完整序号范围；download_url_template 中的 {partition} 是该扁平"
+            "结果文件列表的下载序号，可据此逐文件流式下载。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "artifact_id": {"type": "string"},
+                "include_preview": {"type": "boolean", "default": True},
+            },
+            "required": ["artifact_id"],
+        },
+        "category": "compute",
+    },
+    {
+        "name": "get_large_graph_capabilities",
+        "description": (
+            "返回大图并行引擎当前具有明确语义映射的算法、引擎版本、可用子模式、"
+            "exact/approximate/bounded 执行语义、复杂度等级、并行策略及结果类型。"
+            "提交 run_large_graph_algorithm 前可用它核对 mode/近似语义；具体字段名、"
+            "条件必填项和数值边界见该工具的 parameters Schema。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
         "category": "system",
     },
     # ── 第 4 批新增（图可视化）─────────────────────────────────────────

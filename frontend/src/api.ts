@@ -1,6 +1,6 @@
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
-import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, Session, StreamBatch, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
 import { currentLanguage, tr } from './i18n';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -197,7 +197,16 @@ function datasetScopeUrl(projectId: string | null) {
 export async function listProjectDatasets(projectId: string | null, signal?: AbortSignal) {
   return json<{ success?: boolean; project_id: string | null; default_dataset_id?: string | null; datasets?: Dataset[] }>(datasetScopeUrl(projectId), { signal });
 }
-export async function uploadProjectDataset(projectId: string | null, file: File | File[], sessionId?: string, csvSchema?: CsvBundleSchema, name?: string) {
+export async function listServerDatasets(signal?: AbortSignal) {
+  return json<{ success?: boolean; datasets?: ServerDataset[] }>('/api/server-datasets', { signal });
+}
+export async function importServerDataset(projectId: string, serverDatasetId: string, sessionId?: string) {
+  return json<{ success?: boolean; created?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(`/api/projects/${encodeURIComponent(projectId)}/datasets/from-server`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ server_dataset_id: serverDatasetId, session_id: sessionId || '' }),
+  });
+}
+export async function uploadProjectDataset(projectId: string | null, file: File | File[], sessionId?: string, csvSchema?: CsvBundleSchema, name?: string, description?: string) {
   const body = new FormData();
   const selected = Array.isArray(file) ? file : [file];
   if (csvSchema) {
@@ -206,11 +215,23 @@ export async function uploadProjectDataset(projectId: string | null, file: File 
     if (name) body.append('name', name);
   } else if (selected[0]) body.append('file', selected[0]);
   if (sessionId) body.append('session_id', sessionId);
+  if (description !== undefined) body.append('description', description);
   return json<{ success?: boolean; dataset: Dataset; default_dataset_id?: string | null; activated_session_id?: string | null; dataset_view?: DatasetView | null }>(datasetScopeUrl(projectId), { method: 'POST', body });
 }
 export async function renameProjectDataset(projectId: string | null, datasetId: string, name: string) {
+  return updateProjectDataset(projectId, datasetId, { name });
+}
+export async function updateProjectDataset(projectId: string | null, datasetId: string, patch: { name?: string; description?: string }) {
   return json<{ success?: boolean; dataset: Dataset }>(`${datasetScopeUrl(projectId)}/${encodeURIComponent(datasetId)}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+  });
+}
+export async function listConstructedDatasets(projectId: string, signal?: AbortSignal) {
+  return json<{ datasets: Dataset[] }>(`/api/projects/${encodeURIComponent(projectId)}/constructed-datasets`, { signal });
+}
+export async function importConstructedDataset(projectId: string, datasetId: string) {
+  return json<{ dataset: Dataset; default_dataset_id?: string | null }>(`${datasetScopeUrl(projectId)}/import-constructed`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_dataset_id: datasetId }),
   });
 }
 export async function setDefaultProjectDataset(projectId: string, datasetId: string) {

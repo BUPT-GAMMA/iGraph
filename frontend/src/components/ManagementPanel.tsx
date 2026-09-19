@@ -147,8 +147,8 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
     />
     <div className="management-search">
       {tab === 'skills' && <label className="skill-upload">
-        {uploading ? t('Uploading…', '上传中…') : t('Upload skill ZIP', '上传技能 ZIP')}
-        <input aria-label={t('Upload skill ZIP', '上传技能 ZIP')} type="file" accept=".zip" hidden disabled={uploading} onChange={event => { const file = event.target.files?.[0]; if (file) void uploadSkill(file); event.currentTarget.value = ''; }} />
+        {uploading ? t('Uploading…', '上传中…') : t('Upload skill (.md / .zip)', '上传技能（.md / .zip）')}
+        <input aria-label={t('Upload skill (.md / .zip)', '上传技能（.md / .zip）')} type="file" accept=".md,.zip" hidden disabled={uploading} onChange={event => { const file = event.target.files?.[0]; if (file) void uploadSkill(file); event.currentTarget.value = ''; }} />
       </label>}
       <Icon name="search" size={14} />
       <input value={query} onChange={event => setQuery(event.target.value)} placeholder={tab === 'memory' ? t('Search memories', '搜索记忆内容') : t('Search skills', '搜索技能')} />

@@ -105,6 +105,7 @@ export type GraphHighlights = Highlight[] | {
 };
 
 export type GraphData = {
+  schema_kind?: 'tables';
   degree_scope?: 'full_graph' | 'subgraph';
   success?: boolean;
   nodes: Array<Record<string, unknown>>;
@@ -137,6 +138,18 @@ export type GraphCollectionSummary = {
   storage_type?: string;
 };
 
+export type PartitionedGraphSummary = {
+  num_nodes?: number;
+  num_edges?: number;
+  directed?: boolean;
+  graph_version?: number;
+  partitions?: number;
+  representation?: 'partitioned_snapshot' | string;
+  has_weights?: boolean;
+  storage_bytes?: number;
+  preparation_status?: 'queued' | 'running' | string;
+};
+
 export type DatasetView =
   | {
       kind: 'single_graph';
@@ -147,6 +160,11 @@ export type DatasetView =
       kind: 'graph_collection';
       visualization: { supported: false; code: 'NON_SINGLE_GRAPH' };
       summary: GraphCollectionSummary;
+    }
+  | {
+      kind: 'partitioned_graph';
+      visualization: { supported: false; code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE' };
+      summary: PartitionedGraphSummary;
     };
 
 export type GraphViewState =
@@ -154,6 +172,7 @@ export type GraphViewState =
   | { status: 'loading'; data: null }
   | { status: 'ready'; data: GraphData }
   | { status: 'unsupported'; data: null; code: 'NON_SINGLE_GRAPH'; summary: GraphCollectionSummary }
+  | { status: 'unsupported'; data: null; code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE'; summary: PartitionedGraphSummary }
   | { status: 'failed'; data: null; error: string };
 
 export function isGraphData(value: unknown): value is GraphData {
@@ -166,15 +185,17 @@ export type Dataset = {
   dataset_id: string;
   project_id: string | null;
   name: string;
+  description?: string;
   original_filename: string;
   file_type: string;
   metadata?: Record<string, unknown>;
   status: string;
+  source_kind?: 'upload' | 'server' | string;
+  source_id?: string | null;
   is_default?: boolean;
   created_at?: string;
   updated_at?: string;
 };
-
 export type CsvForeignKey = {
   columns: string[];
   ref_table: string;
@@ -189,6 +210,7 @@ export type CsvBundleTableSchema = {
 };
 export type CsvBundleSchema = {
   version: 'csv_bundle.v1';
+  description?: string;
   tables: CsvBundleTableSchema[];
 };
 
@@ -281,7 +303,15 @@ export type ConstructionSchemaEdgeType = {
   relationship_count: number;
   property_paths?: ConstructionSchemaPropertyPath[];
 };
+export type ConstructionSourceTable = {
+  name: string;
+  columns: string[];
+  column_types?: Record<string, string>;
+  primary_key: string[];
+  foreign_keys: CsvForeignKey[];
+};
 export type ConstructionSchema = {
+  source_tables?: ConstructionSourceTable[];
   directed?: boolean;
   node_count?: number;
   edge_count?: number;
@@ -301,6 +331,33 @@ export type ConstructionResult = ConstructionGraph & {
     after: { node_count: number; edge_count: number };
     changed_nodes: number;
     changed_edges: number;
+  };
+};
+
+export type ServerDataset = {
+  server_dataset_id: string;
+  revision?: string;
+  name: string;
+  original_filename: string;
+  relative_path: string;
+  file_type: string;
+  size_bytes: number;
+  modified_at?: number;
+  directed?: boolean;
+  metadata_error?: string;
+  preparation?: {
+    status: 'not_required' | 'not_prepared' | 'queued' | 'running' | 'ready' | 'failed' | 'cancelled' | 'unavailable' | string;
+    progress?: number;
+    message?: string;
+    error?: string;
+    job_id?: string;
+    graph_version?: number;
+    num_nodes?: number;
+    num_edges?: number;
+    partitions?: number;
+    directed?: boolean;
+    has_weights?: boolean;
+    storage_bytes?: number | Record<string, number>;
   };
 };
 export type AttachmentRef = { file_token: string; filename: string };

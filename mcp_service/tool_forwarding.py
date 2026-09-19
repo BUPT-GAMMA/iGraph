@@ -38,8 +38,22 @@ def forwarded_graph_tool_arguments(
     tool_name: str,
     arguments: dict | None,
 ) -> dict:
-    """Inject private async markers without changing public tool schemas."""
+    """Normalize provider arguments and inject private async markers."""
     forwarded_arguments = dict(arguments or {})
+    if tool_name == "visualize_subgraph":
+        for field, expected_type in (("node_names", list), ("highlights", dict)):
+            value = forwarded_arguments.get(field)
+            if not isinstance(value, str):
+                continue
+            try:
+                decoded = json.loads(value)
+            except ValueError as exc:
+                raise ValueError(f"{field} must contain valid JSON") from exc
+            if not isinstance(decoded, expected_type):
+                raise ValueError(f"{field} must decode to {expected_type.__name__}")
+            if field == "node_names" and not all(isinstance(node, str) for node in decoded):
+                raise ValueError("node_names must contain only node ID strings")
+            forwarded_arguments[field] = decoded
     object_fields = (
         ("data", "train_config", "algo_config")
         if tool_name == "train"

@@ -6,7 +6,9 @@ import types
 import unittest
 from unittest.mock import patch
 
-if "httpx" not in sys.modules:
+try:
+    import httpx
+except ImportError:  # pragma: no cover - minimal dependency test environment
     fake_httpx = types.ModuleType("httpx")
 
     class _Request:
@@ -52,8 +54,7 @@ if "httpx" not in sys.modules:
     fake_httpx.ConnectError = _ConnectError
     fake_httpx.AsyncClient = object
     sys.modules["httpx"] = fake_httpx
-
-import httpx
+    httpx = fake_httpx
 
 import mcp_service.graph_data_client as graph_data_client
 import mcp_service.raw_client as raw_client
@@ -68,6 +69,37 @@ from mcp_service.tool_forwarding import (
 
 
 class MCPModulesTest(unittest.TestCase):
+    def test_visualization_json_arguments_are_decoded_without_mutating_input(self) -> None:
+        original = {
+            "node_names": '["163", "523", "565"]',
+            "highlights": '{"paths":[{"node_sequence":["163","523","565"]}]}',
+        }
+        forwarded = forwarded_graph_tool_arguments("visualize_subgraph", original)
+        self.assertEqual(forwarded["node_names"], ["163", "523", "565"])
+        self.assertEqual(forwarded["highlights"]["paths"][0]["node_sequence"], forwarded["node_names"])
+        self.assertIsInstance(original["node_names"], str)
+        self.assertIsInstance(original["highlights"], str)
+
+    def test_visualization_native_arguments_are_preserved(self) -> None:
+        original = {"node_names": ["163"], "highlights": {"nodes": [{"ids": ["163"]}]}}
+        self.assertEqual(forwarded_graph_tool_arguments("visualize_subgraph", original), original)
+        self.assertEqual(forwarded_graph_tool_arguments("visualize_subgraph", {}), {})
+
+    def test_visualization_invalid_json_is_rejected_not_used_as_whole_graph(self) -> None:
+        for field, value in (
+            ("node_names", "not JSON"), ("node_names", "null"),
+            ("node_names", '{}'), ("node_names", '[163]'),
+            ("node_names", '[["163"]]'), ("highlights", "[]"),
+            ("highlights", "invalid"),
+        ):
+            with self.subTest(field=field, value=value):
+                with self.assertRaises(ValueError):
+                    forwarded_graph_tool_arguments("visualize_subgraph", {field: value})
+
+    def test_visualization_adapter_does_not_change_other_tools(self) -> None:
+        original = {"node_names": '["163"]'}
+        self.assertEqual(forwarded_graph_tool_arguments("get_node_info", original), original)
+
     def test_object_schema_accepts_dict_or_json_string_at_mcp_boundary(self) -> None:
         annotation = schema_parameter_type("object")
 

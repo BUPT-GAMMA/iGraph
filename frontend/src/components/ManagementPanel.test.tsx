@@ -101,7 +101,7 @@ describe('ManagementPanel', () => {
     expect((screen.getByPlaceholderText('搜索记忆内容') as HTMLInputElement).value).toBe('');
   });
 
-  it('uploads and deletes uploaded skills while keeping bundled skills protected', async () => {
+  it.each(['md', 'zip'])('uploads %s and deletes uploaded skills while keeping bundled skills protected', async extension => {
     apiFetchMock
       .mockResolvedValueOnce(jsonResponse({ items: [] }))
       .mockResolvedValueOnce(jsonResponse({ skills: [
@@ -123,8 +123,8 @@ describe('ManagementPanel', () => {
     await waitFor(() => expect(screen.getByText('暂无匹配的记忆')).toBeTruthy());
     fireEvent.click(screen.getByRole('tab', { name: /技能/ }));
     await waitFor(() => expect(screen.getByText('pending-skill')).toBeTruthy());
-    fireEvent.change(screen.getByLabelText('上传技能 ZIP'), {
-      target: { files: [new File(['skill'], 'uploaded-skill.zip', { type: 'application/zip' })] },
+    fireEvent.change(screen.getByLabelText('上传技能（.md / .zip）'), {
+      target: { files: [new File(['skill'], `uploaded-skill.${extension}`, { type: extension === 'md' ? 'text/markdown' : 'application/zip' })] },
     });
     await waitFor(() => expect(screen.getByText('uploaded-skill')).toBeTruthy());
 

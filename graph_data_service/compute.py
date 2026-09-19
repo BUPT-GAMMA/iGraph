@@ -16,6 +16,7 @@ GraphData 计算层
 from __future__ import annotations
 
 import heapq
+import math
 import os
 import statistics
 from itertools import combinations, islice
@@ -66,6 +67,24 @@ def _degree_stats(values: list) -> dict:
         "max": max(values),
         "min": min(values),
         "median": round(statistics.median(values), 4),
+    }
+
+
+def _undefined_assortativity(reason_code: str) -> dict[str, str]:
+    """Return an explicit, model-readable reason for an undefined coefficient."""
+    if reason_code == "no_edges":
+        reason = (
+            "度同配性在数学上未定义：图中没有可用于比较端点度数的边；"
+            "这不表示计算引擎不支持该指标。"
+        )
+    else:
+        reason = (
+            "度同配性在数学上未定义：边端点的度数没有方差，Pearson "
+            "相关系数的分母为 0；这不表示计算引擎不支持该指标。"
+        )
+    return {
+        "undefined_reason_code": reason_code,
+        "undefined_reason": reason,
     }
 
 
@@ -169,6 +188,24 @@ class GraphCompute:
         for _, _, d in cg.edges(data=True):
             d["capacity"] = d.get("weight", 1.0)
         return cg
+
+    @staticmethod
+    def _negative_capacity_error(g: nx.DiGraph) -> Optional[dict]:
+        """Reject negative edge weights before invoking a flow/cut kernel.
+
+        NetworkX silently treats a negative capacity as unusable in its
+        source/sink flow routines, while Stoer-Wagner rejects some (but not
+        all) negative-weight projections.  A single explicit rule keeps the
+        small- and large-graph paths deterministic.
+        """
+        for _, _, data in g.edges(data=True):
+            try:
+                capacity = float(data.get("weight", 1.0))
+            except (TypeError, ValueError):
+                continue
+            if capacity < 0:
+                return {"success": False, "error": "最大流/最小割不支持负容量"}
+        return None
 
     @staticmethod
     def _serialize_label(label) -> Any:
@@ -404,6 +441,11 @@ class GraphCompute:
     @staticmethod
     @analysis_contract
     def all_shortest_paths(g: nx.DiGraph, source: str, target: str, *, limit: int | None = None) -> dict:
+        err = GraphCompute._check_nodes(
+            g, [(source, "起点"), (target, "终点")]
+        )
+        if err:
+            return err
         try:
             eff = _effective_limit(limit, _MAX_PATHS)
             length = nx.shortest_path_length(g, source, target, weight="weight")
@@ -431,6 +473,11 @@ class GraphCompute:
         err = self._check_nodes(g, [(source, "源点"), (sink, "汇点")])
         if err:
             return err
+        if source == sink:
+            return {"success": False, "error": "源点与汇点不能相同"}
+        capacity_error = self._negative_capacity_error(g)
+        if capacity_error:
+            return capacity_error
         cg = self._capacity_copy(g)
         flow_value, flow_dict = nx.maximum_flow(cg, source, sink, capacity="capacity")
 
@@ -456,6 +503,11 @@ class GraphCompute:
         err = self._check_nodes(g, [(source, "源点"), (sink, "汇点")])
         if err:
             return err
+        if source == sink:
+            return {"success": False, "error": "源点与汇点不能相同"}
+        capacity_error = self._negative_capacity_error(g)
+        if capacity_error:
+            return capacity_error
         cg = self._capacity_copy(g)
         cut_value, (reachable, non_reachable) = nx.minimum_cut(cg, source, sink, capacity="capacity")
 
@@ -519,6 +571,9 @@ class GraphCompute:
                 "success": False,
                 "error": "当前仅支持无向全局最小割；有向图请设置 treat_as_undirected=true 或使用 minimum_cut 指定 source/sink。",
             }
+        capacity_error = self._negative_capacity_error(g)
+        if capacity_error:
+            return capacity_error
 
         ug = self._weighted_undirected_graph(g)
         components = [set(c) for c in nx.connected_components(ug)]
@@ -567,15 +622,47 @@ class GraphCompute:
     @staticmethod
     @analysis_contract
     def minimum_spanning_tree(g: nx.DiGraph, *, limit: int | None = None) -> dict:
-        ug = g.to_undirected()
+        # ``DiGraph.to_undirected`` keeps one of two reciprocal edge attribute
+        # dictionaries according to insertion order.  That makes an MST depend
+        # on upload order when u->v and v->u have different weights.  The large
+        # graph path canonicalises such a pair to its minimum weight, so build
+        # the same deterministic projection here.
+        ug = nx.Graph()
+        ug.add_nodes_from(g.nodes(data=True))
+        projected_edges: dict[tuple[Any, Any], float] = {}
+        for source, target, data in g.edges(data=True):
+            if source == target:
+                continue
+            left, right = sorted((source, target), key=lambda node: str(node))
+            weight = float(data.get("weight", 1.0))
+            key = (left, right)
+            projected_edges[key] = min(projected_edges.get(key, weight), weight)
+        for (source, target), weight in sorted(
+            projected_edges.items(),
+            key=lambda item: (item[1], str(item[0][0]), str(item[0][1])),
+        ):
+            ug.add_edge(source, target, weight=weight)
         components = list(nx.connected_components(ug))
         if len(components) == 1:
             mst = nx.minimum_spanning_tree(ug, weight="weight")
             all_edges = sorted(
-                [{"from": u, "to": v, "weight": round(d.get("weight", 1.0), 4)} for u, v, d in mst.edges(data=True)],
-                key=lambda e: e["weight"]
+                [
+                    {
+                        "from": min((u, v), key=lambda node: str(node)),
+                        "to": max((u, v), key=lambda node: str(node)),
+                        "weight": round(d.get("weight", 1.0), 4),
+                    }
+                    for u, v, d in mst.edges(data=True)
+                ],
+                key=lambda e: (e["weight"], str(e["from"]), str(e["to"])),
             )
-            total = round(sum(e["weight"] for e in all_edges), 4)
+            total = round(
+                sum(
+                    float(data.get("weight", 1.0))
+                    for _, _, data in mst.edges(data=True)
+                ),
+                4,
+            )
             eff = _effective_limit(limit, _MAX_LIST_ITEMS)
             edges_preview, truncated = _truncate(all_edges, eff)
             return {
@@ -592,8 +679,12 @@ class GraphCompute:
         for comp in sorted(components, key=len, reverse=True):
             sub = ug.subgraph(comp)
             mst = nx.minimum_spanning_tree(sub, weight="weight")
-            w = round(sum(d.get("weight", 1.0) for _, _, d in mst.edges(data=True)), 4)
-            total += w
+            raw_weight = sum(
+                float(data.get("weight", 1.0))
+                for _, _, data in mst.edges(data=True)
+            )
+            w = round(raw_weight, 4)
+            total += raw_weight
             forest_summary.append({"component_size": len(comp), "mst_weight": w, "mst_edges": mst.number_of_edges()})
         return {
             "success": True,
@@ -605,7 +696,14 @@ class GraphCompute:
         }
 
     @analysis_contract
-    def community_detection(self, g: nx.DiGraph, algorithm: str = "louvain", *, limit: int | None = None) -> dict:
+    def community_detection(
+        self,
+        g: nx.DiGraph,
+        algorithm: str = "louvain",
+        *,
+        limit: int | None = None,
+        focus_nodes: list[str] | None = None,
+    ) -> dict:
         if algorithm not in self._COMMUNITY_ALGORITHMS:
             return {
                 "success": False,
@@ -637,6 +735,33 @@ class GraphCompute:
                 "nodes_truncated": nodes_truncated,
             })
 
+        node_community: dict[object, tuple[int, set]] = {}
+        for community_id, community in enumerate(comms):
+            for node in community:
+                node_community[node] = (community_id, community)
+        focus_node_communities = []
+        missing_focus_nodes = []
+        seen_focus_nodes = set()
+        for raw_node in focus_nodes or []:
+            node = str(raw_node)
+            if node in seen_focus_nodes:
+                continue
+            seen_focus_nodes.add(node)
+            membership = node_community.get(node)
+            if membership is None:
+                missing_focus_nodes.append(node)
+                continue
+            community_id, community = membership
+            focus_node_communities.append(
+                {
+                    "node_id": node,
+                    "node": node,
+                    "community_id": community_id,
+                    "community_size": len(community),
+                    "representative_nodes": sorted(community)[:10],
+                }
+            )
+
         return {
             "success": True,
             "algorithm": algorithm,
@@ -646,10 +771,20 @@ class GraphCompute:
             "communities_shown": len(communities_output),
             "communities_truncated": eff is not None and len(comms) > eff,
             "communities": communities_output,
+            "focus_node_communities": focus_node_communities,
+            "missing_focus_nodes": missing_focus_nodes,
         }
 
     @staticmethod
     def _detect_communities(ug: nx.Graph, algorithm: str) -> list:
+        # Several NetworkX community implementations either reject a null
+        # graph or yield a synthetic empty community.  A community is a set of
+        # actual vertices, so both compute paths use zero communities for the
+        # null graph and the sole vertex for every singleton variant.
+        if ug.number_of_nodes() == 0:
+            return []
+        if ug.number_of_nodes() == 1:
+            return [set(ug.nodes())]
         if algorithm == "louvain":
             try:
                 return list(nx.community.louvain_communities(ug, weight="weight", seed=42))
@@ -671,14 +806,20 @@ class GraphCompute:
             generator = nx.community.girvan_newman(ug)
             return list(next(generator))
         if algorithm == "asyn_fluidc":
-            if ug.number_of_nodes() < 2:
-                return [set(ug.nodes())]
-            k = min(3, max(2, ug.number_of_nodes()))
-            if not nx.is_connected(ug):
-                largest = ug.subgraph(max(nx.connected_components(ug), key=len)).copy()
-            else:
-                largest = ug
-            return list(nx.community.asyn_fluidc(largest, k=min(k, largest.number_of_nodes()), seed=42))
+            # Fluid communities require a connected graph.  Run every
+            # connected component independently instead of silently dropping
+            # every component except the largest one.
+            communities: list[set] = []
+            for component in nx.connected_components(ug):
+                subgraph = ug.subgraph(component).copy()
+                if subgraph.number_of_nodes() == 1:
+                    communities.append(set(component))
+                    continue
+                k = min(3, subgraph.number_of_nodes())
+                communities.extend(
+                    nx.community.asyn_fluidc(subgraph, k=k, seed=42)
+                )
+            return communities
         if algorithm == "leiden":
             try:
                 import igraph as ig  # type: ignore
@@ -701,7 +842,7 @@ class GraphCompute:
             "degree": lambda: nx.degree_centrality(g),
             "betweenness": lambda: nx.betweenness_centrality(g, weight="weight"),
             "closeness": lambda: nx.closeness_centrality(g, distance="weight"),
-            "pagerank": lambda: nx.pagerank(g, weight="weight"),
+            "pagerank": lambda: self._pagerank_centrality(g),
             "eigenvector": lambda: self._eigenvector_centrality(g),
             "harmonic": lambda: nx.harmonic_centrality(g, distance="weight"),
             "katz": lambda: nx.katz_centrality(g, weight="weight", alpha=0.1, beta=1.0, max_iter=1000),
@@ -742,10 +883,70 @@ class GraphCompute:
 
     @staticmethod
     def _eigenvector_centrality(g: nx.DiGraph) -> dict:
+        if g.number_of_nodes() == 0:
+            return {}
         try:
             return nx.eigenvector_centrality(g, weight="weight", max_iter=1000)
         except nx.PowerIterationFailedConvergence:
             return nx.eigenvector_centrality_numpy(g, weight="weight")
+
+    @staticmethod
+    def _pagerank_python(
+        g: nx.Graph,
+        *,
+        alpha: float = 0.85,
+        max_iter: int = 100,
+        tolerance: float = 1.0e-6,
+    ) -> dict:
+        """Dependency-free PageRank power iteration.
+
+        NetworkX 3.x routes :func:`pagerank` through SciPy.  GraphData's small
+        path must remain usable in minimal deployments, so this mirrors the
+        uniform-personalisation NetworkX iteration using only graph iterators.
+        """
+        if len(g) == 0:
+            return {}
+        graph = g.to_directed()
+        nodes = list(graph)
+        node_count = len(nodes)
+        scores = dict.fromkeys(nodes, 1.0 / node_count)
+        outgoing_weight: dict[Any, float] = {}
+        for node in nodes:
+            outgoing_weight[node] = sum(
+                float(data.get("weight", 1.0))
+                for _, _, data in graph.out_edges(node, data=True)
+            )
+
+        for _ in range(max_iter):
+            previous = scores
+            scores = dict.fromkeys(nodes, 0.0)
+            dangling = alpha * sum(
+                previous[node] for node in nodes if outgoing_weight[node] == 0.0
+            )
+            base = (1.0 - alpha + dangling) / node_count
+            for node in nodes:
+                scores[node] += base
+                total = outgoing_weight[node]
+                if total == 0.0:
+                    continue
+                for _, target, data in graph.out_edges(node, data=True):
+                    scores[target] += (
+                        alpha
+                        * previous[node]
+                        * float(data.get("weight", 1.0))
+                        / total
+                    )
+            error = sum(abs(scores[node] - previous[node]) for node in nodes)
+            if error < node_count * tolerance:
+                return scores
+        raise nx.PowerIterationFailedConvergence(max_iter)
+
+    @classmethod
+    def _pagerank_centrality(cls, g: nx.Graph) -> dict:
+        try:
+            return nx.pagerank(g, weight="weight")
+        except (ImportError, ModuleNotFoundError):
+            return cls._pagerank_python(g)
 
     @staticmethod
     @analysis_contract
@@ -769,8 +970,12 @@ class GraphCompute:
             return {
                 "success": True,
                 "directed": True,
-                "is_strongly_connected": bool(g) and nx.is_strongly_connected(g),
-                "is_weakly_connected": bool(g) and nx.is_weakly_connected(g),
+                # NetworkX raises NetworkXPointlessConcept for the null graph.
+                # Component cardinality gives the same answer for every
+                # non-empty graph and an explicit False for the null graph,
+                # matching the disk-backed path.
+                "is_strongly_connected": len(scc_raw) == 1,
+                "is_weakly_connected": len(wcc_raw) == 1,
                 "strongly_connected_components": {
                     "count": len(scc_raw),
                     "largest_size": len(scc_raw[0]) if scc_raw else 0,
@@ -788,7 +993,7 @@ class GraphCompute:
         return {
             "success": True,
             "directed": False,
-            "is_connected": bool(g) and nx.is_connected(g),
+            "is_connected": len(cc_raw) == 1,
             "connected_components": {
                 "count": len(cc_raw),
                 "largest_size": len(cc_raw[0]) if cc_raw else 0,
@@ -1072,7 +1277,21 @@ class GraphCompute:
             elif method == "k_truss":
                 sub = nx.k_truss(g.to_undirected(), k=max(int(k), 2))
             elif method == "k_corona":
-                sub = nx.k_corona(g.to_undirected(), k=max(int(k), 1))
+                requested_k = max(int(k), 1)
+                if g.is_directed():
+                    # Directed core degree is in-degree + out-degree.  Apply
+                    # the same definition to the degree inside the surviving
+                    # core when selecting its corona.
+                    core = nx.k_core(g, k=requested_k)
+                    corona_nodes = [
+                        current
+                        for current in core
+                        if core.in_degree(current) + core.out_degree(current)
+                        == requested_k
+                    ]
+                    sub = core.subgraph(corona_nodes).copy()
+                else:
+                    sub = nx.k_corona(g, k=requested_k)
             elif method == "node_subset":
                 picked = [name for name in (nodes or []) if name in g]
                 sub = g.subgraph(picked).copy()
@@ -1135,6 +1354,11 @@ class GraphCompute:
                     yield (u, v, float(result[0][2]))
 
         if source is not None and target is not None:
+            err = GraphCompute._check_nodes(
+                ug, [(source, "源点"), (target, "目标点")]
+            )
+            if err:
+                return err
             triples = list(_score_pair_iter([(source, target)]))
             return {
                 "success": True,
@@ -1176,6 +1400,11 @@ class GraphCompute:
         if method == "all_simple_paths":
             if not source or not target:
                 return {"success": False, "error": "source 与 target 为必填项"}
+            err = GraphCompute._check_nodes(
+                g, [(source, "起点"), (target, "终点")]
+            )
+            if err:
+                return err
             eff = _effective_limit(limit, _MAX_PATHS)
             paths: list = []
             truncated = False
@@ -1196,13 +1425,38 @@ class GraphCompute:
         if method == "has_path":
             if not source or not target:
                 return {"success": False, "error": "source 与 target 为必填项"}
+            err = GraphCompute._check_nodes(
+                g, [(source, "起点"), (target, "终点")]
+            )
+            if err:
+                return err
             return {"success": True, "method": method, "has_path": nx.has_path(g, source, target)}
         if method == "average_shortest_path_length":
-            ug = g if nx.is_connected(g.to_undirected()) else g.subgraph(max(nx.connected_components(g.to_undirected()), key=len)).copy()
+            if g.number_of_nodes() == 0:
+                return {
+                    "success": False,
+                    "error": "空图没有平均最短路径长度",
+                }
+            if g.is_directed():
+                if not nx.is_strongly_connected(g):
+                    return {
+                        "success": False,
+                        "error": "有向图不是强连通图，无法计算全图平均最短路径长度",
+                    }
+                measured = g
+            else:
+                measured = (
+                    g
+                    if nx.is_connected(g)
+                    else g.subgraph(max(nx.connected_components(g), key=len)).copy()
+                )
             return {
                 "success": True,
                 "method": method,
-                "value": round(float(nx.average_shortest_path_length(ug, weight="weight")), 6),
+                "value": round(
+                    float(nx.average_shortest_path_length(measured, weight="weight")),
+                    6,
+                ),
             }
         return {"success": False, "error": f"未知方法 '{method}'"}
 
@@ -1236,6 +1490,8 @@ class GraphCompute:
             return {"success": True, "method": method, "value": value}
         if method == "number_of_cliques":
             if node:
+                if node not in ug:
+                    return {"success": False, "error": f"节点 '{node}' 不存在"}
                 return {"success": True, "method": method, "node": node, "value": nx.number_of_cliques(ug, nodes=node)}
             values = nx.number_of_cliques(ug)
             # 返回统计摘要 + top 节点
@@ -1316,17 +1572,55 @@ class GraphCompute:
     def global_metrics(g: nx.DiGraph, metric: str) -> dict:
         ug = g.to_undirected()
         largest = ug.subgraph(max(nx.connected_components(ug), key=len)).copy() if ug.number_of_nodes() else ug
+        undefined_reason_code: str | None = None
+
+        def degree_assortativity() -> float:
+            nonlocal undefined_reason_code
+            if ug.number_of_edges() == 0:
+                undefined_reason_code = "no_edges"
+                return float("nan")
+            endpoint_degrees = {
+                int(ug.degree(node))
+                for source, target in ug.edges()
+                for node in (source, target)
+            }
+            if len(endpoint_degrees) <= 1:
+                undefined_reason_code = "zero_endpoint_degree_variance"
+                return float("nan")
+            value = float(nx.degree_assortativity_coefficient(ug))
+            if not math.isfinite(value):
+                undefined_reason_code = "zero_endpoint_degree_variance"
+            return value
+
         dispatch = {
             "density": lambda: nx.density(g),
             "diameter": lambda: nx.diameter(largest) if largest.number_of_nodes() else 0,
             "radius": lambda: nx.radius(largest) if largest.number_of_nodes() else 0,
             "transitivity": lambda: nx.transitivity(ug),
-            "average_clustering": lambda: nx.average_clustering(ug, weight="weight"),
-            "degree_assortativity": lambda: nx.degree_assortativity_coefficient(ug),
+            "average_clustering": lambda: (
+                nx.average_clustering(ug, weight="weight")
+                if ug.number_of_nodes()
+                else 0.0
+            ),
+            "degree_assortativity": degree_assortativity,
         }
         if metric not in dispatch:
             return {"success": False, "error": f"未知指标 '{metric}'"}
-        return {"success": True, "metric": metric, "value": round(float(dispatch[metric]()), 6)}
+        value = float(dispatch[metric]())
+        finite = math.isfinite(value)
+        result = {
+            "success": True,
+            "metric": metric,
+            "value": round(value, 6) if finite else None,
+            "defined": finite,
+        }
+        if metric == "degree_assortativity" and not finite:
+            result.update(
+                _undefined_assortativity(
+                    undefined_reason_code or "zero_endpoint_degree_variance"
+                )
+            )
+        return result
 
     # ── YiGraph 对标扩展算子 ───────────────────────────────────────
 
@@ -2230,7 +2524,16 @@ def run_nx_tool(tool_name: str, g: nx.DiGraph, arguments: dict) -> dict:
     if tool_name == "minimum_spanning_tree":
         return c.minimum_spanning_tree(g, limit=lim)
     if tool_name == "community_detection":
-        return c.community_detection(g, str(a.get("algorithm", "louvain")), limit=lim)
+        return c.community_detection(
+            g,
+            str(a.get("algorithm", "louvain")),
+            limit=lim,
+            focus_nodes=(
+                [str(node) for node in a.get("focus_nodes")]
+                if isinstance(a.get("focus_nodes"), list)
+                else None
+            ),
+        )
     if tool_name == "node_centrality":
         return c.node_centrality(g, str(a.get("centrality_type", "degree")), limit=lim)
     if tool_name == "graph_connectivity":

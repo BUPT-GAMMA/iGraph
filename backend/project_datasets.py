@@ -28,10 +28,13 @@ class ProjectDatasetRecord:
     original_filename: str
     storage_path: str
     file_type: str
+    source_kind: str = "upload"
+    source_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     status: str = "ready"
     created_at: float = 0.0
     updated_at: float = 0.0
+    description: str = ""
 
 
 class ProjectDatasetDirectory:
@@ -111,7 +114,9 @@ class ProjectDatasetDirectory:
         name: str,
         original_filename: str,
         content: bytes,
+        description: str = "",
     ) -> ProjectDatasetRecord:
+        description = self._description(description)
         with self._lock:
             records = self._load()
             dataset_id = str(uuid.uuid4())
@@ -139,9 +144,11 @@ class ProjectDatasetDirectory:
                 original_filename=Path(original_filename).name or safe_name,
                 storage_path=str(source_path.resolve()),
                 file_type=Path(safe_name).suffix.lower().lstrip(".") or "binary",
+                source_kind="upload",
                 status="ready",
                 created_at=now,
                 updated_at=now,
+                description=description,
             )
             if record.file_type in {"sql", "csv", "txt"}:
                 record.status = "source_ready"
@@ -164,6 +171,7 @@ class ProjectDatasetDirectory:
         original_filename: str,
         files: list[tuple[str, Any]],
         schema: dict[str, Any],
+        description: str | None = None,
     ) -> ProjectDatasetRecord:
         """Persist several CSV files as one server-authored construction source.
 
@@ -175,6 +183,7 @@ class ProjectDatasetDirectory:
             raise ValueError("CSV_BUNDLE_FILE_COUNT")
         if not isinstance(schema, dict) or schema.get("version") != "csv_bundle.v1":
             raise ValueError("CSV_BUNDLE_SCHEMA")
+        description = self._description(schema.get("description", "") if description is None else description)
         definitions = schema.get("tables")
         if not isinstance(definitions, list) or len(definitions) != len(files):
             raise ValueError("CSV_BUNDLE_SCHEMA")
@@ -260,6 +269,7 @@ class ProjectDatasetDirectory:
                     status="source_ready",
                     created_at=now,
                     updated_at=now,
+                    description=description,
                     metadata={
                         "construction": {"status": "not_built", "revision": 0, "source_type": "csv"},
                         "dataset_kind": "construction_source",
@@ -281,6 +291,51 @@ class ProjectDatasetDirectory:
                 shutil.rmtree(dataset_dir, ignore_errors=True)
                 raise
 
+    def create_reference(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        name: str,
+        original_filename: str,
+        storage_path: Path,
+        source_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[ProjectDatasetRecord, bool]:
+        """Register a server-owned source without copying or taking ownership."""
+
+        with self._lock:
+            records = self._load()
+            for item in records.values():
+                if (
+                    item.project_id == project_id
+                    and item.user_id == user_id
+                    and item.source_kind == "server"
+                    and item.source_id == source_id
+                ):
+                    return item, False
+            dataset_id = str(uuid.uuid4())
+            safe_name = self._safe_filename(original_filename)
+            now = time.time()
+            record = ProjectDatasetRecord(
+                dataset_id=dataset_id,
+                project_id=project_id,
+                user_id=user_id,
+                name=name.strip() or Path(safe_name).stem or "Dataset",
+                original_filename=Path(original_filename).name or safe_name,
+                storage_path=str(storage_path.resolve()),
+                file_type=Path(safe_name).suffix.lower().lstrip(".") or "binary",
+                source_kind="server",
+                source_id=source_id,
+                metadata=dict(metadata or {}),
+                status="ready",
+                created_at=now,
+                updated_at=now,
+            )
+            records[dataset_id] = record
+            self._write(records)
+            return record, True
+
     def update(
         self,
         dataset_id: str,
@@ -290,6 +345,7 @@ class ProjectDatasetDirectory:
         name: str | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
+        description: str | None = None,
     ) -> ProjectDatasetRecord | None:
         with self._lock:
             records = self._load()
@@ -304,10 +360,18 @@ class ProjectDatasetDirectory:
                 item.status = status
             if metadata is not None:
                 item.metadata = dict(metadata)
+            if description is not None:
+                item.description = self._description(description)
             item.updated_at = time.time()
             records[dataset_id] = item
             self._write(records)
             return item
+
+    @staticmethod
+    def _description(value: str) -> str:
+        if not isinstance(value, str) or len(value) > 4000:
+            raise ValueError("DATASET_DESCRIPTION_INVALID")
+        return value.strip()
 
     def delete(self, dataset_id: str, user_id: str, project_id: str | None = None) -> bool:
         with self._lock:
@@ -318,11 +382,12 @@ class ProjectDatasetDirectory:
             if item.project_id != project_id:
                 return False
             # Keep metadata until files are removed, so a failed cleanup can retry.
-            target = Path(item.storage_path).parent.resolve()
-            if not target.is_relative_to(self.storage_root.resolve()):
-                raise ValueError("DATASET_PATH_OUTSIDE_STORAGE")
-            if target.exists():
-                shutil.rmtree(target)
+            if item.source_kind != "server":
+                target = Path(item.storage_path).parent.resolve()
+                if not target.is_relative_to(self.storage_root.resolve()):
+                    raise ValueError("DATASET_PATH_OUTSIDE_STORAGE")
+                if target.exists():
+                    shutil.rmtree(target)
             del records[dataset_id]
             self._write(records)
             return True

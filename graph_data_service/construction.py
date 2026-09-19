@@ -25,6 +25,7 @@ from typing import Callable
 
 import graph_engine.paths as paths
 from graph_engine.analysis_policy import numeric_weight
+from graph_data_service.construction_schema import source_schema_tables
 
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
@@ -885,7 +886,8 @@ class ConstructionStore:
         if record.get("graph") is None:
             _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
         return {"dataset_id": dataset_id, "revision": record["revision"],
-                "schema": graph_schema(record["graph"])}
+                "schema": {**graph_schema(record["graph"]),
+                           "source_tables": source_schema_tables(directory, record.get("source_tables"))}}
 
     def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None):
         if type(base_revision) is not int or base_revision < 1:

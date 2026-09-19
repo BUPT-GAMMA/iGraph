@@ -34,6 +34,8 @@ type Props = {
   onMemory: () => void;
   onSkills: () => void;
   onCreateGraph: () => void;
+  onHelp?: () => void;
+  helpActive?: boolean;
   createGraphActive?: boolean;
   mobileOpen: boolean;
   onCloseMobile: () => void;
@@ -60,7 +62,7 @@ function runStatusLabel(status: string | undefined, t: Translate) {
   return '';
 }
 
-export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
   const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
@@ -226,6 +228,7 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
     <nav className="sidebar-utilities" aria-label={t('Knowledge and capability management', '知识与能力管理')}>
       <button onClick={() => requireAccount(() => { onMemory(); onCloseMobile(); })}><Icon name="spark" size={16} /><span>{t('Memory', '记忆')}</span></button>
       <button onClick={() => requireAccount(() => { onSkills(); onCloseMobile(); })}><Icon name="cube" size={16} /><span>{t('Skills', '技能')}</span></button>
+      {onHelp && <button className={helpActive ? 'active' : ''} aria-current={helpActive ? 'page' : undefined} onClick={() => { onHelp(); onCloseMobile(); }}><Icon name="file" size={16} /><span>{t('Help', '帮助')}</span></button>}
     </nav>
     <div className="sidebar-scroll">
       <section className="sidebar-projects">

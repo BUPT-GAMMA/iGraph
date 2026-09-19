@@ -1007,6 +1007,10 @@ body.layout-resizing canvas {
   border-color: rgba(245,158,11,0.32);
   background: rgba(245,158,11,0.05);
 }
+.tool-progress-card.failed {
+  border-color: rgba(248,113,113,0.32);
+  background: rgba(248,113,113,0.05);
+}
 .tool-progress-head {
   display:flex; align-items:center; justify-content:space-between; gap:10px;
   font-family:var(--mono); font-size:0.64rem; color:var(--text2);
@@ -1014,6 +1018,7 @@ body.layout-resizing canvas {
 .tool-progress-label { color:var(--accent2); font-weight:600; }
 .tool-progress-card.done .tool-progress-label { color:var(--emerald); }
 .tool-progress-card.early .tool-progress-label { color:#f59e0b; }
+.tool-progress-card.failed .tool-progress-label { color:#f87171; }
 .tool-progress-track {
   height: 6px;
   border-radius: 999px;
@@ -1030,6 +1035,7 @@ body.layout-resizing canvas {
 }
 .tool-progress-card.done .tool-progress-fill { background: linear-gradient(90deg, var(--emerald), #22c55e); }
 .tool-progress-card.early .tool-progress-fill { background: linear-gradient(90deg, #f59e0b, #eab308); }
+.tool-progress-card.failed .tool-progress-fill { background: linear-gradient(90deg, #f87171, #ef4444); }
 .tool-progress-meta {
   margin-top:5px;
   font-family:var(--mono); font-size:0.61rem; color:var(--text3);
@@ -2849,9 +2855,10 @@ function thinkingSectionHtml(arr) {
 }
 
 function toolProgressHtml(tool) {
-  if (!isProgressToolName(tool?.tool)) return '';
   const p = tool && typeof tool.progress === 'object' ? tool.progress : null;
   if (!p) return '';
+  if (!isProgressToolName(tool?.tool) && !isLargeGraphProgressPayload(p)) return '';
+  if (isLargeGraphProgressToolName(tool.tool) || isLargeGraphProgressPayload(p)) return largeGraphProgressHtml(tool, p);
   if (isText2graphToolName(tool.tool)) return text2graphProgressHtml(tool, p);
   const rawProgress = Number(p.progress);
   const pct = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, rawProgress * 100)) : 0;
@@ -2880,6 +2887,36 @@ function toolProgressHtml(tool) {
       <span>${esc(label)} · ${pct.toFixed(1)}%</span>
     </div>
     ${config.length ? `<div class="tool-progress-config">${config.map(x => `<span>${esc(x)}</span>`).join('')}</div>` : ''}
+    <div class="tool-progress-track"><div class="tool-progress-fill" style="width:${pct.toFixed(2)}%"></div></div>
+    ${metrics.length ? `<div class="tool-progress-meta">${metrics.map(x => `<span>${esc(x)}</span>`).join('')}</div>` : ''}
+  </div>`;
+}
+
+function largeGraphProgressHtml(tool, p) {
+  const rawProgress = Number(p.progress);
+  const pct = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, rawProgress * 100)) : 0;
+  const status = String(p.status || '').toLowerCase();
+  const kind = String(p.kind || '').toLowerCase();
+  const failed = status === 'failed' || status === 'cancelled' || kind === 'job_failed' || kind === 'job_cancelled';
+  const done = !failed && (!!tool.done || status === 'done' || kind === 'job_done' || kind === 'large_graph_prepare_done' || kind === 'large_graph_compute_done');
+  const cls = failed ? 'failed' : done ? 'done' : '';
+  const title = toolNameOf(tool.tool) === 'prepare_large_graph' ? '大图准备' : '大图计算';
+  const stage = String(p.stage || p.phase || '').trim();
+  const label = failed
+    ? (status === 'cancelled' ? 'cancelled' : 'failed')
+    : done ? 'done' : (stage || String(p.message || p.status || 'running'));
+  const metrics = [];
+  const jobId = String(p.job_id || '').trim();
+  if (jobId) metrics.push(`job ${jobId}`);
+  if (Number.isFinite(Number(p.processed_edges))) metrics.push(`边 ${Number(p.processed_edges)}`);
+  if (Number.isFinite(Number(p.processed_nodes))) metrics.push(`节点 ${Number(p.processed_nodes)}`);
+  const message = String(p.message || '').trim();
+  if (message && message !== label) metrics.push(message);
+  return `<div class="tool-progress-card ${cls}">
+    <div class="tool-progress-head">
+      <span class="tool-progress-label">${esc(title)}</span>
+      <span>${esc(label)} · ${pct.toFixed(1)}%</span>
+    </div>
     <div class="tool-progress-track"><div class="tool-progress-fill" style="width:${pct.toFixed(2)}%"></div></div>
     ${metrics.length ? `<div class="tool-progress-meta">${metrics.map(x => `<span>${esc(x)}</span>`).join('')}</div>` : ''}
   </div>`;
@@ -2960,8 +2997,26 @@ function isText2graphToolName(name) {
   return n === 'load_graph_from_text' || n === 'load_graph_from_upload';
 }
 
+function isLargeGraphProgressToolName(name) {
+  const n = toolNameOf(name);
+  return n === 'prepare_large_graph' || n === 'run_large_graph_algorithm';
+}
+
+function isLargeGraphProgressPayload(progress) {
+  if (!progress || typeof progress !== 'object') return false;
+  const jobId = String(progress.job_id || '').trim().toLowerCase();
+  const kind = String(progress.kind || '').trim().toLowerCase();
+  return jobId.startsWith('lg_') || kind.startsWith('large_graph_');
+}
+
+function isProgressItem(item) {
+  return !!item && (
+    isProgressToolName(item.tool) || isLargeGraphProgressPayload(item.progress)
+  );
+}
+
 function isProgressToolName(name) {
-  return toolNameOf(name) === 'train' || isText2graphToolName(name);
+  return toolNameOf(name) === 'train' || isText2graphToolName(name) || isLargeGraphProgressToolName(name);
 }
 
 function findToolEventTarget(tools, toolName, callId) {
@@ -3006,7 +3061,7 @@ function toolsHtml(tools) {
 
 function progressItemsHtml(items) {
   if (!items || !items.length) return '';
-  const latestProgress = [...items].reverse().find(item => isProgressToolName(item?.tool));
+  const latestProgress = [...items].reverse().find(isProgressItem);
   const cards = latestProgress ? [toolProgressHtml(latestProgress)].filter(Boolean) : [];
   return cards.length ? `<div class="progress-section"><div class="tool-progress-list">${cards.join('')}</div></div>` : '';
 }
@@ -3018,8 +3073,8 @@ function progressItemKey(toolName, callId, stepId = null) {
 function upsertProgressItem(items, evt) {
   if (!Array.isArray(items) || !evt || typeof evt !== 'object') return null;
   const tool = toolNameOf(evt.tool);
-  if (!isProgressToolName(tool)) return null;
   const progress = evt.progress && typeof evt.progress === 'object' ? evt.progress : {};
+  if (!isProgressToolName(tool) && !isLargeGraphProgressPayload(progress)) return null;
   const stepId = eventStepId(evt);
   const callId = String(evt.call_id || '');
   const key = progressItemKey(tool, callId, stepId);
@@ -3034,10 +3089,16 @@ function upsertProgressItem(items, evt) {
   item.call_id = callId;
   item.step_id = stepId;
   item.progress = { ...(item.progress || {}), ...progress };
-  const kind = String(item.progress.kind || '');
-  if (kind === 'train_done' || kind === 'train_early_stop' || kind === 'text2graph_done') {
+  const kind = String(item.progress.kind || '').toLowerCase();
+  const status = String(item.progress.status || '').toLowerCase();
+  const terminalKinds = new Set([
+    'train_done', 'train_early_stop', 'text2graph_done',
+    'job_done', 'job_failed', 'job_cancelled',
+    'large_graph_prepare_done', 'large_graph_compute_done',
+  ]);
+  if (terminalKinds.has(kind) || status === 'done' || status === 'failed' || status === 'cancelled') {
     item.done = true;
-    item.progress.progress = 1;
+    if (status === 'done' || kind.endsWith('_done')) item.progress.progress = 1;
   } else {
     item.done = Number(item.progress.progress) >= 1 && !item.progress.stopped_early;
   }
@@ -4696,7 +4757,8 @@ function handleSseEvent(evt) {
       break;
     case 'tool_progress': {
       const progressTool = toolNameOf(evt.tool);
-      if (!isProgressToolName(progressTool)) break;
+      const progressPayload = evt.progress && typeof evt.progress === 'object' ? evt.progress : {};
+      if (!isProgressToolName(progressTool) && !isLargeGraphProgressPayload(progressPayload)) break;
       const stepId = eventStepId(evt);
       if (stepId !== null && assignProgressToSolverStep(evt)) {
         if (isActive) {

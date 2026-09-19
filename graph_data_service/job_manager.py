@@ -41,6 +41,7 @@ class JobManager:
     def __init__(self, *, progress_root=None) -> None:
         self._jobs: dict[str, Job] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._submission_ready: dict[str, asyncio.Event] = {}
         self._pending_progress: dict[str, list[dict[str, Any]]] = {}
         self._deleted_progress_sessions: set[tuple[str, str]] = set()
         self._progress_history: dict[str, list[dict[str, Any]]] = {}
@@ -63,6 +64,7 @@ class JobManager:
             self._saved_jobs.pop(oldest, None)
             self._jobs.pop(oldest, None)
             self._tasks.pop(oldest, None)
+            self._submission_ready.pop(oldest, None)
             self._cancel_signals.pop(oldest, None)
             with self._progress_lock:
                 self._pending_progress.pop(oldest, None)
@@ -92,6 +94,7 @@ class JobManager:
         job = Job(job_id=job_id, session_id=session_id, tool_name=tool_name, **identity)
         self._jobs[job_id] = job
         signal = self._cancel_signals[job_id] = asyncio.Event()
+        submission_ready = self._submission_ready[job_id] = asyncio.Event()
         progress_kwarg = kwargs.pop("_progress_kwarg", None)
         cancel_kwarg = kwargs.pop("_cancel_kwarg", None)
         if cancel_kwarg:
@@ -118,6 +121,16 @@ class JobManager:
                     # and its capacity alive until it really exits. Heavy work
                     # uses the isolated worker executor instead of this fallback.
                     result = await run_sync(fn, *args, **kwargs)
+                if (
+                    context and self.execution_host
+                    and isinstance(result, dict) and result.get('async')
+                    and str(result.get('job_id', '')).startswith('lg_')
+                ):
+                    # Expose the durable handle promptly, but retain ownership
+                    # until the independently running worker has really exited.
+                    job.result = result
+                    submission_ready.set()
+                    await self.execution_host.wait_large_graph(context, result['job_id'])
                 if signal.is_set():
                     job.status = "cancelled"
                     job.message = "cancelled"
@@ -131,13 +144,19 @@ class JobManager:
                     job.status = "done"
                     job.message = "completed"
             except asyncio.CancelledError:
+                job.status = "cancelling"
+                if context and self.execution_host:
+                    await self.execution_host.cancel_large_graph_work(context)
                 job.status = "cancelled"
                 job.message = "cancelled"
                 raise
             except Exception as exc:
+                if context and self.execution_host:
+                    await self.execution_host.cancel_large_graph_work(context)
                 job.status = "cancelled" if signal.is_set() else "failed"
                 job.message = "cancelled" if signal.is_set() else str(exc)
             finally:
+                submission_ready.set()
                 job_context.reset(token)
 
         self._tasks[job_id] = asyncio.create_task(_runner())
@@ -238,6 +257,11 @@ class JobManager:
         task = self._tasks.get(job_id)
         if task:
             await asyncio.gather(asyncio.shield(task), return_exceptions=True)
+
+    async def wait_submission(self, job_id: str) -> None:
+        ready = self._submission_ready.get(job_id)
+        if ready is not None:
+            await ready.wait()
 
     def owned(self, job_id: str, session_id: str, user_id: str) -> Job | None:
         job = self.status(job_id)

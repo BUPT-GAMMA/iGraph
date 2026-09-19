@@ -2,6 +2,7 @@ import type { GraphData, Highlight } from './types';
 import { createGraphOverview } from './graphOverview';
 import { tr } from './i18n';
 import type { Translate } from './i18n';
+import { highlightNodeIds } from './graphExploration';
 
 export const NODE_LIMIT = 180;
 export const EDGE_LIMIT = 400;
@@ -44,7 +45,7 @@ export function graphIndex(data: GraphData, translate: Translate = tr) {
   return { nodes, edges, neighbors, maxDegree, directed: Boolean(data.directed), overview, overviewEdges };
 }
 export type GraphIndex = ReturnType<typeof graphIndex>;
-export function previewGraph(index: GraphIndex, highlights: Highlight[], query: string, filterMatches: boolean, connectedOnly: boolean, focusId: string, depth: number) {
+export function previewGraph(index: GraphIndex, highlights: Highlight[], query: string, filterMatches: boolean, connectedOnly: boolean, focusId: string, depth: number, resultsOnly = false) {
   const text = query.trim().toLowerCase();
   const matches = [...index.nodes.values()].filter(node => text && (node.id.toLowerCase().includes(text) || String(node.label ?? '').toLowerCase().includes(text)));
   const matchIds = new Set(matches.map(node => node.id));
@@ -57,7 +58,8 @@ export function previewGraph(index: GraphIndex, highlights: Highlight[], query: 
       layer = next;
     }
   }
-  const eligible = (id: string) => index.nodes.has(id) && (!local || local.has(id)) && (!connectedOnly || index.nodes.get(id)!.degree > 0) && (!filterMatches || !text || matchIds.has(id));
+  const resultIds = highlightNodeIds(highlights);
+  const eligible = (id: string) => index.nodes.has(id) && (!resultsOnly || resultIds.has(id)) && (!local || local.has(id)) && (!connectedOnly || index.nodes.get(id)!.degree > 0) && (!filterMatches || !text || matchIds.has(id));
   const chosen = new Set<string>(), queue: string[] = [];
   const add = (id: string) => { if (chosen.size < NODE_LIMIT && eligible(id) && !chosen.has(id)) { chosen.add(id); queue.push(id); } };
   const important = new Set<string>();
@@ -95,7 +97,7 @@ export function previewGraph(index: GraphIndex, highlights: Highlight[], query: 
   }
   return { maxDegree: index.maxDegree, nodes: [...index.nodes.values()].filter(node => chosen.has(node.id)), edges, matches: matchIds,
     eligibleCount: [...index.nodes.keys()].filter(eligible).length, candidateEdges: candidateEdges.length,
-    omittedHighlights: [...important].filter(id => index.nodes.has(id) && !chosen.has(id)).length };
+    omittedHighlights: [...important].filter(id => !chosen.has(id)).length };
 }
 export type GraphPreview = ReturnType<typeof previewGraph>;
 export function degreeRadius(degree: number, max: number) {

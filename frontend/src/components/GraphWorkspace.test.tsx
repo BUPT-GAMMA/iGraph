@@ -14,6 +14,38 @@ afterEach(() => {
 });
 
 describe('GraphWorkspace visualization layers', () => {
+  it('shows selected instance properties from the latest graph but not in Schema mode', () => {
+    const node = { id: 'customer', attrs: { type: 'customers', properties: { name: '张三' } } };
+    const props = { data: { nodes: [node], edges: [] }, tab: 'Graph' as const, onTab: vi.fn(), selected: { id: 'customer' }, onSelect: vi.fn(), collapsed: false, onToggle: vi.fn() };
+    const { rerender } = render(<GraphWorkspace {...props} />);
+    expect(screen.getByText('张三')).toBeTruthy();
+    expect(screen.getByText('customers')).toBeTruthy();
+    rerender(<GraphWorkspace {...props} data={{ ...props.data, visualization_kind: 'schema' }} />);
+    expect(screen.queryByRole('region', { name: '节点属性' })).toBeNull();
+  });
+
+  it('isolates highlighted result nodes and restores the full graph through the session callback', async () => {
+    const onGraphReset = vi.fn();
+    const graph = { nodes: ['a', 'b', 'c'].map(id => ({ id })), edges: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }], highlights: [{ type: 'path', nodes: ['a', 'b'] }] };
+    const { container } = render(<GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} onGraphReset={onGraphReset} />);
+    fireEvent.click(screen.getByRole('button', { name: '仅看结果子图' }));
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(2));
+    expect(container.querySelector('.graph-overview-status')?.textContent).toContain('结果子图');
+    fireEvent.click(screen.getByRole('button', { name: '恢复全图' }));
+    expect(onGraphReset).toHaveBeenCalledOnce();
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(3));
+  });
+
+  it('resets exploration state when switching conversations', () => {
+    const props = { data: { nodes: [{ id: 'a' }], edges: [] }, tab: 'Graph' as const, onTab: vi.fn(), selected: null, onSelect: vi.fn(), collapsed: false, onToggle: vi.fn(), onGraphQuery: vi.fn() };
+    const { rerender } = render(<GraphWorkspace {...props} sessionId="first" />);
+    fireEvent.click(screen.getByRole('button', { name: '图探索' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '图谱问题' }), { target: { value: 'old conversation question' } });
+    rerender(<GraphWorkspace {...props} sessionId="second" />);
+    fireEvent.click(screen.getByRole('button', { name: '图探索' }));
+    expect((screen.getByRole('textbox', { name: '图谱问题' }) as HTMLTextAreaElement).value).toBe('');
+  });
+
   it('shows directed edge arrows with a marker unique to each canvas', async () => {
     const graph = { nodes: [{ id: 'a' }, { id: 'b' }], edges: [{ source: 'a', target: 'b' }], directed: true };
     const { container } = render(<><GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} /><GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} embedded /></>);

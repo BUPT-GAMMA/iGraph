@@ -13,13 +13,14 @@ import os
 import re
 import uuid
 import hashlib
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+import httpx
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from workspace_storage import delete_user_workspaces, delete_workspace, visible_files, derived_file, save_upload
@@ -33,11 +34,13 @@ from backend.dataset_api import DATASET_API_MIGRATION, MIGRATION_GUIDE_PATH, leg
 from backend.construction_access import install_construction_access
 from construction_access import scope_headers
 from backend.construction import install_construction_routes, sync_record as sync_construction_record
+from backend.constructed_import import install_constructed_import_routes
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, project_run, translate_sse
 from backend.identity import current_user, public_user, require_admin
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
 from backend.projects import ProjectDirectory, ProjectRecord
+from backend.server_datasets import ServerDatasetDirectory, ServerDatasetRecord
 from backend.service_client import ServiceClient, forwarded_headers
 from backend.stream_recovery import close_observation, observation_events
 from backend.users import UserDirectory, UserRecord
@@ -68,7 +71,15 @@ class ProjectPatchReq(BaseModel):
 
 
 class ProjectDatasetPatchReq(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=4000)
+
+
+class ServerDatasetImportReq(BaseModel):
+    server_dataset_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(default="", max_length=120)
+    set_as_default: bool = False
+    session_id: str = Field(default="", max_length=64)
 
 
 class SessionDatasetReq(BaseModel):
@@ -403,6 +414,46 @@ def _restore_attachment_tokens(
             raise HTTPException(409, {"code": "ATTACHMENT_REFERENCE_EXPIRED", "message": message})
         restored.append(item.model_copy(update={"file_token": matches[0]}))
     return restored
+
+
+async def _sse_with_heartbeat(
+    source: AsyncIterator[str],
+    *,
+    heartbeat_seconds: float,
+) -> AsyncIterator[str]:
+    """Forward an SSE stream and keep every downstream hop alive while idle.
+
+    ``asyncio.wait_for`` cannot be used here because timing out ``__anext__``
+    would cancel the in-flight upstream HTTP read. Keep that read task alive
+    and emit an SSE comment whenever no application event arrives in time.
+    """
+
+    interval = max(0.01, float(heartbeat_seconds))
+    iterator = source.__aiter__()
+    pending: asyncio.Task[str] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.create_task(iterator.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                yield ": keep-alive\n\n"
+                continue
+            try:
+                chunk = pending.result()
+            except StopAsyncIteration:
+                return
+            pending = None
+            yield chunk
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            with suppress(RuntimeError):
+                await close()
 
 
 def _run_input_text(run: dict) -> str:
@@ -844,6 +895,9 @@ def _project_dataset_row(dataset: ProjectDatasetRecord, default_dataset_id: str 
 
 
 _GRAPH_COLLECTION_FORMAT = "graph_classification_dataset"
+_PARTITIONED_GRAPH_KIND = "partitioned_graph"
+_PARTITIONED_GRAPH_REPRESENTATION = "partitioned_snapshot"
+_SERVER_PREPROCESS_FILE_TYPES = frozenset({"txt", "csv", "tsv", "edgelist", "dat"})
 
 
 def _graph_collection_summary(payload: Any) -> dict[str, Any]:
@@ -878,6 +932,241 @@ def _graph_collection_summary(payload: Any) -> dict[str, Any]:
     return {key: value for key, value in summary.items() if value is not None}
 
 
+def _is_partitioned_graph_metadata(metadata: Any) -> bool:
+    source = metadata if isinstance(metadata, dict) else {}
+    return bool(
+        str(source.get("dataset_kind") or "").strip() == _PARTITIONED_GRAPH_KIND
+        or str(source.get("representation") or "").strip()
+        == _PARTITIONED_GRAPH_REPRESENTATION
+        or str(source.get("format_detected") or "").strip()
+        == _PARTITIONED_GRAPH_REPRESENTATION
+    )
+
+
+def _bounded_count(value: Any) -> int | None:
+    """Return a JSON-safe non-negative integer without coercing booleans/floats."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _partitioned_graph_context(
+    payload: Any,
+    *,
+    dataset_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Build the bounded, session-bound context exposed to AgentOS.
+
+    Project dataset metadata is shared by every conversation in a project, so
+    it must never be treated as sufficient proof that another session owns the
+    same snapshot.  The returned binding is deliberately small and contains no
+    paths, source contents, shard lists or previews.
+    """
+
+    source = payload if isinstance(payload, dict) else {}
+    if str(source.get("representation") or "").strip() != _PARTITIONED_GRAPH_REPRESENTATION:
+        return None
+    graph_id = str(source.get("graph_id") or "").strip()
+    graph_version = _bounded_count(source.get("graph_version"))
+    if graph_id != session_id or graph_version is None or graph_version < 1:
+        raise ValueError("分区快照返回的 graph_id/graph_version 与当前会话不一致")
+
+    context: dict[str, Any] = {
+        "dataset_id": str(dataset_id),
+        "graph_id": graph_id,
+        "graph_version": graph_version,
+        "representation": _PARTITIONED_GRAPH_REPRESENTATION,
+        "current_graph_replaced": False,
+    }
+    for key in ("num_nodes", "num_edges"):
+        count = _bounded_count(source.get(key))
+        if count is not None:
+            context[key] = count
+    summary = source.get("summary") if isinstance(source.get("summary"), dict) else {}
+    if isinstance(summary.get("directed"), bool):
+        context["directed"] = summary["directed"]
+    elif isinstance(source.get("directed"), bool):
+        context["directed"] = source["directed"]
+    return context
+
+
+def _partitioned_graph_context_from_metadata(
+    dataset: ProjectDatasetRecord,
+    *,
+    session_id: str,
+) -> dict[str, Any] | None:
+    metadata = dataset.metadata if isinstance(dataset.metadata, dict) else {}
+    if not _is_partitioned_graph_metadata(metadata):
+        return None
+    # Metadata is project-scoped.  Only a newly stored exact session binding is
+    # eligible for migration into session_state; older records are prepared
+    # once more rather than risking reuse of another conversation's graph.
+    if str(metadata.get("graph_id") or "").strip() != session_id:
+        return None
+    try:
+        return _partitioned_graph_context(
+            {
+                **metadata,
+                "representation": _PARTITIONED_GRAPH_REPRESENTATION,
+                "graph_id": session_id,
+            },
+            dataset_id=dataset.dataset_id,
+            session_id=session_id,
+        )
+    except ValueError:
+        return None
+
+
+def _normalize_partitioned_graph_context(
+    value: Any,
+    *,
+    dataset_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    source = value if isinstance(value, dict) else {}
+    if str(source.get("dataset_id") or "") != str(dataset_id):
+        return None
+    try:
+        return _partitioned_graph_context(
+            source,
+            dataset_id=dataset_id,
+            session_id=session_id,
+        )
+    except ValueError:
+        return None
+
+
+def _large_graph_prepare_context(
+    payload: Any,
+    *,
+    dataset_id: str,
+    session_id: str,
+) -> dict[str, Any]:
+    """Return the bounded durable-job binding persisted in session_state."""
+
+    source = payload if isinstance(payload, dict) else {}
+    job_id = str(source.get("job_id") or "").strip()
+    graph_id = str(source.get("graph_id") or "").strip()
+    graph_version = _bounded_count(source.get("graph_version"))
+    status = str(source.get("status") or "queued").strip().lower()
+    if (
+        not job_id.startswith("lg_")
+        or graph_id != session_id
+        or graph_version is None
+        or graph_version < 1
+        or status not in {"queued", "running"}
+    ):
+        raise ValueError("大图准备作业缺少有效的会话、版本或任务绑定")
+    return {
+        "dataset_id": str(dataset_id),
+        "job_id": job_id,
+        "graph_id": graph_id,
+        "graph_version": graph_version,
+        "status": status,
+    }
+
+
+def _normalize_large_graph_prepare_context(
+    value: Any,
+    *,
+    dataset_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    source = value if isinstance(value, dict) else {}
+    if str(source.get("dataset_id") or "") != str(dataset_id):
+        return None
+    try:
+        return _large_graph_prepare_context(
+            source,
+            dataset_id=dataset_id,
+            session_id=session_id,
+        )
+    except ValueError:
+        return None
+
+
+def _large_graph_prepare_context_from_metadata(
+    dataset: ProjectDatasetRecord,
+    *,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Recover the exact pending job after a Backend crash during state write."""
+
+    metadata = dataset.metadata if isinstance(dataset.metadata, dict) else {}
+    if (
+        str(metadata.get("graph_id") or "") != session_id
+        or str(metadata.get("preparation_status") or "")
+        not in {"queued", "running"}
+    ):
+        return None
+    return _normalize_large_graph_prepare_context(
+        {
+            "dataset_id": dataset.dataset_id,
+            "job_id": metadata.get("preparation_job_id"),
+            "graph_id": metadata.get("graph_id"),
+            "graph_version": metadata.get("graph_version"),
+            "status": metadata.get("preparation_status"),
+        },
+        dataset_id=dataset.dataset_id,
+        session_id=session_id,
+    )
+
+
+def _large_graph_result_matches_prepare(payload: Any, pending: Any) -> bool:
+    """Fence a terminal result to the durable prepare job that was submitted."""
+
+    source = payload if isinstance(payload, dict) else {}
+    binding = pending if isinstance(pending, dict) else {}
+    return bool(
+        str(source.get("job_id") or "") == str(binding.get("job_id") or "")
+        and str(source.get("graph_id") or "") == str(binding.get("graph_id") or "")
+        and _bounded_count(source.get("graph_version"))
+        == _bounded_count(binding.get("graph_version"))
+        and str(source.get("status") or "") == "done"
+        and str(source.get("representation") or "")
+        == _PARTITIONED_GRAPH_REPRESENTATION
+    )
+
+
+def _published_partitioned_version(
+    payload: Any, context: Any
+) -> dict[str, Any] | None:
+    """Return the exact published row from a bounded version-list response."""
+
+    source = payload if isinstance(payload, dict) else {}
+    binding = context if isinstance(context, dict) else {}
+    graph_id = str(binding.get("graph_id") or "")
+    graph_version = _bounded_count(binding.get("graph_version"))
+    if (
+        source.get("success") is False
+        or not graph_id
+        or graph_version is None
+        or str(source.get("graph_id") or "") != graph_id
+    ):
+        return None
+    versions = source.get("versions")
+    if not isinstance(versions, list):
+        return None
+    for row in versions:
+        if not isinstance(row, dict):
+            continue
+        if (
+            _bounded_count(row.get("graph_version")) == graph_version
+            and str(row.get("status") or "") == "published"
+            and (not row.get("graph_id") or str(row.get("graph_id")) == graph_id)
+        ):
+            return row
+    return None
+
+
+def _partitioned_version_is_published(payload: Any, context: Any) -> bool:
+    """Validate an exact graph/version binding in a bounded control response."""
+
+    return _published_partitioned_version(payload, context) is not None
+
+
 def _dataset_view(dataset: ProjectDatasetRecord | None) -> dict[str, Any] | None:
     if dataset is None:
         return None
@@ -890,6 +1179,35 @@ def _dataset_view(dataset: ProjectDatasetRecord | None) -> dict[str, Any] | None
             "visualization": {"supported": False, "code": "NON_SINGLE_GRAPH"},
             "summary": _graph_collection_summary(metadata),
         }
+    if _is_partitioned_graph_metadata(metadata):
+        storage_bytes = metadata.get("storage_bytes")
+        if isinstance(storage_bytes, dict):
+            storage_bytes = storage_bytes.get("total")
+        summary: dict[str, Any] = {
+            "representation": _PARTITIONED_GRAPH_REPRESENTATION,
+        }
+        for key in ("num_nodes", "num_edges", "graph_version", "partitions"):
+            value = _bounded_count(metadata.get(key))
+            if value is not None:
+                summary[key] = value
+        if isinstance(metadata.get("directed"), bool):
+            summary["directed"] = metadata["directed"]
+        if isinstance(metadata.get("has_weights"), bool):
+            summary["has_weights"] = metadata["has_weights"]
+        storage_total = _bounded_count(storage_bytes)
+        if storage_total is not None:
+            summary["storage_bytes"] = storage_total
+        preparation_status = str(metadata.get("preparation_status") or "").strip()
+        if preparation_status in {"queued", "running"}:
+            summary["preparation_status"] = preparation_status
+        return {
+            "kind": _PARTITIONED_GRAPH_KIND,
+            "visualization": {
+                "supported": False,
+                "code": "PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE",
+            },
+            "summary": summary,
+        }
     return {
         "kind": "single_graph",
         "visualization": {"supported": True, "code": None},
@@ -898,6 +1216,95 @@ def _dataset_view(dataset: ProjectDatasetRecord | None) -> dict[str, Any] | None
             for key in ("num_nodes", "num_edges", "directed", "has_node_features", "has_node_labels")
             if metadata.get(key) is not None
         },
+    }
+
+
+def _session_dataset_view(
+    dataset: ProjectDatasetRecord | None,
+    state: Any,
+    *,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Return a dataset view fenced to this conversation's snapshot binding.
+
+    Project dataset metadata is shared, while every large snapshot belongs to
+    one session.  A project-level graph version may therefore describe a
+    different conversation and must not be presented as the active binding.
+    """
+
+    view = _dataset_view(dataset)
+    if (
+        dataset is None
+        or not isinstance(view, dict)
+        or view.get("kind") != _PARTITIONED_GRAPH_KIND
+    ):
+        return view
+
+    session_state = state if isinstance(state, dict) else {}
+    context = _normalize_partitioned_graph_context(
+        session_state.get("large_graph_context"),
+        dataset_id=dataset.dataset_id,
+        session_id=session_id,
+    )
+    pending = _normalize_large_graph_prepare_context(
+        session_state.get("large_graph_prepare"),
+        dataset_id=dataset.dataset_id,
+        session_id=session_id,
+    )
+    metadata = dataset.metadata if isinstance(dataset.metadata, dict) else {}
+
+    binding = context or pending
+    binding_version = (
+        _bounded_count(binding.get("graph_version"))
+        if isinstance(binding, dict)
+        else None
+    )
+    metadata_matches = bool(
+        str(metadata.get("graph_id") or "") == session_id
+        and binding_version is not None
+        and _bounded_count(metadata.get("graph_version")) == binding_version
+    )
+
+    summary: dict[str, Any] = {
+        "representation": _PARTITIONED_GRAPH_REPRESENTATION,
+    }
+    if binding_version is not None:
+        summary["graph_version"] = binding_version
+    if context is not None:
+        for key in ("num_nodes", "num_edges"):
+            value = _bounded_count(context.get(key))
+            if value is not None:
+                summary[key] = value
+        if isinstance(context.get("directed"), bool):
+            summary["directed"] = context["directed"]
+    elif pending is not None:
+        summary["preparation_status"] = pending["status"]
+    else:
+        # The dataset is known to use partitioned snapshots but this session
+        # has not submitted or recovered its own version yet.
+        summary["preparation_status"] = "not_started"
+
+    if metadata_matches:
+        base_summary = view.get("summary")
+        if isinstance(base_summary, dict):
+            for key in (
+                "num_nodes",
+                "num_edges",
+                "directed",
+                "partitions",
+                "has_weights",
+                "storage_bytes",
+            ):
+                if base_summary.get(key) is not None and key not in summary:
+                    summary[key] = base_summary[key]
+
+    return {
+        "kind": _PARTITIONED_GRAPH_KIND,
+        "visualization": {
+            "supported": False,
+            "code": "PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE",
+        },
+        "summary": summary,
     }
 
 
@@ -963,6 +1370,44 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         Path(os.getenv("BACKEND_PROJECT_DATASETS_FILE", str(settings.projects_file.with_name("project_datasets.json")))).resolve(),
         Path(os.getenv("BACKEND_PROJECT_DATA_ROOT", str(data_root / "projects"))).resolve(),
     )
+    try:
+        server_dataset_limit = max(
+            1, int(os.getenv("BACKEND_SERVER_DATASETS_MAX_ENTRIES", "10000"))
+        )
+    except (TypeError, ValueError):
+        server_dataset_limit = 10_000
+    server_datasets = ServerDatasetDirectory(
+        Path(
+            os.getenv(
+                "BACKEND_SERVER_DATASETS_DIR",
+                str(data_root / "server_datasets"),
+            )
+        ).resolve(),
+        max_entries=server_dataset_limit,
+        default_directed=os.getenv(
+            "BACKEND_SERVER_DATASET_DEFAULT_DIRECTED", "true"
+        ).strip().lower()
+        not in {"0", "false", "no", "off"},
+    )
+    try:
+        server_preprocess_min_bytes = max(
+            0,
+            int(
+                os.getenv(
+                    "BACKEND_SERVER_DATASET_PREPROCESS_MIN_BYTES",
+                    str(64 * 1024 * 1024),
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        server_preprocess_min_bytes = 64 * 1024 * 1024
+    try:
+        server_dataset_scan_seconds = max(
+            1.0,
+            float(os.getenv("BACKEND_SERVER_DATASET_SCAN_SECONDS", "30")),
+        )
+    except (TypeError, ValueError):
+        server_dataset_scan_seconds = 30.0
     runtime = ServiceClient(settings.agent_runtime_url, settings.request_timeout, settings.stream_timeout)
     graph = ServiceClient(settings.graph_engine_url, settings.request_timeout, settings.stream_timeout)
     general_migration = GeneralMigration(projects, project_datasets, runtime, settings.agent_id, graph if os.getenv("IGRAPH_CONTROL_SERVICE_KEY") else None)
@@ -995,15 +1440,19 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     feedback_attempt_ttl_seconds = 30 * 60
 
     @asynccontextmanager
-    async def lifespan(_app):
+    async def lifespan(application: FastAPI):
         nonlocal project_reconciler
         validate_service_configuration()
+        scanner = asyncio.create_task(
+            scan_server_datasets(), name="server-dataset-scanner"
+        )
+        application.state.server_dataset_scanner = scanner
         if controls_enabled():
             project_reconciler = asyncio.create_task(reconcile_project_deletions())
         try:
             yield
         finally:
-            tasks = set(launch_tasks) | set(preparations.values())
+            tasks = set(launch_tasks) | set(preparations.values()) | {scanner}
             if project_reconciler:
                 tasks.add(project_reconciler)
             for values in starting_tasks.values():
@@ -1098,6 +1547,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.post('/api/sessions/{session_id}/jobs/{job_id}/cancel')
     async def cancel_job(session_id: str, job_id: str, req: JobCancelRequest, request: Request):
         user = current_user(request, users)
+        if job_id.startswith('lg_'):
+            await get_session(session_id, request, user.user_id)
+            result = await graph.request('POST', f'/internal/sessions/{session_id}/large-jobs/{job_id}/cancel',
+                headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)},
+                json_body=req.model_dump(mode='json'))
+            return JSONResponse(result, status_code=200 if result.get('execution_stopped') else 202)
         result = await runtime.request('POST', f'/internal/sessions/{session_id}/jobs/{job_id}/cancel',
                                        headers=forwarded_headers(request, user.user_id), json_body=req.model_dump(mode='json'))
         return JSONResponse(result, status_code=200 if result.get('execution_stopped') else 202)
@@ -1105,6 +1560,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.get('/api/sessions/{session_id}/jobs/{job_id}/control')
     async def job_control(session_id: str, job_id: str, request: Request):
         user = current_user(request, users)
+        if job_id.startswith('lg_'):
+            await get_session(session_id, request, user.user_id)
+            return await graph.request('GET', f'/internal/sessions/{session_id}/large-jobs/{job_id}/control',
+                headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)})
         return await runtime.request('GET', f'/internal/sessions/{session_id}/jobs/{job_id}/summary',
                                      headers=forwarded_headers(request, user.user_id))
 
@@ -1366,6 +1825,114 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     def session_project_id(session: dict, user_id: str) -> str | None:
         return _state(session).get("project_id") or None
 
+    def server_dataset_requires_preparation(source: ServerDatasetRecord) -> bool:
+        return bool(
+            source.file_type in _SERVER_PREPROCESS_FILE_TYPES
+            and source.size_bytes >= server_preprocess_min_bytes
+        )
+
+    def public_server_preparation(payload: Any) -> dict[str, Any]:
+        source = payload if isinstance(payload, dict) else {}
+        status = str(source.get("status") or "failed").strip().lower()
+        if status not in {
+            "not_required",
+            "not_prepared",
+            "queued",
+            "running",
+            "ready",
+            "failed",
+            "cancelled",
+            "unavailable",
+        }:
+            status = "failed"
+        result: dict[str, Any] = {"status": status}
+        for key in (
+            "progress",
+            "message",
+            "error",
+            "job_id",
+            "graph_version",
+            "num_nodes",
+            "num_edges",
+            "partitions",
+            "directed",
+            "has_weights",
+            "storage_bytes",
+        ):
+            if source.get(key) is not None:
+                result[key] = source[key]
+        return result
+
+    async def request_server_dataset_preparation(
+        source: ServerDatasetRecord,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        if source.metadata_error:
+            return {
+                "status": "failed",
+                "error": source.metadata_error,
+                "message": "服务器数据源方向配置无效",
+            }
+        if not server_dataset_requires_preparation(source):
+            return {
+                "status": "not_required",
+                "message": "该文件低于服务器预处理阈值，将在会话中直接加载",
+            }
+        try:
+            payload = await graph.request(
+                "POST",
+                "/server-datasets/prepare",
+                headers=headers,
+                json_body={
+                    "server_dataset_id": source.server_dataset_id,
+                    "revision": source.revision,
+                    "relative_path": source.relative_path,
+                    "original_filename": source.original_filename,
+                    "source_path": source.storage_path,
+                    "directed": source.directed,
+                },
+            )
+        except (HTTPException, httpx.HTTPError) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            if isinstance(detail, dict):
+                detail = detail.get("message") or detail.get("error") or str(detail)
+            return {
+                "status": "unavailable",
+                "message": str(detail or "Graph Engine 暂不可用"),
+            }
+        preparation = public_server_preparation(payload)
+        if isinstance(payload, dict) and payload.get("success") is False:
+            preparation["status"] = (
+                "cancelled"
+                if preparation.get("status") == "cancelled"
+                else "failed"
+            )
+            preparation.setdefault(
+                "error", str(payload.get("error") or "服务器数据预处理提交失败")
+            )
+        return preparation
+
+    async def ensure_server_dataset_preparation(
+        source: ServerDatasetRecord,
+        request: Request,
+        user_id: str,
+    ) -> dict[str, Any]:
+        return await request_server_dataset_preparation(
+            source, forwarded_headers(request, user_id)
+        )
+
+    async def scan_server_datasets() -> None:
+        """Discover atomically published server files and enqueue them once."""
+
+        while True:
+            for source in server_datasets.list():
+                if not server_dataset_requires_preparation(source):
+                    continue
+                await request_server_dataset_preparation(
+                    source, {"X-User-ID": settings.admin_user_id}
+                )
+            await asyncio.sleep(server_dataset_scan_seconds)
+
     async def write_session_state(
         session_id: str,
         session: dict,
@@ -1373,10 +1940,19 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user_id: str,
         patch: dict[str, Any],
     ) -> dict:
-        state = {**_state(session), **patch}
-        if "active_dataset_id" in patch:
-            active = project_datasets.get(str(patch["active_dataset_id"]), user_id,
-                session_project_id(session, user_id)) if patch["active_dataset_id"] else None
+        effective_patch = dict(patch)
+        if "active_dataset_id" in effective_patch:
+            current_dataset_id = str(_state(session).get("active_dataset_id") or "")
+            next_dataset_id = str(effective_patch.get("active_dataset_id") or "")
+            if not next_dataset_id or next_dataset_id != current_dataset_id:
+                # A session-bound snapshot must not follow the conversation to
+                # a different project dataset (or survive dataset removal).
+                effective_patch.setdefault("large_graph_context", None)
+                effective_patch.setdefault("large_graph_prepare", None)
+        state = {**_state(session), **effective_patch}
+        if "active_dataset_id" in effective_patch:
+            active = project_datasets.get(str(effective_patch["active_dataset_id"]), user_id,
+                session_project_id(session, user_id)) if effective_patch["active_dataset_id"] else None
             state["data_state"] = dataset_runtime_state(active)
         await runtime.request(
             "PATCH",
@@ -1385,6 +1961,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             params={"type": "agent", "user_id": user_id},
             json_body={"session_state": state},
         )
+        # Callers commonly continue building the same request from ``session``.
+        # Keep the in-memory view coherent so a just-persisted large graph
+        # binding is not overwritten by a later PATCH in that request.
+        session["session_state"] = state
         return state
 
     def dataset_runtime_state(dataset: ProjectDatasetRecord | None) -> dict:
@@ -1415,6 +1995,149 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 json_body={"llm_model": model},
             )
 
+    def record_pending_large_graph_dataset(
+        dataset: ProjectDatasetRecord,
+        *,
+        project_id: str,
+        user_id: str,
+        pending: dict[str, Any],
+        format_detected: str = "",
+    ) -> ProjectDatasetRecord | None:
+        previous_metadata = (
+            dict(dataset.metadata) if isinstance(dataset.metadata, dict) else {}
+        )
+        metadata = {
+            **previous_metadata,
+            "dataset_kind": _PARTITIONED_GRAPH_KIND,
+            "format_detected": format_detected
+            or previous_metadata.get("format_detected")
+            or _PARTITIONED_GRAPH_REPRESENTATION,
+            "graph_id": pending["graph_id"],
+            "graph_version": pending["graph_version"],
+            "representation": _PARTITIONED_GRAPH_REPRESENTATION,
+            "preparation_job_id": pending["job_id"],
+            "preparation_status": pending["status"],
+        }
+        return project_datasets.update(
+            dataset.dataset_id,
+            user_id,
+            project_id=project_id,
+            metadata=metadata,
+        )
+
+    def record_completed_large_graph_dataset(
+        dataset: ProjectDatasetRecord,
+        result: dict[str, Any],
+        *,
+        project_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        try:
+            large_graph_context = _partitioned_graph_context(
+                result,
+                dataset_id=dataset.dataset_id,
+                session_id=session_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if large_graph_context is None:
+            raise HTTPException(
+                status_code=502,
+                detail="Graph Engine 大图准备结果缺少分区快照标识",
+            )
+        result["large_graph_context"] = large_graph_context
+        result_summary = (
+            result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        )
+        storage_bytes = result_summary.get("storage_bytes")
+        if isinstance(storage_bytes, dict):
+            storage_bytes = storage_bytes.get("total")
+        previous_metadata = (
+            dict(dataset.metadata) if isinstance(dataset.metadata, dict) else {}
+        )
+        previous_metadata.pop("preparation_job_id", None)
+        previous_metadata.pop("preparation_status", None)
+        metadata = {
+            **previous_metadata,
+            "dataset_kind": _PARTITIONED_GRAPH_KIND,
+            "format_detected": result.get("format_detected")
+            or previous_metadata.get("format_detected")
+            or _PARTITIONED_GRAPH_REPRESENTATION,
+            "graph_id": result.get("graph_id"),
+            "graph_version": result.get("graph_version"),
+            "representation": _PARTITIONED_GRAPH_REPRESENTATION,
+            "num_nodes": result.get("num_nodes"),
+            "num_edges": result.get("num_edges"),
+            "directed": result_summary.get("directed"),
+            "partitions": result_summary.get("partitions"),
+            "has_weights": result_summary.get("has_weights"),
+            "storage_bytes": storage_bytes,
+        }
+        updated = project_datasets.update(
+            dataset.dataset_id,
+            user_id,
+            project_id=project_id,
+            metadata={key: value for key, value in metadata.items() if value is not None},
+        )
+        if updated is not None:
+            result["dataset_view"] = _dataset_view(updated)
+        return result
+
+    async def poll_large_graph_prepare_once(
+        session_id: str,
+        pending: dict[str, Any],
+        request: Request,
+        user_id: str,
+    ) -> tuple[str, dict[str, Any] | None, str]:
+        """Inspect a durable prepare job once; never sleep or resubmit it."""
+
+        headers = forwarded_headers(request, user_id)
+        status_payload = await graph.request(
+            "POST",
+            f"/sessions/{session_id}/tools/get_job_status",
+            headers=headers,
+            json_body={"arguments": {"job_id": pending["job_id"]}},
+        )
+        job = status_payload.get("job") if isinstance(status_payload, dict) else None
+        if not isinstance(job, dict):
+            return pending["status"], None, "大图准备作业状态暂不可用"
+        returned_job_id = str(job.get("job_id") or pending["job_id"])
+        if returned_job_id != pending["job_id"]:
+            raise HTTPException(status_code=502, detail="Graph Engine 返回了不匹配的大图作业")
+        status = str(job.get("status") or "").strip().lower()
+        if status == "done":
+            result_payload = await graph.request(
+                "POST",
+                f"/sessions/{session_id}/tools/get_job_result",
+                headers=headers,
+                json_body={"arguments": {"job_id": pending["job_id"]}},
+            )
+            completed = (
+                result_payload.get("result")
+                if isinstance(result_payload, dict)
+                and isinstance(result_payload.get("result"), dict)
+                else None
+            )
+            if (
+                not isinstance(result_payload, dict)
+                or result_payload.get("success") is False
+                or completed is None
+                or not _large_graph_result_matches_prepare(completed, pending)
+            ):
+                raise HTTPException(
+                    status_code=502,
+                    detail="Graph Engine 大图准备作业完成但结果绑定无效",
+                )
+            return "done", dict(completed), ""
+        if status in {"failed", "cancelled"}:
+            return status, None, str(
+                job.get("message") or job.get("error") or "项目大图准备失败"
+            )
+        if status in {"queued", "running"}:
+            return status, None, str(job.get("message") or "大图准备中")
+        return pending["status"], None, "大图准备作业返回了未知状态"
+
     async def load_project_dataset_into_session(
         session_id: str,
         session: dict,
@@ -1440,6 +2163,70 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             result["dataset_view"] = _dataset_view(dataset)
             return result
         source_path = Path(dataset.storage_path)
+        server_preparation: dict[str, Any] | None = None
+        server_source: ServerDatasetRecord | None = None
+        if dataset.source_kind == "server":
+            server_source = server_datasets.get(dataset.source_id or "")
+            if server_source is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="服务器数据源已被移除或不再可用",
+                )
+            source_path = Path(server_source.storage_path)
+            try:
+                if source_path.resolve(strict=True) != Path(
+                    dataset.storage_path
+                ).resolve(strict=True):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="服务器数据源路径已变化，请从服务器数据源库重新添加",
+                    )
+            except (OSError, RuntimeError) as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="服务器数据源已被移除或不再可用",
+                ) from exc
+            recorded_revision = str(
+                (dataset.metadata or {}).get("source_revision") or ""
+            )
+            if recorded_revision and recorded_revision != server_source.revision:
+                raise HTTPException(
+                    status_code=409,
+                    detail="服务器数据源内容已经变化，请从服务器数据源库重新添加",
+                )
+            server_preparation = await ensure_server_dataset_preparation(
+                server_source, request, user_id
+            )
+            if server_dataset_requires_preparation(server_source) and str(
+                server_preparation.get("status") or ""
+            ) != "ready":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "SERVER_DATASET_PREPARING",
+                        "message": server_preparation.get("error")
+                        or server_preparation.get("message")
+                        or "服务器数据源仍在预处理，请稍后再试",
+                        "preparation": server_preparation,
+                    },
+                )
+            if not recorded_revision:
+                pinned = project_datasets.update(
+                    dataset.dataset_id,
+                    user_id,
+                    project_id=project_id,
+                    metadata={
+                        **(
+                            dict(dataset.metadata)
+                            if isinstance(dataset.metadata, dict)
+                            else {}
+                        ),
+                        "source_revision": server_source.revision,
+                        "server_preparation": server_preparation,
+                    },
+                )
+                if pinned is not None:
+                    dataset = pinned
         if not source_path.is_file():
             project_datasets.update(
                 dataset.dataset_id,
@@ -1456,22 +2243,56 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 str(_state(session).get("model") or ""),
             )
         headers = forwarded_headers(request, user_id)
-        await graph.request(
-            "POST",
-            f"/sessions/{session_id}/uploads/register",
-            headers=headers,
-            json_body={
-                "file_token": f"project-{dataset.dataset_id}",
-                "original_filename": dataset.original_filename,
-                "saved_path": dataset.storage_path,
-            },
-        )
-        result = await graph.request(
-            "POST",
-            f"/sessions/{session_id}/graph/load_upload",
-            headers=headers,
-            json_body={"filename": dataset.original_filename, "append": False},
-        )
+        if (
+            server_source is not None
+            and server_preparation is not None
+            and server_preparation.get("status") == "ready"
+        ):
+            result = await graph.request(
+                "POST",
+                f"/sessions/{session_id}/server-datasets/attach",
+                headers=headers,
+                json_body={
+                    "server_dataset_id": server_source.server_dataset_id,
+                    "revision": server_source.revision,
+                },
+            )
+        else:
+            # Small and non-text sources retain the ordinary session-local
+            # loading path. Large text sources never cross this boundary once
+            # their server-owned immutable snapshot is ready.
+            with source_path.open("rb") as source_file:
+                await graph.request(
+                    "POST",
+                    f"/sessions/{session_id}/uploads/ingest",
+                    headers=headers,
+                    data={
+                        "file_token": f"project-{dataset.dataset_id}",
+                        "original_filename": dataset.original_filename,
+                    },
+                    files={
+                        "file": (
+                            dataset.original_filename,
+                            source_file,
+                            "application/octet-stream",
+                        )
+                    },
+                    timeout=httpx.Timeout(
+                        settings.stream_timeout, connect=settings.request_timeout
+                    ),
+                )
+            result = await graph.request(
+                "POST",
+                f"/sessions/{session_id}/graph/load_upload",
+                headers=headers,
+                json_body={
+                    "filename": dataset.original_filename,
+                    "append": False,
+                    "directed": (
+                        server_source.directed if server_source is not None else True
+                    ),
+                },
+            )
         if not isinstance(result, dict):
             raise HTTPException(status_code=502, detail="Graph Engine 返回了无效的数据集加载结果")
         if result.get("success") is False:
@@ -1494,6 +2315,52 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             job_id = str(result.get("job_id") or "").strip()
             if not job_id:
                 raise HTTPException(status_code=502, detail="Graph Engine 未返回数据集加载任务 ID")
+            if job_id.startswith("lg_"):
+                try:
+                    pending_large_graph = _large_graph_prepare_context(
+                        result,
+                        dataset_id=dataset.dataset_id,
+                        session_id=session_id,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=502, detail=str(exc)) from exc
+                updated = record_pending_large_graph_dataset(
+                    dataset,
+                    project_id=project_id,
+                    user_id=user_id,
+                    pending=pending_large_graph,
+                    format_detected=str(result.get("format_detected") or ""),
+                )
+                # Persist before returning control. A billion-edge preparation
+                # can outlive an HTTP request or Backend process; future
+                # ensure calls resume this exact durable job instead of
+                # uploading the source and reserving another graph version.
+                pending_state_write = asyncio.create_task(
+                    write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {
+                            "active_dataset_id": dataset.dataset_id,
+                            "large_graph_context": None,
+                            "large_graph_prepare": pending_large_graph,
+                        },
+                    )
+                )
+                try:
+                    await asyncio.shield(pending_state_write)
+                except asyncio.CancelledError:
+                    # Finish this small control write before propagating the
+                    # disconnected request. The durable worker must remain
+                    # discoverable on the next Backend process/request.
+                    await pending_state_write
+                    raise
+                return {
+                    **result,
+                    "large_graph_prepare": pending_large_graph,
+                    "dataset_view": _dataset_view(updated),
+                }
             timeout = float(os.getenv("BACKEND_PROJECT_DATASET_LOAD_TIMEOUT_SECONDS", "300"))
             deadline = asyncio.get_running_loop().time() + max(1.0, timeout)
             while True:
@@ -1506,7 +2373,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 job = status_payload.get("job") if isinstance(status_payload, dict) else None
                 status = str(job.get("status") or "") if isinstance(job, dict) else ""
                 if status == "done":
-                    completed = job.get("result") if isinstance(job.get("result"), dict) else result
+                    completed = (
+                        job.get("result")
+                        if isinstance(job.get("result"), dict)
+                        else result
+                    )
                     result = {**load_context, **completed}
                     break
                 if status == 'cancelled':
@@ -1514,11 +2385,19 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                     # available for the next Run and other conversations.
                     raise HTTPException(409, {'code': 'RUN_CANCELLED'})
                 if status == "failed":
+                    failed_metadata = (
+                        dict(dataset.metadata)
+                        if isinstance(dataset.metadata, dict)
+                        else {}
+                    )
+                    failed_metadata.pop("preparation_job_id", None)
+                    failed_metadata.pop("preparation_status", None)
                     project_datasets.update(
                         dataset.dataset_id,
                         user_id,
                         project_id=project_id,
                         status="failed",
+                        metadata=failed_metadata,
                     )
                     raise HTTPException(
                         status_code=422,
@@ -1546,12 +2425,26 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             readiness = result.get("readiness") if isinstance(result.get("readiness"), dict) else {}
             dataset_summary = result.get("dataset") if isinstance(result.get("dataset"), dict) else {}
             summary = _graph_collection_summary({**dataset_summary, **readiness})
+            previous_metadata = (
+                dict(dataset.metadata) if isinstance(dataset.metadata, dict) else {}
+            )
+            for key in (
+                "graph_id",
+                "graph_version",
+                "representation",
+                "partitions",
+                "has_weights",
+                "storage_bytes",
+                "preparation_job_id",
+                "preparation_status",
+            ):
+                previous_metadata.pop(key, None)
             updated = project_datasets.update(
                 dataset.dataset_id,
                 user_id,
                 project_id=project_id,
                 metadata={
-                    **(dataset.metadata if isinstance(dataset.metadata, dict) else {}),
+                    **previous_metadata,
                     **summary,
                     "dataset_kind": "graph_collection",
                     "format_detected": _GRAPH_COLLECTION_FORMAT,
@@ -1561,32 +2454,66 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             if updated is not None:
                 result["dataset_view"] = _dataset_view(updated)
         else:
-            try:
-                info = await graph.request(
-                    "GET",
-                    f"/sessions/{session_id}/graph/info",
-                    headers=headers,
-                )
-                metadata = {
-                    **(dataset.metadata if isinstance(dataset.metadata, dict) else {}),
-                    "dataset_kind": "single_graph",
-                    "format_detected": result.get("format_detected") or "single_graph",
-                    "num_nodes": info.get("num_nodes"),
-                    "num_edges": info.get("num_edges"),
-                    "directed": info.get("directed"),
-                    "has_node_features": info.get("has_node_features"),
-                    "has_node_labels": info.get("has_node_labels"),
-                }
-                updated = project_datasets.update(
-                    dataset.dataset_id,
-                    user_id,
+            is_partitioned_snapshot = (
+                str(result.get("representation") or "")
+                == _PARTITIONED_GRAPH_REPRESENTATION
+            )
+            if is_partitioned_snapshot:
+                result = record_completed_large_graph_dataset(
+                    dataset,
+                    result,
                     project_id=project_id,
-                    metadata={key: value for key, value in metadata.items() if value is not None},
+                    user_id=user_id,
+                    session_id=session_id,
                 )
-                if updated is not None:
-                    result["dataset_view"] = _dataset_view(updated)
-            except HTTPException:
-                pass
+            else:
+                try:
+                    info = await graph.request(
+                        "GET",
+                        f"/sessions/{session_id}/graph/info",
+                        headers=headers,
+                    )
+                    previous_metadata = (
+                        dict(dataset.metadata)
+                        if isinstance(dataset.metadata, dict)
+                        else {}
+                    )
+                    for key in (
+                        "graph_id",
+                        "graph_version",
+                        "representation",
+                        "partitions",
+                        "has_weights",
+                        "storage_bytes",
+                        "preparation_job_id",
+                        "preparation_status",
+                    ):
+                        previous_metadata.pop(key, None)
+                    metadata = {
+                        **previous_metadata,
+                        "dataset_kind": "single_graph",
+                        "format_detected": result.get("format_detected")
+                        or "single_graph",
+                        "num_nodes": info.get("num_nodes"),
+                        "num_edges": info.get("num_edges"),
+                        "directed": info.get("directed"),
+                        "has_node_features": info.get("has_node_features"),
+                        "has_node_labels": info.get("has_node_labels"),
+                    }
+                    updated = project_datasets.update(
+                        dataset.dataset_id,
+                        user_id,
+                        project_id=project_id,
+                        metadata={
+                            key: value
+                            for key, value in metadata.items()
+                            if value is not None
+                        },
+                    )
+                    if updated is not None:
+                        result["dataset_view"] = _dataset_view(updated)
+                except HTTPException:
+                    pass
         return result
 
     async def switch_session_dataset(
@@ -1628,21 +2555,39 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
             async def restore_previous() -> None:
                 await reset_graph_runtime(session_id, request, user_id, model)
+                restored_context = None
+                restored_pending = None
                 if previous is not None and previous.status == "ready":
-                    await load_project_dataset_into_session(
+                    restored_result = await load_project_dataset_into_session(
                         session_id,
                         session,
                         previous,
                         request,
                         user_id,
                     )
-                await write_session_state(
-                    session_id,
-                    session,
-                    request,
-                    user_id,
-                    {"active_dataset_id": previous.dataset_id if previous else None},
-                )
+                    if isinstance(restored_result, dict):
+                        restored_context = _normalize_partitioned_graph_context(
+                            restored_result.get("large_graph_context"),
+                            dataset_id=previous.dataset_id,
+                            session_id=session_id,
+                        )
+                        restored_pending = _normalize_large_graph_prepare_context(
+                            restored_result.get("large_graph_prepare"),
+                            dataset_id=previous.dataset_id,
+                            session_id=session_id,
+                        )
+                if restored_pending is None:
+                    await write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {
+                            "active_dataset_id": previous.dataset_id if previous else None,
+                            "large_graph_context": restored_context,
+                            "large_graph_prepare": None,
+                        },
+                    )
 
             try:
                 await reset_graph_runtime(session_id, request, user_id, model)
@@ -1655,18 +2600,51 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                         request,
                         user_id,
                     )
-                await write_session_state(
-                    session_id,
-                    session,
-                    request,
-                    user_id,
-                    {"active_dataset_id": dataset.dataset_id if dataset else None},
+                large_graph_context = (
+                    _normalize_partitioned_graph_context(
+                        load_result.get("large_graph_context"),
+                        dataset_id=dataset.dataset_id,
+                        session_id=session_id,
+                    )
+                    if dataset is not None and isinstance(load_result, dict)
+                    else None
                 )
+                pending_large_graph = (
+                    _normalize_large_graph_prepare_context(
+                        load_result.get("large_graph_prepare"),
+                        dataset_id=dataset.dataset_id,
+                        session_id=session_id,
+                    )
+                    if dataset is not None and isinstance(load_result, dict)
+                    else None
+                )
+                if pending_large_graph is None:
+                    await write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {
+                            "active_dataset_id": dataset.dataset_id if dataset else None,
+                            "large_graph_context": large_graph_context,
+                            "large_graph_prepare": None,
+                        },
+                    )
             except asyncio.CancelledError:
-                try:
-                    await asyncio.shield(restore_previous())
-                except Exception:
-                    pass
+                persisted_pending = (
+                    _normalize_large_graph_prepare_context(
+                        _state(session).get("large_graph_prepare"),
+                        dataset_id=dataset.dataset_id,
+                        session_id=session_id,
+                    )
+                    if dataset is not None
+                    else None
+                )
+                if persisted_pending is None:
+                    try:
+                        await asyncio.shield(restore_previous())
+                    except Exception:
+                        pass
                 raise
             except Exception:
                 try:
@@ -1681,7 +2659,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 if dataset is not None
                 else None
             )
-            return load_result, _dataset_view(refreshed)
+            return load_result, _session_dataset_view(
+                refreshed,
+                _state(session),
+                session_id=session_id,
+            )
 
     async def ensure_active_dataset_loaded(
         session_id: str,
@@ -1689,36 +2671,319 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         request: Request,
         user_id: str,
     ) -> bool:
-        loaded = await graph_loaded(session_id, request, user_id)
-        state = _state(session)
-        dataset_id = str(state.get("active_dataset_id") or "").strip()
-        if not dataset_id:
-            return loaded
-        project_id = session_project_id(session, user_id)
-        dataset = project_dataset_or_404(dataset_id, project_id, user_id)
-        if "construction" in dataset.metadata:
-            latest = await graph.request("GET", f"/construction/{dataset_id}",
-                headers={**forwarded_headers(request, user_id), **service_headers(user_id), "X-Session-ID": session_id})
-            dataset = sync_construction_record(project_datasets, dataset, latest)
-            if loaded:
-                info = await graph.request("GET", f"/sessions/{session_id}/graph/info", headers=forwarded_headers(request, user_id))
-                if (info.get("construction_dataset_id") == dataset_id
-                        and info.get("construction_revision") == latest.get("revision")):
+        # Activation, info and chat may arrive concurrently. Serialize the
+        # potentially expensive transfer/preparation with dataset switching
+        # and run reservation for this conversation.
+        lock = await run_lock(user_id, session_id)
+        async with lock:
+            state = _state(session)
+            dataset_id = str(state.get("active_dataset_id") or "").strip()
+            if not dataset_id:
+                if state.get("large_graph_context") is not None:
+                    await write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {"large_graph_context": None},
+                    )
+                return await graph_loaded(session_id, request, user_id)
+
+            project_id = session_project_id(session, user_id)
+            dataset = project_dataset_or_404(dataset_id, project_id, user_id)
+            loaded = await graph_loaded(session_id, request, user_id)
+            force_reload = False
+            if "construction" in dataset.metadata:
+                latest = await graph.request(
+                    "GET",
+                    f"/construction/{dataset_id}",
+                    headers={
+                        **forwarded_headers(request, user_id),
+                        **service_headers(user_id),
+                        "X-Session-ID": session_id,
+                    },
+                )
+                dataset = sync_construction_record(project_datasets, dataset, latest)
+                if loaded:
+                    info = await graph.request(
+                        "GET",
+                        f"/sessions/{session_id}/graph/info",
+                        headers=forwarded_headers(request, user_id),
+                    )
+                    if (
+                        info.get("construction_dataset_id") == dataset_id
+                        and info.get("construction_revision") == latest.get("revision")
+                    ):
+                        return True
+                    # Do not replace a snapshot still used by another active Run.
+                    active = _active_run_record(
+                        await get_session_runs(session_id, request, user_id)
+                    )
+                    if (
+                        active
+                        and str(active.get("run_id"))
+                        != execution_headers.get().get("X-Run-ID")
+                    ):
+                        return True
+                    force_reload = True
+            raw_pending = state.get("large_graph_prepare")
+            pending = _normalize_large_graph_prepare_context(
+                raw_pending,
+                dataset_id=dataset_id,
+                session_id=session_id,
+            )
+            if raw_pending is None:
+                pending = _large_graph_prepare_context_from_metadata(
+                    dataset,
+                    session_id=session_id,
+                )
+                if pending is not None:
+                    await write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {
+                            "large_graph_context": None,
+                            "large_graph_prepare": pending,
+                        },
+                    )
+            if raw_pending is not None and pending is None:
+                # Never replace a durable job merely because its persisted
+                # binding is malformed. An automatic retry here could reserve
+                # another version while the original worker is still writing.
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "LARGE_GRAPH_PREPARE_BINDING_INVALID",
+                        "message": "大图准备作业绑定无效，已停止自动重提交流程",
+                    },
+                )
+            if pending is not None:
+                status, completed, message = await poll_large_graph_prepare_once(
+                    session_id,
+                    pending,
+                    request,
+                    user_id,
+                )
+                if status == "done" and completed is not None:
+                    metadata = (
+                        dataset.metadata if isinstance(dataset.metadata, dict) else {}
+                    )
+                    completed.setdefault(
+                        "format_detected",
+                        metadata.get("format_detected")
+                        or _PARTITIONED_GRAPH_REPRESENTATION,
+                    )
+                    completed = record_completed_large_graph_dataset(
+                        dataset,
+                        completed,
+                        project_id=project_id,
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+                    context = _normalize_partitioned_graph_context(
+                        completed.get("large_graph_context"),
+                        dataset_id=dataset_id,
+                        session_id=session_id,
+                    )
+                    if context is None:
+                        raise HTTPException(
+                            status_code=502,
+                            detail="大图准备结果未生成有效的会话版本绑定",
+                        )
+                    await write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {
+                            "large_graph_context": context,
+                            "large_graph_prepare": None,
+                        },
+                    )
                     return True
-                # Running analysis keeps its snapshot; a subsequent Run loads the saved revision.
-                active = _active_run_record(await get_session_runs(session_id, request, user_id))
-                if active and str(active.get("run_id")) != execution_headers.get().get("X-Run-ID"):
+                if status in {"failed", "cancelled"}:
+                    project_datasets.update(
+                        dataset.dataset_id,
+                        user_id,
+                        project_id=project_id,
+                        status="failed",
+                    )
+                    await write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {
+                            "large_graph_context": None,
+                            "large_graph_prepare": None,
+                        },
+                    )
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "LARGE_GRAPH_DATASET_PREPARE_FAILED",
+                            "message": message or "项目大图准备失败",
+                            "job_id": pending["job_id"],
+                            "status": status,
+                        },
+                    )
+                next_pending = _large_graph_prepare_context(
+                    {**pending, "status": status},
+                    dataset_id=dataset_id,
+                    session_id=session_id,
+                )
+                if next_pending != pending:
+                    record_pending_large_graph_dataset(
+                        dataset,
+                        project_id=project_id,
+                        user_id=user_id,
+                        pending=next_pending,
+                    )
+                    await write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {"large_graph_prepare": next_pending},
+                    )
+                return False
+
+            context = _normalize_partitioned_graph_context(
+                state.get("large_graph_context"),
+                dataset_id=dataset_id,
+                session_id=session_id,
+            )
+            if context is None:
+                context = _partitioned_graph_context_from_metadata(
+                    dataset,
+                    session_id=session_id,
+                )
+
+            # A partitioned snapshot intentionally leaves /graph/info empty.
+            # Verify the exact session-owned immutable version instead of
+            # interpreting that as an unloaded graph and preparing it again.
+            if context is not None:
+                versions = await graph.request(
+                    "POST",
+                    f"/sessions/{session_id}/tools/list_large_graph_versions",
+                    headers=forwarded_headers(request, user_id),
+                    json_body={
+                        "arguments": {"graph_id": context["graph_id"]},
+                    },
+                )
+                published_version = _published_partitioned_version(
+                    versions, context
+                )
+                if published_version is not None:
+                    metadata = (
+                        dataset.metadata
+                        if isinstance(dataset.metadata, dict)
+                        else {}
+                    )
+                    if str(metadata.get("preparation_status") or "") in {
+                        "queued",
+                        "running",
+                    }:
+                        recovered_metadata = dict(metadata)
+                        recovered_metadata.pop("preparation_job_id", None)
+                        recovered_metadata.pop("preparation_status", None)
+                        for source_key, target_key in (
+                            ("node_count", "num_nodes"),
+                            ("edge_count", "num_edges"),
+                            ("partitions", "partitions"),
+                            ("directed", "directed"),
+                            ("has_weights", "has_weights"),
+                        ):
+                            value = published_version.get(source_key)
+                            if value is not None:
+                                recovered_metadata[target_key] = value
+                        refreshed = project_datasets.update(
+                            dataset.dataset_id,
+                            user_id,
+                            project_id=project_id,
+                            metadata=recovered_metadata,
+                        )
+                        if refreshed is not None:
+                            dataset = refreshed
+                        context = _partitioned_graph_context_from_metadata(
+                            dataset,
+                            session_id=session_id,
+                        ) or context
+                    if state.get("large_graph_context") != context:
+                        await write_session_state(
+                            session_id,
+                            session,
+                            request,
+                            user_id,
+                            {"large_graph_context": context},
+                        )
                     return True
-        elif loaded:
-            return True
-        await load_project_dataset_into_session(
-            session_id,
-            session,
-            dataset,
-            request,
-            user_id,
-        )
-        return await graph_loaded(session_id, request, user_id)
+
+            metadata = dataset.metadata if isinstance(dataset.metadata, dict) else {}
+            if (
+                str(metadata.get("graph_id") or "") == session_id
+                and str(metadata.get("preparation_status") or "")
+                in {"queued", "running"}
+            ):
+                # Legacy metadata may lack the job id needed to poll safely.
+                # Keep waiting rather than reserving a duplicate graph version.
+                return False
+
+            is_partitioned_dataset = bool(
+                context is not None
+                or _is_partitioned_graph_metadata(dataset.metadata)
+            )
+            if not is_partitioned_dataset and loaded and not force_reload:
+                if state.get("large_graph_context") is not None:
+                    await write_session_state(
+                        session_id,
+                        session,
+                        request,
+                        user_id,
+                        {"large_graph_context": None},
+                    )
+                return True
+
+            result = await load_project_dataset_into_session(
+                session_id,
+                session,
+                dataset,
+                request,
+                user_id,
+            )
+            loaded_context = (
+                _normalize_partitioned_graph_context(
+                    result.get("large_graph_context"),
+                    dataset_id=dataset_id,
+                    session_id=session_id,
+                )
+                if isinstance(result, dict)
+                else None
+            )
+            await write_session_state(
+                session_id,
+                session,
+                request,
+                user_id,
+                {
+                    "large_graph_context": loaded_context,
+                    "large_graph_prepare": (
+                        result.get("large_graph_prepare")
+                        if isinstance(result, dict)
+                        else None
+                    ),
+                },
+            )
+            if loaded_context is not None:
+                # Preparation completion and context construction already bind
+                # this exact published version; a second list call here would
+                # add latency without strengthening that transaction boundary.
+                return True
+            if isinstance(result, dict) and result.get("large_graph_prepare"):
+                return False
+            return await graph_loaded(session_id, request, user_id)
 
     async def user_sessions(request: Request, user_id: str, limit: int | None = None) -> list[dict]:
         rows = await general_migration.sessions(user_id)
@@ -1802,6 +3067,141 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             ],
         }
 
+    @app.get("/api/server-datasets")
+    async def list_server_datasets(request: Request):
+        user = current_user(request, users)
+        rows = server_datasets.list()
+
+        async def describe(source: ServerDatasetRecord) -> dict[str, Any]:
+            row = source.public_dict()
+            row["preparation"] = await ensure_server_dataset_preparation(
+                source, request, user.user_id
+            )
+            return row
+
+        return {
+            "success": True,
+            "datasets": await asyncio.gather(*(describe(item) for item in rows)),
+        }
+
+    @app.post("/api/projects/{project_id}/datasets/from-server")
+    async def create_project_dataset_from_server(
+        project_id: str,
+        req: ServerDatasetImportReq,
+        request: Request,
+    ):
+        user = current_user(request, users)
+        project = project_or_404(project_id, user.user_id)
+        source = server_datasets.get(req.server_dataset_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="服务器数据源不存在或已被移除")
+        if source.metadata_error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "SERVER_DATASET_METADATA_INVALID",
+                    "message": source.metadata_error,
+                },
+            )
+        preparation = await ensure_server_dataset_preparation(
+            source, request, user.user_id
+        )
+        if server_dataset_requires_preparation(source) and str(
+            preparation.get("status") or ""
+        ) != "ready":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "SERVER_DATASET_PREPARING",
+                    "message": preparation.get("error")
+                    or preparation.get("message")
+                    or "服务器数据源仍在预处理，请稍后再试",
+                    "preparation": preparation,
+                },
+            )
+
+        target_session = None
+        normalized_session_id = req.session_id.strip()
+        if normalized_session_id:
+            target_session = await get_session(
+                normalized_session_id, request, user.user_id
+            )
+            if session_project_id(target_session, user.user_id) != project_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="只能为当前项目中的会话激活数据集",
+                )
+
+        dataset, created = project_datasets.create_reference(
+            project_id=project_id,
+            user_id=user.user_id,
+            name=req.name or source.name,
+            original_filename=source.original_filename,
+            storage_path=Path(source.storage_path),
+            source_id=source.server_dataset_id,
+            metadata={
+                "source_kind": "server",
+                "source_relative_path": source.relative_path,
+                "source_size_bytes": source.size_bytes,
+                "source_modified_at": source.modified_at,
+                "source_revision": source.revision,
+                "directed": source.directed,
+                "server_preparation": preparation,
+            },
+        )
+        previous_default_dataset_id = project.default_dataset_id
+        if project.default_dataset_id is None or req.set_as_default:
+            project = (
+                projects.set_default_dataset(
+                    project_id, user.user_id, dataset.dataset_id
+                )
+                or project
+            )
+
+        activated_session_id = None
+        dataset_view = None
+        if target_session is not None:
+            def rollback_import() -> None:
+                if project.default_dataset_id == dataset.dataset_id:
+                    projects.set_default_dataset(
+                        project_id,
+                        user.user_id,
+                        previous_default_dataset_id,
+                    )
+                if created:
+                    project_datasets.delete(
+                        dataset.dataset_id, user.user_id, project_id
+                    )
+
+            try:
+                _, dataset_view = await switch_session_dataset(
+                    normalized_session_id,
+                    dataset,
+                    request,
+                    user.user_id,
+                )
+            except asyncio.CancelledError:
+                rollback_import()
+                raise
+            except Exception:
+                rollback_import()
+                raise
+            activated_session_id = normalized_session_id
+            dataset = (
+                project_datasets.get(dataset.dataset_id, user.user_id, project_id)
+                or dataset
+            )
+        return {
+            "success": True,
+            "created": created,
+            "dataset": _project_dataset_row(
+                dataset, project.default_dataset_id
+            ),
+            "default_dataset_id": project.default_dataset_id,
+            "activated_session_id": activated_session_id,
+            "dataset_view": dataset_view,
+        }
+
     @app.post("/api/projects/{project_id}/datasets")
     async def create_project_dataset(
         request: Request,
@@ -1810,6 +3210,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         files: list[UploadFile] | None = File(None),
         csv_schema: str = Form(""),
         name: str = Form(""),
+        description: str = Form("", max_length=4000),
         set_as_default: bool = Form(False),
         session_id: str = Form(""),
     ):
@@ -1847,6 +3248,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                     original_filename=(re.sub(r"[^A-Za-z0-9._-]+", "_", bundle_name).strip("._") or "csv-bundle") + ".csv",
                     files=[(Path(item.filename or "").name, item.file) for item in selected_files],
                     schema=schema,
+                    description=description or str(schema.get("description") or ""),
                 )
             except ValueError as exc:
                 code = str(exc) if str(exc).startswith("CSV_BUNDLE_") else "CSV_BUNDLE_SCHEMA"
@@ -1863,6 +3265,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 name=name or Path(filename).stem,
                 original_filename=filename,
                 content=content,
+                description=description,
             )
         previous_default_dataset_id = default_dataset_id
         if dataset.status == "ready" and project and (project.default_dataset_id is None or set_as_default):
@@ -1912,6 +3315,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             user.user_id,
             project_id=project_id,
             name=req.name,
+            description=req.description,
         )
         return {
             "success": True,
@@ -1995,9 +3399,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def create_personal_dataset(request: Request, file: UploadFile | None = File(None),
                                       files: list[UploadFile] | None = File(None),
                                       csv_schema: str = Form(""), name: str = Form(""),
+                                      description: str = Form("", max_length=4000),
                                       session_id: str = Form("")):
         return await create_project_dataset(request, file=file, files=files, csv_schema=csv_schema,
-                                            name=name, session_id=session_id,
+                                            name=name, description=description, session_id=session_id,
                                             set_as_default=False)
 
     @app.patch("/api/personal-datasets/{dataset_id}")
@@ -2434,7 +3839,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "reused": reused,
             "project_id": response_project_id,
             "active_dataset_id": response_dataset_id,
-            "dataset_view": _dataset_view(response_dataset),
+            "dataset_view": _session_dataset_view(
+                response_dataset,
+                state,
+                session_id=session_id,
+            ),
             "provider": "openai-compatible",
             **state,
             "model": selected_model,
@@ -2448,8 +3857,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def activate_session(session_id: str, request: Request):
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
-        state = _state(session)
         has_graph = await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        state = _state(session)
         active_dataset_id = str(state.get("active_dataset_id") or "").strip()
         active_dataset = (
             project_datasets.get(active_dataset_id, user.user_id, session_project_id(session, user.user_id))
@@ -2469,11 +3878,24 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "requires_graph_reload": False,
             "messages": restored,
             "has_graph": has_graph,
-            "dataset_view": _dataset_view(active_dataset),
+            "dataset_view": _session_dataset_view(
+                active_dataset,
+                state,
+                session_id=session_id,
+            ),
             "pending_feedback": pending,
             "active_run": active_run,
             "project_id": session_project_id(session, user.user_id),
             "active_dataset_id": state.get("active_dataset_id"),
+            "large_graph_prepare": (
+                _normalize_large_graph_prepare_context(
+                    state.get("large_graph_prepare"),
+                    dataset_id=active_dataset_id,
+                    session_id=session_id,
+                )
+                if active_dataset_id
+                else None
+            ),
             "provider": state.get("provider", "openai-compatible"),
             "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
             "reasoning_mode": state.get("reasoning_mode", "direct"),
@@ -2497,8 +3919,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def session_info(session_id: str, request: Request):
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
-        state = _state(session)
         has_graph = await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        state = _state(session)
         active_dataset_id = str(state.get("active_dataset_id") or "").strip()
         active_dataset = (
             project_datasets.get(active_dataset_id, user.user_id, session_project_id(session, user.user_id))
@@ -2510,11 +3932,24 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return {
             "session_id": session_id,
             "has_graph": has_graph,
-            "dataset_view": _dataset_view(active_dataset),
+            "dataset_view": _session_dataset_view(
+                active_dataset,
+                state,
+                session_id=session_id,
+            ),
             "pending_feedback": pending,
             "active_run": active_run,
             "project_id": session_project_id(session, user.user_id),
             "active_dataset_id": state.get("active_dataset_id"),
+            "large_graph_prepare": (
+                _normalize_large_graph_prepare_context(
+                    state.get("large_graph_prepare"),
+                    dataset_id=active_dataset_id,
+                    session_id=session_id,
+                )
+                if active_dataset_id
+                else None
+            ),
             "provider": state.get("provider", "openai-compatible"),
             "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
             "reasoning_mode": state.get("reasoning_mode", "direct"),
@@ -2605,7 +4040,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "dataset_view": dataset_view,
         }
 
-    async def run_form(session_id: str, req: ChatReq, request: Request) -> tuple[dict, dict[str, str], str]:
+    async def run_form(
+        session_id: str, req: ChatReq, request: Request
+    ) -> tuple[dict, dict[str, str], str, bool]:
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
         req = req.model_copy(update={"attachments": _restore_attachment_tokens(
@@ -2625,8 +4062,60 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             if str(latest.get("status") or "").lower() not in {"completed", "error", "failed", "cancelled", "canceled"}:
                 raise HTTPException(409, {"code": "RUN_ACTIVE", "message": "请等待当前任务结束"})
             regeneration = latest_id
-        await ensure_active_dataset_loaded(session_id, session, request, user.user_id)
+        dataset_ready = await ensure_active_dataset_loaded(
+            session_id, session, request, user.user_id
+        )
         state = _state(session)
+        active_dataset_id = str(state.get("active_dataset_id") or "").strip()
+        active_dataset = (
+            project_datasets.get(
+                active_dataset_id,
+                user.user_id,
+                session_project_id(session, user.user_id),
+            )
+            if active_dataset_id
+            else None
+        )
+        pending_large_graph = (
+            _normalize_large_graph_prepare_context(
+                state.get("large_graph_prepare"),
+                dataset_id=active_dataset_id,
+                session_id=session_id,
+            )
+            if active_dataset_id
+            else None
+        )
+        if (
+            not dataset_ready
+            and active_dataset is not None
+            and _is_partitioned_graph_metadata(active_dataset.metadata)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "LARGE_GRAPH_DATASET_PREPARING",
+                    "message": "项目大图仍在准备中，请稍后重试；不会重复提交该作业",
+                    "job_id": (
+                        pending_large_graph.get("job_id")
+                        if pending_large_graph is not None
+                        else None
+                    ),
+                    "status": (
+                        pending_large_graph.get("status")
+                        if pending_large_graph is not None
+                        else str(
+                            (active_dataset.metadata or {}).get(
+                                "preparation_status", "queued"
+                            )
+                        )
+                    ),
+                    "dataset_view": _session_dataset_view(
+                        active_dataset,
+                        state,
+                        session_id=session_id,
+                    ),
+                },
+            )
         options = {
             "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
             "reasoning_mode": req.reasoning_mode or state.get("reasoning_mode", "direct"),
@@ -2684,7 +4173,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 "attachments": [item.model_dump() for item in req.attachments or []],
                 "regenerate_of": regeneration}}, ensure_ascii=False),
         }
-        return form, forwarded_headers(request, user.user_id), user.user_id
+        return form, forwarded_headers(request, user.user_id), user.user_id, dataset_ready
 
     async def controlled_run_form(session_id: str, req: ChatReq, request: Request):
         user = current_user(request, users)
@@ -2765,7 +4254,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return StreamingResponse(events(), media_type='text/event-stream')
 
     async def failed_native_handoff(session_id, prepared, registration, request):
-        _, _, uid = prepared
+        _, _, uid, _ = prepared
         rid, generation = registration['run_id'], registration['execution_generation']
         preparation_finished[(uid, session_id, rid)] = {'generation': generation, 'failed': True}
         # Closing an unclaimed start is atomic against the native claim. An
@@ -2783,7 +4272,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 prepared, registration = await controlled_run_form(session_id, req, request)
                 if prepared is None:
                     return None, registration, None
-                form, headers, _ = prepared
+                form, headers, _, _ = prepared
                 form.update({'stream': 'false', 'background': 'true'})
                 try:
                     payload = await runtime.request('POST', f'/agents/{settings.agent_id}/runs', headers=headers, data=form)
@@ -2794,7 +4283,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             prepared, registration, payload = await asyncio.shield(own_launch(launch()))
             if prepared is None:
                 return duplicate_start(registration, False)
-            form, headers, user_id = prepared
+            form, headers, user_id, dataset_ready = prepared
             # Preserve the existing non-stream response contract while the
             # producer remains independently owned by Agno.
             while str(payload.get('status') or '').lower() not in {'completed', 'cancelled', 'failed', 'error', 'paused'}:
@@ -2804,17 +4293,20 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 payload = next((run for run in _data_rows(runs) if run.get('run_id') == registration['run_id']), payload)
             return {"success": True, "run_id": registration['run_id'], "start_request_id": registration['start_request_id'],
                     "response": str(payload.get('content') or ''), 'context_usage': payload.get('metrics') or {},
-                    'has_graph': await graph_loaded(session_id, request, user_id),
+                    'has_graph': dataset_ready or await graph_loaded(session_id, request, user_id),
                     'reasoning_mode': json.loads(form['factory_input'])['reasoning_mode']}
         _, reservation = await reserve_new_run(session_id, request)
         try:
-            form, headers, user_id = await run_form(session_id, req, request)
+            form, headers, user_id, dataset_ready = await run_form(
+                session_id, req, request
+            )
             form.update({"stream": "false", "background": "false"})
             payload = await runtime.request("POST", f"/agents/{settings.agent_id}/runs", headers=headers, data=form)
             return {
                 "success": True,
                 "response": str(payload.get("content") or ""),
-                "has_graph": await graph_loaded(session_id, request, user_id),
+                "has_graph": dataset_ready
+                or await graph_loaded(session_id, request, user_id),
                 "reasoning_mode": json.loads(form["factory_input"])["reasoning_mode"],
                 "context_usage": payload.get("metrics") or {},
                 "run_id": payload.get("run_id"),
@@ -2830,7 +4322,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 prepared, registration = await controlled_run_form(session_id, req, request)
                 if prepared is None:
                     return None, None, registration
-                form, headers, _ = prepared
+                form, headers, _, _ = prepared
                 form.update({'stream': 'true', 'background': 'true'})
                 owned_stack = AsyncExitStack()
                 try:
@@ -2859,7 +4351,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             _, reservation = await reserve_new_run(session_id, request)
         try:
             if reservation:
-                form, headers, _ = await run_form(session_id, req, request)
+                form, headers, _, _ = await run_form(session_id, req, request)
                 form.update({"stream": "true", "background": "true"})
         except Exception:
             if reservation:
@@ -3110,8 +4602,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             },
         )
 
+    async def learned_memory_items(request: Request, user_id: str) -> list[dict]:
+        payload = await runtime.request("GET", "/internal/memory", headers={**forwarded_headers(request, user_id), **service_headers(user_id)})
+        return payload["items"]
+
     @app.get("/api/memory")
-    async def list_memory(request: Request, scope: str = "long_term", query: str = "", limit: int = 100):
+    async def list_memory(request: Request, scope: str = "long_term", query: str = "", limit: int = Query(100, ge=1, le=1000)):
         user = current_user(request, users)
         payload = await runtime.request(
             "GET", "/memories", headers=forwarded_headers(request, user.user_id),
@@ -3143,7 +4639,15 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             elif scope == "user_profile":
                 item["profile_id"] = row.get("memory_id")
             items.append(item)
-        return {"success": True, "scope": scope, "items": items}
+        if scope == "long_term":
+            learned = await learned_memory_items(request, user.user_id)
+            search = query.strip().casefold()
+            if search:
+                learned = [item for item in learned if search in " ".join(
+                    str(item.get(field) or "") for field in ("key", "value", "category")
+                ).casefold()]
+            items = learned + items
+        return {"success": True, "scope": scope, "items": items[:limit]}
 
     @app.post("/api/memory")
     async def write_memory(req: MemoryWriteReq, request: Request):
@@ -3157,6 +4661,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.patch("/api/memory/{memory_id}")
     async def update_memory(memory_id: str, req: MemoryPatchReq, request: Request):
         user = current_user(request, users)
+        if memory_id.startswith("learning:"):
+            return await runtime.request(
+                "PATCH", f"/internal/memory/{memory_id}", headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)},
+                json_body={"value": req.value, "key": req.key},
+            )
         payload = await runtime.request(
             "PATCH", f"/memories/{memory_id}", headers=forwarded_headers(request, user.user_id),
             json_body={"memory": req.value, "user_id": user.user_id, "topics": [req.scope, "fact", req.key]},
@@ -3166,6 +4675,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.delete("/api/memory/{memory_id}")
     async def delete_memory(memory_id: str, request: Request, scope: str = "long_term", reason: str = ""):
         user = current_user(request, users)
+        if memory_id.startswith("learning:"):
+            await runtime.request(
+                "DELETE", f"/internal/memory/{memory_id}", headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)},
+            )
+            return {"success": True, "memory_id": memory_id, "scope": "long_term", "reason": reason}
         await runtime.request(
             "DELETE", f"/memories/{memory_id}", headers=forwarded_headers(request, user.user_id), params={"user_id": user.user_id}
         )
@@ -3210,11 +4724,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         payload = await runtime.request("GET", "/memories", headers=forwarded_headers(request, user.user_id), params={"user_id": user.user_id, "limit": 1000})
         meta = (payload.get("meta") or {}) if isinstance(payload, dict) else {}
         rows = _data_rows(payload)
-        included_ids = [str(item.get("memory_id")) for item in rows if item.get("memory_id")]
+        learned = await learned_memory_items(request, user.user_id)
+        included_ids = [str(item.get("memory_id")) for item in [*learned, *rows] if item.get("memory_id")]
         return {
             "success": True,
-            "count": meta.get("total_count", len(rows)),
-            "snapshot_char_count": sum(len(str(item.get("memory") or "")) for item in rows),
+            "count": meta.get("total_count", len(rows)) + len(learned),
+            "snapshot_char_count": sum(len(str(item.get("memory") or "")) for item in rows)
+                + sum(len(item["value"]) for item in learned),
             "snapshot": "",
             "frozen": False,
             "included_item_ids": included_ids,
@@ -3242,6 +4758,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         skills = await runtime.request("GET", "/internal/skills", headers=headers)
         memory_meta = memories.get("meta") if isinstance(memories, dict) else {}
         memory_count = (memory_meta or {}).get("total_count", len(_data_rows(memories)))
+        memory_count += len(await learned_memory_items(request, user.user_id))
         skill_rows = skills.get("skills", []) if isinstance(skills, dict) else []
         skill_counts: dict[str, int] = {}
         for item in skill_rows if isinstance(skill_rows, list) else []:
@@ -3440,10 +4957,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         content = await file.read(2 * 1024 * 1024 + 1)
         if len(content) > 2 * 1024 * 1024:
-            raise HTTPException(413, "Skill 压缩包不能超过 2MB")
+            raise HTTPException(413, "Skill 文件不能超过 2MB")
         return await runtime.request("POST", "/internal/skills/upload",
             headers=forwarded_headers(request, user.user_id),
-            files={"file": (file.filename or "skill.zip", content, file.content_type or "application/zip")})
+            files={"file": (file.filename or "", content, file.content_type or "application/octet-stream")})
 
     @app.api_route("/api/skills/{name}", methods=["GET", "PUT", "DELETE"])
     async def skill_item(name: str, request: Request):
@@ -3510,6 +5027,47 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         )
         return result
 
+    @app.get(
+        "/api/sessions/{session_id}/large-graph/artifacts/"
+        "{artifact_id}/partitions/{partition}"
+    )
+    async def download_large_graph_artifact_partition(
+        session_id: str, artifact_id: str, partition: int, request: Request
+    ):
+        """Authenticated streaming proxy for private Graph Engine artifacts."""
+        if partition < 0:
+            raise HTTPException(status_code=404, detail="Artifact 分区不存在")
+        user = current_user(request, users)
+        await get_session(session_id, request, user.user_id)
+        upstream_client, upstream = await graph.open_stream(
+            "GET",
+            (
+                f"/sessions/{session_id}/large-graph/artifacts/"
+                f"{artifact_id}/partitions/{partition}"
+            ),
+            headers=forwarded_headers(request, user.user_id),
+        )
+
+        async def body():
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await upstream_client.aclose()
+
+        response_headers = {}
+        disposition = upstream.headers.get("content-disposition", "").strip()
+        if disposition:
+            response_headers["Content-Disposition"] = disposition
+        return StreamingResponse(
+            body(),
+            media_type=upstream.headers.get(
+                "content-type", "application/x-ndjson"
+            ).split(";", 1)[0],
+            headers=response_headers,
+        )
+
     @app.post("/api/sessions/{session_id}/graph/visualize")
     async def visualize_graph(session_id: str, request: Request):
         user = current_user(request, users)
@@ -3522,13 +5080,31 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             if active_dataset_id
             else None
         )
-        view = _dataset_view(active_dataset)
-        if view and view.get("kind") == "graph_collection":
+        view = _session_dataset_view(
+            active_dataset,
+            state,
+            session_id=session_id,
+        )
+        visualization = (
+            view.get("visualization")
+            if isinstance(view, dict) and isinstance(view.get("visualization"), dict)
+            else {}
+        )
+        if view and visualization.get("supported") is False:
+            partitioned = view.get("kind") == _PARTITIONED_GRAPH_KIND
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "GRAPH_NOT_VISUALIZABLE",
-                    "message": "非独立图，无法直接可视化",
+                    "code": (
+                        "PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE"
+                        if partitioned
+                        else "GRAPH_NOT_VISUALIZABLE"
+                    ),
+                    "message": (
+                        "分区大图不能直接全量可视化；请先运行有界子图提取，再可视化结果"
+                        if partitioned
+                        else "非独立图，无法直接可视化"
+                    ),
                     "dataset_view": view,
                 },
             )
@@ -3538,13 +5114,32 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 if active_dataset_id
                 else None
             )
-            view = _dataset_view(active_dataset)
-            if view and view.get("kind") == "graph_collection":
+            view = _session_dataset_view(
+                active_dataset,
+                _state(session),
+                session_id=session_id,
+            )
+            visualization = (
+                view.get("visualization")
+                if isinstance(view, dict)
+                and isinstance(view.get("visualization"), dict)
+                else {}
+            )
+            if view and visualization.get("supported") is False:
+                partitioned = view.get("kind") == _PARTITIONED_GRAPH_KIND
                 raise HTTPException(
                     status_code=409,
                     detail={
-                        "code": "GRAPH_NOT_VISUALIZABLE",
-                        "message": "非独立图，无法直接可视化",
+                        "code": (
+                            "PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE"
+                            if partitioned
+                            else "GRAPH_NOT_VISUALIZABLE"
+                        ),
+                        "message": (
+                            "分区大图不能直接全量可视化；请先运行有界子图提取，再可视化结果"
+                            if partitioned
+                            else "非独立图，无法直接可视化"
+                        ),
                         "dataset_view": view,
                     },
                 )
@@ -3627,6 +5222,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return {"success": True, "workspace_path": workspace_path, "filename": filename, "file_token": file_token, "graph_engine": payload,
                 "dataset": _project_dataset_row(dataset) if dataset else None,
                 "construction_required": dataset is not None}
+
+    install_constructed_import_routes(app, graph=graph, directory=project_datasets, projects=projects,
+        user_for=lambda request: current_user(request, users), project_for=project_or_404,
+        dataset_row=_project_dataset_row)
 
     install_construction_access(app, directory=project_datasets, projects=projects,
         session_for=get_session, state_for=_state)

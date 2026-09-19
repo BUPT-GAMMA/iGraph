@@ -367,6 +367,22 @@ class ConstructionStoreTest(unittest.TestCase):
         self.assertEqual(second["revision"], 2)
         self.assertEqual(second["schema"]["node_type_count"], 2)
 
+    def test_schema_exposes_source_keys_without_private_report_content(self):
+        original = self.build_ready()
+        directory = self.store._directory("user-a", "dataset-1")
+        report = {"source_schema": {"tables": [{
+            "name": "people", "columns": ["id", "manager_id"], "primary_key": ["id"],
+            "foreign_keys": [{"columns": ["manager_id"], "ref_table": "people", "ref_columns": ["id"]}],
+            "create_sql": "private SQL", "rows": [{"id": "private-record-value"}],
+        }]}, "queries": ["private query"]}
+        _atomic_json(directory / "evolution-report.json", report)
+        schema = self.store.schema("user-a", "dataset-1")
+        source = schema["schema"]["source_tables"][0]
+        self.assertEqual(source["primary_key"], ["id"])
+        self.assertEqual(source["foreign_keys"][0]["ref_table"], "people")
+        self.assertNotIn("private", json.dumps(schema))
+        self.assertEqual(self.store.graph("user-a", "dataset-1"), original)
+
     def test_preview_is_readonly_commit_persists_and_stale_revision_is_rejected(self):
         original = self.build_ready()
         operations = [{"op": "reverse_edges", "edge_ids": ["e1"]}]
