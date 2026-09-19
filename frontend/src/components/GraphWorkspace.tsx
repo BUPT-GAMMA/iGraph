@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { GraphCanvas } from './GraphCanvas';
+import { GraphCoverage } from './GraphCoverage';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
 import { listProjectTrainingRuns } from '../api';
@@ -136,9 +137,16 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     if (id && index.nodes.has(id) && !preview.nodes.some(node => node.id === id) && !filterMatches && !depth) setFocusId(id);
   }, [selected, index, preview.nodes, filterMatches, depth]);
   const schemaMode = renderedData?.visualization_kind === 'schema';
-  const sourcePartial = !!renderedData && (renderedData.truncated === true || (renderedData.total_nodes ?? 0) > index.nodes.size || (renderedData.total_edges ?? 0) > index.edges.length);
   const selectedInfo = selected ? index.nodes.get(String(selected.id)) : undefined;
   const locate = (id: string) => { setFocusId(id); const node = index.nodes.get(id); if (node) onSelect(node); };
+  const changeTab = (nextTab: Tab) => {
+    if (tab === 'Graph' && nextTab !== 'Graph') {
+      setFocusId('');
+      setDepth(0);
+      onSelect(null);
+    }
+    onTab(nextTab);
+  };
   useEffect(() => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); setResultsOnly(false); setResultIndex(-1); setExploreOpen(false); }, [sessionId, datasetName]);
   useEffect(() => { setResultIndex(-1); if (!allHighlights.length) setResultsOnly(false); }, [allHighlights]);
   const resetGraphFilters = () => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); setConnectedOnly(false); setResultsOnly(false); setResultIndex(-1); onSelect(null); setFitVersion(current => current + 1); };
@@ -195,7 +203,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
       <button className="plain-icon workspace-panel-toggle" onClick={onToggle} aria-label={panelToggleLabel} title={panelToggleLabel}><Icon name={collapsed ? 'panel-right-open' : 'panel-right-close'} size={21} /></button>
     </div>
     <div className="workspace-panel-content" aria-hidden={collapsed}>
-      {!tablesMode && <SlidingTabs ariaLabel={t('Graph workspace views', '图工作台视图')} className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: t(TAB_LABELS[item][0], TAB_LABELS[item][1]) }))} value={tab} onChange={onTab} />}
+      {!tablesMode && <SlidingTabs ariaLabel={t('Graph workspace views', '图工作台视图')} className="workspace-tabs" indicatorClassName="workspace-tab-indicator" options={tabs.map(item => ({ value: item, label: t(TAB_LABELS[item][0], TAB_LABELS[item][1]) }))} value={tab} onChange={changeTab} />}
       {tab === 'ML' ? <MLTab hasProject={Boolean(projectId)} onStopJob={onStopJob} messages={messages} liveTools={liveTools} projectRuns={projectTrainingRuns} sessionId={sessionId} loading={projectTrainingLoading} error={trainingError} />
         : tab === 'Artifacts' ? <><WorkspaceFiles key={sessionId} sessionId={sessionId} revision={JSON.stringify([messages.length, ...[...messages.flatMap(message => message.tools || []), ...liveTools].filter(tool => tool.tool?.startsWith('workspace_')).map(tool => [tool.call_id, tool.done, tool.result])])} /><ArtifactsTab messages={messages} /></>
           : view?.status === 'unsupported' ? (tab === 'Graph'
@@ -231,21 +239,10 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
                       {query.trim() && <div className="graph-search-results">{[...preview.matches].slice(0, 8).map(id => <button key={id} onClick={() => locate(id)}>{String(index.nodes.get(id)?.label ?? id)}<small>{id}</small></button>)}{!preview.matches.size && <span>{t('No matching nodes in the loaded data', '当前已加载数据中没有匹配节点')}</span>}</div>}
                     </div> : null}
                     <div className={`graph-canvas ${schemaMode ? 'is-schema' : ''}`}><GraphCanvas schema={schemaMode} active={!collapsed} key={`${sessionId}:${datasetName || ''}`} preview={preview} directed={renderedData?.directed} communities={communityById} highlights={highlights} selected={selected} onSelect={node => { onSelect(node); if (!node) { setFocusId(''); setDepth(0); } }} layout={layout} layoutVersion={layoutVersion} sizeMode={sizeMode} labels={labels} edgeWidth={edgeWidth} fitVersion={fitVersion} focusId={focusId} />{!preview.nodes.length && <div className="graph-preview-empty">{t('No nodes match the current filters', '没有符合条件的节点')}</div>}</div>
-                    <div className="graph-preview-note graph-overview-status" role="status">
-                      {tablesMode
-                        ? t(`Table relationships · ${preview.nodes.length.toLocaleString(locale)} / ${index.nodes.size.toLocaleString(locale)} tables · ${preview.edges.length.toLocaleString(locale)} / ${index.edges.length.toLocaleString(locale)} foreign keys`, `表关联模式 · ${preview.nodes.length.toLocaleString(locale)} / ${index.nodes.size.toLocaleString(locale)} 张表 · ${preview.edges.length.toLocaleString(locale)} / ${index.edges.length.toLocaleString(locale)} 条外键关系`)
-                        : schemaMode
-                        ? t(`Graph Schema · ${preview.nodes.length.toLocaleString(locale)} node types · ${preview.edges.length.toLocaleString(locale)} relationships`, `Graph Schema · ${preview.nodes.length.toLocaleString(locale)} 种节点类型 · ${preview.edges.length.toLocaleString(locale)} 种关系`)
-                        : <>{resultsOnly && t('Result subgraph · ', '结果子图 · ')}{sourcePartial
-                          ? t(`Partial upstream graph · Loaded ${index.nodes.size.toLocaleString(locale)} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString(locale)} nodes · `, `上游部分图 · 已载入 ${index.nodes.size.toLocaleString(locale)} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString(locale)} 个节点 · `)
-                          : preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length ? t('Smart overview · ', '智能概览 · ') : !resultsOnly ? t('Current graph view · ', '当前图视图 · ') : ''}
-                          {t(`Showing ${preview.nodes.length.toLocaleString(locale)} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString(locale)} nodes · ${preview.edges.length.toLocaleString(locale)} / ${(renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length).toLocaleString(locale)} edges`, `显示 ${preview.nodes.length.toLocaleString(locale)} / ${(renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size).toLocaleString(locale)} 个节点 · ${preview.edges.length.toLocaleString(locale)} / ${(renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length).toLocaleString(locale)} 条边`)}
-                          {(preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length) && t(' · Local smart overview (bounded preview)', ' · 本地智能概览（有界预览）')}
-                          {depth > 0 && t(` · ${depth} hop neighborhood`, ` · ${depth} 跳邻域`)}
-                          {sizeMode === 'degree' && t(` · Size: ${preview.nodes[0]?.degreeLabel || 'Degree'}`, ` · 大小：${preview.nodes[0]?.degreeLabel || '度数'}`)}</>}
-                      {preview.omittedHighlights > 0 && t(` · ${preview.omittedHighlights.toLocaleString(locale)} highlighted nodes are outside the preview`, ` · ${preview.omittedHighlights.toLocaleString(locale)} 个高亮节点超出预览范围`)}
-                      {schemaMode && !tablesMode && (preview.nodes.length < index.nodes.size || preview.edges.length < index.edges.length) && t(` · Bounded preview of ${index.nodes.size.toLocaleString(locale)} node types and ${index.edges.length.toLocaleString(locale)} relationships`, ` · 有界预览，共 ${index.nodes.size.toLocaleString(locale)} 种节点类型、${index.edges.length.toLocaleString(locale)} 种关系`)}
-                    </div>
+                    <GraphCoverage nodes={preview.nodes.length} edges={preview.edges.length}
+                      totalNodes={schemaMode || tablesMode ? index.nodes.size : renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size}
+                      totalEdges={schemaMode || tablesMode ? index.edges.length : renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length}
+                      kind={tablesMode ? 'tables' : schemaMode ? 'schema' : 'instances'} />
                     {(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">{t('Legend', '图例')}</span>{communityById.size ? <span><i className="legend-dot community" />{t('Community colors', '社区着色')}</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />{t('Highlighted nodes', '节点高亮')}</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />{t('Highlighted paths', '路径高亮')}</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />{t('Highlighted subgraphs', '子图高亮')}</span> : null}</div> : null}
                     <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? t('Selected node', '已选节点'))}</strong><span>{t('Selected', '已选择')}</span></div><div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String(nodePropertyType(selectedInfo || selected) ?? t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div>{!schemaMode && <NodeProperties node={selectedInfo || selected} />}<div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
                   </>

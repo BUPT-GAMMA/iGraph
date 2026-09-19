@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GraphWorkspace } from './GraphWorkspace';
@@ -30,10 +31,12 @@ describe('GraphWorkspace visualization layers', () => {
     const { container } = render(<GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} onGraphReset={onGraphReset} />);
     fireEvent.click(screen.getByRole('button', { name: '仅看结果子图' }));
     await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(2));
-    expect(container.querySelector('.graph-overview-status')?.textContent).toContain('结果子图');
+    expect(screen.getByRole('meter', { name: '节点' }).getAttribute('aria-valuetext')).toBe('已显示 2 / 3（66.7%）');
+    expect(screen.getByRole('meter', { name: '边' }).getAttribute('aria-valuetext')).toBe('已显示 1 / 2（50%）');
     fireEvent.click(screen.getByRole('button', { name: '恢复全图' }));
     expect(onGraphReset).toHaveBeenCalledOnce();
     await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(3));
+    expect(screen.getByRole('meter', { name: '节点' }).getAttribute('aria-valuetext')).toBe('已显示 3 / 3（100%）');
   });
 
   it('resets exploration state when switching conversations', () => {
@@ -44,6 +47,33 @@ describe('GraphWorkspace visualization layers', () => {
     rerender(<GraphWorkspace {...props} sessionId="second" />);
     fireEvent.click(screen.getByRole('button', { name: '图探索' }));
     expect((screen.getByRole('textbox', { name: '图谱问题' }) as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('clears node focus and neighborhood when leaving the graph tab', async () => {
+    const graph = {
+      nodes: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }],
+      edges: [{ source: 'a', target: 'b' }],
+    };
+    function WorkspaceHarness() {
+      const [tab, setTab] = useState<'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts'>('Graph');
+      const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
+      return <GraphWorkspace data={graph} tab={tab} onTab={setTab} selected={selected} onSelect={setSelected} collapsed={false} onToggle={vi.fn()} />;
+    }
+
+    const { container } = render(<WorkspaceHarness />);
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(3));
+    fireEvent.click(container.querySelector('[data-node-id="a"]')!);
+    await waitFor(() => expect(container.querySelector('[data-node-id="a"]')?.classList.contains('is-selected')).toBe(true));
+
+    fireEvent.change(screen.getByLabelText('查看邻域范围'), { target: { value: '1' } });
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(2));
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    await waitFor(() => expect(screen.getByText('图分析已就绪')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('tab', { name: '图谱' }));
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(3));
+    expect(container.querySelector('.graph-node.is-selected')).toBeNull();
+    expect(screen.getByText('点击图中节点查看属性')).toBeTruthy();
   });
 
   it('shows directed edge arrows with a marker unique to each canvas', async () => {
@@ -142,20 +172,20 @@ describe('GraphWorkspace visualization layers', () => {
     expect(screen.getByText(/画布当前展示 180 个节点/)).toBeTruthy();
   });
 
-  it('distinguishes an upstream partial graph from a locally sampled overview', () => {
+  it('reports displayed counts against full graph totals instead of the loaded sample', () => {
     const nodes = Array.from({ length: 200 }, (_, index) => ({ id: `node-${index}` }));
-    const { container } = render(<GraphWorkspace data={{ nodes, edges: [], total_nodes: 10000, total_edges: 24000, truncated: true }} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed onToggle={vi.fn()} />);
-    const status = container.querySelector('.graph-overview-status');
+    render(<GraphWorkspace data={{ nodes, edges: [], total_nodes: 10000, total_edges: 24000, truncated: true }} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
 
-    expect(status?.textContent).toContain('上游部分图');
-    expect(status?.textContent).toContain('已载入 200 / 10,000 个节点');
-    expect(status?.textContent).toContain('本地智能概览');
+    expect(screen.getByRole('meter', { name: '节点' }).getAttribute('aria-valuetext')).toBe('已显示 180 / 10,000（1.8%）');
+    expect(screen.getByRole('meter', { name: '边' }).getAttribute('aria-valuetext')).toBe('已显示 0 / 24,000（0%）');
+    expect(screen.getByRole('status').textContent).not.toMatch(/上游部分图|已载入|智能概览|度数/);
   });
 
   it('renders relationship type and count labels for a complete schema graph', async () => {
     const { container } = render(<GraphWorkspace
       data={{
         visualization_kind: 'schema',
+        total_nodes: 10000, total_edges: 12000,
         nodes: [{ id: 'Post', label: 'Post' }, { id: 'Tag', label: 'Tag' }],
         edges: [{ source: 'Post', target: 'Tag', type: 'HAS_TAG', properties: { relationship_count: 12000 } }],
         directed: true,
@@ -169,7 +199,8 @@ describe('GraphWorkspace visualization layers', () => {
     />);
 
     await waitFor(() => expect(container.querySelector('.graph-schema-edge-label')?.textContent).toBe('HAS_TAG · 12,000'));
-    expect(screen.getByRole('status').textContent).toContain('Graph Schema · 2 种节点类型 · 1 种关系');
+    expect(screen.getByRole('meter', { name: '节点类型' }).getAttribute('aria-valuetext')).toBe('已显示 2 / 2（100%）');
+    expect(screen.getByRole('meter', { name: '关系' }).getAttribute('aria-valuetext')).toBe('已显示 1 / 1（100%）');
     expect(screen.getByLabelText(/Graph Schema 画布/)).toBeTruthy();
   });
 
