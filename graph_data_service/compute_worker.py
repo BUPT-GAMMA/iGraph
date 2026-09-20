@@ -88,6 +88,9 @@ def compute(payload):
                 elif old.is_file(): shutil.copy2(old, new)
 
         async def execute():
+            if payload.get('model_run_context'):
+                from graph_data_service.execution_host import JobContext, job_context
+                job_context.set(JobContext(**payload['model_run_context']))
             async def work():
                 if tool in {'undo_graph', 'load_graph_version', 'discard_graph_version'}:
                     target = payload['history_target']

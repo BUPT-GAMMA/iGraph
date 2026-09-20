@@ -69,6 +69,24 @@ def test_full_disable_delete_restore_flow(api):
     assert client.patch('/internal/sessions/A/model-selection', json={'model': 'qwen3.6-plus', 'model_revision': 1}).status_code == 200
 
 
+def test_private_run_resolution_keeps_original_revision_for_paused_resume(api):
+    client, catalog = api
+    row = add(client, api_key='old-key')
+    catalog.select('alice', 'A', row['config_id'], 0)
+    run, _ = catalog.store.register('alice', 'A', 'req', 'fp', capture_model=lambda conn: catalog.freeze(conn, 'alice', 'A'))
+    catalog.store.acknowledge('alice', 'A', run['run_id'], 1, run_status='paused', terminal_persisted=False)
+    catalog.save('alice', {'api_key': 'new-key', 'base_url': 'http://localhost:4321/v1'}, row['config_id'], 1)
+    path = f"/internal/sessions/A/runs/{run['run_id']}/model-config"
+    assert client.get(path, headers={'X-iGraph-Service-Key': ''}).status_code == 403
+    assert client.get(path, headers={'X-User-ID': 'bob'}).status_code == 404
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.json()['api_key'] == 'old-key'
+    assert response.json()['base_url'] == 'http://localhost:1234/v1'
+    catalog.store.acknowledge('alice', 'A', run['run_id'], 1, run_status='completed', terminal_persisted=True, agent_stopped=True, preparation_stopped=True)
+    assert client.get(path).status_code == 409
+
+
 def test_connection_test_uses_only_synthetic_input_and_selected_endpoint(api, monkeypatch):
     client, catalog = api
     row = add(client, api_key='private-secret')

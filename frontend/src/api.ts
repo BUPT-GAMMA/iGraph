@@ -65,6 +65,7 @@ export function modelErrorMessage(code?: string | null) {
     MODEL_CONTROLS_REQUIRED: tr('Enable IGRAPH_RUN_CANCEL_ENABLED on all services to use model management.', '请为所有服务启用 IGRAPH_RUN_CANCEL_ENABLED 后使用模型管理'),
     MODEL_CONTEXT_TOO_LARGE: tr('This model cannot fit the current input. Use a larger-context model or shorten the input.', '当前输入超出模型容量，请选择更大上下文的模型或缩短输入'),
     MODEL_MEDIA_UNSUPPORTED: tr('This model cannot read the attachments in this conversation. Select a compatible model.', '此模型无法读取会话中的附件，请选择支持这些附件的模型'),
+    MODEL_RUN_CONFIG_UNAVAILABLE: tr('The task model configuration is unavailable. No alternate model was used.', '本轮模型配置暂不可用，未切换到其他模型'),
   };
   return code ? messages[code] || code : '';
 }

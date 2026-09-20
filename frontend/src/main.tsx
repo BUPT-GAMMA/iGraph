@@ -232,6 +232,7 @@ function App() {
   const [managementOpen, setManagementOpen] = useState(false);
   const [modelManagerOpen, setModelManagerOpen] = useState(false);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [modelNotice, setModelNotice] = useState<{ sessionId: string; name: string } | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [managementTab, setManagementTab] = useState<'memory' | 'skills'>('memory');
   const [defaultModel, setDefaultModel] = useState(DEFAULT_MODEL);
@@ -1740,6 +1741,7 @@ function App() {
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: selectedModel, modelRevision: response.model_revision ?? 0, modelUnavailableReason: null } });
       setAvailableModels(normalizedModels(response.available_models || availableModels, selectedModel));
       setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, model: selectedModel } : session));
+      setModelNotice({ sessionId, name: modelCatalog?.models.find(item => item.config_id === selectedModel)?.display_name || selectedModel });
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: previousModel, error: cause.message || tr('Could not switch models', '模型切换失败') } });
@@ -2142,6 +2144,7 @@ function App() {
             : <CreateGraphWorkspace datasets={datasets} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onStateChange={constructionStateUpdated} />}
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
+          {modelNotice?.sessionId === activeSession?.session_id && modelNotice && <div className="model-switch-notice" role="status">{t(`Next message: ${modelNotice.name}`, `下一条消息将使用：${modelNotice.name}`)}<button className="plain-icon" onClick={() => setModelNotice(null)} aria-label={t('Dismiss model notice', '关闭模型切换提示')}><Icon name="close" size={12} /></button></div>}
           {activeDraft
             ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={() => void openDatasets()} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession

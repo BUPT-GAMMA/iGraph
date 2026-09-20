@@ -246,6 +246,8 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
             "message_id": message_id,
             **({"content": payload["content"]} if isinstance(payload.get("content"), str) else {}),
             "context_usage": payload.get("metrics") or {},
+            "model_snapshot": (payload.get('metadata') or {}).get('model_snapshot'),
+            "history_compacted": bool((payload.get('metadata') or {}).get('history_compacted')),
             **common,
         }
     if event in {"RunError", "RunCancelled", "TeamRunError", "TeamRunCancelled", "error"}:
