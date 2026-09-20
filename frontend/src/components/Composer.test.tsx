@@ -218,17 +218,17 @@ describe('ConversationInputArea', () => {
     expect(screen.getByText('模型')).toBeTruthy();
     expect(screen.queryByText(/每家精选一款/)).toBeNull();
     const modelGroup = screen.getByRole('group', { name: '可用模型' });
-    expect(within(modelGroup).getAllByRole('button')).toHaveLength(5);
+    expect(within(modelGroup).getAllByRole('button')).toHaveLength(10);
     expect(within(modelGroup).getByRole('button', { name: 'qwen3.6-plus' }).getAttribute('aria-pressed')).toBe('true');
-    expect(within(modelGroup).queryByRole('button', { name: 'qwen3.7-max' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'qwen3.7-max' })).toBeTruthy();
     expect(within(modelGroup).getByRole('button', { name: 'claude-opus-4-6' }).querySelector('[data-model-provider="anthropic"]')).toBeTruthy();
-    expect(within(modelGroup).queryByRole('button', { name: 'claude-sonnet-4-6' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'claude-sonnet-4-6' })).toBeTruthy();
     expect(within(modelGroup).getByRole('button', { name: 'deepseek-v4-pro' }).querySelector('[data-model-provider="deepseek"]')).toBeTruthy();
-    expect(within(modelGroup).queryByRole('button', { name: 'deepseek-v4-flash' })).toBeNull();
-    expect(within(modelGroup).queryByRole('button', { name: 'deepseek-v4-lite' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'deepseek-v4-flash' })).toBeTruthy();
+    expect(within(modelGroup).getByRole('button', { name: 'deepseek-v4-lite' })).toBeTruthy();
     expect(within(modelGroup).getByRole('button', { name: 'doubao-seed-2-0-pro-260215' }).querySelector('[data-model-provider="doubao"]')).toBeTruthy();
     expect(within(modelGroup).getByRole('button', { name: 'gpt-5-4' }).querySelector('[data-model-provider="openai"]')).toBeTruthy();
-    expect(within(modelGroup).queryByRole('button', { name: 'gpt-5-2' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'gpt-5-2' })).toBeTruthy();
   });
 
   it('terminates despite upload and draft gates, and allows idempotent retry when unconfirmed', () => {
