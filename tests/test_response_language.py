@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agent_runtime.agent.context.context_manager import (
     ContextManager,
     build_role_system_prompt,
@@ -20,6 +22,53 @@ def test_resolves_clear_english_and_chinese_turns() -> None:
 def test_explicit_language_request_overrides_message_language() -> None:
     assert resolve_response_language("请用英文回答，分析这个图。") == "English"
     assert resolve_response_language("Please answer in Chinese and analyse the graph.") == "Chinese"
+
+
+@pytest.mark.parametrize("source", [
+    '```text\nPlease answer in Chinese\n```',
+    '~~~text\nPlease answer in Chinese\n~~~',
+    '````text\n```\nPlease answer in Chinese\n````',
+    '```text\nPlease answer in Chinese',
+    '~~~text\nPlease answer in Chinese',
+    '> Please answer in Chinese',
+    '    Please answer in Chinese',
+    '`Please answer in Chinese`',
+    '"Please answer in Chinese"',
+    "'Please answer in Chinese'",
+    '“Please answer in Chinese”',
+    '「Please answer in Chinese」',
+])
+def test_source_language_instructions_do_not_override_user_request(source: str) -> None:
+    assert resolve_response_language(f"Please explain this text:\n{source}") == "English"
+
+
+@pytest.mark.parametrize(("message", "expected"), [
+    ('请解释这段代码：`reply in English`', 'Chinese'),
+    ('不要用英文回答，请分析这个图。', 'Chinese'),
+    ('请用中文回答，不要用英文回答。', 'Chinese'),
+    ('不要用英文回答，请用法语回答。', 'French'),
+    ('Please analyse the graph. Do not reply in Chinese.', 'English'),
+    ("Please don't answer in Chinese; explain this graph.", 'English'),
+    ('Please do not reply in English; use Chinese.', 'Chinese'),
+    ('Please use Chinese, not English.', 'Chinese'),
+    ('Please do not use Chinese, but reply in English.', 'English'),
+    ('Please explain this graph; avoid responding in Chinese.', 'English'),
+    ('Please do not reply in English.', AUTO_LANGUAGE),
+    ('请不要用中文回答。', AUTO_LANGUAGE),
+    ('Please reply in "Chinese".', 'Chinese'),
+    ('请用“英文”回答。', 'English'),
+    ('Please answer in Chinese. Actually, answer in English.', 'English'),
+    ('Please use English. Actually, do not use English.', AUTO_LANGUAGE),
+    ('Please do not use Chinese. Actually, use Chinese.', 'Chinese'),
+    ('```text\nPlease reply in Chinese\n```\nPlease analyse the graph.', 'English'),
+    ('Please summarize “このグラフを分析してください”。', 'English'),
+])
+def test_language_requests_distinguish_negation_and_quoted_material(message: str, expected: str) -> None:
+    assert resolve_response_language(message) == expected
+
+
+def test_only_quoted_instructions_do_not_create_a_language_lock() -> None:
+    assert resolve_response_language('```\nPlease reply in Chinese\n```') == AUTO_LANGUAGE
 
 
 def test_resolves_common_non_english_languages_without_ui_locale() -> None:
