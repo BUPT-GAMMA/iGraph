@@ -3,6 +3,7 @@ import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
 import type { RunSnapshot, RunControl } from './api';
 import { tr } from './i18n';
+import { pendingActivity, type SavedSessionActivity } from './sessionActivity';
 
 export const PERSONAL_DRAFT_KEY = 'personal';
 export function draftScopeKey(projectId: string | null | undefined) { return projectId || PERSONAL_DRAFT_KEY; }
@@ -75,6 +76,8 @@ export type SessionViewState = {
   error?: string;
   activeRun: SessionRunState | null;
   unreadCompletion: boolean;
+  lastCompletedRunId?: string;
+  lastReadRunId?: string;
   lastAccessedAt: number;
 };
 
@@ -87,6 +90,7 @@ export type ConversationState = {
 
 export type ConversationAction =
   | { type: 'RESET' }
+  | { type: 'RESTORE_SESSION_ACTIVITY'; activity: SavedSessionActivity }
   | { type: 'ENSURE_SESSION'; sessionId: string; model?: string; accessedAt?: number }
   | { type: 'SET_ACTIVE_SESSION'; sessionId: string | null; model?: string; accessedAt?: number }
   | { type: 'OPEN_DRAFT'; draft: NewConversationDraft }
@@ -763,6 +767,26 @@ export function conversationReducer(state: ConversationState, action: Conversati
       viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view },
     });
   }
+  if (action.type === 'RESTORE_SESSION_ACTIVITY') {
+    const saved = action.activity;
+    const current = state.viewsBySessionId[saved.sessionId];
+    // Never overwrite a live/hydrated run with an older browser record.
+    if (current?.activeRun || current?.hydration === 'ready') return state;
+    const active = state.activeSessionId === saved.sessionId;
+    const view = { ...(current || createSessionView(saved.sessionId)),
+      lastCompletedRunId: saved.completedRunId,
+      lastReadRunId: active ? saved.completedRunId : saved.readRunId,
+      unreadCompletion: !active && Boolean(saved.completedRunId && saved.completedRunId !== saved.readRunId),
+    };
+    if (pendingActivity(saved)) {
+      view.activeRun = { runId: saved.runId, startRequestId: saved.startRequestId,
+        generation: `restore:${saved.runId || saved.startRequestId}`,
+        status: saved.status === 'awaiting_feedback' ? 'awaiting_feedback' : 'starting',
+        lastAppliedEventIndex: -1, reception: 'connecting', synchronized: false,
+        toolsById: {}, toolOrder: [], plan: null, feedback: null };
+    }
+    return { ...state, viewsBySessionId: { ...state.viewsBySessionId, [saved.sessionId]: view } };
+  }
   if (action.type === 'ENSURE_SESSION' || action.type === 'SET_ACTIVE_SESSION') {
     const sessionId = action.sessionId;
     if (sessionId === null) return { ...state, activeSessionId: null, activeDraftKey: null };
@@ -770,6 +794,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
     const view = current
       ? { ...current, model: action.model || current.model,
         unreadCompletion: action.type === 'SET_ACTIVE_SESSION' ? false : current.unreadCompletion,
+        lastReadRunId: action.type === 'SET_ACTIVE_SESSION' ? current.lastCompletedRunId : current.lastReadRunId,
         lastAccessedAt: action.accessedAt ?? current.lastAccessedAt }
       : createSessionView(sessionId, action.model, action.accessedAt);
     return evictViews({
@@ -1180,7 +1205,11 @@ export function conversationReducer(state: ConversationState, action: Conversati
   }
   const completedNow = current.activeRun?.status !== 'completed' && view.activeRun?.status === 'completed';
   if (completedNow) {
-    view = { ...view, unreadCompletion: state.activeSessionId !== action.sessionId };
+    const completedId = view.activeRun!.runId || view.activeRun!.generation;
+    const active = state.activeSessionId === action.sessionId;
+    view = { ...view, lastCompletedRunId: completedId,
+      lastReadRunId: active ? completedId : view.lastReadRunId,
+      unreadCompletion: !active && view.lastReadRunId !== completedId };
   }
   const updated = { ...state, viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view } };
   const control = action.type === 'APPLY_SNAPSHOT' ? action.snapshot.control : action.type === 'HYDRATE_SUCCESS' ? action.control : null;

@@ -3,6 +3,7 @@ import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent a
 import { createRoot } from 'react-dom/client';
 import { readComposerDraft, writeComposerDraft, clearComposerDraft } from './composerDrafts';
 import { readPins } from './sessionPins';
+import { forgetSessionActivity, pendingActivity, readSessionActivities, saveSessionActivity } from './sessionActivity';
 import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, importServerDataset, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listServerDatasets, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, ConstructionState, CsvBundleSchema, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, ServerDataset, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
@@ -687,6 +688,7 @@ function App() {
       if (!requestWasAborted(cause) && cause instanceof ApiError && cause.status === 404) {
         connectionManagerRef.current.abort(id);
         clearPersistedRun(id);
+        forgetSessionActivity(identity, id);
         dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
         cancellationRef.current?.forget(id);
         setSessions(current => current.filter(item => item.session_id !== id));
@@ -756,7 +758,10 @@ function App() {
     let nextSessions = sessionResponse.sessions || [];
     setSessionCursor(sessionResponse.next_cursor || null);
     setSessionListError('');
-    const missingPins = [...readPins(identity)].filter(id => !nextSessions.some(session => session.session_id === id));
+    const activities = readSessionActivities(identity);
+    const relevantActivities = activities.filter(item => pendingActivity(item) || item.completedRunId !== item.readRunId);
+    const wantedIds = new Set([...readPins(identity), ...relevantActivities.map(item => item.sessionId)]);
+    const missingPins = [...wantedIds].filter(id => !nextSessions.some(session => session.session_id === id));
     for (let offset = 0; offset < missingPins.length; offset += 50) {
       const pinnedResponse = await listSessions({ ids: missingPins.slice(offset, offset + 50) });
       if (stale()) return;
@@ -765,6 +770,15 @@ function App() {
     const nextProjects = projectResponse.projects || [];
     setSessions(nextSessions); setProjects(nextProjects);
     const route = parseWorkspaceRoute(window.location.search);
+    for (const activity of activities) {
+      if (nextSessions.some(session => session.session_id === activity.sessionId)) {
+        // Foreground activation owns its authoritative hydration. Avoid racing
+        // it with a second observer for the saved (possibly older) run.
+        const restored = route.kind === 'session' && route.id === activity.sessionId
+          ? { ...activity, runId: undefined, startRequestId: undefined } : activity;
+        dispatchConversation({ type: 'RESTORE_SESSION_ACTIVITY', activity: restored });
+      } else if (wantedIds.has(activity.sessionId)) forgetSessionActivity(identity, activity.sessionId);
+    }
     if (route.kind === 'help') {
       showHelp(false);
     } else if (route.kind === 'create-graph') {
@@ -984,6 +998,10 @@ function App() {
       committedCursorsRef.current.set(id, { generation: run.generation, index: run.lastAppliedEventIndex });
     }
   }, [conversation.viewsBySessionId]);
+  useLayoutEffect(() => {
+    if (!userId || demoMode || getUserId() !== userId || identityRef.current !== userId) return;
+    for (const view of Object.values(conversation.viewsBySessionId)) saveSessionActivity(userId, view);
+  }, [conversation.viewsBySessionId, userId]);
   useEffect(() => {
     const wake = () => { if (document.visibilityState !== 'hidden') { cancellationRef.current?.wake(); recoveryRef.current?.wake(); } };
     window.addEventListener('online', wake);
@@ -1194,6 +1212,7 @@ function App() {
       clearPersistedRun(id);
       clearPendingFirstTurn(id);
       clearComposerDraft(identity, id); cancelSessionUploads(id);
+      forgetSessionActivity(identity, id);
       dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
       setSessions(current => current.filter(item => item.session_id !== id));
       if (deleted?.project_id) setProjects(current => current.map(project => project.project_id === deleted.project_id ? { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) } : project));
@@ -1248,6 +1267,7 @@ function App() {
       hydrationControllersRef.current.get(id)?.abort(); hydrationControllersRef.current.delete(id);
       clearPersistedRun(id); clearPendingFirstTurn(id);
       clearComposerDraft(identity, id); cancelSessionUploads(id);
+      forgetSessionActivity(identity, id);
       dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
     }
     setSessions(current => current.filter(item => item.project_id !== targetId));

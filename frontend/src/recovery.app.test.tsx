@@ -15,6 +15,7 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   visualizeGraph: vi.fn().mockRejectedValue(new Error('no graph')),
 }));
 import App from './main';
+import { activityKey, readSessionActivities } from './sessionActivity';
 import { USER_KEY, activateSession, cancelRun, deleteSession, getCapabilities, getRunControl, getRunSnapshot, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, resumeRun, streamChat, updateSessionModel, validateUser, visualizeGraph } from './api';
 
 const active = (content = 'A') => ({ model: 'model', has_graph: false,
@@ -54,6 +55,62 @@ beforeEach(() => {
 afterEach(() => { cleanup(); restoreStorage(); restoreStorage = () => {}; });
 
 describe('actual App recovery', () => {
+  it('resumes a background run after remount without posting another question', async () => {
+    vi.mocked(activateSession).mockImplementation(async id => id === 'A' ? active() : { ...complete(), messages: [] });
+    const first = render(<App />);
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
+    navigate('B');
+    await waitFor(() => expect(first.container.querySelector('.session-row.selected')?.textContent).toContain('Session B'));
+    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.runId).toBe('r'));
+    first.unmount();
+    vi.mocked(resumeRun).mockClear();
+    vi.mocked(activateSession).mockClear();
+    const second = render(<App />);
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
+    expect(vi.mocked(resumeRun).mock.calls[0].slice(0, 3)).toEqual(['A', 'r', -1]);
+    expect(vi.mocked(activateSession).mock.calls.every(call => call[0] === 'B')).toBe(true);
+    await waitFor(() => expect(second.container.querySelector('.session-row.selected')?.textContent).toContain('Session B'));
+    expect(second.container.querySelector('.session-run-indicator.is-running')).toBeTruthy();
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it('restores an offline completion, keeps its blue dot across reloads, and clears it permanently when opened', async () => {
+    window.history.replaceState({}, '', '/?session=B');
+    localStorage.setItem(activityKey('recovery-user', 'A'), JSON.stringify({ sessionId: 'A', runId: 'r', status: 'streaming' }));
+    vi.mocked(activateSession).mockResolvedValue({ ...complete(), messages: [] });
+    vi.mocked(getCapabilities).mockResolvedValue({ run_cancel_v1: false, job_cancel_v1: false });
+    vi.mocked(resumeRun).mockImplementationOnce(async (sessionId, runId, _cursor, handlers) => {
+      handlers.onBatch?.({ protocol_version: 2, session_id: sessionId, run_id: runId, event_index: 0, events: [{ type: 'done', content: 'Finished offline' }] });
+    });
+    const first = render(<App />);
+    await screen.findByRole('status', { name: '回复已完成' });
+    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.completedRunId).toBe('r'));
+    first.unmount();
+    const second = render(<App />);
+    await screen.findByRole('status', { name: '回复已完成' });
+    fireEvent.click(screen.getByText('Session A'));
+    await waitFor(() => expect(screen.queryByRole('status', { name: '回复已完成' })).toBeNull());
+    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.readRunId).toBe('r'));
+    second.unmount();
+    window.history.replaceState({}, '', '/?session=B');
+    render(<App />);
+    await screen.findByText('Session A');
+    expect(screen.queryByRole('status', { name: '回复已完成' })).toBeNull();
+    expect(resumeRun).toHaveBeenCalledOnce();
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  it('discards activity for deleted tasks without restoring its run', async () => {
+    localStorage.setItem(activityKey('recovery-user', 'deleted'), JSON.stringify({ sessionId: 'deleted', runId: 'old', status: 'streaming' }));
+    vi.mocked(listSessions).mockImplementation(async options => options?.ids ? { sessions: [] } : { sessions: [{ session_id: 'A', title: 'Session A' }] });
+    vi.mocked(activateSession).mockResolvedValue({ ...complete(), messages: [] });
+    render(<App />);
+    await screen.findByText('Session A');
+    expect(localStorage.getItem(activityKey('recovery-user', 'deleted'))).toBeNull();
+    expect(resumeRun).not.toHaveBeenCalled();
+  });
+
   it.each(['storage', 'focus', 'visibility'])('synchronizes accounts on %s and discards the old stream', async trigger => {
     vi.mocked(activateSession).mockResolvedValue(active('old account response'));
     const { container } = render(<App />);
