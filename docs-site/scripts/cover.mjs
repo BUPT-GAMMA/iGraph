@@ -11,7 +11,7 @@ export function renderCover(locale, { origin = '', rootEntry = false } = {}) {
   const title = text('iGraph · 图驱动的数据分析智能体', 'iGraph · Graph-driven data analysis agent');
   const description = text('iGraph 是图驱动的数据分析智能体。以图组织实体与关系，通过图查询、算法和学习获取分析证据，再由智能体组织分析过程并解释结果。', 'iGraph is a graph-driven data analysis agent. Represent entities and relationships as a graph, obtain evidence through graph queries, algorithms, and learning, and let the agent organize the analysis and explain its results.');
   const chapters = [
-    ['agent-runtime', '01', '分析智能体', 'Analysis agent', '问题分解、工具编排与结果解释', 'Planning, tools, and interpretation'],
+    ['agent-runtime', '01', '分析智能体', 'Analysis agent', '拆解问题、调用工具、解释结果', 'Planning, tools, and interpretation'],
     ['graph-engine', '02', '图分析引擎', 'Graph Engine', '图查询、算法与机器学习', 'Graph queries, algorithms, and learning'],
     ['construction', '03', '自进化构图', 'Evolving construction', '为分析准备和优化图表示', 'Prepare graph representations for analysis'],
   ];
@@ -50,7 +50,7 @@ ${origin ? `<link rel="canonical" href="${origin}/${locale}/"><link rel="alterna
       <h2>${text('图驱动的', 'Graph-driven')}<br><span>${text('数据分析智能体', 'data analysis agent')}</span></h2>
       <p class="hero-description">${text('从数据中的实体与关系出发，让智能体围绕分析问题组织图查询、算法与学习，将计算结果转化为有依据的分析与解释。', 'Start with the entities and relationships in your data. Let the agent organize graph queries, algorithms, and learning around your questions, then turn computed results into evidence-based analysis and explanations.')}</p>
       <div class="hero-actions"><a class="start-reading" href="/${locale}/overview/">${text('开始阅读', 'Start reading')}${arrow}</a><a class="read-report" href="/${locale}/graph-tools/">${text('探索分析工具', 'Explore graph tools')}${arrow}</a></div>
-      <p class="hero-principles"><span>${text('图表示', 'Graph representations')}</span><span>${text('分析编排', 'Analysis')}</span><span>${text('结果解释', 'Interpretation')}</span></p>
+      <p class="hero-principles"><span>${text('组织数据', 'Graph representations')}</span><span>${text('开展分析', 'Analysis')}</span><span>${text('解释结果', 'Interpretation')}</span></p>
     </div>
   </section>
   <nav class="chapter-nav" aria-label="${text('探索技术章节', 'Explore technical chapters')}">${chapters.map(([slug,n,cn,en,cnDesc,enDesc])=>`<a href="/${locale}/${slug}/"><span class="chapter-number">${n}</span><span class="chapter-copy"><strong>${text(cn,en)}</strong><small>${text(cnDesc,enDesc)}</small></span>${arrow}</a>`).join('')}</nav>
