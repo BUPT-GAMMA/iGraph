@@ -1,4 +1,5 @@
-import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { MarkdownContent } from './MarkdownContent';
 import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { editableLatestTurn } from '../latestTurn';
@@ -8,6 +9,7 @@ import { BrandLogo, Icon } from './Icon';
 import { ProcessTimeline } from './ProcessTimeline';
 import { fetchArtifact } from './WorkspaceFiles';
 import { useI18n, type Translate } from '../i18n';
+import { executionLabel, executionPending, executionStatus } from '../toolStatus';
 
 function formatBytes(size?: number) {
   if (!Number.isFinite(size) || (size as number) < 0) return '';
@@ -15,35 +17,6 @@ function formatBytes(size?: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-const INTERNAL_METADATA_KEYS = [
-  'graph_version',
-  'graph_id',
-  'session_id',
-  'run_id',
-  'request_id',
-  'job_id',
-  'tool_call_id',
-  'call_id',
-  'event_index',
-  'protocol_version',
-].join('|');
-
-const CLOSED_INTERNAL_METADATA_ANNOTATION = new RegExp(
-  `\\s*[（(]\\s*(?=[^()（）]*\\x60?(?:${INTERNAL_METADATA_KEYS})\\x60?\\s*[:：=])[^()（）]*[)）]`,
-  'gi',
-);
-const STREAMING_INTERNAL_METADATA_ANNOTATION = new RegExp(
-  `\\s*[（(]\\s*\\x60?(?:${INTERNAL_METADATA_KEYS})\\x60?\\s*[:：=][^()（）]*$`,
-  'gi',
-);
-
-export function sanitizeAssistantContent(content: string) {
-  return content
-    .replace(CLOSED_INTERNAL_METADATA_ANNOTATION, '')
-    .replace(STREAMING_INTERNAL_METADATA_ANNOTATION, '')
-    .replace(/[ \t]+([，。！？；：,.!?;:])/g, '$1');
 }
 
 /** Deliverables the agent published this turn, downloadable inline. */
@@ -95,118 +68,22 @@ function toolList(tools: ToolCall[] | undefined, t: Translate) {
     const epochs = Number(progress.epochs);
     const hasEpoch = Number.isFinite(epoch) && Number.isFinite(epochs) && epochs > 0;
     const progressLabel = hasEpoch ? t(`Epoch ${epoch}/${epochs}`, `轮次 ${epoch}/${epochs}`) : progress.message;
-    const statusLabel = tool.done ? t('Complete', '已完成') : progressLabel ? String(progressLabel) : t('Running', '运行中');
-    return <div className={`tool-row ${tool.done ? 'done' : 'running'}`} key={`${tool.tool}-${index}`} role="status" aria-label={`${tool.tool || 'graph_tool'}${t(': ', '：')}${statusLabel}`} title={`${tool.tool || 'graph_tool'} · ${statusLabel}`}>
-      <span className={tool.done ? 'tool-state done' : 'tool-state'}>{tool.done ? <Icon name="check" size={12} /> : <span className="loader" />}</span>
+    const pending = executionPending(tool);
+    const statusLabel = pending && progressLabel ? String(progressLabel) : executionLabel(tool, t);
+    return <div className={`tool-row ${pending ? 'running' : 'done'}`} key={`${tool.tool}-${index}`} role="status" aria-label={`${tool.tool || 'graph_tool'}${t(': ', '：')}${statusLabel}`} title={`${tool.tool || 'graph_tool'} · ${statusLabel}`}>
+      <span className={pending ? 'tool-state' : 'tool-state done'}>{pending ? <span className="loader" /> : <Icon name={executionStatus(tool) === 'completed' ? 'check' : 'close'} size={12} />}</span>
       <span>{tool.tool || 'graph_tool'}</span>
       {progressLabel ? <span className="tool-progress-label">{String(progressLabel)}</span> : null}
     </div>;
   })}</div>;
 }
 
-function renderInline(text: string, keyPrefix: string): ReactNode[] {
-  const token = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|\[([^\]]+)\]\(([^)\s]+)\))/g;
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  let index = 0;
-  while ((match = token.exec(text))) {
-    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
-    const value = match[0];
-    if (value.startsWith('`')) parts.push(<code key={`${keyPrefix}-code-${index}`}>{value.slice(1, -1)}</code>);
-    else if (value.startsWith('**') || value.startsWith('__')) parts.push(<strong key={`${keyPrefix}-strong-${index}`}>{value.slice(2, -2)}</strong>);
-    else if (value.startsWith('*') || value.startsWith('_')) parts.push(<em key={`${keyPrefix}-em-${index}`}>{value.slice(1, -1)}</em>);
-    else if (match[2] && match[3] && /^https?:\/\//i.test(match[3])) parts.push(<a key={`${keyPrefix}-link-${index}`} href={match[3]} target="_blank" rel="noreferrer">{match[2]}</a>);
-    else parts.push(value);
-    cursor = match.index + value.length;
-    index += 1;
-  }
-  if (cursor < text.length) parts.push(text.slice(cursor));
-  return parts;
-}
-
-function splitTableRow(line: string) {
-  const normalized = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-  return normalized.split('|').map(cell => cell.trim());
-}
-
-function isTableSeparator(line: string) {
-  const cells = splitTableRow(line);
-  return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
-}
-
-function MarkdownContent({ content }: { content: string }) {
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
-  const blocks: ReactNode[] = [];
-  let paragraph: string[] = [];
-  let list: { ordered: boolean; items: string[] } | null = null;
-  const flushParagraph = () => {
-    if (!paragraph.length) return;
-    const linesInParagraph = paragraph;
-    blocks.push(<p key={`p-${blocks.length}`}>{linesInParagraph.map((line, index) => <Fragment key={index}>{renderInline(line, `p-${blocks.length}-${index}`)}{index < linesInParagraph.length - 1 ? <br /> : null}</Fragment>)}</p>);
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (!list) return;
-    const current = list;
-    const ListTag = current.ordered ? 'ol' : 'ul';
-    blocks.push(<ListTag key={`list-${blocks.length}`}>{current.items.map((item, index) => <li key={index}>{renderInline(item, `list-${blocks.length}-${index}`)}</li>)}</ListTag>);
-    list = null;
-  };
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index];
-    const trimmed = line.trim();
-    if (!trimmed) { flushParagraph(); flushList(); index += 1; continue; }
-    if (trimmed.startsWith('```')) {
-      flushParagraph(); flushList();
-      const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && !lines[index].trim().startsWith('```')) { codeLines.push(lines[index]); index += 1; }
-      if (index < lines.length) index += 1;
-      blocks.push(<pre key={`pre-${blocks.length}`}><code>{codeLines.join('\n')}</code></pre>);
-      continue;
-    }
-    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
-    if (heading) {
-      flushParagraph(); flushList();
-      const Heading = `h${heading[1].length}` as keyof JSX.IntrinsicElements;
-      blocks.push(<Heading key={`heading-${blocks.length}`}>{renderInline(heading[2], `heading-${blocks.length}`)}</Heading>);
-      index += 1;
-      continue;
-    }
-    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(trimmed)) {
-      flushParagraph(); flushList(); blocks.push(<hr key={`hr-${blocks.length}`} />); index += 1; continue;
-    }
-    if (index + 1 < lines.length && line.includes('|') && isTableSeparator(lines[index + 1])) {
-      flushParagraph(); flushList();
-      const headers = splitTableRow(line);
-      const rows: string[][] = [];
-      index += 2;
-      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) { rows.push(splitTableRow(lines[index])); index += 1; }
-      blocks.push(<table key={`table-${blocks.length}`}><thead><tr>{headers.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell, `th-${cellIndex}`)}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{headers.map((_, cellIndex) => <td key={cellIndex}>{renderInline(row[cellIndex] || '', `td-${rowIndex}-${cellIndex}`)}</td>)}</tr>)}</tbody></table>);
-      continue;
-    }
-    const unordered = /^\s*[-*+]\s+(.+)$/.exec(line);
-    const ordered = /^\s*\d+[.)]\s+(.+)$/.exec(line);
-    if (unordered || ordered) {
-      flushParagraph();
-      const orderedList = Boolean(ordered);
-      if (list && list.ordered !== orderedList) flushList();
-      if (!list) list = { ordered: orderedList, items: [] };
-      list.items.push((ordered || unordered)![1]);
-      index += 1;
-      continue;
-    }
-    flushList(); paragraph.push(line); index += 1;
-  }
-  flushParagraph(); flushList();
-  return <div className="markdown-content">{blocks}</div>;
-}
 
 function renderContent(content: string, role: Message['role']) {
+  // Runtime IDs live in structured message fields. Never infer metadata from
+  // prose: legitimate examples and code can contain the very same identifiers.
   return role === 'assistant'
-    ? <MarkdownContent content={sanitizeAssistantContent(content)} />
+    ? <MarkdownContent content={content} />
     : <span className="plain-content">{content}</span>;
 }
 
@@ -302,6 +179,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
 };
 
 const BOTTOM_THRESHOLD = 48;
+const TERMINAL_MESSAGE_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
@@ -376,6 +254,8 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
         const visibleTools = isLiveAssistant && runTools?.length ? runTools : displayed.tools;
         const visiblePlan = isLiveAssistant && plan ? plan : displayed.plan;
         const isEditing = Boolean(editableKey && editingKey === editableKey && message === latestTurn?.user);
+        const assistantOutputPending = isAssistant && (isLiveAssistant || displayed.streaming === true
+          || Boolean(displayed.run_status && !TERMINAL_MESSAGE_STATUSES.has(displayed.run_status)));
         // Attachment chips sit above the user bubble so they read as separate
         // files rather than as part of the sent text.
         const attachmentChips = displayed.attachments?.length
@@ -386,6 +266,8 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
           {isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}
           <div className="message-body">
             <div className="message-label">{isAssistant ? (message.regenerate_of ? t('iGraph Assistant · Regenerated', 'iGraph 助手 · 重新生成') : t('iGraph Assistant', 'iGraph 助手')) : t('You', '你')}</div>
+            {isAssistant && message.model_snapshot && <div className="message-model-provenance" title={`${message.model_snapshot.model_id} · v${message.model_snapshot.revision}`}>{message.model_snapshot.display_name}</div>}
+            {message.history_compacted && <div className="message-model-provenance">{t('Earlier context compacted for this model', '较早上下文已压缩以适应此模型')}</div>}
             {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools, t)) : null}
             {isAssistant ? planCard(visiblePlan, t) : null}
             {!isAssistant && !isEditing ? attachmentChips : null}
@@ -403,7 +285,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
               <span>{t(`Version ${versionIndex + 1} / ${versions.length}`, `版本 ${versionIndex + 1} / ${versions.length}`)}</span>
               <button type="button" aria-label={t('Next answer version', '下一个回答版本')} disabled={versionIndex >= versions.length - 1} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex + 1].run_id! }))}>›</button>
             </nav> : null}
-            {displayed.content && !isEditing ? <MessageCopyAction content={displayed.content}
+            {displayed.content && !isEditing && !assistantOutputPending ? <MessageCopyAction content={displayed.content}
               onEdit={editableKey && message === latestTurn?.user ? () => setEditingKey(editableKey) : undefined} /> : null}
           </div>
         </div>;

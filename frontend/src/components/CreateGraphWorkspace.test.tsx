@@ -25,11 +25,15 @@ describe('create graph workspace', () => {
     expect(container.querySelector('.create-graph-section-head p')).toBeNull();
     expect(container.querySelector('.create-graph-kicker')).toBeNull();
     expect(screen.getByText('SQL / CSV / TXT')).toBeTruthy();
+    expect(screen.queryByText('结构与数据校验')).toBeNull();
+    expect(screen.queryByText('可复用的图数据')).toBeNull();
+    expect(container.querySelectorAll('.create-graph-step')).toHaveLength(3);
+    expect(container.querySelectorAll('.create-graph-step-icon')).toHaveLength(3);
     expect(container.querySelector('input[type="file"]')?.getAttribute('accept')).toBe('.sql,.csv,.txt');
     expect(container.querySelector('input[type="file"]')?.hasAttribute('multiple')).toBe(true);
   });
 
-  it('opens constructible sources and explains ready graph datasets separately', () => {
+  it('opens constructible sources and omits ready graph datasets', () => {
     const onConstruct = vi.fn();
     render(<CreateGraphWorkspace datasets={datasets} onUpload={vi.fn()} onConstruct={onConstruct} />);
     fireEvent.click(screen.getByRole('button', { name: '构图 订单源数据' }));
@@ -37,7 +41,7 @@ describe('create graph workspace', () => {
     expect(onConstruct).toHaveBeenNthCalledWith(1, datasets[0]);
     expect(onConstruct).toHaveBeenNthCalledWith(2, datasets[1]);
     expect(screen.queryByRole('button', { name: /Cora/ })).toBeNull();
-    expect(screen.getByText('另有 1 个现成图数据集无需构图，可在分析任务中直接使用。')).toBeTruthy();
+    expect(screen.queryByText(/现成图数据集无需构图/)).toBeNull();
   });
 
   it('keeps user descriptions and graph counts after removing introductory copy', () => {

@@ -17,6 +17,59 @@ export type CustomModel = {
   updated_at?: number;
 };
 
+export type ModelConfiguration = CustomModel & {
+  config_id: string;
+  revision: number;
+  upstream_model_id: string;
+  source: 'deployment' | 'custom';
+  enabled: boolean;
+  tools: boolean;
+  vision: boolean;
+  context_window: number;
+  max_output_tokens: number;
+  unavailable_reason?: string | null;
+};
+export type ModelCatalog = { models: ModelConfiguration[]; default_model: string };
+export const listModels = () => json<ModelCatalog>('/api/models');
+export const saveModelConfiguration = (input: Record<string, unknown>) => json<{ model: ModelConfiguration }>('/api/models', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+});
+export const setModelEnabled = (model: ModelConfiguration, enabled: boolean) => json('/api/models/state', {
+  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config_id: model.config_id, revision: model.revision, enabled }),
+});
+export const setDefaultModelConfiguration = (configId: string) => json('/api/models/default', {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config_id: configId }),
+});
+export const testModelConfiguration = (model: ModelConfiguration) => json('/api/models/test', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config_id: model.config_id, revision: model.revision }),
+});
+export const deleteModelConfiguration = (model: ModelConfiguration) => json(`/api/models/${encodeURIComponent(model.config_id)}?revision=${model.revision}`, { method: 'DELETE' });
+
+export function modelErrorMessage(code?: string | null) {
+  const messages: Record<string, string> = {
+    MODEL_REMOVED: tr('Model configuration removed. Select another model.', '模型配置已删除，请选择其他模型'),
+    MODEL_DISABLED: tr('Model disabled. Select another model.', '模型已停用，请选择其他模型'),
+    MODEL_NOT_CONFIGURED: tr('Endpoint or API key not configured', '尚未配置接口地址或密钥'),
+    MODEL_NOT_ALLOWED: tr('Model is not available for this account', '此账户不可使用该模型'),
+    MODEL_TOOLS_REQUIRED: tr('Graph analysis requires tool calling', '图分析需要模型支持工具调用'),
+    MODEL_CONFIG_CHANGED: tr('Configuration changed. Refresh and try again.', '配置已变化，请刷新后重试'),
+    MODEL_SELECTION_CHANGED: tr('The model changed in another page. Refresh this conversation before sending.', '模型已在其他页面更改，请重新打开此会话后再发送'),
+    MODEL_IN_USE: tr('An active task uses this model. Wait for it to finish or stop it before deleting.', '有活动任务正在使用此模型，请等待结束或停止任务后再删除'),
+    MODEL_AUTH_FAILED: tr('Authentication failed. Check the API key.', '认证失败，请检查 API Key'),
+    MODEL_RATE_LIMITED: tr('Rate limit or quota reached', '调用频率或额度受限'),
+    MODEL_TEST_FAILED: tr('The endpoint rejected this model or tool protocol. Check configuration.', '接口拒绝了该型号或工具协议，请检查配置'),
+    MODEL_CONNECTION_FAILED: tr('Could not connect to the model endpoint', '无法连接模型接口'),
+    MODEL_INVALID_RESPONSE: tr('The endpoint returned an unsupported response', '接口返回的数据格式不受支持'),
+    MODEL_INVALID_CONFIG: tr('Enter a valid model ID and HTTP(S) endpoint without embedded credentials.', '请填写有效模型 ID 和 HTTP(S) 地址，地址中不能包含凭据'),
+    MODEL_INVALID_LIMITS: tr('Output limit must be smaller than the context window.', '输出上限必须小于上下文窗口'),
+    MODEL_CONTROLS_REQUIRED: tr('Enable IGRAPH_RUN_CANCEL_ENABLED on all services to use model management.', '请为所有服务启用 IGRAPH_RUN_CANCEL_ENABLED 后使用模型管理'),
+    MODEL_CONTEXT_TOO_LARGE: tr('This model cannot fit the current input. Use a larger-context model or shorten the input.', '当前输入超出模型容量，请选择更大上下文的模型或缩短输入'),
+    MODEL_MEDIA_UNSUPPORTED: tr('This model cannot read the attachments in this conversation. Select a compatible model.', '此模型无法读取会话中的附件，请选择支持这些附件的模型'),
+    MODEL_RUN_CONFIG_UNAVAILABLE: tr('The task model configuration is unavailable. No alternate model was used.', '本轮模型配置暂不可用，未切换到其他模型'),
+  };
+  return code ? messages[code] || code : '';
+}
+
 export function getUserId() { return localStorage.getItem(USER_KEY) || ''; }
 export function setUserId(value: string) { localStorage.setItem(USER_KEY, value); }
 
@@ -83,7 +136,7 @@ export class ApiError extends Error {
       : '';
     const message = typeof detail === 'string'
       ? detail
-      : validationMessage || ({
+      : validationMessage || (body?.code?.startsWith('MODEL_') ? modelErrorMessage(body.code) : '') || ({
         JOB_IDEMPOTENCY_CONFLICT: tr('The data-loading operation ID conflicts with another request. Try again, or contact an administrator if this continues.', '数据加载操作编号冲突，请重试；若持续出现，请联系维护者'),
         EDIT_TARGET_CHANGED: tr('The latest turn changed. Refresh and try again.', '最新一轮已变化，请刷新后重试'),
         EDIT_TARGET_NOT_FINISHED: tr('Wait for the current turn to finish before editing it.', '请等待本轮结束后再修改'),
@@ -120,7 +173,13 @@ export async function deleteCustomModel(modelId: string) {
   return json<{ success?: boolean; model_id: string }>(`/api/models/custom/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
 }
 
-export async function listSessions() { return json<{ success?: boolean; sessions?: Session[] }>('/api/sessions'); }
+export async function listSessions(options: { cursor?: string; ids?: string[]; limit?: number } = {}) {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set('cursor', options.cursor);
+  if (options.limit) query.set('limit', String(options.limit));
+  for (const id of options.ids || []) query.append('ids', id);
+  return json<{ success?: boolean; sessions?: Session[]; next_cursor?: string | null; has_more?: boolean }>(`/api/sessions${query.size ? `?${query}` : ''}`);
+}
 export async function createSession(options: {
   clientSessionId?: string;
   model?: string;
@@ -153,13 +212,18 @@ export async function activateSession(id: string, signal?: AbortSignal) {
     has_graph?: boolean;
     dataset_view?: DatasetView | null;
     model?: string;
+    model_revision?: number;
+    model_unavailable_reason?: string | null;
     default_model?: string;
     available_models?: string[];
   }>(`/api/sessions/${encodeURIComponent(id)}/activate`, { method: 'POST', signal });
 }
-export async function updateSessionModel(id: string, model: string) {
-  return json<{ success?: boolean; session_id: string; model: string; available_models?: string[]; default_model?: string }>(`/api/sessions/${encodeURIComponent(id)}/model`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }),
+export async function getSessionModel(id: string) {
+  return json<{ model: string; model_revision: number; model_unavailable_reason?: string | null }>(`/api/sessions/${encodeURIComponent(id)}/model`);
+}
+export async function updateSessionModel(id: string, model: string, modelRevision = 0) {
+  return json<{ success?: boolean; session_id: string; model: string; model_revision?: number; available_models?: string[]; default_model?: string }>(`/api/sessions/${encodeURIComponent(id)}/model`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, model_revision: modelRevision }),
   });
 }
 export async function deleteSession(id: string) {
@@ -456,12 +520,12 @@ export function getRunSnapshot(sessionId: string, runId: string, signal?: AbortS
   return json<RunSnapshot>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/snapshot`, { signal });
 }
 
-export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string, regenerateOf?: string, replaceRunId?: string) {
+export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string, regenerateOf?: string, replaceRunId?: string, modelRevision?: number) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
   const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
     method: 'POST', signal, headers,
-    body: JSON.stringify({ message, start_request_id: startRequestId, ...(replaceRunId ? { replace_run_id: replaceRunId } : {}), ...(regenerateOf ? { regenerate: true, regenerate_of: regenerateOf } : {}), attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
+    body: JSON.stringify({ message, model_revision: modelRevision, start_request_id: startRequestId, ...(replaceRunId ? { replace_run_id: replaceRunId } : {}), ...(regenerateOf ? { regenerate: true, regenerate_of: regenerateOf } : {}), attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
   });
   await consumeSseResponse(response, sessionId, handlers);
 }

@@ -21,3 +21,20 @@ def test_directed_preview_preserves_incoming_outgoing_and_parallel_edges():
     a = next(node for node in result['nodes'] if node['id'] == 'a')
     assert (a['in_degree'], a['out_degree'], a['total_degree']) == (2, 3, 5)
     assert result['directed'] and len(result['edges']) == 4
+
+
+def test_explicit_node_visualization_returns_complete_text():
+    text = "complete node text " * 40
+    data = GraphData(
+        num_nodes=1,
+        id2node={0: "node-1"},
+        node2id={"node-1": 0},
+        node_text=[text],
+    )
+    graph = data.to_networkx()
+
+    overview = GraphCompute().visualize_subgraph(graph, data)
+    detail = GraphCompute().visualize_subgraph(graph, data, node_names=["node-1"])
+
+    assert overview["nodes"][0]["attrs"]["text"] == text[:300] + "..."
+    assert detail["nodes"][0]["attrs"]["text"] == text

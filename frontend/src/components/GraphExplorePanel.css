@@ -1,7 +1,7 @@
 .graph-explore { flex-shrink: 0; margin: 8px 12px 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); color: var(--text-primary); font-size: 11px; }
 .graph-explore-tabs { display: flex; gap: 6px; }
-.graph-explore-tabs button, .graph-result-controls button { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-secondary); font-size: 11px; }
-.graph-explore-tabs button[aria-pressed="true"], .graph-result-controls button[aria-pressed="true"] { color: var(--accent-strong); background: var(--accent-soft); border-color: var(--accent-border); }
+.graph-explore-tabs button { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-secondary); font-size: 11px; }
+.graph-explore-tabs button[aria-pressed="true"] { color: var(--accent-strong); background: var(--accent-soft); border-color: var(--accent-border); }
 .graph-explore p { margin: 8px 0; color: var(--text-secondary); line-height: 1.5; }
 .graph-explore form { display: grid; gap: 8px; }
 .graph-explore-question, .graph-path-endpoints label { display: grid; gap: 5px; min-width: 0; }
@@ -12,6 +12,4 @@
 .graph-path-weight { display: flex; align-items: center; gap: 5px; }
 .graph-path-weight input { accent-color: var(--accent); }
 .graph-explore-submit { justify-self: start; border-radius: 6px; padding: 7px 10px; background: var(--accent-solid); color: #fff; font-size: 11px; }
-.graph-explore button:disabled, .graph-result-controls button:disabled { cursor: not-allowed; opacity: .55; }
-.graph-result-controls { flex-shrink: 0; margin: 8px 12px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 11px; }
-.graph-result-controls select { max-width: 180px; padding: 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-primary); background: var(--surface); font-size: 11px; }
+.graph-explore button:disabled { cursor: not-allowed; opacity: .55; }

@@ -11,20 +11,38 @@ import { highlightNodeIds } from '../graphExploration';
 type Props = {
   active: boolean; schema?: boolean; preview: GraphPreview; directed?: boolean; highlights: Highlight[]; communities: Map<string, string>;
   selected: Record<string, unknown> | null; onSelect: (node: Record<string, unknown> | null) => void;
-  layout: 'force' | 'radial' | 'circle'; layoutVersion: number; sizeMode: 'degree' | 'uniform';
-  labels: 'auto' | 'all' | 'hidden'; edgeWidth: number; fitVersion: number; focusId: string;
+  layout: 'force' | 'radial' | 'circle'; sizeMode: 'degree' | 'uniform';
+  labels: 'auto' | 'all' | 'hidden'; edgeWidth: number; fitVersion: number; focusId: string; state?: GraphCanvasState;
 };
 type Node = PreviewNode & d3.SimulationNodeDatum;
+export type GraphCanvasState = {
+  camera: d3.ZoomTransform;
+  positions: Map<string, { x: number; y: number }>;
+  topologySignature: string;
+  layout: Props['layout'] | '';
+  appliedFitVersion: number;
+  appliedFocusId: string;
+};
+export function createGraphCanvasState(): GraphCanvasState {
+  return { camera: d3.zoomIdentity, positions: new Map(), topologySignature: '', layout: '', appliedFitVersion: 0, appliedFocusId: '' };
+}
 export function GraphCanvas(props: Props) {
   const { t } = useI18n();
   const ref = useRef<SVGSVGElement>(null);
   const latest = useRef(props); latest.current = props;
   const controller = useRef<{ paint: () => void; fit: () => void; focus: () => void; resizeNodes: () => void }>();
-  const camera = useRef(d3.zoomIdentity);
-  const positions = useRef(new Map<string, { x: number; y: number }>());
+  const localState = useRef<GraphCanvasState>(createGraphCanvasState());
+  const state = props.state || localState.current;
   const marker = `graph-arrow-${useId().replace(/:/g, '')}`;
   // Compare only the bounded preview. Parent chat updates never restart physics.
   const signature = JSON.stringify([props.preview.nodes, props.preview.edges, props.directed, props.schema, props.highlights, [...props.communities]]);
+  // Labels, translations, highlights and colors may rebuild SVG appearance, but
+  // only topology and an explicit layout change are allowed to restart physics.
+  const topologySignature = JSON.stringify([
+    props.preview.nodes.map(node => node.id).sort(),
+    props.preview.edges.map(edge => JSON.stringify([edge.source, edge.target].sort())).sort(),
+    Boolean(props.schema),
+  ]);
   useEffect(() => {
     if (!ref.current || !props.active) return;
     const svg = d3.select(ref.current); svg.selectAll('*').remove();
@@ -33,7 +51,11 @@ export function GraphCanvas(props: Props) {
     let disposed = false, frame = 0, interacted = false, zooming = false, needsPaint = false;
     let hovered = '', dragging = false, lastLabels = 0;
     const p = latest.current;
-    const nodes: Node[] = p.preview.nodes.map(node => ({ ...node, ...positions.current.get(node.id) }));
+    const nodes: Node[] = p.preview.nodes.map(node => ({ ...node, ...state.positions.get(node.id) }));
+    const canResume = state.topologySignature === topologySignature
+      && state.layout === p.layout
+      && nodes.length > 0
+      && nodes.every(node => state.positions.has(node.id));
     const byId = new Map(nodes.map(node => [node.id, node]));
     const maxDegree = p.preview.maxDegree;
     const radius = (n: Node) => latest.current.sizeMode === 'uniform' ? 8 : degreeRadius(n.degree, maxDegree);
@@ -80,7 +102,7 @@ export function GraphCanvas(props: Props) {
       const { labels: mode, selected, preview } = latest.current;
       const focus = hovered || String(selected?.id ?? '');
       const related = neighbors.get(focus);
-      const k = camera.current.k;
+      const k = state.camera.k;
       budget = labelBudget(k, budget, nodes.length);
       const count = mode === 'all' || p.schema ? nodes.length : budget;
       const priority = [...nodes].sort((a, b) => {
@@ -92,7 +114,7 @@ export function GraphCanvas(props: Props) {
         if (mode === 'hidden' && n.id !== focus) continue;
         if (visible.size >= count && n.id !== focus) continue;
         const name = fullName(n), text = n.id === focus ? name : name.length > 18 ? name.slice(0, 17) + '…' : name;
-        const x = (n.x || 0) * k + camera.current.x, y = (n.y || 0) * k + camera.current.y + (radius(n) + 12) * Math.sqrt(k);
+        const x = (n.x || 0) * k + state.camera.x, y = (n.y || 0) * k + state.camera.y + (radius(n) + 12) * Math.sqrt(k);
         const w = Math.min(text.length * 8, 440), padding = visibleLabels.has(n.id) ? 0 : 3;
         const box = [x - w / 2 - padding, y - 11 - padding, x + w / 2 + padding, y + 4 + padding];
         if (mode !== 'all' && n.id !== focus && boxes.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
@@ -134,7 +156,7 @@ export function GraphCanvas(props: Props) {
       if (disposed) return;
       if (!frame) frame = requestAnimationFrame(() => {
         frame = 0;
-        const transform = camera.current.toString();
+        const transform = state.camera.toString();
         if (viewport.attr('transform') !== transform) viewport.attr('transform', transform);
         if (needsPaint) { needsPaint = false; paint(); }
         // Recompute labels while moving, at most 30 times per second. Camera
@@ -151,13 +173,15 @@ export function GraphCanvas(props: Props) {
       })
       .on('zoom', event => {
         if (event.sourceEvent) interacted = true;
-        camera.current = event.transform;
+        state.camera = event.transform;
         scheduleFrame();
       })
       .on('end', () => {
         zooming = false; svg.classed('is-zooming', false); schedulePaint();
       });
-    svg.call(zoom).call(zoom.transform, camera.current).on('dblclick.zoom', null).on('click.clear', event => { if (event.target === ref.current) { hovered = ''; latest.current.onSelect(null); schedulePaint(); } });
+    svg.call(zoom).call(zoom.transform, state.camera).on('dblclick.zoom', null).on('click.clear', event => { if (event.target === ref.current) { hovered = ''; latest.current.onSelect(null); schedulePaint(); } });
+    // Restore the viewport in the same render as the nodes, without an identity-camera frame.
+    viewport.attr('transform', state.camera.toString());
     const simulation = d3.forceSimulation(nodes).alphaDecay(.045).velocityDecay(.45)
       .force('link', d3.forceLink<Node, any>(edges).id(n => n.id).distance(p.schema ? 115 : 65))
       .force('charge', d3.forceManyBody().strength(p.schema ? -300 : -115).distanceMax(550))
@@ -196,8 +220,9 @@ export function GraphCanvas(props: Props) {
       // Reserve enough space for either size mode without restarting physics.
       renderFrame(); paint();
     }
-    function fit() {
+    function fit(manual = true) {
       if (!nodes.length) return;
+      if (manual) interacted = true;
       let x0 = Math.min(...nodes.map(n => (n.x || 0) - radius(n))) - 30, x1 = Math.max(...nodes.map(n => (n.x || 0) + radius(n))) + 30;
       let y0 = Math.min(...nodes.map(n => (n.y || 0) - radius(n))) - 30, y1 = Math.max(...nodes.map(n => (n.y || 0) + radius(n))) + 40;
       // Schema loops and relationship labels extend beyond the node circles.
@@ -213,10 +238,14 @@ export function GraphCanvas(props: Props) {
       svg.call(zoom.transform, d3.zoomIdentity.translate(width / 2 - k * (x0 + x1) / 2, height / 2 - k * (y0 + y1) / 2).scale(k));
     }
     function focus() {
-      const n = byId.get(latest.current.focusId); if (!n) return;
-      const k = Math.max(.8, camera.current.k);
+      const focusId = latest.current.focusId;
+      if (!focusId) { state.appliedFocusId = ''; return; }
+      if (state.appliedFocusId === focusId) return;
+      const n = byId.get(focusId); if (!n) return;
+      const k = Math.max(.8, state.camera.k);
       svg.call(zoom.transform, d3.zoomIdentity.translate(width / 2 - (n.x || 0) * k, height / 2 - (n.y || 0) * k).scale(k));
       interacted = true;
+      state.appliedFocusId = focusId;
     }
     node.on('pointerenter', (_, n) => { if (!dragging && !zooming) { hovered = n.id; schedulePaint(); } })
       .on('pointerleave', () => { if (!dragging && !zooming) { hovered = ''; schedulePaint(); } })
@@ -227,14 +256,23 @@ export function GraphCanvas(props: Props) {
         .on('drag', (event, n) => { if (p.layout !== 'circle') simulation.alphaTarget(.15).restart(); n.fx = n.x = event.x; n.fy = n.y = event.y; renderFrame(); })
         .on('end', (_, n) => { dragging = false; hovered = ''; simulation.alphaTarget(0); n.fx = null; n.fy = null; schedulePaint(); }));
     if (p.layout === 'circle') {
-      nodes.forEach((n, i) => { const angle = i * 2 * Math.PI / Math.max(nodes.length, 1), r = Math.min(width, height) * .34; n.x = width / 2 + Math.cos(angle) * r; n.y = height / 2 + Math.sin(angle) * r; });
+      if (!canResume) nodes.forEach((n, i) => { const angle = i * 2 * Math.PI / Math.max(nodes.length, 1), r = Math.min(width, height) * .34; n.x = width / 2 + Math.cos(angle) * r; n.y = height / 2 + Math.sin(angle) * r; });
       simulation.stop();
     }
-    const fresh = !nodes.some(node => positions.current.has(node.id));
-    simulation.on('tick', renderFrame).on('end', () => { if (!interacted && fresh) fit(); paint(); });
-    simulation.tick(); resizeNodes();
-    if (fresh) fit();
-    if (p.focusId) focus();
+    const fresh = !nodes.some(node => state.positions.has(node.id));
+    state.topologySignature = topologySignature;
+    state.layout = p.layout;
+    if (canResume) {
+      simulation.stop();
+      renderFrame();
+      resizeNodes();
+    } else {
+      simulation.on('tick', renderFrame).on('end', () => { if (!interacted && fresh) fit(false); paint(); });
+      if (p.layout !== 'circle') simulation.tick();
+      resizeNodes();
+      if (fresh) fit(false);
+    }
+    focus();
     controller.current = { paint: schedulePaint, fit, focus, resizeNodes };
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
       width = host.clientWidth || width; height = host.clientHeight || height;
@@ -242,11 +280,15 @@ export function GraphCanvas(props: Props) {
       schedulePaint();
     }); observer?.observe(host);
     return () => { disposed = true; simulation.stop(); observer?.disconnect(); cancelAnimationFrame(frame); svg.on('.zoom', null).on('.clear', null); controller.current = undefined;
-      positions.current = new Map(nodes.map(n => [n.id, { x: n.x || 0, y: n.y || 0 }])); };
-  }, [signature, props.layout, props.layoutVersion, props.active, marker, t]);
+      state.positions = new Map(nodes.map(n => [n.id, { x: n.x || 0, y: n.y || 0 }])); };
+  }, [signature, topologySignature, props.layout, props.active, props.state, marker, t]);
   useEffect(() => { controller.current?.paint(); }, [props.selected, props.labels, props.edgeWidth, props.preview.matches]);
   useEffect(() => { controller.current?.resizeNodes(); }, [props.sizeMode]);
-  useEffect(() => { if (props.fitVersion) controller.current?.fit(); }, [props.fitVersion]);
+  useEffect(() => {
+    if (!controller.current || !props.fitVersion || state.appliedFitVersion === props.fitVersion) return;
+    state.appliedFitVersion = props.fitVersion;
+    controller.current.fit();
+  }, [props.fitVersion, props.active, signature, props.layout, state]);
   useEffect(() => { controller.current?.focus(); }, [props.focusId]);
   return <svg ref={ref} aria-label={props.schema
     ? t('Graph Schema canvas. Drag to pan and use the mouse wheel to zoom.', 'Graph Schema 画布，可拖动平移并使用滚轮缩放')

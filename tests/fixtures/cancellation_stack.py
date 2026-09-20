@@ -40,7 +40,12 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
                 'GRAPH_ENGINE_API_URL': url + '/graph'}
     settings.update(GRAPH_CONSTRUCTION_API_KEY='local-construction-test-only',
                     GRAPH_CONSTRUCTION_BASE_URL=url + '/model/construction/v1',
-                    GRAPH_CONSTRUCTION_RESOLVED_IP='')
+                    GRAPH_CONSTRUCTION_RESOLVED_IP='',
+                    # Catalogue admission checks the deployment endpoint before
+                    # the patched model is constructed. Keep every repetition
+                    # independent of dotenv's one-time module initialization.
+                    QWEN_API_KEY='local-cancellation-test-only',
+                    QWEN_BASE_URL=url + '/model/v1')
     settings['NO_PROXY'] = settings['no_proxy'] = '127.0.0.1,localhost'
     previous_manager = cancel.get_cancellation_manager()
     async with AsyncExitStack() as stack:

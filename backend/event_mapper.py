@@ -241,11 +241,14 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
     if event in {"RunCompleted", "TeamRunCompleted"}:
         run_id = str(common.get("run_id") or "")
         message_id = str(_first_value(variants, "message_id", "messageId") or f"assistant:{run_id}")
+        metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
         return {
             "type": "done",
             "message_id": message_id,
             **({"content": payload["content"]} if isinstance(payload.get("content"), str) else {}),
             "context_usage": payload.get("metrics") or {},
+            "model_snapshot": metadata.get('model_snapshot'),
+            "history_compacted": bool(metadata.get('history_compacted')),
             **common,
         }
     if event in {"RunError", "RunCancelled", "TeamRunError", "TeamRunCancelled", "error"}:
@@ -355,7 +358,7 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     "progress": job.get("detail") if isinstance(job.get("detail"), dict) else {},
                 })
                 if status != "done" and not final_result.get("error"):
-                    final_result["error"] = job.get("message") or f"training job {status}"
+                    final_result["error"] = job.get("error") or job.get("message") or f"training job {status}"
                 rows.append({
                     "type": "tool_result",
                     "tool": "train",
