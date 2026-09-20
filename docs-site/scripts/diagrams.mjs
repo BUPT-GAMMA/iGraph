@@ -7,7 +7,7 @@ export function diagramTitle(name, locale) {
     analysis: tr(locale, '图驱动的数据分析流程', 'Graph-driven data analysis workflow'),
     architecture: tr(locale, '系统架构与调用关系', 'System architecture and request paths'),
     engine: tr(locale, 'Graph Engine 执行路径', 'Graph Engine execution path'),
-    evolution: tr(locale, '自进化构图：候选迭代与经验回流', 'Self-evolving construction: iteration and experience'),
+    evolution: tr(locale, '自进化构图：方案比较与经验复用', 'Self-evolving construction: iteration and experience'),
   }[name];
 }
 
@@ -47,7 +47,7 @@ export function renderDiagram(name, locale, dark = false) {
     ],true);
     shapes += rect(28,148,704,390,color.panel);
     shapes += line('M380 112V128H153V170');
-    shapes += node(48,176,210,160,tr(locale,'智能体编排','Analysis agent'),[
+    shapes += node(48,176,210,160,tr(locale,'智能体组织分析','Analysis agent'),[
       tr(locale,'问题分解 · 技能流程','Analysis plan · Skills'),
       tr(locale,'选择图操作与工具','Choose graph operations'),
       tr(locale,'依据返回证据推进分析','Interpret returned evidence')
@@ -80,7 +80,7 @@ export function renderDiagram(name, locale, dark = false) {
     shapes += wrap(footer,704,12).map((row,i)=>label(28,696+i*18,row,{size:12,fill:color.muted})).join('');
   } else if(name==='architecture') {
     height=568;
-    shapes += label(28,32,tr(locale,'交互与编排','INTERACTION & ORCHESTRATION'),{size:12,weight:600,fill:color.muted});
+    shapes += label(28,32,tr(locale,'交互与任务执行','INTERACTION & ORCHESTRATION'),{size:12,weight:600,fill:color.muted});
     shapes += node(28,56,188,102,'Frontend',[tr(locale,'会话 · 对话 · 图视图','Sessions · Chat · Graph views')]);
     shapes += node(286,56,188,102,'Backend',[tr(locale,'身份 · 权限 · 公共 API','Identity · Access · Public API')]);
     shapes += node(544,56,188,166,'Agent Runtime',['Agno AgentOS',tr(locale,'技能 · 运行 · 审批','Skills · Runs · Approval'),tr(locale,'记忆 · 学习','Memory · Learning')],true);
@@ -126,7 +126,7 @@ export function renderDiagram(name, locale, dark = false) {
     shapes += node(28,24,704,88,tr(locale,'技能层 · graph_construction SKILL.md','Skill layer · graph_construction SKILL.md'),[
       tr(locale,'组织任务步骤、检查数据状态，并协调构图与结果加载','Organize task steps, inspect data state, and coordinate construction and loading')
     ],true);
-    shapes += node(28,132,704,68,tr(locale,'SQL / CSV / TXT → 属性图基线','SQL / CSV / TXT → Baseline property graph'),[
+    shapes += node(28,132,704,68,tr(locale,'关系表或逐行记录 → 初始属性图','Relational tables or line records → Baseline property graph'),[
       tr(locale,'保留记录、主外键与类型语义；固定本轮评测查询集','Preserve records, keys, and types; fix the evaluation workload for this run')
     ]);
     shapes += line('M380 200V218');
@@ -187,7 +187,7 @@ export function renderDiagram(name, locale, dark = false) {
     shapes += label(585,242,tr(locale,'经验用于下一轮构图','Reuse in the next construction run'),{size:locale==='zh'?12:10,fill:color.teal});
 
     shapes += label(28,1060,tr(locale,'实线圆环：本轮候选迭代','Solid circle: candidate iteration'),{size:12,fill:color.accent});
-    shapes += label(386,1060,tr(locale,'虚线回流：跨任务经验复用','Dashed return: cross-run experience'),{size:12,fill:color.teal});
+    shapes += label(386,1060,tr(locale,'虚线：后续任务复用经验','Dashed return: cross-run experience'),{size:12,fill:color.teal});
   } else throw new Error(`Unknown diagram: ${name}`);
   const description = name === 'analysis'
     ? tr(locale,'从用户问题和数据上下文出发，智能体组织图操作，Graph Engine在会话活动图上执行查询、算法和学习。返回的结构证据用于检查结果、调整下一步，并形成有依据的分析与报告。','Starting from the user question and data context, the agent organizes graph operations. Graph Engine executes queries, algorithms, and learning on the active session graph. Returned structural evidence supports result checks, further analysis, and findings with supporting reports.')

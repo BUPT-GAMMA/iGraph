@@ -6,8 +6,8 @@
     "en": "Graph tool reference"
   },
   "description": {
-    "zh": "图驱动分析的工具层：61 个 Graph Engine 目录工具与 3 个 MCP 会话管理接口，按数据准备、结构分析、机器学习和结果表达分类，提供参数、返回与调用边界。",
-    "en": "The tool layer for graph-driven analysis: 61 Graph Engine catalog tools and 3 MCP session-management interfaces, covering data preparation, structural analysis, machine learning, and result presentation, with parameters, outputs, and calling constraints."
+    "zh": "图驱动分析的工具层：72 个 Graph Engine 目录工具与 3 个 MCP 会话管理接口，按数据准备、结构分析、机器学习和结果表达分类，提供参数、返回与调用边界。",
+    "en": "The tool layer for graph-driven analysis: 72 Graph Engine catalog tools and 3 MCP session-management interfaces, covering data preparation, structural analysis, machine learning, and result presentation, with parameters, outputs, and calling constraints."
   },
   "sections": [
     {
@@ -27,8 +27,8 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "工具使用固定英文名称和 JSON 参数。本页完整覆盖 Graph Engine 默认目录的 61 项工具，并单列 MCP 的 3 项会话管理接口。原生运行时通过 MCP 发现工具，参数名与枚举值不随界面语言变化；报告工具可由部署配置关闭。",
-            "en": "Tools use fixed English names and JSON arguments. This page covers all 61 tools in the default Graph Engine catalog and separately lists 3 MCP session-management interfaces. The native runtime discovers tools through MCP; parameter names and enum values are language-independent. Reporting can be disabled by deployment configuration."
+            "zh": "工具使用固定英文名称和 JSON 参数。本页完整覆盖 Graph Engine 默认目录的 72 项工具，并单列 MCP 的 3 项会话管理接口。原生运行时通过 MCP 发现工具，参数名与枚举值不随界面语言变化；报告工具可由部署配置关闭。",
+            "en": "Tools use fixed English names and JSON arguments. This page covers all 72 tools in the default Graph Engine catalog and separately lists 3 MCP session-management interfaces. The native runtime discovers tools through MCP; parameter names and enum values are language-independent. Reporting can be disabled by deployment configuration."
           }
         },
         {
@@ -80,8 +80,8 @@
                 "en": "Background work"
               },
               {
-                "zh": "async=true 时保留 job_id。get_job_status 返回 {success,job,progress_updates}，完成结果位于 job.result；只有明确的最终状态才能确认执行结束。",
-                "en": "When async=true, retain job_id. get_job_status returns {success,job,progress_updates}, with completed output in job.result. Confirm completion using an actual terminal state."
+                "zh": "async=true 时保留 job_id，用 get_job_status 查状态。普通完成结果位于 job.result，大图结果通过 get_job_result 获取 summary、preview、artifact_id；明确终态后仍需检查业务结果。",
+                "en": "Retain job_id when async=true and inspect get_job_status. Ordinary final output is job.result; large-graph get_job_result returns summary, preview and artifact_id. After a terminal state, still check the business result."
               }
             ]
           ]
@@ -145,6 +145,13 @@
               }
             }
           ]
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "默认 72 项由 60 项图/系统工具、6 项公开构图工具、5 项图学习工具与 1 项报告工具组成；关闭报告后少一项。Runtime 的技能、用户记忆、经验检索和工作区工具另行注册，不在此计数内。本文核对工具目录与实现，不声称所有算法和参数组合已逐项实测。",
+            "en": "The default 72 comprise 60 graph/system tools, 6 public construction tools, 5 graph-learning tools and 1 reporting tool; disabling reports removes one. Runtime skill, user-memory, learned-knowledge and workspace tools are registered separately. This reference is checked against catalogs and implementation, not a claim that every algorithm and parameter combination has been executed."
+          }
         }
       ]
     },
@@ -232,6 +239,16 @@
                     "en": "false replaces the active graph; true appends ordinary graph data. Append is unsupported when either side is a constructed property graph."
                   },
                   "default": false
+                },
+                {
+                  "name": "directed",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "文本格式自动识别时使用的方向参数，默认 true；结构化图的实际方向仍应读取加载结果。",
+                    "en": "Direction parameter for detected text formats, default true; inspect the loaded structural graph for its actual direction."
+                  },
+                  "default": true
                 }
               ],
               "result": {
@@ -610,6 +627,769 @@
       ]
     },
     {
+      "id": "large-graph",
+      "title": {
+        "zh": "大图分区计算与结果文件",
+        "en": "Partitioned large graphs and artifacts"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "先准备分区版本，等待 published，再核对能力并提交算法。结果摘要与预览保持有界，可下载文件保存完整或有界物化结果；普通活动图和分区表示不能直接互换。",
+            "en": "Prepare a partitioned version, wait for publication, inspect capabilities and submit computation. Summaries and previews remain bounded; downloadable artifacts contain full or bounded materialized output. Ordinary active graphs and partitioned representations are not interchangeable."
+          }
+        },
+        {
+          "type": "tools",
+          "items": [
+            {
+              "name": "prepare_large_graph",
+              "displayName": {
+                "zh": "准备大图分区快照",
+                "en": "Prepare large-graph snapshot"
+              },
+              "description": {
+                "zh": "将注册的边列表或三元组文件流式处理为版本化分区快照，提交持久化后台作业。",
+                "en": "Stream a registered edge-list or triples file into a versioned partitioned snapshot through a persistent background job."
+              },
+              "parameters": [
+                {
+                  "name": "filename",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "已在当前会话注册的上传文件名；内容必须符合 input_format。",
+                    "en": "Upload filename already registered in the current session; content must match input_format."
+                  }
+                },
+                {
+                  "name": "graph_id",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "逻辑图标识；省略时使用当前 session_id。",
+                    "en": "Logical graph ID, defaulting to the current session_id when omitted."
+                  }
+                },
+                {
+                  "name": "graph_version",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "可显式指定至少为 1 的新版本号，不能覆盖已占用版本；省略时由服务分配并校验与普通图版本的绑定。",
+                    "en": "Optional new version of at least 1; cannot overwrite an occupied version. Omission lets the service allocate a version and validate binding with ordinary-graph versions."
+                  }
+                },
+                {
+                  "name": "input_format",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "edgelist 为边列表，triples 为关系三元组；默认 edgelist。",
+                    "en": "edgelist for edge lists or triples for relation triples; default edgelist."
+                  },
+                  "default": "edgelist",
+                  "enum": [
+                    "edgelist",
+                    "triples"
+                  ]
+                },
+                {
+                  "name": "delimiter",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "auto 自动识别，或 whitespace、comma、tab、单字符分隔符。",
+                    "en": "auto detection, whitespace, comma, tab or a single-character delimiter."
+                  },
+                  "default": "auto"
+                },
+                {
+                  "name": "directed",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "是否保留有向语义，默认 true。",
+                    "en": "Whether to use directed semantics; default true."
+                  },
+                  "default": true
+                },
+                {
+                  "name": "partitions",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "分区数量，范围 1–128；省略时按服务端配置和资源计算。",
+                    "en": "Partition count, 1–128; omission uses service configuration and available resources."
+                  }
+                },
+                {
+                  "name": "workers",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "请求的工作进程数，至少 1；实际并行度受分区数、CPU 和资源准入限制。",
+                    "en": "Requested worker count, at least 1; partitions, CPU count and resource admission constrain actual concurrency."
+                  }
+                },
+                {
+                  "name": "quality_policy",
+                  "type": "object",
+                  "required": false,
+                  "description": {
+                    "zh": "显式控制节点规范化、边唯一键、权重冲突、自环和无效记录处理。省略对象与传空对象的默认语义可能不同，见注意事项。",
+                    "en": "Explicit node normalization, edge identity, weight-conflict, self-loop and invalid-record policy. Omitting the object can differ from passing an empty object; see notes."
+                  }
+                },
+                {
+                  "name": "quality_policy.node_normalization",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "exact 保留原名；nfkc_casefold 做 Unicode NFKC 规范化与大小写折叠。",
+                    "en": "exact preserves names; nfkc_casefold applies Unicode NFKC normalization and case folding."
+                  },
+                  "enum": [
+                    "nfkc_casefold",
+                    "exact"
+                  ]
+                },
+                {
+                  "name": "quality_policy.edge_key",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "endpoints 按端点识别逻辑边；endpoints_relation 保留多关系平行边，当前经典算法会拒绝该语义。",
+                    "en": "endpoints identifies logical edges by endpoints; endpoints_relation preserves parallel relation types, which current classical algorithms reject."
+                  },
+                  "default": "endpoints",
+                  "enum": [
+                    "endpoints",
+                    "endpoints_relation"
+                  ]
+                },
+                {
+                  "name": "quality_policy.weight_conflict",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "重复逻辑边取 first/last/max/min 权重或 reject。",
+                    "en": "Use first/last/max/min weight for duplicate logical edges, or reject."
+                  },
+                  "enum": [
+                    "first",
+                    "last",
+                    "max",
+                    "min",
+                    "reject"
+                  ]
+                },
+                {
+                  "name": "quality_policy.self_loops",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "自环保留 allow、跳过 skip 或拒绝 reject。",
+                    "en": "Allow, skip or reject self-loops."
+                  },
+                  "enum": [
+                    "allow",
+                    "skip",
+                    "reject"
+                  ]
+                },
+                {
+                  "name": "quality_policy.invalid_records",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "无效记录跳过 skip 或拒绝 reject。",
+                    "en": "Skip or reject invalid records."
+                  },
+                  "enum": [
+                    "skip",
+                    "reject"
+                  ]
+                }
+              ],
+              "result": {
+                "zh": "提交返回 async=true、job_id、graph_id 与 graph_version；完成结果含质量摘要、规模及 representation=partitioned_snapshot，current_graph_replaced=false。",
+                "en": "Submission returns async=true, job_id, graph_id and graph_version. Completed output includes quality summaries, counts, representation=partitioned_snapshot and current_graph_replaced=false."
+              },
+              "notes": [
+                {
+                  "zh": "无需先构建完整 GraphData 或 NetworkX 图；需要运行中的大图 worker 与足够资源。省略 quality_policy 时，edgelist 默认保留节点原名并采用最后重复边权；triples 默认 nfkc_casefold 与最大权重。传入空对象使用质量策略类的默认值，不能视作完全等同于省略对象。",
+                  "en": "No full GraphData or NetworkX graph is constructed first; a running large-graph worker and sufficient resources are required. Omitting quality_policy uses exact node spelling and last duplicate weight for edgelist, but nfkc_casefold and maximum weight for triples. An empty policy object uses the policy-class defaults and is not equivalent to omission."
+                }
+              ]
+            },
+            {
+              "name": "run_large_graph_algorithm",
+              "displayName": {
+                "zh": "提交大图算法作业",
+                "en": "Run large-graph algorithm"
+              },
+              "description": {
+                "zh": "在已发布的分区快照版本上提交算法；先核对运行时能力，不把名称相同当作与普通图算法完全等价。",
+                "en": "Submit an algorithm against a published partitioned snapshot. Check runtime capabilities; matching names do not establish equivalence to ordinary-graph algorithms."
+              },
+              "parameters": [
+                {
+                  "name": "graph_id",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "逻辑图标识；省略时使用当前 session_id。",
+                    "en": "Logical graph ID, defaulting to the current session_id when omitted."
+                  }
+                },
+                {
+                  "name": "graph_version",
+                  "type": "integer",
+                  "required": true,
+                  "description": {
+                    "zh": "已发布的分区快照版本号，至少为 1。准备阶段可指定新版本，不能覆盖已占用版本。",
+                    "en": "Published partitioned-snapshot version, at least 1. Preparation can reserve a new version but cannot overwrite an occupied version."
+                  }
+                },
+                {
+                  "name": "algorithm",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "选择大图计算入口；子方法与指标放在 parameters 中，先用能力目录核对语义和资源约束。",
+                    "en": "Select a large-graph operation; put submethods and metrics in parameters and inspect capabilities for semantics and resource constraints first."
+                  },
+                  "enum": [
+                    "degree",
+                    "in_degree",
+                    "out_degree",
+                    "degree_centrality",
+                    "shortest_path",
+                    "all_shortest_paths",
+                    "maximum_flow",
+                    "minimum_cut",
+                    "global_minimum_cut",
+                    "minimum_spanning_tree",
+                    "community_detection",
+                    "node_centrality",
+                    "graph_connectivity",
+                    "find_cycles",
+                    "maximum_cycle",
+                    "topological_sort",
+                    "degree_analysis",
+                    "subgraph_extraction",
+                    "link_prediction_score",
+                    "path_analysis",
+                    "clique_analysis",
+                    "reachability",
+                    "global_metrics",
+                    "graph_structure_analysis",
+                    "connectivity_analysis",
+                    "tree_dag_analysis",
+                    "matching_coloring_analysis",
+                    "distance_measures"
+                  ]
+                },
+                {
+                  "name": "parameters",
+                  "type": "object",
+                  "required": false,
+                  "description": {
+                    "zh": "按算法提供端点、method/metric、预览和资源选项；点号参数在实际 JSON 中嵌套发送。条件必填项见下文，不能跨算法混用选择器。",
+                    "en": "Algorithm-specific endpoints, method/metric, preview and resource options. Send dotted parameters as nested JSON. Observe the conditional requirements below rather than mixing selectors across algorithms."
+                  }
+                },
+                {
+                  "name": "workers",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "请求的工作进程数，至少 1；实际并行度受分区数、CPU 和资源准入限制。",
+                    "en": "Requested worker count, at least 1; partitions, CPU count and resource admission constrain actual concurrency."
+                  }
+                },
+                {
+                  "name": "parameters.source",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "起点；与 target 或流/割的 sink 配合。",
+                    "en": "Source node, paired with target or flow/cut sink."
+                  }
+                },
+                {
+                  "name": "parameters.target",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "终点；shortest_path 可用 all 生成源点距离结果文件。",
+                    "en": "Target node; shortest_path accepts all to generate a source-distance artifact."
+                  }
+                },
+                {
+                  "name": "parameters.sink",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "maximum_flow/minimum_cut 的汇点。",
+                    "en": "Sink for maximum_flow/minimum_cut."
+                  }
+                },
+                {
+                  "name": "parameters.algorithm",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "路径子模式 default/yen_k_shortest；社区子模式为其余名称，当前均映射到加权同步标签传播近似。",
+                    "en": "Path submode default/yen_k_shortest, or one of the community names; all community names currently map to weighted synchronous label propagation."
+                  },
+                  "enum": [
+                    "default",
+                    "yen_k_shortest",
+                    "louvain",
+                    "greedy_modularity",
+                    "label_propagation",
+                    "label_propagation_asyn",
+                    "leiden",
+                    "girvan_newman",
+                    "asyn_fluidc"
+                  ]
+                },
+                {
+                  "name": "parameters.centrality_type",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "中心性指标；部分方法为采样或明确标记的近似，先查询能力。",
+                    "en": "Centrality metric; some methods use sampling or labeled approximations. Inspect capabilities first."
+                  },
+                  "default": "degree",
+                  "enum": [
+                    "degree",
+                    "betweenness",
+                    "closeness",
+                    "pagerank",
+                    "eigenvector",
+                    "harmonic",
+                    "katz",
+                    "load",
+                    "voterank",
+                    "percolation"
+                  ]
+                },
+                {
+                  "name": "parameters.method",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "与顶层 algorithm 对应的子方法，不同分组的枚举不能混用。",
+                    "en": "Submethod belonging to the top-level algorithm; do not mix families."
+                  },
+                  "enum": [
+                    "ego_graph",
+                    "k_core",
+                    "k_truss",
+                    "k_corona",
+                    "node_subset",
+                    "jaccard",
+                    "adamic_adar",
+                    "resource_allocation",
+                    "preferential_attachment",
+                    "all_simple_paths",
+                    "has_path",
+                    "average_shortest_path_length",
+                    "find_cliques",
+                    "clique_number",
+                    "number_of_cliques",
+                    "transitive_closure",
+                    "descendants",
+                    "ancestors",
+                    "is_tree",
+                    "is_forest",
+                    "is_directed_acyclic_graph",
+                    "bfs_tree",
+                    "dfs_tree",
+                    "lexicographical_topological_sort",
+                    "all_topological_sorts",
+                    "is_at_free",
+                    "check_planarity",
+                    "is_tournament",
+                    "score_sequence",
+                    "is_bipartite",
+                    "weisfeiler_lehman_graph_hash",
+                    "node_connectivity",
+                    "edge_connectivity",
+                    "minimum_node_cut",
+                    "minimum_edge_cut",
+                    "articulation_points",
+                    "bridges",
+                    "local_bridges",
+                    "biconnected_component_edges",
+                    "bridge_components",
+                    "condensation",
+                    "maximum_spanning_tree",
+                    "random_spanning_tree",
+                    "lowest_common_ancestor",
+                    "immediate_dominators",
+                    "dominance_frontiers",
+                    "dag_longest_path",
+                    "dag_longest_path_length",
+                    "antichains",
+                    "is_aperiodic",
+                    "colliders",
+                    "v_structures",
+                    "max_weight_matching",
+                    "min_weight_matching",
+                    "maximal_matching",
+                    "min_edge_cover",
+                    "is_matching",
+                    "greedy_color",
+                    "equitable_color"
+                  ]
+                },
+                {
+                  "name": "parameters.metric",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "global_metrics/distance_measures 的指标选择器。",
+                    "en": "Metric selector for global_metrics/distance_measures."
+                  },
+                  "enum": [
+                    "density",
+                    "diameter",
+                    "radius",
+                    "transitivity",
+                    "average_clustering",
+                    "degree_assortativity",
+                    "center",
+                    "periphery",
+                    "eccentricity",
+                    "wiener_index",
+                    "global_efficiency",
+                    "local_efficiency",
+                    "average_neighbor_degree",
+                    "average_degree_connectivity",
+                    "rich_club_coefficient",
+                    "reciprocity",
+                    "flow_hierarchy",
+                    "barycenter",
+                    "estrada_index",
+                    "girth"
+                  ]
+                },
+                {
+                  "name": "parameters.node",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "ego_graph、descendants/ancestors 必需节点；number_of_cliques 可选指定节点。",
+                    "en": "Required node for ego_graph and descendants/ancestors; optional selected node for number_of_cliques."
+                  }
+                },
+                {
+                  "name": "parameters.nodes",
+                  "type": "array",
+                  "required": false,
+                  "description": {
+                    "zh": "node_subset 的节点名称数组，运行时默认最多 10,000 项，部署可收紧。",
+                    "en": "Node names for node_subset; runtime default maximum 10,000, possibly tightened by deployment."
+                  }
+                },
+                {
+                  "name": "parameters.focus_nodes",
+                  "type": "array",
+                  "required": false,
+                  "description": {
+                    "zh": "本次社区结果中需确认归属的节点名，最多 200 项。",
+                    "en": "Node names whose community membership is requested from this run, at most 200."
+                  }
+                },
+                {
+                  "name": "parameters.k",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "Yen 路径数 1–200（默认 3），或 ego 半径及 core/truss/corona 阈值（默认 2）。",
+                    "en": "Yen path count 1–200 (default 3), or ego radius and core/truss/corona threshold (default 2)."
+                  }
+                },
+                {
+                  "name": "parameters.cutoff",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "all_simple_paths 最大边数，1–10,000，默认 5。",
+                    "en": "all_simple_paths maximum edge count, 1–10,000; default 5."
+                  },
+                  "default": 5
+                },
+                {
+                  "name": "parameters.limit",
+                  "type": "integer | string",
+                  "required": false,
+                  "description": {
+                    "zh": "预览项数 1–200；all 仍映射到 200 条硬上限，完整结果以结果文件及其范围说明为准。",
+                    "en": "Preview count 1–200; all still maps to the hard cap of 200. Consult artifacts and their scope for complete output."
+                  }
+                },
+                {
+                  "name": "parameters.top_k",
+                  "type": "integer | string",
+                  "required": false,
+                  "description": {
+                    "zh": "degree/链接预测前列项数，1–200；all 仍为 200。省略时分别为 20/10。",
+                    "en": "Top degree/link-prediction items, 1–200; all remains 200. Omission defaults to 20/10 respectively."
+                  }
+                },
+                {
+                  "name": "parameters.max_cycles",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "最大环搜索候选数 1–100,000，默认 10,000。",
+                    "en": "Maximum cycle candidates, 1–100,000; default 10,000."
+                  },
+                  "default": 10000
+                },
+                {
+                  "name": "parameters.optimize_by",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "maximum_cycle 按节点数或权重总和选择已搜索的最好环。",
+                    "en": "Select the best searched cycle by length or total weight."
+                  },
+                  "default": "length",
+                  "enum": [
+                    "length",
+                    "weight"
+                  ]
+                },
+                {
+                  "name": "parameters.treat_as_undirected",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "global_minimum_cut 是否把有向输入投影为无向图。",
+                    "en": "Whether global_minimum_cut projects directed input to an undirected graph."
+                  },
+                  "default": true
+                },
+                {
+                  "name": "parameters.max_iterations",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "迭代上限，目录范围 1–2,000；社区实际最多 500 次，默认 5。",
+                    "en": "Iteration limit, schema range 1–2,000; communities allow at most 500, default 5."
+                  },
+                  "default": 5
+                },
+                {
+                  "name": "parameters.sample_sources",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "Brandes 类中心性的采样源点数，最多 10,000；小于总节点数时标记 approximate，部署硬上限不能由 allow_expensive 绕过。",
+                    "en": "Sample sources for Brandes-type centrality, at most 10,000. Below the node count, output is approximate; allow_expensive does not bypass the deployment cap."
+                  }
+                },
+                {
+                  "name": "parameters.damping",
+                  "type": "number",
+                  "required": false,
+                  "description": {
+                    "zh": "PageRank 阻尼系数，必须有限且 0 < damping < 1。",
+                    "en": "PageRank damping, finite and strictly between 0 and 1."
+                  },
+                  "default": 0.85
+                },
+                {
+                  "name": "parameters.alpha",
+                  "type": "number",
+                  "required": false,
+                  "description": {
+                    "zh": "Katz 有限衰减系数，默认 0.1。",
+                    "en": "Finite Katz attenuation, default 0.1."
+                  },
+                  "default": 0.1
+                },
+                {
+                  "name": "parameters.beta",
+                  "type": "number",
+                  "required": false,
+                  "description": {
+                    "zh": "Katz 有限外源偏置，默认 1。",
+                    "en": "Finite Katz exogenous bias, default 1."
+                  },
+                  "default": 1.0
+                },
+                {
+                  "name": "parameters.tolerance",
+                  "type": "number",
+                  "required": false,
+                  "description": {
+                    "zh": "迭代中心性的有限正收敛容差。",
+                    "en": "Finite positive convergence tolerance for iterative centralities."
+                  },
+                  "default": 1e-06
+                },
+                {
+                  "name": "parameters.use_weight",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "shortest_path 是否按边权计算；all_shortest_paths 固定加权，其他算法忽略此参数。",
+                    "en": "Use weights for shortest_path. all_shortest_paths always uses weights; other algorithms ignore this parameter."
+                  },
+                  "default": true
+                },
+                {
+                  "name": "parameters.create_version",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "子图提取默认发布新分区版本，后续显式使用 new_graph_version；不自动替换普通活动图。false 仅生成结果文件。",
+                    "en": "Subgraph extraction publishes a partitioned version by default; explicitly use new_graph_version afterward. It does not replace the ordinary active graph. false produces only an artifact."
+                  },
+                  "default": true
+                },
+                {
+                  "name": "parameters.allow_expensive",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "允许通过部分平方/指数复杂度准入门槛，不会取消内存、采样等硬限制。",
+                    "en": "Allow some quadratic/exponential admission thresholds, without removing hard memory or sampling limits."
+                  },
+                  "default": false
+                },
+                {
+                  "name": "parameters.strict_semantics",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "拒绝大图中的近似语义映射，不自动改为完整 NetworkX 计算。",
+                    "en": "Reject approximate semantic mappings; does not fall back to full NetworkX computation."
+                  },
+                  "default": false
+                }
+              ],
+              "result": {
+                "zh": "返回异步作业句柄；完成后通过 get_job_result 获取 summary、preview 和 artifact_id。精确、近似、有界或混合语义以能力与实际结果为准；完整可物化输出保存在结果文件中。",
+                "en": "Returns an asynchronous job handle. Read summary, preview and artifact_id with get_job_result after completion. Capabilities and output identify exact, approximate, bounded or mixed semantics; full materializable output is stored as artifacts."
+              },
+              "notes": [
+                {
+                  "zh": "路径需 source/target，流/割需 source/sink，方法类需 method，指标类需 metric。LCA 另需 node1/node2，支配关系需 source，均衡着色需 num_colors。参数对象允许扩展字段，但仍由运行时按算法校验；不支持模式或资源不足会明确拒绝。",
+                  "en": "Paths require source/target, flow/cuts source/sink, method families method, and metric families metric. LCA additionally needs node1/node2, dominators source, and equitable coloring num_colors. The parameter object allows extension fields, but runtime validates them per algorithm and explicitly rejects unsupported modes or insufficient resources."
+                }
+              ]
+            },
+            {
+              "name": "list_large_graph_versions",
+              "displayName": {
+                "zh": "列出大图快照版本",
+                "en": "List large-graph versions"
+              },
+              "description": {
+                "zh": "列出当前用户与会话中指定逻辑图的分区版本。",
+                "en": "List partitioned versions of a logical graph in the current user/session scope."
+              },
+              "parameters": [
+                {
+                  "name": "graph_id",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "逻辑图标识；省略时使用当前 session_id。",
+                    "en": "Logical graph ID, defaulting to the current session_id when omitted."
+                  }
+                }
+              ],
+              "result": {
+                "zh": "返回 success、graph_id 和 versions；版本信息包含准备/发布状态与质量摘要。",
+                "en": "Returns success, graph_id and versions, including preparation/publication status and quality summaries."
+              },
+              "notes": [
+                {
+                  "zh": "只有已发布版本可用于算法。该列表不是 list_graph_versions 返回的普通活动图历史，不要仅凭编号假定两个表示已绑定同一数据源。",
+                  "en": "Algorithms require a published version. This list differs from ordinary active-graph history returned by list_graph_versions; matching numbers alone do not establish a shared source."
+                }
+              ]
+            },
+            {
+              "name": "get_large_graph_artifact",
+              "displayName": {
+                "zh": "查看大图结果文件",
+                "en": "Get large-graph artifact"
+              },
+              "description": {
+                "zh": "读取大图结果文件的元数据与可选有界预览，不把完整分区结果放入模型上下文。",
+                "en": "Read artifact metadata and an optional bounded preview without loading full partition results into model context."
+              },
+              "parameters": [
+                {
+                  "name": "artifact_id",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "作业真实返回的结果文件标识；必须属于当前用户和会话。",
+                    "en": "Artifact ID returned by a job, owned by the current user and session."
+                  }
+                },
+                {
+                  "name": "include_preview",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "是否附带有界结果预览，默认 true；不加载完整分区文件。",
+                    "en": "Include a bounded result preview, default true; never loads the full partition files."
+                  },
+                  "default": true
+                }
+              ],
+              "result": {
+                "zh": "返回 success、artifact 和 download_url_template；文件总数、路径/下载序号预览与完整序号范围在 artifact 中。",
+                "en": "Returns success, artifact and download_url_template. artifact includes the file count, bounded path/download-index preview and full index range."
+              },
+              "notes": [
+                {
+                  "zh": "download_url_template 的 {partition} 是扁平结果文件列表的下载序号，不一定等于输入分区编号。经 Backend 的 /api/sessions/{session_id}/large-graph/artifacts/{artifact_id}/partitions/{partition} 逐文件下载，仍须用户与会话鉴权。",
+                  "en": "{partition} in download_url_template indexes the flattened result-file list and need not equal an input partition ID. Download files individually through Backend /api/sessions/{session_id}/large-graph/artifacts/{artifact_id}/partitions/{partition}, with user/session authorization."
+                }
+              ]
+            },
+            {
+              "name": "get_large_graph_capabilities",
+              "displayName": {
+                "zh": "查询大图运行能力",
+                "en": "Get large-graph capabilities"
+              },
+              "description": {
+                "zh": "读取当前大图引擎支持的操作、子模式、语义与资源约束。",
+                "en": "Read operations, submodes, semantics and resource constraints supported by the current large-graph engine."
+              },
+              "parameters": [],
+              "result": {
+                "zh": "返回 success 与 capabilities，包含引擎版本、精确/近似/有界语义、复杂度、并行策略和结果类型。",
+                "en": "Returns success and capabilities, including engine version, exact/approximate/bounded semantics, complexity, parallel strategy and result types."
+              },
+              "notes": [
+                {
+                  "zh": "目录表示实现契约和适用条件，不代表每个方法都已在当前数据上运行成功。社区名称当前映射为加权同步标签传播近似，部分中心性也有采样或近似映射；严格比较前设置 strict_semantics 并核对实际结果。",
+                  "en": "The catalog describes implementation contracts and prerequisites, not successful execution of every method on the current data. Community names currently map to weighted synchronous label propagation, and some centralities use sampling or approximations. For strict comparisons, set strict_semantics and inspect actual output."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "entity-inspection",
       "title": {
         "zh": "图概览与实体检索",
@@ -634,7 +1414,7 @@
               },
               "parameters": [],
               "result": {
-                "zh": "返回图概要、节点与边预览、num_edge_entries、num_unique_edges、semantic_type、storage_type，以及标签、特征与 GraphML readiness。",
+                "zh": "返回图概要、节点与边预览、num_edge_entries、num_unique_edges、semantic_type、storage_type，以及标签、特征与图学习就绪状态。",
                 "en": "Returns a graph summary, node and edge previews, num_edge_entries, num_unique_edges, semantic_type, storage_type, and label, feature and GraphML-readiness information."
               },
               "notes": [
@@ -874,8 +1654,12 @@
               },
               "notes": [
                 {
-                  "zh": "ambiguous=true 时先确认候选。没有可用嵌入模型时，精确名称或有效节点编号仍可匹配；其他文本查询不会获得词法相似度分数，候选主要由结构过滤和排序决定。使用 semantic_enabled 与 retrieval_mode 判断模式。",
+                  "zh": "ambiguous=true 时先确认候选。没有可用语义嵌入服务时，精确名称或有效节点编号仍可匹配；其他文本查询不会获得词法相似度分数，候选主要由结构过滤和排序决定。使用 semantic_enabled 与 retrieval_mode 判断模式。",
                   "en": "Resolve candidates when ambiguous=true. Without an embedding provider, exact names and valid node IDs can still match; other text queries receive no lexical-similarity score, so structural filters and sorting primarily determine candidates. Inspect semantic_enabled and retrieval_mode."
+                },
+                {
+                  "zh": "实体语义检索依赖 Graph Engine 自己的嵌入服务配置：EMBEDDING_PROVIDER 可显式选择 sentence-transformers、openai 或 lexical。默认先尝试本地 Sentence Transformers（需要依赖与模型权重），失败后在存在 OPENAI_API_KEY 时选择 OpenAI，否则使用词法哈希。当前 OpenAI 分支调用固定的 api.openai.com/v1/embeddings；Agent Runtime 的聊天模型或 EMBEDDING_BASE_URL 配置不会自动改写这个地址。词法模式不为实体查询提供语义相似度排序；索引编码失败时也会禁用语义检索，应检查 semantic_enabled 与检索错误信息。 显式选择 openai 时必须提供 OPENAI_API_KEY；显式提供方初始化失败不会执行上述自动选择。首次实体索引会编码全图节点与边文本，远程服务的可达性、延迟和额度也影响可用性。",
+                  "en": "Entity semantic search depends on Graph Engine’s own embedding configuration. EMBEDDING_PROVIDER explicitly selects sentence-transformers, openai or lexical. Automatic selection first tries local Sentence Transformers, requiring its dependency and model weights, then OpenAI when OPENAI_API_KEY is set, and otherwise lexical hashing. The current OpenAI branch calls the fixed api.openai.com/v1/embeddings endpoint; Agent Runtime chat-model or EMBEDDING_BASE_URL settings do not override it. Lexical mode does not provide semantic ranking for entities. Index-encoding failures also disable semantic search; inspect semantic_enabled and retrieval errors. Explicit openai selection requires OPENAI_API_KEY; failure to initialize a forced provider does not run the automatic selection sequence. Initial entity indexing encodes node and edge documents for the entire graph, so remote reachability, latency and quota also affect availability."
                 }
               ],
               "displayName": {
@@ -968,6 +1752,10 @@
                 {
                   "zh": "精确端点定位只返回最后一条关系，无法据此枚举全部平行关系；逐条核对请使用保存属性图中的真实 edge_id。",
                   "en": "Exact endpoints resolve only the last relationship, not every parallel relationship. Use actual edge_id values in the saved attributed graph to inspect individual relationships."
+                },
+                {
+                  "zh": "语义查询使用与 search_node 相同的 Graph Engine 嵌入服务；无可用服务时只保留精确定位、结构过滤与排序能力，rerank 不会调用独立重排模型。",
+                  "en": "Semantic queries use the same Graph Engine embedding provider as search_node. Without an available provider, rely on exact resolution, structural filters and sorting; rerank does not invoke a separate reranking model."
                 }
               ],
               "displayName": {
@@ -1289,8 +2077,8 @@
               },
               "notes": [
                 {
-                  "zh": "平均最短路径以边权作为距离。非连通图选择最大弱连通范围；保留方向的图若仍不可全部互达，算法可能失败。",
-                  "en": "Average shortest paths use weights as distances. Disconnected input selects the largest weakly connected scope; the algorithm can still fail if retained directions prevent mutual reachability."
+                  "zh": "平均最短路径按边权计算。有向图要求整图强连通，否则失败；无向非连通图只计算最大连通分量。该结果不能用来宣称其他分量也可互达。",
+                  "en": "Average shortest paths use weights. Directed input must be strongly connected or the call fails; disconnected undirected input uses its largest component. The result does not establish reachability across other components."
                 }
               ],
               "displayName": {
@@ -1766,6 +2554,422 @@
                 "zh": "分析团结构",
                 "en": "Clique analysis"
               }
+            },
+            {
+              "name": "graph_structure_analysis",
+              "displayName": {
+                "zh": "图结构判定与遍历",
+                "en": "Graph structure and traversal"
+              },
+              "description": {
+                "zh": "检查树、森林、DAG、二部图、平面性及锦标赛结构，或生成遍历树、拓扑序和 WL 哈希。",
+                "en": "Check tree, forest, DAG, bipartite, planar and tournament structure, or return traversal trees, topological orders and WL hashes."
+              },
+              "parameters": [
+                {
+                  "name": "method",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "选择本工具支持的方法；不同方法的前提和附加必填参数见下文。",
+                    "en": "Select a supported method; prerequisites and additional required parameters depend on the method."
+                  },
+                  "enum": [
+                    "is_tree",
+                    "is_forest",
+                    "is_directed_acyclic_graph",
+                    "bfs_tree",
+                    "dfs_tree",
+                    "lexicographical_topological_sort",
+                    "all_topological_sorts",
+                    "is_at_free",
+                    "check_planarity",
+                    "is_tournament",
+                    "score_sequence",
+                    "is_bipartite",
+                    "weisfeiler_lehman_graph_hash"
+                  ]
+                },
+                {
+                  "name": "source",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "BFS/DFS 遍历必填的真实起点名称。",
+                    "en": "Actual source-node name required for BFS/DFS traversal."
+                  }
+                },
+                {
+                  "name": "depth_limit",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "BFS/DFS 最大遍历深度，整数且不小于 0。",
+                    "en": "Maximum BFS/DFS traversal depth, an integer of at least 0."
+                  }
+                },
+                {
+                  "name": "iterations",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "Weisfeiler–Lehman 哈希迭代次数，至少 1，默认 3。",
+                    "en": "Weisfeiler–Lehman hash iterations, at least 1; default 3."
+                  },
+                  "default": 3
+                },
+                {
+                  "name": "limit",
+                  "type": "integer | string",
+                  "required": false,
+                  "description": {
+                    "zh": "列表预览默认 20，正整数最多 200。all 对普通列表可扩大输出，但拓扑序、反链、collider/v-structure 枚举仍保留 200 条硬上限。",
+                    "en": "List previews default to 20; positive integer limits are capped at 200. all can expand ordinary lists, but topological-order, antichain and collider/v-structure enumeration retains a hard cap of 200."
+                  },
+                  "default": 20
+                }
+              ],
+              "result": {
+                "zh": "根据方法返回 value、is_planar、hash、score_sequence、order/orders 或遍历树 edges_preview，附总量与截断信息；不会改变活动图。",
+                "en": "Returns method-specific value, is_planar, hash, score_sequence, order/orders or traversal-tree edges_preview, with applicable totals and truncation. Does not change the active graph."
+              },
+              "notes": [
+                {
+                  "zh": "树/森林、AT-free、二部图和平面性使用无向视图。BFS/DFS 需 source；拓扑排序需 DAG。score_sequence 检查出度序列是否满足锦标赛得分序列条件，不能代替 is_tournament。WL 哈希相同也不是同构证明。",
+                  "en": "Tree/forest, AT-free, bipartite and planarity checks use an undirected view. BFS/DFS require source; topological ordering requires a DAG. score_sequence checks tournament-score-sequence conditions, not whether the input itself is a tournament. Equal WL hashes do not prove isomorphism."
+                },
+                {
+                  "zh": "当前普通图入口不支持多重图，返回 UNSUPPORTED_MULTIGRAPH_OPERATION；大图同名算子有独立能力约束。",
+                  "en": "The ordinary-graph entry rejects multigraphs with UNSUPPORTED_MULTIGRAPH_OPERATION; the corresponding large-graph operation has separate capability constraints."
+                }
+              ]
+            },
+            {
+              "name": "connectivity_analysis",
+              "displayName": {
+                "zh": "连通度、割集与桥",
+                "en": "Connectivity, cuts and bridges"
+              },
+              "description": {
+                "zh": "计算点/边连通度、最小点割/边割、割点、桥、局部桥、双连通分量、桥分量及强连通缩点图。",
+                "en": "Compute node/edge connectivity, minimum node/edge cuts, articulation points, bridges, local bridges, biconnected/bridge components and SCC condensation."
+              },
+              "parameters": [
+                {
+                  "name": "method",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "选择本工具支持的方法；不同方法的前提和附加必填参数见下文。",
+                    "en": "Select a supported method; prerequisites and additional required parameters depend on the method."
+                  },
+                  "enum": [
+                    "node_connectivity",
+                    "edge_connectivity",
+                    "minimum_node_cut",
+                    "minimum_edge_cut",
+                    "articulation_points",
+                    "bridges",
+                    "local_bridges",
+                    "biconnected_component_edges",
+                    "bridge_components",
+                    "condensation"
+                  ]
+                },
+                {
+                  "name": "source",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "局部点/边连通度或割集的起点，与 target 同时提供；二者省略时计算全局值。",
+                    "en": "Source for local node/edge connectivity or cuts; provide with target, or omit both for the global operation."
+                  }
+                },
+                {
+                  "name": "target",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "终点节点的真实名称；局部连通度与割集需与 source 同时提供。",
+                    "en": "Actual target-node name, supplied together with source for local connectivity and cuts."
+                  }
+                },
+                {
+                  "name": "limit",
+                  "type": "integer | string",
+                  "required": false,
+                  "description": {
+                    "zh": "列表预览默认 20，正整数最多 200。all 对普通列表可扩大输出，但拓扑序、反链、collider/v-structure 枚举仍保留 200 条硬上限。",
+                    "en": "List previews default to 20; positive integer limits are capped at 200. all can expand ordinary lists, but topological-order, antichain and collider/v-structure enumeration retains a hard cap of 200."
+                  },
+                  "default": 20
+                }
+              ],
+              "result": {
+                "zh": "按方法返回 value、nodes、items、components 或缩点图 nodes/edges；size/count 和 truncated 描述总量与列表范围。",
+                "en": "Returns method-specific value, nodes, items, components or condensation nodes/edges; size/count and truncated describe totals and list scope."
+              },
+              "notes": [
+                {
+                  "zh": "局部连通度/割集同时提供 source 和 target。连通度、割集、割点、桥和双连通类方法使用无向视图；condensation 要求有向图。全局最小点/边割要求非空连通输入，并非前述按权重容量计算的 minimum_cut。",
+                  "en": "Provide source and target together for local connectivity/cuts. Connectivity, cuts, articulation, bridge and biconnected methods use an undirected view; condensation requires a directed graph. Global node/edge cuts require nonempty connected input and differ from capacity-weighted minimum_cut."
+                },
+                {
+                  "zh": "当前普通图入口不支持多重图，返回 UNSUPPORTED_MULTIGRAPH_OPERATION；大图同名算子有独立能力约束。",
+                  "en": "The ordinary-graph entry rejects multigraphs with UNSUPPORTED_MULTIGRAPH_OPERATION; the corresponding large-graph operation has separate capability constraints."
+                }
+              ]
+            },
+            {
+              "name": "tree_dag_analysis",
+              "displayName": {
+                "zh": "树、DAG 与支配关系",
+                "en": "Trees, DAGs and dominators"
+              },
+              "description": {
+                "zh": "查询最大/随机生成树、最近公共祖先、支配关系、DAG 最长路、反链、非周期性与汇聚结构。",
+                "en": "Query maximum/random spanning trees, lowest common ancestors, dominators, DAG longest paths, antichains, aperiodicity and collider structures."
+              },
+              "parameters": [
+                {
+                  "name": "method",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "选择本工具支持的方法；不同方法的前提和附加必填参数见下文。",
+                    "en": "Select a supported method; prerequisites and additional required parameters depend on the method."
+                  },
+                  "enum": [
+                    "maximum_spanning_tree",
+                    "random_spanning_tree",
+                    "lowest_common_ancestor",
+                    "immediate_dominators",
+                    "dominance_frontiers",
+                    "dag_longest_path",
+                    "dag_longest_path_length",
+                    "antichains",
+                    "is_aperiodic",
+                    "colliders",
+                    "v_structures"
+                  ]
+                },
+                {
+                  "name": "source",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "immediate_dominators/dominance_frontiers 必填的真实起点名称。",
+                    "en": "Actual source-node name required for immediate_dominators/dominance_frontiers."
+                  }
+                },
+                {
+                  "name": "node1",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "最近公共祖先查询的第一个节点名。",
+                    "en": "First node name for lowest-common-ancestor queries."
+                  }
+                },
+                {
+                  "name": "node2",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "最近公共祖先查询的第二个节点名。",
+                    "en": "Second node name for lowest-common-ancestor queries."
+                  }
+                },
+                {
+                  "name": "seed",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "随机生成树的随机种子，默认 42。",
+                    "en": "Random-spanning-tree seed, default 42."
+                  },
+                  "default": 42
+                },
+                {
+                  "name": "limit",
+                  "type": "integer | string",
+                  "required": false,
+                  "description": {
+                    "zh": "列表预览默认 20，正整数最多 200。all 对普通列表可扩大输出，但拓扑序、反链、collider/v-structure 枚举仍保留 200 条硬上限。",
+                    "en": "List previews default to 20; positive integer limits are capped at 200. all can expand ordinary lists, but topological-order, antichain and collider/v-structure enumeration retains a hard cap of 200."
+                  },
+                  "default": 20
+                }
+              ],
+              "result": {
+                "zh": "按方法返回 edges/total_weight、ancestor、items、path、value、antichains 或 structures。汇聚结构结果含 count_is_exact；count=null 表示未得到精确总数。",
+                "en": "Returns method-specific edges/total_weight, ancestor, items, path, value, antichains or structures. Collider results include count_is_exact; count=null means no exact total was obtained."
+              },
+              "notes": [
+                {
+                  "zh": "生成树使用连通无向视图；LCA 需 node1/node2，支配关系需 source。DAG 最长路按 weight 计算，拓扑相关方法要求 DAG。is_aperiodic 要求非空强连通有向图；v_structures 排除两个前驱之间已有连接的情形。",
+                  "en": "Spanning trees use a connected undirected view. LCA needs node1/node2; dominators need source. DAG longest paths use weight, and DAG-specific methods require a DAG. is_aperiodic requires a nonempty strongly connected directed graph; v_structures excludes connected predecessor pairs."
+                },
+                {
+                  "zh": "当前普通图入口不支持多重图，返回 UNSUPPORTED_MULTIGRAPH_OPERATION；大图同名算子有独立能力约束。",
+                  "en": "The ordinary-graph entry rejects multigraphs with UNSUPPORTED_MULTIGRAPH_OPERATION; the corresponding large-graph operation has separate capability constraints."
+                }
+              ]
+            },
+            {
+              "name": "matching_coloring_analysis",
+              "displayName": {
+                "zh": "匹配、边覆盖与着色",
+                "en": "Matching, edge covers and coloring"
+              },
+              "description": {
+                "zh": "在无向视图上计算权重匹配、极大匹配、最小边覆盖与着色，或校验给定边集是否构成匹配。",
+                "en": "Compute weighted/maximal matchings, minimum edge covers and coloring on an undirected view, or validate an edge set as a matching."
+              },
+              "parameters": [
+                {
+                  "name": "method",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "选择本工具支持的方法；不同方法的前提和附加必填参数见下文。",
+                    "en": "Select a supported method; prerequisites and additional required parameters depend on the method."
+                  },
+                  "enum": [
+                    "max_weight_matching",
+                    "min_weight_matching",
+                    "maximal_matching",
+                    "min_edge_cover",
+                    "is_matching",
+                    "greedy_color",
+                    "equitable_color"
+                  ]
+                },
+                {
+                  "name": "edges",
+                  "type": "array",
+                  "required": false,
+                  "description": {
+                    "zh": "is_matching 待校验边集，使用二元数组或 {from,to} 对象，端点为真实节点名。",
+                    "en": "Edges to validate with is_matching, as pairs or {from,to} objects containing actual node names."
+                  }
+                },
+                {
+                  "name": "maxcardinality",
+                  "type": "boolean",
+                  "required": false,
+                  "description": {
+                    "zh": "最大权匹配是否先最大化匹配边数，再优化权重；默认 false。",
+                    "en": "For maximum-weight matching, prioritize maximum cardinality before weight; default false."
+                  },
+                  "default": false
+                },
+                {
+                  "name": "strategy",
+                  "type": "string",
+                  "required": false,
+                  "description": {
+                    "zh": "greedy_color 使用的 NetworkX 策略名称，默认 largest_first。",
+                    "en": "NetworkX greedy_color strategy name, default largest_first."
+                  },
+                  "default": "largest_first"
+                },
+                {
+                  "name": "num_colors",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "equitable_color 必填颜色数；运行时要求大于图的最大度。",
+                    "en": "Required color count for equitable_color; must exceed the graph maximum degree at runtime."
+                  }
+                },
+                {
+                  "name": "limit",
+                  "type": "integer | string",
+                  "required": false,
+                  "description": {
+                    "zh": "列表预览默认 20，正整数最多 200。all 对普通列表可扩大输出，但拓扑序、反链、collider/v-structure 枚举仍保留 200 条硬上限。",
+                    "en": "List previews default to 20; positive integer limits are capped at 200. all can expand ordinary lists, but topological-order, antichain and collider/v-structure enumeration retains a hard cap of 200."
+                  },
+                  "default": 20
+                }
+              ],
+              "result": {
+                "zh": "返回 matching 或 edges 及 size/total_weight，匹配校验返回 value，着色返回 coloring 与 num_colors；列表可截断。",
+                "en": "Returns matching or edges with size/total_weight, value for matching validation, or coloring and num_colors. Lists can be truncated."
+              },
+              "notes": [
+                {
+                  "zh": "极大匹配是不能再加入边的匹配，不保证边数最大。最小边覆盖拒绝孤立节点；equitable_color 需要 num_colors 大于最大度。greedy_color 的结果依赖策略，不承诺最少颜色。",
+                  "en": "A maximal matching cannot accept another edge but need not have maximum cardinality. Minimum edge cover rejects isolates; equitable_color requires num_colors above the maximum degree. Greedy coloring depends on strategy and does not guarantee a minimum color count."
+                },
+                {
+                  "zh": "当前普通图入口不支持多重图，返回 UNSUPPORTED_MULTIGRAPH_OPERATION；大图同名算子有独立能力约束。",
+                  "en": "The ordinary-graph entry rejects multigraphs with UNSUPPORTED_MULTIGRAPH_OPERATION; the corresponding large-graph operation has separate capability constraints."
+                }
+              ]
+            },
+            {
+              "name": "distance_measures",
+              "displayName": {
+                "zh": "扩展距离与结构指标",
+                "en": "Extended distance and structural measures"
+              },
+              "description": {
+                "zh": "计算中心、边缘、离心率、Wiener 指数、效率、邻居度、富俱乐部系数、互惠性、流层级、重心、Estrada 指数或围长。",
+                "en": "Compute center, periphery, eccentricity, Wiener index, efficiency, neighbor degree, rich-club coefficient, reciprocity, flow hierarchy, barycenter, Estrada index or girth."
+              },
+              "parameters": [
+                {
+                  "name": "metric",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "选择度量指标，注意其方向、权重和连通分量范围。",
+                    "en": "Select a metric and check its direction, weight and component scope."
+                  },
+                  "enum": [
+                    "center",
+                    "periphery",
+                    "eccentricity",
+                    "wiener_index",
+                    "global_efficiency",
+                    "local_efficiency",
+                    "average_neighbor_degree",
+                    "average_degree_connectivity",
+                    "rich_club_coefficient",
+                    "reciprocity",
+                    "flow_hierarchy",
+                    "barycenter",
+                    "estrada_index",
+                    "girth"
+                  ]
+                },
+                {
+                  "name": "limit",
+                  "type": "integer | string",
+                  "required": false,
+                  "description": {
+                    "zh": "列表预览默认 20，正整数最多 200。all 对普通列表可扩大输出，但拓扑序、反链、collider/v-structure 枚举仍保留 200 条硬上限。",
+                    "en": "List previews default to 20; positive integer limits are capped at 200. all can expand ordinary lists, but topological-order, antichain and collider/v-structure enumeration retains a hard cap of 200."
+                  },
+                  "default": 20
+                }
+              ],
+              "result": {
+                "zh": "标量返回 value；节点集合返回 nodes/count，映射返回 values/count，并附适用的 truncated。无环图 girth 返回 value=null、acyclic=true。",
+                "en": "Scalars return value, node sets return nodes/count, and mappings return values/count with applicable truncated. Acyclic girth returns value=null and acyclic=true."
+              },
+              "notes": [
+                {
+                  "zh": "中心、边缘、离心率、Wiener 指数和重心使用最大无向连通分量；其中重心按 weight，其他四项无权。效率使用无权无向视图，富俱乐部系数 normalized=false。flow_hierarchy 要求有向图并使用权重。",
+                  "en": "Center, periphery, eccentricity, Wiener index and barycenter use the largest undirected component; barycenter is weighted and the other four are unweighted. Efficiency uses an unweighted undirected view; rich-club coefficients use normalized=false. flow_hierarchy requires a directed graph and uses weights."
+                },
+                {
+                  "zh": "当前普通图入口不支持多重图，返回 UNSUPPORTED_MULTIGRAPH_OPERATION；大图同名算子有独立能力约束。",
+                  "en": "The ordinary-graph entry rejects multigraphs with UNSUPPORTED_MULTIGRAPH_OPERATION; the corresponding large-graph operation has separate capability constraints."
+                }
+              ]
             }
           ]
         }
@@ -1909,8 +3113,8 @@
                 }
               ],
               "result": {
-                "zh": "返回 metric 与 value。diameter/radius 使用最大无向连通分量的无权距离。",
-                "en": "Returns metric and value. diameter/radius use unweighted distances in the largest undirected connected component."
+                "zh": "返回 metric、value 与 defined。直径/半径使用最大无向连通分量的无权距离；非有限值表示为 value=null、defined=false。度同配系数无定义时还附原因码和说明。",
+                "en": "Returns metric, value and defined. Diameter/radius use unweighted distances in the largest undirected component. Nonfinite values become value=null and defined=false; undefined assortativity also includes a reason code and explanation."
               },
               "notes": [
                 {
@@ -1977,6 +3181,25 @@
                   "description": {
                     "zh": "结果预览上限，数值最多 200；all 请求完整结果，可能显著增加返回量或枚举成本。",
                     "en": "Preview limit, with numeric values capped at 200. all requests full results and can greatly increase output or enumeration cost."
+                  },
+                  "default": 5
+                },
+                {
+                  "name": "focus_nodes",
+                  "type": "array",
+                  "required": false,
+                  "description": {
+                    "zh": "最多 200 个真实节点名，查询它们在本次社区划分中的归属；未知名称列入 missing_focus_nodes。",
+                    "en": "Up to 200 actual node names whose memberships are returned from this partition; unknown names appear in missing_focus_nodes."
+                  }
+                },
+                {
+                  "name": "max_iterations",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "范围 1–500，默认 5；仅供大图加权同步标签传播使用，普通 NetworkX 社区算法不使用此参数。",
+                    "en": "Range 1–500, default 5; used only by large-graph weighted synchronous label propagation, not ordinary NetworkX community algorithms."
                   },
                   "default": 5
                 }
@@ -2252,7 +3475,7 @@
               },
               "notes": [
                 {
-                  "zh": "文档索引属于当前会话。切换嵌入模型 provider 的维度可能需要重新索引现有文档。",
+                  "zh": "文档索引属于当前会话。切换嵌入服务的向量维度可能需要重新索引现有文档。",
                   "en": "The document index belongs to the current session. Changing embedding dimensionality may require reindexing existing documents."
                 }
               ],
@@ -2342,17 +3565,17 @@
                     "zh": "是否为视图附加社区信息。",
                     "en": "Whether to include community information in the view."
                   },
-                  "default": false
+                  "default": true
                 },
                 {
                   "name": "max_nodes",
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "视图目标节点上限，默认 200。超量时优先保留高亮，再进行邻域扩展。",
-                    "en": "Target node limit for the view, defaulting to 200. Oversized views prioritize highlights, then expand neighborhoods."
+                    "zh": "节点展示上限，目录默认 800；超量时使用确定性的概览选择。引擎省略值可通过 VISUALIZE_MAX_NODES 配置。",
+                    "en": "Display node limit, catalog default 800; oversized inputs use deterministic overview selection. The engine fallback is configurable with VISUALIZE_MAX_NODES."
                   },
-                  "default": 200
+                  "default": 800
                 },
                 {
                   "name": "highlights",
@@ -2370,8 +3593,8 @@
               },
               "notes": [
                 {
-                  "zh": "超量视图优先保留高亮节点，否则从内部度较高的节点开始扩展邻域；同层遍历次序可变。图指标应来自分析工具，不从截断视图反推。",
-                  "en": "Oversized views prioritize highlighted nodes, or start neighborhood expansion from a high internal-degree node. Traversal order within a layer can vary. Obtain metrics from analysis tools rather than inferring them from a truncated view."
+                  "zh": "概览综合高亮、节点类型、社区代表、高度数节点和连接路径；边上限由 VISUALIZE_MAX_EDGES 控制，默认 2,000。检查 truncated、total_nodes/total_edges、overview.required_nodes_truncated；过多高亮也可能截断。图指标应来自分析工具。",
+                  "en": "The overview combines highlights, node types, community representatives, high-degree nodes and connecting paths. VISUALIZE_MAX_EDGES defaults to 2,000. Inspect truncated, total_nodes/total_edges and overview.required_nodes_truncated; excessive highlights can also be truncated. Obtain graph metrics from analysis tools."
                 }
               ],
               "displayName": {
@@ -2478,6 +3701,10 @@
                 {
                   "zh": "报告工具由 MCP_ENABLE_REPORTING_TOOLS 控制，默认启用；设为 0、false、no 或 off 时不向智能体注册。",
                   "en": "Controlled by MCP_ENABLE_REPORTING_TOOLS and enabled by default; 0, false, no or off disables agent registration."
+                },
+                {
+                  "zh": "返回 analysis_report.v2 结构以供界面展示，不自动写入 Markdown/PDF 或 Derived。需要可下载文件时，在 Runtime 的 Ephemeral 工作区生成内容，再用 workspace_publish(path=..., name=...) 发布；name 应带正确扩展名。",
+                  "en": "Returns an analysis_report.v2 structure for display; it does not automatically write Markdown/PDF or Derived files. For a download, create content under the Runtime Ephemeral workspace and use workspace_publish(path=..., name=...), with the correct extension in name."
                 }
               ],
               "displayName": {
@@ -2580,7 +3807,7 @@
                 }
               ],
               "result": {
-                "zh": "返回 graph_version、单图规模、split、graph_label、预览与分析 readiness。",
+                "zh": "返回 graph_version、单图规模、split、graph_label、预览与分析就绪状态。",
                 "en": "Returns graph_version, graph counts, split, graph_label, previews and analysis readiness."
               },
               "displayName": {
@@ -2641,8 +3868,8 @@
                   "type": "string",
                   "required": false,
                   "description": {
-                    "zh": "模型名称；GNN 实现提供 GCN、GAT、SAGE，具体可用性由任务和数据约束确定。",
-                    "en": "Model name. GNN implementations include GCN, GAT and SAGE; availability depends on the task and data requirements."
+                    "zh": "骨干网络名称：APPNP / GCN / GAT / GATV2 / GEN / GIN / SAGE / TRANSFORMER。三个监督任务和 GNN 预训练必填，Node2Vec 不要求。",
+                    "en": "Backbone name: APPNP / GCN / GAT / GATV2 / GEN / GIN / SAGE / TRANSFORMER. Required for all three supervised tasks and GNN pretraining, but not Node2Vec."
                   }
                 },
                 {
@@ -2650,8 +3877,8 @@
                   "type": "string",
                   "required": false,
                   "description": {
-                    "zh": "任务对应的训练方法或 pipeline 名称；Node2Vec 预训练使用 node2vec。",
-                    "en": "Task-specific training method or pipeline; use node2vec for Node2Vec pretraining."
+                    "zh": "pretrain 必填：node2vec 或 contrastive_learning、graph_contrastive_learning、mask_autoencoding、graph_mask_autoencoding；后四项共享 GNN 边重构实现。",
+                    "en": "Required for pretrain: node2vec, contrastive_learning, graph_contrastive_learning, mask_autoencoding or graph_mask_autoencoding. The latter four share GNN edge reconstruction."
                   }
                 },
                 {
@@ -2659,8 +3886,8 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "训练使用的会话图版本；省略时由服务端选择。图分类使用已绑定多图数据集。",
-                    "en": "Session graph version for training; the server selects it when omitted. Graph classification uses the bound multi-graph dataset."
+                    "zh": "校验当前活动单图的版本，不会自动加载历史版本；省略时使用活动图。图分类不接受此字段。",
+                    "en": "Checks the active single-graph version; it does not load history automatically. Omission uses the active graph. Graph classification rejects this field."
                   }
                 },
                 {
@@ -2668,7 +3895,7 @@
                   "type": "string",
                   "required": false,
                   "description": {
-                    "zh": "上游已训练模型标识；使用嵌入模型特征时必须提供。",
+                    "zh": "上游已训练模型标识；使用嵌入向量特征时必须提供。",
                     "en": "Upstream trained-model ID; required when using embedding features."
                   }
                 },
@@ -2704,8 +3931,8 @@
                   "type": "string",
                   "required": false,
                   "description": {
-                    "zh": "graph 使用图自身特征；嵌入模型使用上游模型表示，必须提供 upstream_model_id。",
-                    "en": "graph uses graph features; embedding uses an upstream model representation and requires upstream_model_id."
+                    "zh": "graph 使用 node_feat 或回退结构特征；embedding 按名称读取上游 embedding.npy，必须提供 upstream_model_id。图分类只接受 graph。",
+                    "en": "graph uses node_feat or fallback structural features; embedding reads upstream embedding.npy by node name and requires upstream_model_id. Graph classification accepts only graph."
                   },
                   "enum": [
                     "graph",
@@ -2718,8 +3945,8 @@
                   "type": "array",
                   "required": false,
                   "description": {
-                    "zh": "节点分类训练节点子集，使用精确节点名称。",
-                    "en": "Subset of exact node names for node-classification training."
+                    "zh": "限定节点分类的监督候选范围，使用真实节点名；仍需标签及训练/验证掩码或划分，不只表示训练集。",
+                    "en": "Limit the supervised candidate scope for node classification using actual names; labels and train/validation masks or splits still apply. This is not solely the training set."
                   }
                 },
                 {
@@ -2823,8 +4050,8 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "连续多少轮没有足够提升时早停；≤0 关闭早停。",
-                    "en": "Epochs without sufficient improvement before early stopping; ≤0 disables it."
+                    "zh": "监督任务连续多少轮没有足够提升时早停；0 关闭，负数不合法。预训练忽略早停选项。",
+                    "en": "Supervised epochs without sufficient improvement before early stopping; 0 disables it, negative values are invalid. Pretraining ignores early-stopping options."
                   },
                   "default": 0
                 },
@@ -2843,7 +4070,7 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "图分类 mini-batch 的图数量；单图任务忽略此参数。",
+                    "zh": "图分类 小批次 的图数量；单图任务忽略此参数。",
                     "en": "Graphs per mini-batch for graph classification; ignored by single-graph tasks."
                   },
                   "default": 64
@@ -2853,7 +4080,7 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "图分类 DataLoader worker 数，默认 0。",
+                    "zh": "图分类 DataLoader 的数据加载进程数，默认 0。",
                     "en": "Number of graph-classification DataLoader workers, defaulting to 0."
                   },
                   "default": 0
@@ -2888,7 +4115,7 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "图分类中节点类别的嵌入模型维度。",
+                    "zh": "图分类中节点类别嵌入向量的维度。",
                     "en": "Categorical-node embedding dimension for graph classification."
                   },
                   "default": 64
@@ -2898,8 +4125,8 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "输出节点嵌入模型维度。",
-                    "en": "Output node-embedding dimension."
+                    "zh": "节点输出向量维度。目录标注默认 64；实际未传该项时，GNN 跟随 hidden_dim，Node2Vec 使用 128。建议显式填写。",
+                    "en": "Output node-vector dimension. The catalog annotates 64; when actually omitted, GNN training follows hidden_dim and Node2Vec uses 128. Set explicitly to avoid ambiguity."
                   },
                   "default": 64
                 },
@@ -2928,8 +4155,8 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "GAT 注意力头数量，仅 GAT 模型使用。",
-                    "en": "Number of attention heads, used only by GAT."
+                    "zh": "GAT、GATV2 和 TRANSFORMER 的注意力头数，默认 2，使用 concat=False。",
+                    "en": "Attention heads for GAT, GATV2 and TRANSFORMER, default 2 with concat=False."
                   },
                   "default": 2
                 },
@@ -3027,7 +4254,7 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "Node2Vec loader 的 batch size。",
+                    "zh": "Node2Vec 采样加载器的批大小。",
                     "en": "Batch size of the Node2Vec loader."
                   },
                   "default": 128
@@ -3051,6 +4278,26 @@
                     "en": "Node2Vec in/out exploration-bias parameter q."
                   },
                   "default": 1
+                },
+                {
+                  "name": "algo_config.appnp_k",
+                  "type": "integer",
+                  "required": false,
+                  "description": {
+                    "zh": "APPNP 传播迭代次数，至少 1，默认 10。",
+                    "en": "APPNP propagation iterations, at least 1; default 10."
+                  },
+                  "default": 10
+                },
+                {
+                  "name": "algo_config.appnp_alpha",
+                  "type": "number",
+                  "required": false,
+                  "description": {
+                    "zh": "APPNP 返回初始预测的比例，0 < alpha ≤ 1，默认 0.1。",
+                    "en": "APPNP teleport probability to the initial predictions, 0 < alpha ≤ 1; default 0.1."
+                  },
+                  "default": 0.1
                 }
               ],
               "result": {
@@ -3059,7 +4306,7 @@
               },
               "notes": [
                 {
-                  "zh": "图分类必须先加载数据集，并使用固定 split/metric。feature_source=嵌入模型必须提供 upstream_model_id；训练前检查数据 readiness。",
+                  "zh": "图分类必须先加载数据集，并使用固定 split/metric。feature_source=embedding 必须提供 upstream_model_id；训练前检查数据就绪状态。",
                   "en": "Load a dataset before graph classification and use its fixed split/metric. feature_source=embedding requires upstream_model_id; inspect readiness before training."
                 },
                 {
@@ -3069,6 +4316,10 @@
                 {
                   "zh": "MCP 层可以返回后台句柄；原生运行时的 GraphMCPTools 会监控任务并将最终结果交回主智能体。",
                   "en": "The MCP layer can return a background handle; GraphMCPTools in the native runtime monitors the job and delivers its final result to the main agent."
+                },
+                {
+                  "zh": "缺少 node_feat 的单图使用归一化入度、出度、总度与常数特征，原始业务字段不会自动编码。GNN 预训练无独立掩码/增广实现，也不执行早停；Node2Vec 固定 CPU，默认嵌入维度 128，忽略 weight_decay 和早停。",
+                  "en": "Single graphs without node_feat use normalized in-degree, out-degree, total-degree and constant features; business fields are not automatically encoded. GNN pretraining has no separate masking/augmentation implementation or early stopping. Node2Vec runs on CPU, defaults to 128 embedding dimensions and ignores weight_decay and early stopping."
                 }
               ],
               "displayName": {
@@ -3106,8 +4357,8 @@
                   "type": "object",
                   "required": false,
                   "description": {
-                    "zh": "任务输入对象：nodes 选节点，edges 为二元数组列表，source_node/candidate_nodes 做候选预测，graph_indices 选图，split 选择划分；省略时返回评估与少量样例。",
-                    "en": "Task query: nodes selects nodes; edges is a list of pairs; source_node/candidate_nodes predicts candidates; graph_indices selects graphs; split selects a partition. Omit for evaluation and a few samples."
+                    "zh": "nodes 选节点，edges 为节点名二元数组，source_node/candidate_nodes 做候选排序，graph_indices 选图，split 选划分。省略时：节点分类返回评估和样例，链接预测搜索非边候选，图分类读取 test，预训练返回已保存向量的前若干项。",
+                    "en": "nodes selects nodes, edges contains name pairs, source_node/candidate_nodes ranks candidates, graph_indices selects graphs and split selects a partition. Omission gives node-classification evaluation/samples, nonedge candidates for link prediction, test graphs for graph classification, or the first saved embeddings for pretraining."
                   }
                 },
                 {
@@ -3124,7 +4375,7 @@
                   "type": "array",
                   "required": false,
                   "description": {
-                    "zh": "节点分类或嵌入模型查询的精确节点名称列表。",
+                    "zh": "节点分类或嵌入向量查询的精确节点名称列表。",
                     "en": "Exact node names for node classification or embedding lookup."
                   }
                 },
@@ -3203,7 +4454,7 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "图分类推理的 mini-batch 大小。",
+                    "zh": "图分类推理的 小批次 大小。",
                     "en": "Mini-batch size for graph-classification inference."
                   },
                   "default": 128
@@ -3213,8 +4464,8 @@
                   "type": "string",
                   "required": false,
                   "description": {
-                    "zh": "auto 自动选择可用设备；cpu 或 cuda 显式指定计算设备。",
-                    "en": "auto selects an available device; cpu or cuda explicitly selects the computation device."
+                    "zh": "图分类推理的设备选择：auto/cpu/cuda；节点分类与链接预测当前自动选设备，预训练只读保存的向量。",
+                    "en": "Device selection for graph-classification inference: auto/cpu/cuda. Node classification and link prediction currently select automatically; pretraining only reads saved vectors."
                   },
                   "enum": [
                     "auto",
@@ -3318,8 +4569,8 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "链接预测在空 query 下最多评估的非边候选数。",
-                    "en": "Maximum non-edge candidate pairs evaluated for link prediction with an empty query."
+                    "zh": "空 query 链接预测最多保留和评分的非边候选数，默认 200,000；生成阶段仍可能遍历全部节点对，大图建议显式提供候选。",
+                    "en": "Maximum retained and scored nonedge candidates for empty-query link prediction, default 200,000. Generation can still traverse all node pairs; provide explicit candidates on large graphs."
                   },
                   "default": 200000
                 },
@@ -3328,20 +4579,24 @@
                   "type": "integer",
                   "required": false,
                   "description": {
-                    "zh": "预训练/嵌入模型推理未指定 nodes 时的返回条数上限。",
+                    "zh": "预训练向量查询未指定 nodes 时的返回条数上限。",
                     "en": "Result limit for pretraining/embedding inference when nodes is omitted."
                   },
                   "default": 200
                 }
               ],
               "result": {
-                "zh": "返回 evaluation 与预测明细或样例。预测可分页；节点/划分指标按请求集合计算。PCBA 完整任务概率需显式开启。",
-                "en": "Returns evaluation and prediction details or samples. Predictions can be paginated; node/split metrics cover the requested set. Full PCBA task probabilities require explicit opt-in."
+                "zh": "监督任务返回预测明细与相应评估，分页不缩小评估集合；预训练返回 embeddings 数组，每项包含 node 与 embedding。PCBA 默认只展示少量高概率任务。",
+                "en": "Supervised tasks return predictions and applicable evaluation; pagination does not narrow the evaluated set. Pretraining returns an embeddings array of node and embedding entries. PCBA displays only a few high-probability tasks by default."
               },
               "notes": [
                 {
                   "zh": "edges 必须是二元数组列表。预测分页不应被解读为评估只覆盖这一页；PCBA 默认返回少量高概率任务。",
                   "en": "edges must be a list of two-element arrays. Prediction pagination does not mean evaluation covers only that page; PCBA returns a few high-probability tasks by default."
+                },
+                {
+                  "zh": "预训练推理不对新图执行 GNN，只查询训练时保存的 embedding.npy。链接预测的内积解码器对称，候选中可有已存在边，需检查 exists_in_graph。节点分类 query.split 读取原图掩码，不是训练时未保存的随机划分。",
+                  "en": "Pretraining inference queries embedding.npy saved during training rather than running a GNN on a new graph. Link prediction uses a symmetric inner-product decoder; candidates can include existing edges, so inspect exists_in_graph. Node-classification query.split reads original graph masks, not unsaved random training splits."
                 }
               ],
               "displayName": {
@@ -3406,13 +4661,13 @@
                 }
               ],
               "result": {
-                "zh": "返回 success、job 和 progress_updates；job 包含 status、progress、message、detail、result。最终结果在 job.result。",
-                "en": "Returns success, job and progress_updates. job contains status, progress, message, detail and result; the final output is job.result."
+                "zh": "返回 success、job 和 progress_updates。普通作业 job 含状态、进度、detail 与最终 result；大图 job 含 stage、summary、artifact_id 等持久化状态，完整结果摘要使用 get_job_result 读取。",
+                "en": "Returns success, job and progress_updates. Ordinary jobs contain status, progress, detail and final result; large-graph jobs contain persisted stage, summary and artifact_id fields. Use get_job_result for the large-graph result summary."
               },
               "notes": [
                 {
-                  "zh": "传 after_seq 可按游标重复读取进度；不传时采用消费式读取待推送进度。任务完成时从 job.result 读取结果，无独立 get_job_result 工具。",
-                  "en": "Supply after_seq for cursor-based progress replay; omitting it drains pending progress updates. Read completed output from job.result; there is no separate get_job_result tool."
+                  "zh": "普通作业传 after_seq 可按游标读取进度；省略时消费待推送进度。大图作业 progress_updates 为空。普通完成结果可从 job.result 或 get_job_result 读取，大图完成结果使用 get_job_result；两者均需检查终态与业务 success。",
+                  "en": "For ordinary jobs, after_seq replays progress by cursor; omission drains pending updates. Large-graph progress_updates is empty. Read ordinary completed output from job.result or get_job_result, and large-graph output with get_job_result. Check terminal status and business success in either case."
                 }
               ],
               "displayName": {
@@ -3438,8 +4693,8 @@
                 }
               ],
               "result": {
-                "zh": "返回取消请求状态；cancelling 表示正在停止，需等待 cancelled 或其他明确的最终状态确认退出。",
-                "en": "Returns cancellation-request status. cancelling means shutdown is in progress; wait for cancelled or another actual terminal state to confirm exit."
+                "zh": "返回 success 与 job_id，表示取消请求是否被接受；随后用 get_job_status 确认终态。请求成功不能单独证明计算已退出。",
+                "en": "Returns success and job_id indicating acceptance of the cancellation request. Confirm a terminal state with get_job_status; request acceptance alone does not prove computation has exited."
               },
               "notes": [
                 {
@@ -3644,6 +4899,38 @@
                 "zh": "查询 NebulaGraph 最短路径",
                 "en": "Nebula shortest path"
               }
+            },
+            {
+              "name": "get_job_result",
+              "displayName": {
+                "zh": "读取后台作业结果",
+                "en": "Get job result"
+              },
+              "description": {
+                "zh": "读取普通或大图后台作业的状态与结果；大图结果保持为摘要、预览和文件引用。",
+                "en": "Read ordinary or large-graph job status and output; large-graph output remains summaries, previews and artifact references."
+              },
+              "parameters": [
+                {
+                  "name": "job_id",
+                  "type": "string",
+                  "required": true,
+                  "description": {
+                    "zh": "提交后台任务后返回的真实作业 ID，属于当前用户和会话。",
+                    "en": "Actual submitted job ID belonging to the current user and session."
+                  }
+                }
+              ],
+              "result": {
+                "zh": "外层返回 success 与 result。普通终态的 result 含 job_id、status、result、error；大图 result 含 status、graph_id、graph_version、summary、preview、artifact_id、error 等。",
+                "en": "Returns outer success and result. Ordinary terminal result contains job_id, status, result and error; large-graph result includes status, graph_id, graph_version, summary, preview, artifact_id and error."
+              },
+              "notes": [
+                {
+                  "zh": "queued/running 的 success=true 仅表示作业查找成功。确认 status=done 后再检查内层业务结果；failed/cancelled 返回 success=false。未知或无权访问的作业不会返回结果。",
+                  "en": "success=true for queued/running means successful lookup only. Confirm status=done, then inspect the inner business result; failed/cancelled returns success=false. Unknown or inaccessible jobs return no result."
+                }
+              ]
             }
           ]
         }
@@ -4168,8 +5455,8 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "这 3 项由 MCP Server 单独注册，不在 61 项工具目录中。原生 GraphMCPTools 没有过滤它们，工具发现可以取得其数据模式。它们操作 MCP 连接的显式会话绑定；原生 Run 通常通过身份请求头定位业务会话，由宿主服务管理生命周期。",
-            "en": "These 3 interfaces are registered separately by the MCP server and are not part of the 61-tool catalog. Native GraphMCPTools does not filter them, so discovery can obtain their schemas. They operate on explicit MCP connection bindings; native runs normally identify business sessions through headers, with lifecycle managed by the host service."
+            "zh": "这 3 项由 MCP Server 单独注册，不在 72 项工具目录中。原生 GraphMCPTools 没有过滤它们，工具发现可以取得其数据模式。它们操作 MCP 连接的显式会话绑定；原生 Run 通常通过身份请求头定位业务会话，由宿主服务管理生命周期。",
+            "en": "These 3 interfaces are registered separately by the MCP server and are not part of the 72-tool catalog. Native GraphMCPTools does not filter them, so discovery can obtain their schemas. They operate on explicit MCP connection bindings; native runs normally identify business sessions through headers, with lifecycle managed by the host service."
           }
         },
         {
