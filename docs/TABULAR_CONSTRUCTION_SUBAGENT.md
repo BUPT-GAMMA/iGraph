@@ -6,7 +6,7 @@
 
 ## 入口与模块边界
 
-Graph Engine 初始化时通过 `register_builtin_algorithms(store)` 为 `csv`、`sql` 注册 `TabularConstructionSubAgent`，使用原有接口：
+Graph Engine 初始化时通过 `register_builtin_algorithms(store)` 为 `csv`、`sql`、`txt` 注册 `TabularConstructionSubAgent`，使用原有接口：
 
 ```python
 builder(retained_source_path, options) -> {
@@ -28,7 +28,9 @@ builder(retained_source_path, options) -> {
 |---|---|
 | `.csv` | UTF-8／UTF-8 BOM、表头、严格列数检查；`delimiter` 可指定一个分隔字符。原始 CSV 单元格保留为字符串。 |
 | `.sql` | SQLite 兼容的普通表／索引 DDL、字面值 `INSERT`、受支持的 dump 事务标记；也接受以 `.sql` 提交的 SQLite 数据库镜像。 |
-| `.txt` | 保留原来的源文件及能力状态接口；本次没有注册通用文本构图算法。 |
+| `.txt` | `txt_mode="auto"` 自动识别制表符表格，否则逐行保留为 `text` 记录；`lines` 显式按行导入；`entities` 使用 LLM 分块抽取有来源依据的实体关系。 |
+
+TXT 的表格／逐行模式沿用关系数据构图与查询验收。实体模式必须使用 `mode="llm"`，不能同时设置 `delimiter` 或关系型 PK/FK／内联表选项；它校验每条关系的两个实体出现在同一来源分块中，保留分块证据，并检查图文档结构，不运行 SQL 工作负载，也不作“查询正确率 100%”的声明。文本大小、分块数、调用次数和图规模均受预算限制，超限或未抽取到关系时明确失败，不发布半成品。
 
 SQL 不接受任意可执行脚本，不自动把 MySQL、PostgreSQL、Oracle dump 当作 SQLite 执行。视图、触发器、虚拟表、生成／隐藏列及不支持的语句需要事先显式转换为普通物化表。源 SQL 在内存数据库中解析，不连接生产数据库，也不接受由构图 options 指定的数据库连接或额外源文件路径。
 
