@@ -4672,6 +4672,15 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         uid, _ = await construction_grant(request, dataset_id)
         return await run_sync(svc.do_get_constructed_schema, dataset_id, uid)
 
+    @app.get("/construction/{dataset_id}/source-preview")
+    async def construction_source_preview(dataset_id: str, request: Request, delimiter: str = ","):
+        from graph_data_service.source_preview import source_preview
+        _uid, grant = await construction_grant(request, dataset_id)
+        if grant.source is None:
+            raise HTTPException(404, {"code": "source_preview_unavailable", "message": "数据源不可用。"})
+        return await run_sync(source_preview, grant.source.source_path, grant.source.source_filename,
+                              dataset_id, delimiter)
+
     @app.post("/construction/{dataset_id}/preview")
     async def construction_preview(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
         uid, _ = await construction_grant(request, dataset_id)

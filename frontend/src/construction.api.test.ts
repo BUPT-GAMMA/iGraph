@@ -1,11 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, buildDatasetGraph, commitConstruction, getConstructionGraph, getConstructionState, previewConstruction, setUserId } from './api';
+import { ApiError, buildDatasetGraph, commitConstruction, getConstructionGraph, getConstructionSourcePreview, getConstructionState, previewConstruction, setUserId } from './api';
 import type { ConstructionBuildOptions, Dataset } from './types';
 
 const dataset: Dataset = { dataset_id: 'data /1', project_id: null, name: '关系', original_filename: 'data.sql', file_type: 'sql', status: 'source_ready' };
 afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); });
 
 describe('construction API boundaries', () => {
+  it.each([null, 'project /1'])('reads bounded source samples in the right scope with identity and cancellation (%s)', async projectId => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ success: true, tables: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock); setUserId('user-test');
+    const signal = new AbortController().signal;
+    await getConstructionSourcePreview({ ...dataset, project_id: projectId }, signal, '\t');
+    const scope = projectId ? '/api/projects/project%20%2F1/datasets' : '/api/personal-datasets';
+    expect(fetchMock.mock.calls[0][0]).toBe(`${scope}/data%20%2F1/construction/source-preview?delimiter=%09`);
+    expect(fetchMock.mock.calls[0][1].signal).toBe(signal);
+    expect(fetchMock.mock.calls[0][1].headers.get('X-User-ID')).toBe('user-test');
+  });
   it.each([null, 'project /1'])('uses the correct dataset scope (%s), identity, and revision in every operation', async projectId => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ success: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock); setUserId('user-test');

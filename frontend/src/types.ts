@@ -310,6 +310,26 @@ export type ConstructionSourceTable = {
   primary_key: string[];
   foreign_keys: CsvForeignKey[];
 };
+export type ConstructionSourcePreviewTable = ConstructionSourceTable & {
+  sample_rows: Array<Record<string, unknown>>;
+  row_count: number | null;
+  column_descriptions: Record<string, {
+    text: string;
+    source: 'comment' | 'schema' | 'inferred' | 'unavailable';
+  }>;
+  sample_truncated: boolean;
+};
+export type ConstructionSourcePreview = {
+  success: boolean;
+  dataset_id: string;
+  source_type: string;
+  source_filename: string;
+  tables: ConstructionSourcePreviewTable[];
+  text?: { excerpt: string; truncated: boolean; total_lines: number | null };
+  limits: { sample_rows: number; cell_chars: number; text_chars: number };
+  warnings: string[];
+  truncated: boolean;
+};
 export type ConstructionSchema = {
   source_tables?: ConstructionSourceTable[];
   directed?: boolean;
