@@ -1832,8 +1832,8 @@ class GraphDataService:
         fmt_raw, fmt_detail = _detect_text_format_verbose(text)
         session_model = session.llm_model
         from graph_data_service.run_model import resolve_run_gateway
-        if job_context.get() and fmt_raw == 'freetext':
-            classifier = FileFormatPreCheckSubAgent(provider_gateway=await resolve_run_gateway(_NullTraceLogger()))
+        if (job_context.get() or controls_enabled()) and fmt_raw == 'freetext':
+            classifier = FileFormatPreCheckSubAgent(provider_gateway=await resolve_run_gateway(_NullTraceLogger(), session_id, user_id))
         elif session_model:
             session_gateway = self._create_text_graph_provider_gateway(session_model)
             if session_gateway is not None:
@@ -2672,9 +2672,9 @@ class GraphDataService:
         extractor = self._text_graph_extractor
         session_model = session.llm_model
         from graph_data_service.run_model import resolve_run_gateway
-        if job_context.get():
+        if job_context.get() or controls_enabled():
             from graph_engine.extraction import TextGraphExtractionSubAgent
-            call_gateway = await resolve_run_gateway(_NullTraceLogger())
+            call_gateway = await resolve_run_gateway(_NullTraceLogger(), session_id, user_id)
             session_model = call_gateway.model
             extractor = TextGraphExtractionSubAgent(provider_gateway=call_gateway)
         elif session_model:

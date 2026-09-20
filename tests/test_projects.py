@@ -1360,10 +1360,11 @@ def test_chat_locks_response_language_from_original_user_message(client, message
     assert "response_language" not in session_state
 
 
-def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata():
+@pytest.mark.parametrize('legacy_metadata', [None, 'legacy metadata', ['legacy'], 42, {}])
+def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata(legacy_metadata):
     from backend.event_mapper import project_run
     run = {"run_id": "legacy", "status": "completed", "run_input": "question",
-        "content": "answer", "metadata": "legacy metadata",
+        "content": "answer", "metadata": legacy_metadata,
         "events": [
             {"event": "RunContent", "event_index": None, "content": "checking"},
             {"event": "ToolCallStarted", "event_index": "invalid", "tool": {"tool_name": "get_graph_info", "tool_call_id": "call"}},
@@ -1376,6 +1377,46 @@ def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata():
     messages = backend_app._messages_from_runs([run])
     assert [message["content"] for message in messages] == ["question", "answer"]
     assert messages[-1]["regenerate_of"] is None
+    assert messages[-1]['model_snapshot'] is None
+    assert messages[-1]['history_compacted'] is False
+
+
+@pytest.mark.parametrize('event', ['RunCompleted', 'TeamRunCompleted'])
+@pytest.mark.parametrize('metadata', [None, 'legacy metadata', ['legacy'], 42, {},
+    {'model_snapshot': {'config_id': 'model-a'}, 'history_compacted': True}])
+def test_completed_events_accept_legacy_metadata_and_preserve_model_audit(event, metadata):
+    from backend.event_mapper import map_agentos_event
+    result = map_agentos_event({'event': event, 'run_id': 'old', 'content': 'answer', 'metadata': metadata})
+    assert result['type'] == 'done' and result['content'] == 'answer'
+    expected = metadata if isinstance(metadata, dict) else {}
+    assert result['model_snapshot'] == expected.get('model_snapshot')
+    assert result['history_compacted'] == bool(expected.get('history_compacted'))
+
+
+@pytest.mark.parametrize('legacy_metadata', [None, 'legacy metadata', ['legacy'],
+    {'igraph_turn': {'regenerate_of': 'previous-run'}}])
+def test_history_endpoint_merges_model_provenance_with_legacy_metadata(client, monkeypatch, legacy_metadata):
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    FakeServiceClient.runtime_runs[sid] = [{'run_id': 'old', 'status': 'completed',
+        'run_input': 'question', 'content': 'answer', 'metadata': legacy_metadata}]
+    monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'true')
+    original = FakeServiceClient.request
+    async def model_api(self, method, path, **kwargs):
+        if path == '/internal/model-catalog/bootstrap':
+            return {'models': [], 'default_model': ''}
+        if path == f'/internal/sessions/{sid}/model-selection':
+            return {'model': 'model-a', 'model_revision': 1}
+        if path == f'/internal/sessions/{sid}/model-provenance':
+            return {'runs': {'old': {'model_snapshot': {'config_id': 'model-a'}, 'history_compacted': True}}}
+        return await original(self, method, path, **kwargs)
+    monkeypatch.setattr(FakeServiceClient, 'request', model_api)
+    response = client.get(f'/api/sessions/{sid}/messages', headers=headers())
+    assert response.status_code == 200
+    answer = response.json()['messages'][-1]
+    assert answer['content'] == 'answer'
+    assert answer['model_snapshot'] == {'config_id': 'model-a'}
+    assert answer['history_compacted'] is True
+    assert answer['regenerate_of'] == ('previous-run' if isinstance(legacy_metadata, dict) else None)
 
 
 def test_attachment_context_round_trips_tokens_without_stripping_user_markers():

@@ -4,7 +4,7 @@ import { useI18n } from '../i18n';
 import { Icon } from './Icon';
 
 const blank = { display_name: '', upstream_model_id: '', base_url: '', api_key: '', clear_api_key: false,
-  provider: 'openai-compatible', tools: true, vision: false, context_window: 32768, max_output_tokens: 4096 };
+  provider: 'openai-compatible', tools: true, vision: false, context_window: 131072, max_output_tokens: 4096 };
 
 export function ModelManager({ onClose, onUpdated }: { onClose: () => void; onUpdated: (catalog: ModelCatalog) => void }) {
   const { t } = useI18n();
@@ -88,7 +88,7 @@ export function ModelManager({ onClose, onUpdated }: { onClose: () => void; onUp
           <div className="model-editor-grid"><label>{t('Context window (tokens)', '上下文窗口（tokens）')}<input required type="number" min="2048" max="2000000" value={draft.context_window} onChange={event => setDraft({ ...draft, context_window: Number(event.target.value) })} /></label><label>{t('Output limit (tokens)', '输出上限（tokens）')}<input required type="number" min="128" max={draft.context_window - 1} value={draft.max_output_tokens} onChange={event => setDraft({ ...draft, max_output_tokens: Number(event.target.value) })} /></label></div>
           <label className="model-checkbox"><input type="checkbox" checked={draft.tools} onChange={event => setDraft({ ...draft, tools: event.target.checked })} />{t('Supports tool calling (required for graph analysis)', '支持工具调用（图分析必需）')}</label>
           <label className="model-checkbox"><input type="checkbox" checked={draft.vision} onChange={event => setDraft({ ...draft, vision: event.target.checked })} />{t('Supports image input', '支持图片输入')}</label>
-          <p className="model-muted">{t('Use the limits and capabilities documented by your endpoint.', '请按接入服务的实际能力和限制填写。')}</p>
+          <p className="model-muted">{t('Use your endpoint’s actual limits. The complete graph toolset needs a large context window; undersized requests are blocked before sending.', '请填写接口的真实限制。完整图工具集需要较大上下文，容量不足时会在发送前拦截。')}</p>
         </fieldset><div className="model-actions"><button type="button" disabled={busy} onClick={() => setEditing(null)}>{t('Cancel', '取消')}</button><button type="submit" disabled={busy}>{busy ? t('Saving…', '保存中…') : t('Save configuration', '保存配置')}</button></div>
       </form> : <>
         <div className="model-manager-toolbar"><input aria-label={t('Search models', '搜索模型')} placeholder={t('Search models', '搜索模型')} value={query} onChange={event => setQuery(event.target.value)} /><button disabled={busy} onClick={() => edit('new')}><Icon name="plus" size={15} />{t('Add model', '添加模型')}</button></div>

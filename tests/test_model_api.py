@@ -5,6 +5,7 @@ import httpx
 import pytest
 from agno.db.sqlite import SqliteDb
 from agno.session.agent import AgentSession
+from agno.run.agent import RunOutput
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -85,6 +86,40 @@ def test_private_run_resolution_keeps_original_revision_for_paused_resume(api):
     assert response.json()['base_url'] == 'http://localhost:1234/v1'
     catalog.store.acknowledge('alice', 'A', run['run_id'], 1, run_status='completed', terminal_persisted=True, agent_stopped=True, preparation_stopped=True)
     assert client.get(path).status_code == 409
+
+
+def test_pre_run_ingestion_uses_current_session_selection(api):
+    client, catalog = api
+    row = add(client, api_key='session-key')
+    catalog.select('alice', 'A', row['config_id'], 0)
+    response = client.get('/internal/sessions/A/model-config')
+    assert response.status_code == 200
+    assert response.json()['model_id'] == 'local-model'
+    assert client.get('/internal/sessions/A/model-config', headers={'X-User-ID': 'bob'}).status_code == 404
+    catalog.set_enabled('alice', row['config_id'], False, 1)
+    assert client.get('/internal/sessions/A/model-config').json()['detail']['code'] == 'MODEL_DISABLED'
+
+
+def test_user_deletion_removes_configurations_and_credentials(api):
+    client, catalog = api
+    add(client, api_key='removed-secret')
+    response = client.delete('/internal/model-catalog/user/all')
+    assert response.status_code == 200
+    assert catalog.list('alice')['models'] == []
+
+
+def test_provenance_preserves_only_public_per_run_audit_fields(api):
+    client, catalog = api
+    # Locate the route's native DB through its fixture closure is unnecessary:
+    # use a separately owned native run in a small router instance.
+    db = SimpleNamespace(get_session=lambda **kwargs: AgentSession(session_id='A', user_id='alice', agent_id='igraph-agent',
+        runs=[RunOutput(run_id='old', metadata={'model_snapshot': {'config_id': 'A', 'display_name': 'Old A'}, 'internal': 'not-for-client'})]))
+    app = FastAPI(); app.include_router(create_model_router(catalog, db))
+    with TestClient(app) as other:
+        response = other.get('/internal/sessions/A/model-provenance', headers=dict(client.headers))
+    assert response.status_code == 200
+    assert response.json()['runs']['old']['model_snapshot']['display_name'] == 'Old A'
+    assert 'not-for-client' not in response.text
 
 
 def test_connection_test_uses_only_synthetic_input_and_selected_endpoint(api, monkeypatch):

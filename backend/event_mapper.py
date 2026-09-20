@@ -241,13 +241,14 @@ def map_agentos_event(payload: dict[str, Any]) -> dict[str, Any]:
     if event in {"RunCompleted", "TeamRunCompleted"}:
         run_id = str(common.get("run_id") or "")
         message_id = str(_first_value(variants, "message_id", "messageId") or f"assistant:{run_id}")
+        metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
         return {
             "type": "done",
             "message_id": message_id,
             **({"content": payload["content"]} if isinstance(payload.get("content"), str) else {}),
             "context_usage": payload.get("metrics") or {},
-            "model_snapshot": (payload.get('metadata') or {}).get('model_snapshot'),
-            "history_compacted": bool((payload.get('metadata') or {}).get('history_compacted')),
+            "model_snapshot": metadata.get('model_snapshot'),
+            "history_compacted": bool(metadata.get('history_compacted')),
             **common,
         }
     if event in {"RunError", "RunCancelled", "TeamRunError", "TeamRunCancelled", "error"}:

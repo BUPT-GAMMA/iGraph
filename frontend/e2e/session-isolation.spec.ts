@@ -204,7 +204,9 @@ test('graph collections degrade safely and recover when switching back to a sing
   await page.goto('/?session=session-a');
   await expect(page.locator('.graph-canvas svg')).toBeVisible();
   await page.getByRole('tab', { name: '概览' }).click();
-  await expect(page.locator('.stat-grid > div').filter({ hasText: '节点数' }).locator('strong')).toHaveText('2,708');
+  const graphScale = page.getByLabel('图规模', { exact: true });
+  const nodeTotal = graphScale.locator('div').filter({ has: page.getByRole('term').filter({ hasText: /^节点$/ }) }).getByRole('definition');
+  await expect(nodeTotal).toHaveText('2,708');
   await page.getByRole('tab', { name: '图谱', exact: true }).click();
 
   await page.locator('.composer-dataset').click();
