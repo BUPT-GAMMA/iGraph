@@ -471,6 +471,33 @@ describe('GraphWorkspace visualization layers', () => {
     expect(screen.getAllByText('77.3%').length).toBeGreaterThan(0);
   });
 
+  it('shows absent metrics as missing and preserves genuine zero measurements', async () => {
+    listProjectTrainingRunsMock.mockResolvedValue({ training_runs: [{
+      tool: 'train', training_run_id: 'job-1', session_id: 'old', done: true,
+      result: { metrics: { val_acc: null, test_acc: '', train_acc: 0, train_loss: false, best_epoch: null } },
+    }], has_running: false });
+    const { container } = render(<GraphWorkspace data={null} projectId="p" sessionId="new" tab="ML" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('.ml-comparison')).toBeTruthy());
+    const cells = container.querySelectorAll('.ml-comparison tbody td');
+    expect([...cells].slice(-3).map(cell => cell.textContent)).toEqual(['—', '—', '—']);
+    expect(container.querySelectorAll('.ml-metric-grid > div')).toHaveLength(1);
+    expect(container.querySelector('.ml-metric-grid strong')?.textContent).toBe('0.0%');
+    expect(container.querySelectorAll('.ml-table tbody tr')).toHaveLength(1);
+    expect(container.querySelectorAll('.ml-table tbody td')[2].textContent).toBe('—');
+  });
+
+  it('does not draw through gaps in training metrics', () => {
+    const history = [{ epoch: null, train_loss: 5 }, { epoch: 1, train_loss: 1 }, { epoch: 2, train_loss: null }, { epoch: 3, train_loss: .5 }, { epoch: 4, train_loss: 0 }];
+    const { container } = render(<GraphWorkspace data={null} messages={[{ role: 'assistant', content: '', tools: [{ tool: 'train', done: true, history }] }]} tab="ML" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+    expect(container.querySelectorAll('[data-metric="train_loss"] circle')).toHaveLength(3);
+    const lines = container.querySelectorAll('[data-metric="train_loss"] polyline');
+    expect(lines).toHaveLength(1);
+    expect(lines[0].getAttribute('points')?.split(' ')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('tab', { name: '表格' }));
+    expect(container.querySelectorAll('.ml-table tbody tr')).toHaveLength(4);
+    expect(container.querySelectorAll('.ml-table tbody tr')[1].textContent).toContain('—');
+  });
+
   it('updates the current training card from the project job snapshot', async () => {
     listProjectTrainingRunsMock.mockResolvedValue({
       training_runs: [{
