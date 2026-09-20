@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, AsyncIterator, List, Literal, Optional
 
 from agent_runtime.agent.skills.skill_loader import build_skills_system_prompt
 from agent_runtime.agent.tools.core_set import CORE_TOOL_NAMES
+from response_language import build_turn_language_instruction, resolve_response_language
 
 if TYPE_CHECKING:
     from agent_runtime.agent.context.protocol_driver import ProtocolDriver
@@ -32,7 +33,7 @@ _ROLE_PROMPT = """\
 - 理解用户提出的图分析目标；
 - 判断当前是否具备完成分析所需的图数据与任务条件；
 - 在必要时调用工具加载图、检查图状态、执行图分析或图学习相关操作；
-- 基于已有事实、工具结果与图分析结论，向用户给出准确、可解释的中文答复。
+- 基于已有事实、工具结果与图分析结论，向用户给出准确、可解释的答复。
 
 ## 图数据前提
 
@@ -117,7 +118,7 @@ _ROLE_PROMPT = """\
 
 ## 回答风格要求
 
-1. 最终答复必须使用中文。
+1. 最终答复必须遵循本轮动态注入的语言约束。
 2. 优先给出结论，再补充依据、分析说明、注意事项或下一步建议。
 3. 简单问题可直接回答；复杂问题应分层组织，确保逻辑清晰、便于执行。
 4. 根据内容灵活组织表达形式，可使用小标题、分点、编号、表格或总结。
@@ -144,7 +145,7 @@ _ROLE_PROMPT = """\
         - 可选字段：`server`、`call_id`
     - 若需要调用多个工具，应尽量在同一个 `<tool_call>` 中按照实际执行顺序组织输出，以减少不必要的中间轮次。
 
-5. `<answer>` 用于最终回答；内容为普通 Markdown 正文（中文）。
+5. `<answer>` 用于最终回答；内容为遵循本轮语言约束的普通 Markdown 正文。
 """.strip()
 
 _STAGED_MODE_NOTICE = "你当前处于推理模式。每轮都必须先输出 `<think>` 进行规划或反思，并在同一轮继续输出 `<tool_call>` 或 `<answer>`。"
@@ -216,7 +217,7 @@ _ROLE_PROMPT_NATIVE = """\
 - 理解用户提出的图分析目标；
 - 判断当前是否具备完成分析所需的图数据与任务条件；
 - 在必要时调用工具加载图、检查图状态、执行图分析或图学习相关操作；
-- 基于已有事实、工具结果与图分析结论，向用户给出准确、可解释的中文答复。
+- 基于已有事实、工具结果与图分析结论，向用户给出准确、可解释的答复。
 
 ## 图数据前提
 
@@ -301,7 +302,7 @@ _ROLE_PROMPT_NATIVE = """\
 
 ## 回答风格要求
 
-1. 最终答复必须使用中文。
+1. 最终答复必须遵循本轮动态注入的语言约束。
 2. 优先给出结论，再补充依据、分析说明、注意事项或下一步建议。
 3. 简单问题可直接回答；复杂问题应分层组织，确保逻辑清晰、便于执行。
 4. 根据内容灵活组织表达形式，可使用小标题、分点、编号、表格或总结。
@@ -408,6 +409,11 @@ class ContextManager:
             return
         self.messages.insert(0, {"role": "system", "content": prompt})
 
+    def lock_response_language(self, user_input: str) -> str:
+        """Resolve the user's language once and keep it stable for this turn."""
+        self._turn_response_language = resolve_response_language(user_input)
+        return self._turn_response_language
+
     def update_messages(self, new_messages: List[dict]) -> None:
         """用 Agent 执行后返回的最新消息列表替换内部历史。"""
         self.messages = new_messages
@@ -440,7 +446,10 @@ class ContextManager:
             else ""
         )
         mode_prompt = build_mode_system_prompt(self.reasoning_mode, self.protocol)
-        _ = query
+        response_language = getattr(self, "_turn_response_language", None)
+        if response_language is None:
+            response_language = resolve_response_language(query)
+        language_prompt = build_turn_language_instruction(response_language)
         skill_source_tools = visible_tool_specs if visible_tool_specs is not None else tool_specs
         skill_prompt = build_skills_system_prompt(
             skill_source_tools,
@@ -453,6 +462,7 @@ class ContextManager:
             working,
             tool_specs,
             system_prompt=system_prompt,
+            language_prompt=language_prompt,
             memory_prompt=memory_prompt,
             skill_prompt=skill_prompt,
             mode_prompt=mode_prompt,

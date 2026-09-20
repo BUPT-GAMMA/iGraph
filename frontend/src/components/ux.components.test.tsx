@@ -135,6 +135,24 @@ it('shows a temporary copy check only on the copied message', async () => {
   expect(within(assistant).getByRole('button', { name: '复制' })).toBeTruthy();
 });
 
+it('shows the assistant copy action only after the answer is complete', () => {
+  const user: Message = { id: 'u', role: 'user', content: 'Question' };
+  const partial: Message = { id: 'a', role: 'assistant', content: 'Partial answer', streaming: true, run_status: 'streaming' };
+  const props = { ...composer, hasGraph: false, onOpenGraph: noop, interaction: { kind: 'composer' as const } };
+  const { container, rerender } = render(<ChatPane {...props} loading messages={[user, partial]} />);
+  let [userRow, assistantRow] = Array.from(container.querySelectorAll<HTMLElement>('.message-row'));
+  expect(within(userRow).getByRole('button', { name: '复制' })).toBeTruthy();
+  expect(within(assistantRow).queryByRole('button', { name: '复制' })).toBeNull();
+
+  rerender(<ChatPane {...props} messages={[user, { ...partial, streaming: false, run_status: 'awaiting_feedback' }]} />);
+  assistantRow = container.querySelectorAll<HTMLElement>('.message-row')[1];
+  expect(within(assistantRow).queryByRole('button', { name: '复制' })).toBeNull();
+
+  rerender(<ChatPane {...props} messages={[user, { ...partial, streaming: false, run_status: 'completed', content: 'Complete answer' }]} />);
+  assistantRow = container.querySelectorAll<HTMLElement>('.message-row')[1];
+  expect(within(assistantRow).getByRole('button', { name: '复制' })).toBeTruthy();
+});
+
 it('allows retry after a clipboard failure without falsely reporting success', async () => {
   const copy = vi.fn().mockRejectedValueOnce(new Error('Clipboard denied')).mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });

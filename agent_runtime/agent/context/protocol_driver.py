@@ -55,6 +55,7 @@ class ProtocolDriver(ABC):
         tool_specs: List[dict],
         *,
         system_prompt: str,
+        language_prompt: str = "",
         memory_prompt: str = "",
         skill_prompt: str = "",
         mode_prompt: str = "",

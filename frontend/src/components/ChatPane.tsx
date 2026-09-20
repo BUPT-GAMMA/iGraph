@@ -302,6 +302,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
 };
 
 const BOTTOM_THRESHOLD = 48;
+const TERMINAL_MESSAGE_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
@@ -376,6 +377,8 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
         const visibleTools = isLiveAssistant && runTools?.length ? runTools : displayed.tools;
         const visiblePlan = isLiveAssistant && plan ? plan : displayed.plan;
         const isEditing = Boolean(editableKey && editingKey === editableKey && message === latestTurn?.user);
+        const assistantOutputPending = isAssistant && (isLiveAssistant || displayed.streaming === true
+          || Boolean(displayed.run_status && !TERMINAL_MESSAGE_STATUSES.has(displayed.run_status)));
         // Attachment chips sit above the user bubble so they read as separate
         // files rather than as part of the sent text.
         const attachmentChips = displayed.attachments?.length
@@ -403,7 +406,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
               <span>{t(`Version ${versionIndex + 1} / ${versions.length}`, `版本 ${versionIndex + 1} / ${versions.length}`)}</span>
               <button type="button" aria-label={t('Next answer version', '下一个回答版本')} disabled={versionIndex >= versions.length - 1} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex + 1].run_id! }))}>›</button>
             </nav> : null}
-            {displayed.content && !isEditing ? <MessageCopyAction content={displayed.content}
+            {displayed.content && !isEditing && !assistantOutputPending ? <MessageCopyAction content={displayed.content}
               onEdit={editableKey && message === latestTurn?.user ? () => setEditingKey(editableKey) : undefined} /> : null}
           </div>
         </div>;
