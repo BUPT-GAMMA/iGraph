@@ -955,12 +955,15 @@ body { font-size: 14px; }
 .ml-chart-heading span, .ml-chart text { font-size: 10px; }
 .ml-table { font-size: 11px; }
 
-.session-run-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .13); }
-.session-run-dot.reconnecting { background: #d89b28; }
-.session-run-dot.awaiting_feedback { background: #a96ddd; }
-.session-run-dot.submitting_feedback { background: #d18a28; }
-.session-run-dot.detached { background: #7d8790; }
-.session-run-dot.failed { background: #d75a5a; }
+.session-run-indicator { box-sizing: border-box; display: inline-block; border-radius: 50%; }
+.session-run-indicator.is-running { width: 12px; height: 12px; flex: 0 0 12px; border: 2px solid rgba(var(--accent-rgb), .22); border-top-color: var(--accent); border-right-color: var(--accent); animation: session-run-spin .72s linear infinite; }
+.session-run-indicator.is-running.reconnecting, .session-run-indicator.is-running.submitting_feedback { border-top-color: #d18a28; border-right-color: #d18a28; }
+.session-run-indicator.is-running.detached { border-top-color: #7d8790; border-right-color: #7d8790; }
+.session-run-indicator.is-unread, .session-run-indicator.is-static { width: 7px; height: 7px; flex: 0 0 7px; background: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .13); }
+.session-run-indicator.is-static.awaiting_feedback { background: #a96ddd; }
+.session-run-indicator.is-static.failed { background: #d75a5a; }
+@keyframes session-run-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .session-run-indicator.is-running { animation: none; } }
 
 /* Docked panel layout: collapsed sidebars keep their toggle in a stable rail. */
 .app-body,
