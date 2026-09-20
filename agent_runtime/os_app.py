@@ -44,6 +44,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         manager = RunCancellationManager()
         set_cancellation_manager(manager)
         controller = ExecutionController(db, store, manager)
+        controller.model_catalog = catalog
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -172,6 +173,10 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
                         raise ControlError('RUN_NOT_REGISTERED', 404)
                     if row['state']['cancel_status'] != 'none':
                         raise ControlError('RUN_CANCELLED')
+                    snapshot = row['state'].get('model_snapshot')
+                    if snapshot:
+                        request.state.igraph_model_snapshot = snapshot
+                        request.state.igraph_model_config = await asyncio.to_thread(catalog.resolve, uid, snapshot)
                 except ControlError as exc:
                     return JSONResponse({'detail': {'code': exc.code}}, status_code=exc.status)
                 except HTTPException as exc:

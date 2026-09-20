@@ -128,9 +128,8 @@ export class RunRecovery {
     };
     try {
       if (operation === 'start' && start) {
-        if (start.replaceRunId) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation, undefined, start.replaceRunId);
-        else if (start.regenerateOf) await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation, start.regenerateOf);
-        else await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal, shadow.activeRun?.startRequestId || generation);
+        await streamChat(sessionId, start.message, start.attachments, handlers, connection.controller.signal,
+          shadow.activeRun?.startRequestId || generation, start.regenerateOf, start.replaceRunId, shadow.modelRevision ?? 0);
       }
       else if (operation === 'feedback' && feedback && decision && decisionId) await streamFeedback(sessionId, feedback, decision, decisionId, handlers, connection.controller.signal);
       else if (runId) await resumeRun(sessionId, runId, cursor, handlers, connection.controller.signal);

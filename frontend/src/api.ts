@@ -159,13 +159,18 @@ export async function activateSession(id: string, signal?: AbortSignal) {
     has_graph?: boolean;
     dataset_view?: DatasetView | null;
     model?: string;
+    model_revision?: number;
+    model_unavailable_reason?: string | null;
     default_model?: string;
     available_models?: string[];
   }>(`/api/sessions/${encodeURIComponent(id)}/activate`, { method: 'POST', signal });
 }
-export async function updateSessionModel(id: string, model: string) {
-  return json<{ success?: boolean; session_id: string; model: string; available_models?: string[]; default_model?: string }>(`/api/sessions/${encodeURIComponent(id)}/model`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }),
+export async function getSessionModel(id: string) {
+  return json<{ model: string; model_revision: number; model_unavailable_reason?: string | null }>(`/api/sessions/${encodeURIComponent(id)}/model`);
+}
+export async function updateSessionModel(id: string, model: string, modelRevision = 0) {
+  return json<{ success?: boolean; session_id: string; model: string; model_revision?: number; available_models?: string[]; default_model?: string }>(`/api/sessions/${encodeURIComponent(id)}/model`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, model_revision: modelRevision }),
   });
 }
 export async function deleteSession(id: string) {
@@ -462,12 +467,12 @@ export function getRunSnapshot(sessionId: string, runId: string, signal?: AbortS
   return json<RunSnapshot>(`/api/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/snapshot`, { signal });
 }
 
-export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string, regenerateOf?: string, replaceRunId?: string) {
+export async function streamChat(sessionId: string, message: string, attachments: AttachmentRef[], handlers: StreamHandlers, signal: AbortSignal, startRequestId?: string, regenerateOf?: string, replaceRunId?: string, modelRevision?: number) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (SESSION_STATE_V2) headers['X-iGraph-Stream-Version'] = '2';
   const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
     method: 'POST', signal, headers,
-    body: JSON.stringify({ message, start_request_id: startRequestId, ...(replaceRunId ? { replace_run_id: replaceRunId } : {}), ...(regenerateOf ? { regenerate: true, regenerate_of: regenerateOf } : {}), attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
+    body: JSON.stringify({ message, model_revision: modelRevision, start_request_id: startRequestId, ...(replaceRunId ? { replace_run_id: replaceRunId } : {}), ...(regenerateOf ? { regenerate: true, regenerate_of: regenerateOf } : {}), attachments: attachments.length ? attachments : undefined, reasoning_mode: 'direct', planning_mode: 'auto', stream: true, background: true }),
   });
   await consumeSseResponse(response, sessionId, handlers);
 }

@@ -72,6 +72,8 @@ export type SessionViewState = {
   pendingAttachments: DraftAttachment[];
   uploading: boolean;
   model: string;
+  modelRevision?: number;
+  modelUnavailableReason?: string | null;
   activeDatasetId?: string | null;
   error?: string;
   activeRun: SessionRunState | null;
@@ -100,14 +102,14 @@ export type ConversationAction =
   | { type: 'HYDRATE_START'; sessionId: string; requestVersion: number }
   | {
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
-      model: string; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
+      model: string; modelRevision?: number; modelUnavailableReason?: string | null; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
       activeRun?: ActiveRun | null; generation?: string; preserveMessages?: boolean;
       preserveComposer?: boolean;
       control?: RunControl | null;
       datasetView?: DatasetView | null; hasGraph?: boolean;
     }
   | { type: 'HYDRATE_FAILED'; sessionId: string; requestVersion: number; error: string }
-  | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'pendingAttachments' | 'uploading' | 'model' | 'activeDatasetId' | 'error' | 'selectedNode'>> }
+  | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'pendingAttachments' | 'uploading' | 'model' | 'modelRevision' | 'modelUnavailableReason' | 'activeDatasetId' | 'error' | 'selectedNode'>> }
   | { type: 'APPEND_MESSAGES'; sessionId: string; messages: Message[] }
   | { type: 'BEGIN_RUN_PREPARATION'; sessionId: string; generation: string }
   | { type: 'START_PREPARED_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
@@ -862,6 +864,8 @@ export function conversationReducer(state: ConversationState, action: Conversati
         graph: hydratedGraph,
         hydration: 'ready',
         model: action.model,
+        modelRevision: action.modelRevision ?? 0,
+        modelUnavailableReason: action.modelUnavailableReason,
         activeDatasetId: action.activeDatasetId,
         selectedNode: hydratedGraph.status === 'ready' ? view.selectedNode : null,
         activeRun,

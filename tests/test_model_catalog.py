@@ -106,3 +106,87 @@ def test_builtin_is_managed_but_not_deletable(catalog):
     catalog.set_enabled('alice', 'qwen3.6-plus', False, 1)
     catalog.bootstrap('alice', ['qwen3.6-plus'])
     assert catalog.list('alice')['models'][0]['unavailable_reason'] == 'MODEL_DISABLED'
+
+
+def start(catalog, sid='A', key='request', revision=None):
+    return catalog.store.register('alice', sid, key, key,
+        capture_model=lambda conn: catalog.freeze(conn, 'alice', sid, expected_revision=revision))[0]
+
+
+def finish(catalog, run):
+    catalog.store.acknowledge('alice', run['session_id'], run['run_id'], 1,
+        preparation_stopped=True, agent_stopped=True, terminal_persisted=True, run_status='completed')
+
+
+def test_active_run_locks_selection_and_delete_but_not_disable(catalog):
+    model = custom(catalog, api_key='private')
+    cid = model['config_id']
+    catalog.select('alice', 'A', cid, 0)
+    run = start(catalog)
+    with pytest.raises(ControlError, match='RUN_ACTIVE'):
+        catalog.select('alice', 'A', 'qwen3.6-plus', 1)
+    with pytest.raises(ControlError, match='MODEL_IN_USE') as error:
+        catalog.delete('alice', cid, 1)
+    assert error.value.sessions == ['A']
+    catalog.set_enabled('alice', cid, False, 1)
+    assert catalog.resolve('alice', run['state']['model_snapshot'])['api_key'] == 'private'
+    finish(catalog, run)
+    catalog.delete('alice', cid, 2)
+    assert catalog.selection('alice', 'A')['model_unavailable_reason'] == 'MODEL_REMOVED'
+    catalog.select('alice', 'A', 'qwen3.6-plus', 1)
+    assert start(catalog, key='new')['state']['model_snapshot']['config_id'] == 'qwen3.6-plus'
+
+
+@pytest.mark.parametrize('phase', ['preparing', 'running', 'paused', 'cancelled'])
+def test_unfinished_save_or_approval_always_blocks_switch(catalog, phase):
+    model = custom(catalog)
+    run = start(catalog)
+    catalog.store.acknowledge('alice', 'A', run['run_id'], 1, run_status=phase, terminal_persisted=False)
+    with pytest.raises(ControlError, match='RUN_ACTIVE'):
+        catalog.select('alice', 'A', model['config_id'], 0)
+
+
+def test_switch_racing_start_is_atomic(catalog):
+    model = custom(catalog)
+    def choose():
+        try:
+            return catalog.select('alice', 'A', model['config_id'], 0)
+        except ControlError as exc:
+            return exc.code
+    with ThreadPoolExecutor(2) as pool:
+        a, b = pool.submit(start, catalog), pool.submit(choose)
+        run, selection = a.result(), b.result()
+    snapshot = run['state']['model_snapshot']
+    if isinstance(selection, str):
+        assert selection == 'RUN_ACTIVE'
+        assert snapshot['config_id'] == 'qwen3.6-plus'
+    else:
+        assert snapshot['config_id'] == model['config_id']
+
+
+def test_delete_racing_start_never_leaves_dangling_run(catalog):
+    model = custom(catalog)
+    cid = model['config_id']
+    catalog.select('alice', 'A', cid, 0)
+    def operation(fn):
+        try:
+            return fn()
+        except ControlError as exc:
+            return exc.code
+    with ThreadPoolExecutor(2) as pool:
+        a = pool.submit(operation, lambda: start(catalog))
+        b = pool.submit(operation, lambda: catalog.delete('alice', cid, 1))
+        run, deletion = a.result(), b.result()
+    if isinstance(run, str):
+        assert run == 'MODEL_REMOVED'
+        assert catalog.store.active('alice', 'A') is None
+    else:
+        assert deletion == 'MODEL_IN_USE'
+        assert catalog.resolve('alice', run['state']['model_snapshot'])
+
+
+def test_start_with_stale_selection_does_not_run_another_model(catalog):
+    catalog.select('alice', 'A', custom(catalog)['config_id'], 0)
+    with pytest.raises(ControlError, match='MODEL_SELECTION_CHANGED'):
+        start(catalog, revision=0)
+    assert catalog.store.active('alice', 'A') is None

@@ -111,10 +111,12 @@ class ChatReq(BaseModel):
     regenerate_of: str | None = None
     replace_run_id: uuid.UUID | None = None
     start_request_id: uuid.UUID | None = None
+    model_revision: int | None = None
 
 
 class SessionSettingReq(BaseModel):
     model: str | None = None
+    model_revision: int | None = None
     reasoning_mode: Literal["staged", "direct"] | None = None
     planning_mode: Literal["never", "auto", "always"] | None = None
 
@@ -1569,7 +1571,14 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return await runtime.request('GET', f'/internal/sessions/{session_id}/jobs/{job_id}/summary',
                                      headers=forwarded_headers(request, user.user_id))
 
-    def available_models_for(user: UserRecord) -> list[str]:
+    async def model_catalog_for(user: UserRecord) -> dict:
+        return await runtime.request('POST', '/internal/model-catalog/bootstrap', headers=service_headers(user.user_id),
+            json_body={'allowed': user.allowed_models, 'legacy': [asdict(item) for item in custom_models.list(user.user_id)]})
+
+    async def available_models_for(user: UserRecord) -> list[str]:
+        if controls_enabled():
+            catalog = await model_catalog_for(user)
+            return [item['config_id'] for item in catalog['models'] if not item.get('unavailable_reason')]
         custom_ids = [item.model_id for item in custom_models.list(user.user_id)]
         return list(dict.fromkeys([*user.allowed_models, *custom_ids]))
 
@@ -1608,28 +1617,35 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return {"status": "ok", "module": "backend"}
 
     @app.post("/api/auth/validate")
-    def validate(request: Request):
+    async def validate(request: Request):
         user_id = request.headers.get("X-User-ID", "").strip()
         record = users.get(user_id)
         if not record or not record.enabled:
             return {"valid": False, "reason": "user_not_supported" if user_id else "missing_user_id"}
-        models = available_models_for(record)
+        models = await available_models_for(record)
+        default = (await model_catalog_for(record))['default_model'] if controls_enabled() else (models[0] if models else '')
         return {
             "valid": True,
             "user_id": record.user_id,
             "is_admin": "admin" in record.roles,
             "available_models": models,
-            "default_model": models[0] if models else "qwen3.6-plus",
+            "default_model": default,
         }
 
     @app.get("/api/models/custom")
-    def list_custom_models(request: Request):
+    async def list_custom_models(request: Request):
         user = current_user(request, users)
+        if controls_enabled():
+            return {'success': True, 'models': [item for item in (await model_catalog_for(user))['models'] if item['source'] == 'custom']}
         return {"success": True, "models": [public_custom_model(item) for item in custom_models.list(user.user_id)]}
 
     @app.post("/api/models/custom")
     async def save_custom_model(req: CustomModelReq, request: Request):
         user = current_user(request, users)
+        if controls_enabled():
+            await model_catalog_for(user)
+            return await runtime.request('POST', '/internal/model-catalog', headers=service_headers(user.user_id),
+                json_body={**req.model_dump(exclude={'model_id'}), 'upstream_model_id': req.model_id})
         try:
             record = custom_models.save(CustomModelRecord(user_id=user.user_id, **req.model_dump()))
         except ValueError as exc:
@@ -1640,6 +1656,16 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.delete("/api/models/custom/{model_id:path}")
     async def delete_custom_model(model_id: str, request: Request):
         user = current_user(request, users)
+        if controls_enabled():
+            catalog = await model_catalog_for(user)
+            model = next((item for item in catalog['models'] if item['config_id'] == model_id), None)
+            if not model:
+                raise HTTPException(404, {'code': 'MODEL_REMOVED'})
+            from urllib.parse import quote
+            result = await runtime.request('DELETE', '/internal/model-catalog/' + quote(model_id, safe=''),
+                headers=service_headers(user.user_id), params={'revision': model['revision']})
+            custom_models.delete(user.user_id, model_id)
+            return result
         if not custom_models.delete(user.user_id, model_id):
             raise HTTPException(status_code=404, detail="自定义模型不存在")
         await runtime.request(
@@ -1648,6 +1674,41 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user.user_id),
         )
         return {"success": True, "model_id": model_id}
+
+    @app.get('/api/models')
+    async def model_catalog(request: Request):
+        user = current_user(request, users)
+        if not controls_enabled():
+            raise HTTPException(409, {'code': 'MODEL_CONTROLS_REQUIRED'})
+        return await model_catalog_for(user)
+
+    @app.post('/api/models')
+    async def save_model_configuration(req: dict, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        return await runtime.request('POST', '/internal/model-catalog', headers=service_headers(user.user_id), json_body=req)
+
+    @app.patch('/api/models/state')
+    async def update_model_state(req: dict, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        return await runtime.request('PATCH', '/internal/model-catalog/state', headers=service_headers(user.user_id), json_body=req)
+
+    @app.put('/api/models/default')
+    async def update_model_default(req: dict, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        return await runtime.request('PUT', '/internal/model-catalog/default', headers=service_headers(user.user_id), json_body=req)
+
+    @app.delete('/api/models/{config_id:path}')
+    async def delete_model_configuration(config_id: str, revision: int, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        from urllib.parse import quote
+        result = await runtime.request('DELETE', '/internal/model-catalog/' + quote(config_id, safe=''),
+            headers=service_headers(user.user_id), params={'revision': revision})
+        custom_models.delete(user.user_id, config_id)
+        return result
 
     @app.get("/api/admin/users")
     def list_users(request: Request):
@@ -1716,6 +1777,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         pid = _state(payload).get('project_id')
         if pid:
             project_or_404(pid, user_id)
+        if controls_enabled():
+            user = users.get(user_id)
+            if user:
+                await model_catalog_for(user)
+            selection = await runtime.request('GET', f'/internal/sessions/{session_id}/model-selection', headers=service_headers(user_id))
+            payload['session_state'] = {**_state(payload), **selection}
         return payload
 
     async def graph_loaded(session_id: str, request: Request, user_id: str) -> bool:
@@ -3436,7 +3503,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         project_or_404(project_id, user.user_id)
         rows = await user_sessions(request, user.user_id)
-        available_models = available_models_for(user)
+        available_models = await available_models_for(user)
         default_model = available_models[0] if available_models else "qwen3.6-plus"
         sessions = [
             _session_row(session, default_model)
@@ -3686,7 +3753,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         else:
             rows, next_cursor = session_page(await user_sessions(request, user.user_id),
                                             limit=limit, cursor=cursor, activity=_session_activity)
-        available_models = available_models_for(user)
+        available_models = await available_models_for(user)
         default_model = available_models[0] if available_models else "qwen3.6-plus"
         return {"success": True, "sessions": [_session_row(row, default_model) for row in rows],
                 "next_cursor": next_cursor, "has_more": next_cursor is not None}
@@ -3694,8 +3761,9 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.post("/api/sessions")
     async def create_session(req: CreateSessionReq, request: Request):
         user = current_user(request, users)
-        available_models = available_models_for(user)
-        model = req.model or (available_models[0] if available_models else "qwen3.6-plus")
+        available_models = await available_models_for(user)
+        default_model = (await model_catalog_for(user))['default_model'] if controls_enabled() else (available_models[0] if available_models else '')
+        model = req.model or default_model
         if model not in available_models:
             raise HTTPException(status_code=403, detail=f"用户无权使用模型 {model}")
         project = project_or_404(req.project_id, user.user_id) if req.project_id else None
@@ -3876,7 +3944,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "title": str(session.get("session_name") or title),
             "context_usage": {"used_tokens": 0, "limit_tokens": 0, "ratio": 0},
             "available_models": available_models,
-            "default_model": available_models[0] if available_models else selected_model,
+            "default_model": default_model,
+            "model_revision": 0,
         }
 
     @app.post("/api/sessions/{session_id}/activate")
@@ -3923,12 +3992,14 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 else None
             ),
             "provider": state.get("provider", "openai-compatible"),
-            "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
+            "model": state.get("model", ""),
+            "model_revision": state.get("model_revision", 0),
+            "model_unavailable_reason": state.get("model_unavailable_reason"),
             "reasoning_mode": state.get("reasoning_mode", "direct"),
             "planning_mode": state.get("planning_mode", "auto"),
             "context_usage": session.get("metrics") or {},
-            "available_models": available_models_for(user),
-            "default_model": available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus",
+            "available_models": await available_models_for(user),
+            "default_model": (await model_catalog_for(user))['default_model'] if controls_enabled() else '',
         }
 
     @app.get("/api/sessions/{session_id}/messages")
@@ -3977,12 +4048,14 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 else None
             ),
             "provider": state.get("provider", "openai-compatible"),
-            "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
+            "model": state.get("model", ""),
+            "model_revision": state.get("model_revision", 0),
+            "model_unavailable_reason": state.get("model_unavailable_reason"),
             "reasoning_mode": state.get("reasoning_mode", "direct"),
             "planning_mode": state.get("planning_mode", "auto"),
             "context_usage": session.get("metrics") or {},
-            "available_models": available_models_for(user),
-            "default_model": available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus",
+            "available_models": await available_models_for(user),
+            "default_model": (await model_catalog_for(user))['default_model'] if controls_enabled() else '',
         }
 
     @app.get("/api/sessions/{session_id}/context-usage")
@@ -4007,7 +4080,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         session = await get_session(session_id, request, user.user_id)
         state = {**_state(session), **patch}
-        if state.get("model") and state["model"] not in available_models_for(user):
+        if "model" in patch and state.get("model") and state["model"] not in await available_models_for(user):
             raise HTTPException(status_code=403, detail=f"用户无权使用模型 {state['model']}")
         await write_session_state(session_id, session, request, user.user_id, patch)
         if "model" in patch and patch.get("model"):
@@ -4021,9 +4094,24 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
     @app.patch("/api/sessions/{session_id}/model")
     async def set_model(session_id: str, req: SessionSettingReq, request: Request):
+        if controls_enabled():
+            user = current_user(request, users)
+            await get_session(session_id, request, user.user_id)
+            if req.model_revision is None:
+                raise HTTPException(409, {'code': 'MODEL_SELECTION_CHANGED'})
+            result = await runtime.request('PATCH', f'/internal/sessions/{session_id}/model-selection',
+                headers=service_headers(user.user_id), json_body={'model': req.model, 'model_revision': req.model_revision})
+            return {'success': True, 'session_id': session_id, **result, 'available_models': await available_models_for(user)}
         result = await patch_setting(session_id, request, {"model": req.model})
         result["provider"] = "openai-compatible"
         return result
+
+    @app.get('/api/sessions/{session_id}/model')
+    async def session_model(session_id: str, request: Request):
+        user = current_user(request, users)
+        session = await get_session(session_id, request, user.user_id)
+        state = _state(session)
+        return {key: state.get(key) for key in ('model', 'model_revision', 'model_unavailable_reason')}
 
     @app.patch("/api/sessions/{session_id}/reasoning-mode")
     async def set_reasoning(session_id: str, req: SessionSettingReq, request: Request):
@@ -4143,7 +4231,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 },
             )
         options = {
-            "model": state.get("model", available_models_for(user)[0] if available_models_for(user) else "qwen3.6-plus"),
+            "model": state.get("model", "qwen3.6-plus"),
             "reasoning_mode": req.reasoning_mode or state.get("reasoning_mode", "direct"),
             "planning_mode": req.planning_mode or state.get("planning_mode", "auto"),
             "output_format": req.output_format,
@@ -4155,7 +4243,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         project_id = session_project_id(session, user.user_id)
         training_payload = await project_training_runs(project_id, request, current_session_id=session_id)
         training_summary = _project_training_summary(training_payload.get("training_runs") or [])
-        await sync_custom_model(user, str(options["model"]), request)
+        if not controls_enabled():
+            await sync_custom_model(user, str(options["model"]), request)
         data_state = dataset_runtime_state(project_datasets.get(str(state.get("active_dataset_id")),
             user.user_id, project_id) if state.get("active_dataset_id") else None)
         attachment_tokens = {item.file_token for item in (req.attachments or [])}
@@ -4240,7 +4329,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         registration = await runtime.request('POST', f'/internal/sessions/{session_id}/runs/register',
                                              headers=forwarded_headers(request, user.user_id),
                                              json_body={"start_request_id": start_id, "fingerprint": digest, 'preparation_owner': preparation_instance,
-                                                        "replace_run_id": str(req.replace_run_id) if req.replace_run_id else None})
+                                                        "replace_run_id": str(req.replace_run_id) if req.replace_run_id else None,
+                                                        "model_revision": req.model_revision})
         if not registration.get('preparation_claimed'):
             # Stable identity is enough for the client's normal resume/snapshot
             # path. Never resend a user question on an idempotent duplicate.
@@ -4860,7 +4950,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             state = _state(session)
         else:
             state = {}
-        available_models = available_models_for(user)
+        available_models = await available_models_for(user)
         model = state.get("model", available_models[0] if available_models else "qwen3.6-plus")
         await sync_custom_model(user, str(model), request)
         prompt = (
