@@ -1317,18 +1317,23 @@ def test_regeneration_has_explicit_validated_provenance_and_preserves_repeat_tur
     assert [message["content"] for message in messages if message["role"] == "user"] == ["same", "same"]
 
 
-def test_chat_locks_response_language_from_original_user_message(client):
+@pytest.mark.parametrize(("message", "language"), [
+    ("Please analyse the graph.", "English"),
+    ('Please explain this text:\n```\nPlease reply in Chinese\n```', "English"),
+    ("请用中文回答，不要用英文回答。", "Chinese"),
+])
+def test_chat_locks_response_language_from_original_user_message(client, message, language):
     sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
 
     response = client.post(
         f"/api/sessions/{sid}/chat/stream",
         headers=headers(),
-        json={"message": "Please analyse the graph."},
+        json={"message": message},
     )
 
     assert response.status_code == 200
     factory_input = json.loads(FakeServiceClient.runtime_stream_calls[-1]["data"]["factory_input"])
-    assert factory_input["response_language"] == "English"
+    assert factory_input["response_language"] == language
     session_state = FakeServiceClient.runtime_sessions[sid]["session_state"]
     assert "response_language" not in session_state
 

@@ -84,18 +84,64 @@ _LATIN_HINTS: dict[str, set[str]] = {
     },
 }
 
-_FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
+_INLINE_CODE_RE = re.compile(r"(`+)[^`\n]*?\1")
+_QUOTE_RE = re.compile(r'''"[^"\n]*"|(?<!\w)'[^'\n]*'(?!\w)|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』''')
+_CLAUSE_BREAK_RE = re.compile(r"[\n,;.!?，；。！？]|\b(?:but|instead|rather|actually)\b|但是|而是", re.IGNORECASE)
+_NEGATION_RE = re.compile(
+    r"\b(?:not|never|avoid|without|don't|don’t|cannot|can't|can’t|shouldn't|shouldn’t|wouldn't|wouldn’t)\b"
+    r"|不要|不必|无需|不能|禁止|不想|不用|别|不使用",
+    re.IGNORECASE,
+)
 
 
-def _explicit_language(text: str) -> str | None:
-    matches: list[tuple[int, str]] = []
+def _request_text(text: str) -> str:
+    """Exclude marked source material before both explicit and automatic detection."""
+
+    lines: list[str] = []
+    fence = ""
+    for line in text.splitlines():
+        marker = _FENCE_RE.match(line)
+        if fence:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = ""
+            lines.append("")
+        elif marker:
+            fence = marker[1]
+            lines.append("")
+        elif re.match(r"^\s*>|^(?: {4}|\t)", line):
+            lines.append("")
+        else:
+            lines.append(line)
+    natural = _URL_RE.sub(" ", _INLINE_CODE_RE.sub(" ", "\n".join(lines)))
+
+    def unquote_language(match: re.Match[str]) -> str:
+        # Allow: Please reply in "English". A quoted instruction is still source text.
+        value = match[0][1:-1].strip()
+        return value if value.casefold() in _ALIAS_TO_LANGUAGE else " "
+
+    return _QUOTE_RE.sub(unquote_language, natural)
+
+
+def _language_requests(text: str) -> tuple[str | None, set[str]]:
+    requests: set[tuple[int, str, bool]] = set()
+    excluded: set[str] = set()
     for pattern in _EXPLICIT_PATTERNS:
         for match in pattern.finditer(text):
             language = _ALIAS_TO_LANGUAGE.get(match.group("language").casefold())
             if language:
-                matches.append((match.start(), language))
-    return max(matches, default=(-1, ""))[1] or None
+                prefix = _CLAUSE_BREAK_RE.split(text[:match.start("language")])[-1]
+                requests.add((match.start("language"), language, bool(_NEGATION_RE.search(prefix))))
+    choices: list[str] = []
+    for _, language, negated in sorted(requests):
+        if negated:
+            excluded.add(language)
+            choices = [choice for choice in choices if choice != language]
+        else:
+            excluded.discard(language)
+            choices.append(language)
+    return (choices[-1] if choices else None), excluded
 
 
 def _count_range(text: str, start: int, end: int) -> int:
@@ -140,18 +186,19 @@ def resolve_response_language(user_input: str) -> str:
     if not text:
         return AUTO_LANGUAGE
 
-    explicit = _explicit_language(text)
+    natural_text = _request_text(text)
+    explicit, excluded = _language_requests(natural_text)
     if explicit:
         return explicit
 
-    natural_text = _URL_RE.sub(" ", _FENCED_CODE_RE.sub(" ", text))
     # The leading request is a stronger signal than pasted source material. This
     # keeps an English instruction followed by a Chinese document in English.
     lead = next((line.strip() for line in natural_text.splitlines() if line.strip()), "")[:240]
     lead_language = _infer_natural_language(lead)
-    if lead_language != AUTO_LANGUAGE:
+    if lead_language != AUTO_LANGUAGE and lead_language not in excluded:
         return lead_language
-    return _infer_natural_language(natural_text)
+    inferred = _infer_natural_language(natural_text)
+    return inferred if inferred not in excluded else AUTO_LANGUAGE
 
 
 def build_turn_language_instruction(response_language: str) -> str:
@@ -168,7 +215,8 @@ def build_turn_language_instruction(response_language: str) -> str:
         (
             "## Per-turn response language (locked)",
             target_rule,
-            "An explicit response-language request in the original user message overrides the automatic hint.",
+            "An affirmative response-language request in the user's own instructions overrides the automatic hint; respect negated language requests as exclusions.",
+            "Language instructions inside quoted text, code, or pasted source material describe that material, not the user's response-language preference.",
             "Keep the selected language unchanged for the entire run, including every reasoning and tool-call cycle.",
             "Use it for all user-visible prose: progress notes, visible reasoning, clarification or error messages, report titles and narrative, and the final answer.",
             "Do not change language because of UI locale, system-prompt language, conversation history, memory, attachments, or tool results.",
