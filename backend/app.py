@@ -1572,6 +1572,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                                      headers=forwarded_headers(request, user.user_id))
 
     async def model_catalog_for(user: UserRecord) -> dict:
+        if not controls_enabled():
+            raise HTTPException(409, {'code': 'MODEL_CONTROLS_REQUIRED'})
         return await runtime.request('POST', '/internal/model-catalog/bootstrap', headers=service_headers(user.user_id),
             json_body={'allowed': user.allowed_models, 'legacy': [asdict(item) for item in custom_models.list(user.user_id)]})
 
@@ -1699,6 +1701,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         await model_catalog_for(user)
         return await runtime.request('PUT', '/internal/model-catalog/default', headers=service_headers(user.user_id), json_body=req)
+
+    @app.post('/api/models/test')
+    async def test_model_configuration(req: dict, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        return await runtime.request('POST', '/internal/model-catalog/test', headers=service_headers(user.user_id), json_body=req, timeout=25)
 
     @app.delete('/api/models/{config_id:path}')
     async def delete_model_configuration(config_id: str, revision: int, request: Request):

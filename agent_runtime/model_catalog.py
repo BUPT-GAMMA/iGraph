@@ -10,6 +10,7 @@ import json
 import re
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from sqlalchemy import Column, Integer, JSON, String, Table, select, text
 
@@ -138,7 +139,9 @@ class ModelCatalog:
             merged = {**old, **data}
             mid = str(merged.get('upstream_model_id') or merged.get('model_id') or '').strip()
             base = str(merged.get('base_url') or '').strip().rstrip('/')
-            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}', mid) or not base.startswith(('http://', 'https://')):
+            url = urlsplit(base)
+            if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}', mid)
+                    or url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password or url.query or url.fragment):
                 raise ControlError('MODEL_INVALID_CONFIG', 422)
             window = int(merged.get('context_window', 32768))
             output = int(merged.get('max_output_tokens', 4096))
@@ -248,3 +251,12 @@ class ModelCatalog:
             if not data:
                 raise ControlError('MODEL_REMOVED', 422)
             return dict(data)
+
+    def test_configuration(self, uid, cid, revision):
+        with self.store.transaction(uid, '__models__') as conn:
+            row = self._row(conn, uid, cid)
+            if not row or row['data'].get('deleted'):
+                raise ControlError('MODEL_REMOVED', 404)
+            if revision != row['revision']:
+                raise ControlError('MODEL_CONFIG_CHANGED')
+            return dict(row['data'])
