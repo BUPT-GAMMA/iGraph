@@ -266,6 +266,8 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
           {isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}
           <div className="message-body">
             <div className="message-label">{isAssistant ? (message.regenerate_of ? t('iGraph Assistant · Regenerated', 'iGraph 助手 · 重新生成') : t('iGraph Assistant', 'iGraph 助手')) : t('You', '你')}</div>
+            {isAssistant && message.model_snapshot && <div className="message-model-provenance" title={`${message.model_snapshot.model_id} · v${message.model_snapshot.revision}`}>{message.model_snapshot.display_name}</div>}
+            {message.history_compacted && <div className="message-model-provenance">{t('Earlier context compacted for this model', '较早上下文已压缩以适应此模型')}</div>}
             {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools, t)) : null}
             {isAssistant ? planCard(visiblePlan, t) : null}
             {!isAssistant && !isEditing ? attachmentChips : null}

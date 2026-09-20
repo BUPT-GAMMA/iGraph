@@ -2,6 +2,7 @@ import { editableLatestTurn } from './latestTurn';
 import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
 import type { RunSnapshot, RunControl } from './api';
+import { modelErrorMessage } from './api';
 import { tr } from './i18n';
 import { pendingActivity, type SavedSessionActivity } from './sessionActivity';
 
@@ -555,13 +556,17 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     const content = typeof event.content === 'string' ? event.content : current?.content || '';
     view = { ...view,
       messagesById: { ...view.messagesById, [messageId]: { ...current, id: messageId, role: 'assistant', content, streaming: false,
+        model_snapshot: event.model_snapshot ?? current?.model_snapshot,
+        history_compacted: event.history_compacted ?? current?.history_compacted,
         tools: run.toolOrder.map(id => run.toolsById[id]), plan: run.plan } },
       messageOrder: view.messageOrder.includes(messageId) ? view.messageOrder : [...view.messageOrder, messageId] };
     run = { ...run, status: run.status === 'cancelled' ? 'cancelled' : 'completed', feedback: null };
   }
 
   if (eventType === 'error') {
-    const error = String(event.error || tr('Analysis failed', '分析失败'));
+    const rawError = String(event.error || tr('Analysis failed', '分析失败'));
+    const modelCode = rawError.match(/MODEL_[A-Z_]+/)?.[0];
+    const error = modelCode ? modelErrorMessage(modelCode) : rawError;
     const cancelled = Boolean(event.cancelled || eventName.includes('cancel') || run.status === 'cancelled');
     const messageId = run.assistantMessageId || '';
     view = {

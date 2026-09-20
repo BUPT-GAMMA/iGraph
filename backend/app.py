@@ -805,6 +805,8 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
                 "role": "assistant",
                 "content": assistant_text,
                 "run_status": status,
+                "model_snapshot": (run.get('metadata') or {}).get('model_snapshot'),
+                "history_compacted": bool((run.get('metadata') or {}).get('history_compacted')),
                 "tools": tool_cards,
                 "graphs": graphs,
                 "reports": reports,
@@ -1760,6 +1762,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             if memory_id:
                 await runtime.request("DELETE", f"/memories/{memory_id}", headers=headers, params={"user_id": user_id})
         await runtime.request("DELETE", f"/internal/skills/users/{user_id}/all", headers=headers)
+        await runtime.request('DELETE', '/internal/model-catalog/user/all', headers=service_headers(user_id))
         for item in custom_models.list(user_id):
             custom_models.delete(user_id, item.model_id)
         for item in project_datasets._load().values():
@@ -3953,7 +3956,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "context_usage": {"used_tokens": 0, "limit_tokens": 0, "ratio": 0},
             "available_models": available_models,
             "default_model": default_model,
-            "model_revision": 0,
+            "model_revision": state.get('model_revision', 0),
         }
 
     @app.post("/api/sessions/{session_id}/activate")

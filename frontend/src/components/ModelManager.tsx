@@ -15,6 +15,7 @@ export function ModelManager({ onClose, onUpdated }: { onClose: () => void; onUp
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [blockedSessions, setBlockedSessions] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<ModelConfiguration | null>(null);
   const [testTarget, setTestTarget] = useState<ModelConfiguration | null>(null);
   const dialog = useRef<HTMLElement>(null);
@@ -34,7 +35,7 @@ export function ModelManager({ onClose, onUpdated }: { onClose: () => void; onUp
   }
   async function act(action: () => Promise<unknown>, message = '') {
     if (busy) return;
-    setBusy(true); setError(''); setNotice('');
+    setBusy(true); setError(''); setNotice(''); setBlockedSessions([]);
     try {
       await action();
       if (!alive.current) return;
@@ -42,6 +43,8 @@ export function ModelManager({ onClose, onUpdated }: { onClose: () => void; onUp
     } catch (cause) {
       if (alive.current) {
         setError(cause instanceof Error ? cause.message : t('Operation failed', '操作失败'));
+        const ids = (cause as { detail?: { sessions?: unknown } })?.detail?.sessions;
+        if (Array.isArray(ids)) setBlockedSessions(ids.filter((id): id is string => typeof id === 'string'));
         await refresh().catch(() => undefined);
       }
     } finally { if (alive.current) setBusy(false); }
@@ -67,6 +70,7 @@ export function ModelManager({ onClose, onUpdated }: { onClose: () => void; onUp
       <header><div><h2>{t('Model management', '模型管理')}</h2><p>{t('Manage connections. Each conversation keeps its own model.', '管理接入配置，每个会话独立选择模型。')}</p></div>
         <button type="button" className="plain-icon" disabled={busy} onClick={onClose} aria-label={t('Close model management', '关闭模型管理')}><Icon name="close" /></button></header>
       {error && <p className="model-manager-alert" role="alert">{error}</p>}
+      {blockedSessions.length > 0 && <div className="model-muted">{t('Active conversations', '相关活动会话')}<ul>{blockedSessions.map(id => <li key={id}><a href={`/?session=${encodeURIComponent(id)}`}>{id}</a></li>)}</ul></div>}
       {notice && <p className="model-manager-notice" role="status">{notice}</p>}
       {deleteTarget ? <div className="model-confirm"><h3>{t('Delete connection?', '删除接入配置？')}</h3><p>{deleteTarget.display_name}</p><p>{t('Credentials will be removed. Conversation history stays available; select another model to continue.', '将删除凭据。历史会话仍可查看，选择其他模型后可以继续。')}</p><div className="model-actions"><button disabled={busy} onClick={() => setDeleteTarget(null)}>{t('Cancel', '取消')}</button><button disabled={busy} onClick={() => void act(async () => { await deleteModelConfiguration(deleteTarget); setDeleteTarget(null); }, t('Connection deleted', '接入配置已删除'))}>{t('Delete configuration', '删除配置')}</button></div></div>
       : testTarget ? <div className="model-confirm"><h3>{t('Test connection?', '测试连接？')}</h3><p>{t('Sends a short test message to this endpoint. May incur a small charge. No conversation content is sent.', '将向此接口发送简短测试消息，可能产生少量费用，不会发送会话内容。')}</p><strong>{testTarget.display_name}</strong><div className="model-actions"><button disabled={busy} onClick={() => setTestTarget(null)}>{t('Cancel', '取消')}</button><button disabled={busy} onClick={() => void act(async () => { await testModelConfiguration(testTarget); setTestTarget(null); }, t('Connection and request format accepted. This does not certify analysis quality.', '连接与请求格式验证通过，不代表分析质量已验证。'))}>{busy ? t('Testing…', '测试中…') : t('Run test', '开始测试')}</button></div></div>

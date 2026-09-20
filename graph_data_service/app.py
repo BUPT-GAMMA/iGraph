@@ -1829,14 +1829,17 @@ class GraphDataService:
         # 格式检测：优先用 LLM pre-check，不可用或调用失败时退回启发式
         # 与 TextGraphExtractor 一致：优先用 session model 对应的 gateway
         classifier = self._file_format_classifier
+        fmt_raw, fmt_detail = _detect_text_format_verbose(text)
         session_model = session.llm_model
-        if session_model:
+        from graph_data_service.run_model import resolve_run_gateway
+        if job_context.get() and fmt_raw == 'freetext':
+            classifier = FileFormatPreCheckSubAgent(provider_gateway=await resolve_run_gateway(_NullTraceLogger()))
+        elif session_model:
             session_gateway = self._create_text_graph_provider_gateway(session_model)
             if session_gateway is not None:
                 classifier = FileFormatPreCheckSubAgent(provider_gateway=session_gateway)
         # Obvious row-structured files are deterministic and should not be
         # reclassified by an LLM. Only ambiguous/free text needs pre-check.
-        fmt_raw, fmt_detail = _detect_text_format_verbose(text)
         use_heuristic = fmt_raw != "freetext" or not classifier.available()
         if not use_heuristic:
             svc_log.event("PRE_CHECK_START", filename=record.original_filename)
@@ -2668,7 +2671,13 @@ class GraphDataService:
         # service-level default, so extraction follows the calling session's LLM.
         extractor = self._text_graph_extractor
         session_model = session.llm_model
-        if session_model:
+        from graph_data_service.run_model import resolve_run_gateway
+        if job_context.get():
+            from graph_engine.extraction import TextGraphExtractionSubAgent
+            call_gateway = await resolve_run_gateway(_NullTraceLogger())
+            session_model = call_gateway.model
+            extractor = TextGraphExtractionSubAgent(provider_gateway=call_gateway)
+        elif session_model:
             call_gateway = self._create_text_graph_provider_gateway(session_model)
             if call_gateway is not None:
                 from graph_engine.extraction import TextGraphExtractionSubAgent

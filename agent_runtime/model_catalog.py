@@ -203,6 +203,14 @@ class ModelCatalog:
         conn.execute(selections.insert().values(**row))
         return row
 
+    def purge_user(self, uid):
+        with self.store.transaction(uid, '__models__') as conn:
+            if conn.execute(select(controls.c.control_id).where(controls.c.user_id == uid,
+                    controls.c.kind == 'run', controls.c.admission_blocked.is_(True))).first():
+                raise ControlError('MODEL_IN_USE')
+            for table in (versions, models, selections, preferences):
+                conn.execute(table.delete().where(table.c.user_id == uid))
+
     def selection(self, uid, sid, legacy_model=None):
         with self.store.transaction(uid, sid) as conn:
             self.lock(conn, uid)

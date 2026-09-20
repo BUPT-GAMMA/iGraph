@@ -111,6 +111,11 @@ def create_model_router(catalog, db):
             raise ControlError('MODEL_CONNECTION_FAILED', 422) from None
         return {'success': True, 'config_id': req.config_id, 'revision': req.revision}
 
+    @router.delete('/internal/model-catalog/user/all')
+    async def purge_user(request: Request):
+        await asyncio.to_thread(catalog.purge_user, identity(request))
+        return {'success': True}
+
     @router.delete('/internal/model-catalog/{config_id:path}')
     async def delete(config_id: str, revision: int, request: Request):
         await asyncio.to_thread(catalog.delete, identity(request), config_id, revision)
@@ -121,6 +126,19 @@ def create_model_router(catalog, db):
         uid = identity(request)
         record = await session(uid, sid)
         return await asyncio.to_thread(catalog.selection, uid, sid, (record.session_data or {}).get('session_state', {}).get('model'))
+
+    @router.get('/internal/sessions/{sid}/runs/{rid}/model-config')
+    async def run_model(sid: str, rid: str, request: Request):
+        uid = identity(request)
+        await session(uid, sid)
+        run = await asyncio.to_thread(catalog.store.get, uid, sid, run_id=rid)
+        if not run or not run['admission_blocked']:
+            raise ControlError('MODEL_RUN_NOT_ACTIVE', 409)
+        snapshot = run['state'].get('model_snapshot')
+        if not snapshot:
+            raise ControlError('MODEL_SNAPSHOT_MISSING', 409)
+        # Credentials only cross the authenticated server-to-server boundary.
+        return await asyncio.to_thread(catalog.resolve, uid, snapshot)
 
     @router.patch('/internal/sessions/{sid}/model-selection')
     async def choose(sid: str, req: ModelSelection, request: Request):
