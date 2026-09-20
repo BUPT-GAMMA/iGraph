@@ -3,7 +3,7 @@ import { GraphCanvas } from './GraphCanvas';
 import { GraphCoverage } from './GraphCoverage';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
-import { listProjectTrainingRuns } from '../api';
+import { listProjectTrainingRuns, visualizeGraph } from '../api';
 import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, PartitionedGraphSummary, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
 import { SlidingTabs } from './SlidingTabs';
@@ -117,6 +117,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   const [exploreOpen, setExploreOpen] = useState(false);
   const [resultsOnly, setResultsOnly] = useState(false);
   const [resultIndex, setResultIndex] = useState(-1);
+  const [selectedDetail, setSelectedDetail] = useState<Record<string, unknown> | null>(null);
   const [projectTrainingRuns, setProjectTrainingRuns] = useState<ProjectTrainingRun[]>([]);
   const [projectTrainingLoading, setProjectTrainingLoading] = useState(false);
   const [projectTrainingError, setProjectTrainingError] = useState('');
@@ -137,7 +138,25 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     if (id && index.nodes.has(id) && !preview.nodes.some(node => node.id === id) && !filterMatches && !depth) setFocusId(id);
   }, [selected, index, preview.nodes, filterMatches, depth]);
   const schemaMode = renderedData?.visualization_kind === 'schema';
+  const selectedId = String(selected?.id ?? '');
   const selectedInfo = selected ? index.nodes.get(String(selected.id)) : undefined;
+  const detailedSelected = selectedDetail && String(selectedDetail.id ?? selectedDetail.label ?? '') === selectedId
+    ? selectedDetail
+    : undefined;
+  useEffect(() => {
+    setSelectedDetail(null);
+    if (!selectedId || !sessionId || schemaMode) return;
+    const controller = new AbortController();
+    void visualizeGraph(sessionId, { node_names: [selectedId], include_community: false, max_nodes: 1 }, controller.signal)
+      .then(result => {
+        const detail = result.nodes.find(node => String(node.id ?? node.label ?? '') === selectedId);
+        if (detail) setSelectedDetail(detail);
+      })
+      .catch(cause => {
+        if (!(cause && typeof cause === 'object' && 'name' in cause && cause.name === 'AbortError')) setSelectedDetail(null);
+      });
+    return () => controller.abort();
+  }, [datasetName, schemaMode, selectedId, sessionId]);
   const locate = (id: string) => { setFocusId(id); const node = index.nodes.get(id); if (node) onSelect(node); };
   const changeTab = (nextTab: Tab) => {
     if (tab === 'Graph' && nextTab !== 'Graph') {
@@ -222,16 +241,15 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
                       <button onClick={() => setConnectedOnly(current => !current)} aria-pressed={connectedOnly}>{connectedOnly ? t('Filter: connected', '过滤：有连接') : t('Filter', '过滤')}</button>
                       <button onClick={() => setFitVersion(current => current + 1)}>{t('Fit to canvas', '适应画布')}</button>
                       <button aria-expanded={displayOpen} onClick={() => setDisplayOpen(value => !value)}>{t('Display settings', '显示设置')}</button>
+                      {onGraphReset && <button disabled={graphQueryPending} onClick={() => { resetGraphFilters(); onGraphReset(); }}>{t('Restore full graph', '恢复全图')}</button>}
                     </div>
                     {exploreOpen && onGraphQuery && <GraphExplorePanel key={`${sessionId}:${datasetName || ''}`} schema={schemaMode} selectedId={String(selected?.id ?? '')} pending={graphQueryPending} onQuery={prompt => { resetGraphFilters(); onGraphQuery(prompt); }} />}
-                    {!schemaMode && (allHighlights.length > 0 || onGraphReset) && <div className="graph-result-controls">
-                      {allHighlights.length > 0 && <><span>{t('Analysis results', '分析结果')}</span>{allHighlights.length > 1 && <select aria-label={t('Result layer', '结果图层')} value={resultIndex} onChange={event => { setResultIndex(Number(event.target.value)); setFitVersion(current => current + 1); }}><option value={-1}>{t('All results', '全部结果')}</option>{allHighlights.map((item, index) => <option key={index} value={index}>{item.label || t(`Result ${index + 1}`, `结果 ${index + 1}`)}</option>)}</select>}<button aria-pressed={resultsOnly} onClick={() => { setResultsOnly(current => !current); setDepth(0); setFilterMatches(false); setConnectedOnly(false); setFocusId(''); onSelect(null); setFitVersion(current => current + 1); }}>{t('Result subgraph only', '仅看结果子图')}</button></>}
-                      {onGraphReset && <button disabled={graphQueryPending} onClick={() => { resetGraphFilters(); onGraphReset(); }}>{t('Restore full graph', '恢复全图')}</button>}
-                    </div>}
                     {displayOpen && <div className="graph-display-settings">
                       <label>{t('Node size', '节点大小')}<select value={sizeMode} onChange={e => setSizeMode(e.target.value as typeof sizeMode)}><option value="degree">{t('By degree', '按度数')}</option><option value="uniform">{t('Uniform', '统一大小')}</option></select></label>
                       <label>{t('Node labels', '节点标签')}<select value={labels} onChange={e => setLabels(e.target.value as typeof labels)}><option value="auto">{t('Automatic', '自动')}</option><option value="all">{t('All', '全部')}</option><option value="hidden">{t('Hidden', '隐藏')}</option></select></label>
                       <label>{t('Edge width', '边粗细')}<input aria-label={t('Edge width', '边粗细')} type="range" min="0.6" max="2" step="0.2" value={edgeWidth} onChange={e => setEdgeWidth(Number(e.target.value))} /></label>
+                      {!schemaMode && allHighlights.length > 1 && <label>{t('Result layer', '结果图层')}<select aria-label={t('Result layer', '结果图层')} value={resultIndex} onChange={event => { setResultIndex(Number(event.target.value)); setFitVersion(current => current + 1); }}><option value={-1}>{t('All results', '全部结果')}</option>{allHighlights.map((item, index) => <option key={index} value={index}>{item.label || t(`Result ${index + 1}`, `结果 ${index + 1}`)}</option>)}</select></label>}
+                      {!schemaMode && allHighlights.length > 0 && <label><input type="checkbox" checked={resultsOnly} onChange={() => { setResultsOnly(current => !current); setDepth(0); setFilterMatches(false); setConnectedOnly(false); setFocusId(''); onSelect(null); setFitVersion(current => current + 1); }} />{t('Result subgraph only', '仅看结果子图')}</label>}
                       <button onClick={() => { setSizeMode('degree'); setLabels('auto'); setEdgeWidth(1); }}>{t('Restore defaults', '恢复默认')}</button>
                     </div>}
                     {searchOpen ? <div className="graph-search-group"><div className="graph-search"><Icon name="search" size={14} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { const id = preview.matches.values().next().value; if (id) locate(id); } }} placeholder={t('Search by node ID or name', '搜索节点 ID 或名称')} /><span>{t(`${preview.matches.size.toLocaleString(locale)} results`, `${preview.matches.size.toLocaleString(locale)} 个结果`)}</span></div>
@@ -244,7 +262,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
                       totalEdges={schemaMode || tablesMode ? index.edges.length : renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length}
                       kind={tablesMode ? 'tables' : schemaMode ? 'schema' : 'instances'} />
                     {(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">{t('Legend', '图例')}</span>{communityById.size ? <span><i className="legend-dot community" />{t('Community colors', '社区着色')}</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />{t('Highlighted nodes', '节点高亮')}</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />{t('Highlighted paths', '路径高亮')}</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />{t('Highlighted subgraphs', '子图高亮')}</span> : null}</div> : null}
-                    <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? t('Selected node', '已选节点'))}</strong><span>{t('Selected', '已选择')}</span></div><div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String(nodePropertyType(selectedInfo || selected) ?? t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div>{!schemaMode && <NodeProperties node={selectedInfo || selected} />}<div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
+                    <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? t('Selected node', '已选节点'))}</strong><span>{t('Selected', '已选择')}</span></div><div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String(nodePropertyType(detailedSelected || selectedInfo || selected) ?? t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div>{!schemaMode && <NodeProperties node={detailedSelected || selectedInfo || selected} />}<div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
                   </>
                     : <WorkspaceTab tab={tab} data={data} messages={messages} previewNodes={preview.nodes.length} previewEdges={preview.edges.length} />}
     </div>
