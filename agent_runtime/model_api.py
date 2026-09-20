@@ -23,7 +23,7 @@ class ModelWrite(BaseModel):
     provider: str = Field(default='openai-compatible', max_length=80)
     tools: bool = True
     vision: bool = False
-    context_window: int = Field(default=32768, ge=2048, le=2_000_000)
+    context_window: int = Field(default=131072, ge=2048, le=2_000_000)
     max_output_tokens: int = Field(default=4096, ge=128)
 
 
@@ -127,6 +127,15 @@ def create_model_router(catalog, db):
         record = await session(uid, sid)
         return await asyncio.to_thread(catalog.selection, uid, sid, (record.session_data or {}).get('session_state', {}).get('model'))
 
+    @router.get('/internal/sessions/{sid}/model-provenance')
+    async def provenance(sid: str, request: Request):
+        record = await session(identity(request), sid)
+        # Agno's public RunSchema omits metadata. Expose only these non-secret
+        # audit fields so refresh/replay retains the actual model per answer.
+        return {'runs': {run.run_id: {key: (run.metadata or {}).get(key)
+                for key in ('model_snapshot', 'history_compacted')}
+                for run in record.runs or []}}
+
     @router.get('/internal/sessions/{sid}/runs/{rid}/model-config')
     async def run_model(sid: str, rid: str, request: Request):
         uid = identity(request)
@@ -139,6 +148,16 @@ def create_model_router(catalog, db):
             raise ControlError('MODEL_SNAPSHOT_MISSING', 409)
         # Credentials only cross the authenticated server-to-server boundary.
         return await asyncio.to_thread(catalog.resolve, uid, snapshot)
+
+    @router.get('/internal/sessions/{sid}/model-config')
+    async def session_ingestion_model(sid: str, request: Request):
+        uid = identity(request)
+        record = await session(uid, sid)
+        def resolve_selection():
+            with catalog.store.transaction(uid, sid) as conn:
+                snapshot = catalog.freeze(conn, uid, sid, (record.session_data or {}).get('session_state', {}).get('model'))
+            return catalog.resolve(uid, snapshot)
+        return await asyncio.to_thread(resolve_selection)
 
     @router.patch('/internal/sessions/{sid}/model-selection')
     async def choose(sid: str, req: ModelSelection, request: Request):

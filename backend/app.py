@@ -805,8 +805,8 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
                 "role": "assistant",
                 "content": assistant_text,
                 "run_status": status,
-                "model_snapshot": (run.get('metadata') or {}).get('model_snapshot'),
-                "history_compacted": bool((run.get('metadata') or {}).get('history_compacted')),
+                "model_snapshot": metadata.get('model_snapshot'),
+                "history_compacted": bool(metadata.get('history_compacted')),
                 "tools": tool_cards,
                 "graphs": graphs,
                 "reports": reports,
@@ -1828,7 +1828,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user_id),
             params={"type": "agent", "user_id": user_id},
         )
-        return _ordered_runs(_data_rows(payload))
+        rows = _ordered_runs(_data_rows(payload))
+        if controls_enabled() and rows:
+            audit = await runtime.request('GET', f'/internal/sessions/{session_id}/model-provenance', headers=service_headers(user_id))
+            for row in rows:
+                metadata = row.get('metadata') if isinstance(row.get('metadata'), dict) else {}
+                row['metadata'] = {**metadata, **audit.get('runs', {}).get(row.get('run_id'), {})}
+        return rows
 
     async def run_lock(user_id: str, session_id: str) -> asyncio.Lock:
         key = (user_id, session_id)
@@ -3772,12 +3778,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.post("/api/sessions")
     async def create_session(req: CreateSessionReq, request: Request):
         user = current_user(request, users)
+        # Reject invalid/deleting project scopes before depending on model services.
+        project = project_or_404(req.project_id, user.user_id) if req.project_id else None
         available_models = await available_models_for(user)
         default_model = (await model_catalog_for(user))['default_model'] if controls_enabled() else (available_models[0] if available_models else '')
         model = req.model or default_model
         if model not in available_models:
             raise HTTPException(status_code=403, detail=f"用户无权使用模型 {model}")
-        project = project_or_404(req.project_id, user.user_id) if req.project_id else None
         project_id = project.project_id if project else None
         default_dataset_id = project.default_dataset_id if project else None
         client_session_id = str(req.client_session_id or "").strip()

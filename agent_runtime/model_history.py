@@ -14,8 +14,12 @@ from agno.models.message import Message
 
 
 def estimate_tokens(value):
-    # A deliberately conservative cross-provider estimate, not an exact tokenizer.
-    return math.ceil(len(json.dumps(value, ensure_ascii=False, default=str).encode('utf-8')) / 2) + 16
+    # Provider-neutral estimate with headroom (ASCII ~3 chars/token, non-ASCII
+    # ~2 UTF-8 bytes/token). This avoids overcounting English tool schemas while
+    # the caller still reserves output tokens and a separate safety margin.
+    wire = json.dumps(value, ensure_ascii=False, default=str)
+    ascii_chars = sum(ord(char) < 128 for char in wire)
+    return math.ceil(ascii_chars / 3 + (len(wire.encode('utf-8')) - ascii_chars) / 2) + 16
 
 
 def normalize_history(messages):
@@ -89,7 +93,7 @@ def prepare_history(messages, *, tools=None, context_window=32768, output_tokens
             turns.append([])
         turns[-1].append(item)
     if not turns or cost(instructions + turns[-1]) > budget:
-        raise ValueError('MODEL_CONTEXT_TOO_LARGE')
+        raise ValueError(f'MODEL_CONTEXT_TOO_LARGE (context={context_window}, tools≈{estimate_tokens(tools or [])}, current≈{cost(instructions + (turns[-1] if turns else []))})')
     removed = []
     while len(turns) > 1:
         removed.extend(turns.pop(0))

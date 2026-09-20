@@ -30,3 +30,25 @@ async def test_ingestion_resolves_run_version_and_never_uses_service_fallback(mo
             await resolve_run_gateway(None)
     finally:
         job_context.reset(token)
+
+
+@pytest.mark.anyio
+async def test_pre_run_upload_uses_session_model_and_propagates_unavailability(monkeypatch):
+    monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'true')
+    original = httpx.AsyncClient
+    seen = []
+    def respond(req):
+        seen.append(req)
+        return httpx.Response(200, json={'model_id': 'upload-model', 'api_key': '',
+            'base_url': 'http://localhost:1234/v1', 'max_output_tokens': 512, 'context_window': 8192})
+    monkeypatch.setattr('graph_data_service.run_model.httpx.AsyncClient',
+        lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(respond)))
+    gateway = await resolve_run_gateway(None, 'session-A', 'alice')
+    assert gateway.model == 'upload-model'
+    assert seen[0].url.path.endswith('/sessions/session-A/model-config')
+    assert seen[0].headers['X-User-ID'] == 'alice'
+    await gateway.client.close()
+    monkeypatch.setattr('graph_data_service.run_model.httpx.AsyncClient',
+        lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(lambda req: httpx.Response(409))))
+    with pytest.raises(ValueError, match='MODEL_RUN_CONFIG_UNAVAILABLE'):
+        await resolve_run_gateway(None, 'session-A', 'alice')

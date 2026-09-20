@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -81,7 +82,7 @@ class ModelCatalog:
                 data = dict(old, model_id=mid, display_name=mid, provider=provider_for_model(mid),
                     base_url=base, api_key=key, source='deployment', enabled=old.get('enabled', True),
                     unavailable_reason=error, tools=True, vision=old.get('vision', False),
-                    context_window=old.get('context_window', 32768), max_output_tokens=old.get('max_output_tokens', 4096))
+                    context_window=int(os.getenv('IGRAPH_MODEL_CONTEXT_WINDOW', '131072')), max_output_tokens=old.get('max_output_tokens', 4096))
                 if not existing or old != data:
                     self._write(conn, uid, mid, data, existing)
             for item in legacy:
@@ -90,7 +91,7 @@ class ModelCatalog:
                     continue
                 data = {key: item.get(key, '') for key in ('model_id', 'display_name', 'base_url', 'api_key')}
                 data.update(source='custom', provider='openai-compatible', enabled=True, tools=True,
-                            vision=False, context_window=32768, max_output_tokens=4096)
+                            vision=False, context_window=131072, max_output_tokens=4096)
                 self._write(conn, uid, cid, data)
             pref = self._preference(conn, uid)
             pref['allowed'] = list(allowed)
@@ -117,7 +118,7 @@ class ModelCatalog:
             provider=data.get('provider', 'openai-compatible'), base_url=data.get('base_url', ''),
             has_api_key=bool(data.get('api_key')), source=data['source'], enabled=data.get('enabled', True),
             tools=data.get('tools', True), vision=data.get('vision', False),
-            context_window=data.get('context_window', 32768), max_output_tokens=data.get('max_output_tokens', 4096),
+            context_window=data.get('context_window', 131072), max_output_tokens=data.get('max_output_tokens', 4096),
             unavailable_reason=self._reason(conn, uid, row))
 
     def list(self, uid):
@@ -143,7 +144,7 @@ class ModelCatalog:
             if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}', mid)
                     or url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password or url.query or url.fragment):
                 raise ControlError('MODEL_INVALID_CONFIG', 422)
-            window = int(merged.get('context_window', 32768))
+            window = int(merged.get('context_window', 131072))
             output = int(merged.get('max_output_tokens', 4096))
             if not 2048 <= window <= 2_000_000 or not 128 <= output < window:
                 raise ControlError('MODEL_INVALID_LIMITS', 422)
