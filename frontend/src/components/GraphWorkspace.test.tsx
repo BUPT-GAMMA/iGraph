@@ -203,8 +203,12 @@ describe('GraphWorkspace visualization layers', () => {
     const { container } = render(<I18nProvider initialLanguage="zh"><WorkspaceHarness /></I18nProvider>);
     await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(1));
     fireEvent.click(screen.getByRole('button', { name: '适应画布' }));
-    fireEvent.wheel(screen.getByLabelText(/图谱画布/), { deltaY: -240, clientX: 180, clientY: 180 });
+    // A nonempty transform already exists before wheel input; wait for that
+    // input's frame before comparing it with the restored camera.
     await waitFor(() => expect(container.querySelector('.graph-viewport')?.getAttribute('transform')).toBeTruthy());
+    const beforeZoom = container.querySelector('.graph-viewport')?.getAttribute('transform');
+    fireEvent.wheel(screen.getByLabelText(/图谱画布/), { deltaY: -240, clientX: 180, clientY: 180 });
+    await waitFor(() => expect(container.querySelector('.graph-viewport')?.getAttribute('transform')).not.toBe(beforeZoom));
     const camera = container.querySelector('.graph-viewport')?.getAttribute('transform');
     const position = container.querySelector('.graph-node')?.getAttribute('transform');
     const expectStable = async () => {
