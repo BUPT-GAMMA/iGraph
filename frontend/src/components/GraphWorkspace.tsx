@@ -4,6 +4,7 @@ import { GraphCoverage } from './GraphCoverage';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
 import { executionError, executionLabel, executionPending, executionStatus } from '../toolStatus';
+import { metricNumber, metricSegments } from '../mlMetrics';
 import { listProjectTrainingRuns, visualizeGraph } from '../api';
 import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, PartitionedGraphSummary, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
@@ -371,14 +372,9 @@ function recordValue(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
 }
 
-function metricNumber(value: unknown) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
 function formatMetric(key: string, value: unknown, locale: string) {
   const number = metricNumber(value);
-  if (number === null) return String(value ?? '-');
+  if (number === null) return '—';
   if (/(acc|accuracy|auc|f1|precision|recall)$/i.test(key) && Math.abs(number) <= 1) return `${(number * 100).toFixed(1)}%`;
   if (Number.isInteger(number)) return number.toLocaleString(locale);
   return number.toFixed(Math.abs(number) < 0.01 ? 5 : 4).replace(/0+$/, '').replace(/\.$/, '');
@@ -484,7 +480,7 @@ function MetricChart({ rows, keys, title }: { rows: Array<Record<string, unknown
   const { language, t } = useI18n();
   const locale = localeFor(language);
   const width = 560; const height = 190; const left = 46; const right = 12; const top = 18; const bottom = 28;
-  const series = keys.map(key => ({ key, values: rows.map(row => ({ epoch: Number(row.epoch), value: metricNumber(row[key]) })).filter(point => point.value !== null) as Array<{ epoch: number; value: number }> })).filter(item => item.values.length);
+  const series = keys.map(key => { const segments = metricSegments(rows, key); return { key, segments, values: segments.flat() }; }).filter(item => item.values.length);
   if (!series.length) return null;
   const values = series.flatMap(item => item.values.map(point => point.value));
   const epochs = series.flatMap(item => item.values.map(point => point.epoch));
@@ -497,7 +493,7 @@ function MetricChart({ rows, keys, title }: { rows: Array<Record<string, unknown
   return <div className="ml-chart-panel"><div className="ml-chart-heading"><strong>{title}</strong><div>{series.map((item, index) => <span key={item.key}><i style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }} />{metricLabel(item.key, t)}</span>)}</div></div><svg className="ml-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t(`${title} training curve`, `${title}训练曲线`)}>
     {[0, .25, .5, .75, 1].map(fraction => { const value = maxY - (maxY - minY) * fraction; const py = top + (height - top - bottom) * fraction; return <g key={fraction}><line x1={left} x2={width - right} y1={py} y2={py} /><text x={left - 7} y={py + 4} textAnchor="end">{formatMetric(keys[0], value, locale)}</text></g>; })}
     <text x={left} y={height - 7}>{t(`Epoch ${minX}`, `第 ${minX} 轮`)}</text><text x={width - right} y={height - 7} textAnchor="end">{t(`Epoch ${maxX}`, `第 ${maxX} 轮`)}</text>
-    {series.map((item, index) => { const points = item.values.map(point => `${x(point.epoch)},${y(point.value)}`).join(' '); return <g key={item.key}><polyline points={points} style={{ stroke: CHART_COLORS[index % CHART_COLORS.length] }} />{item.values.map(point => <circle key={point.epoch} cx={x(point.epoch)} cy={y(point.value)} r={item.values.length < 25 ? 2.4 : 1.4} style={{ fill: CHART_COLORS[index % CHART_COLORS.length] }} />)}</g>; })}
+    {series.map((item, index) => <g key={item.key} data-metric={item.key}>{item.segments.filter(segment => segment.length > 1).map((segment, segmentIndex) => <polyline key={segmentIndex} points={segment.map(point => `${x(point.epoch)},${y(point.value)}`).join(' ')} style={{ stroke: CHART_COLORS[index % CHART_COLORS.length] }} />)}{item.values.map(point => <circle key={point.epoch} cx={x(point.epoch)} cy={y(point.value)} r={item.values.length < 25 ? 2.4 : 1.4} style={{ fill: CHART_COLORS[index % CHART_COLORS.length] }} />)}</g>)}
   </svg></div>;
 }
 
