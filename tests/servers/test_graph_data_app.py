@@ -410,7 +410,7 @@ class GraphDataAppTest(unittest.TestCase):
         body = resp.json()
         self.assertTrue(body["success"])
         report = body["report"]
-        self.assertEqual(report["version"], "analysis_report.v1")
+        self.assertEqual(report["version"], "analysis_report.v2")
         self.assertEqual(report["title"], "结构报告")
         self.assertIn("structure-overview", {section["id"] for section in report["sections"]})
 
@@ -479,7 +479,7 @@ class GraphDataAppTest(unittest.TestCase):
         report = resp.json()["report"]
         section_ids = {section["id"] for section in report["sections"]}
         self.assertIn("structure-overview", section_ids)
-        self.assertIn("degree-distribution", section_ids)
+        self.assertIn("connections-and-key-nodes", section_ids)
 
     def test_create_analysis_report_returns_error_for_invalid_source_results(self) -> None:
         resp = self.client.post(

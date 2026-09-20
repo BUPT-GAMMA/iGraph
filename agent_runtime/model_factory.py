@@ -7,6 +7,7 @@ import os
 from agno.models.openai.like import OpenAILike
 from agent_runtime.cancellation_compat import CancellableOpenAILike
 from agent_runtime.tool_dag import DAGModelMixin
+from agent_runtime.model_history import ModelHistoryMixin
 from execution_protocol import controls_enabled
 
 from agent_runtime.config import AgentRuntimeConfig
@@ -16,11 +17,11 @@ import re
 CUSTOM_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
 
 
-class DAGOpenAILike(DAGModelMixin, OpenAILike):
+class DAGOpenAILike(ModelHistoryMixin, DAGModelMixin, OpenAILike):
     pass
 
 
-class CancellableDAGOpenAILike(DAGModelMixin, CancellableOpenAILike):
+class CancellableDAGOpenAILike(ModelHistoryMixin, DAGModelMixin, CancellableOpenAILike):
     pass
 
 
@@ -62,17 +63,21 @@ def create_model(model_id: str, config: AgentRuntimeConfig, custom_model: dict |
         api_key = str(custom.get("api_key") or "").strip()
         if not CUSTOM_MODEL_ID_RE.fullmatch(normalized):
             raise ValueError("自定义模型 ID 格式无效")
-        if not base_url.startswith(("http://", "https://")) or not api_key:
+        if not base_url.startswith(("http://", "https://")) or (not api_key and not custom.get('allow_anonymous')):
             raise ValueError("自定义模型必须配置有效的 Base URL 和 API Key")
     else:
         normalized = normalize_model_name(model_id, default=config.default_model)
         api_key, base_url = _endpoint(normalized, config)
     constructor = CancellableDAGOpenAILike if controls_enabled() else DAGOpenAILike
-    return constructor(
-        id=normalized,
-        api_key=api_key,
+    model = constructor(
+        id=str(custom.get('upstream_model_id') or normalized) if custom else normalized,
+        api_key=api_key or 'local-no-auth',
         base_url=base_url,
+        **({'max_tokens': int(custom['max_output_tokens'])} if custom and 'max_output_tokens' in custom else {}),
     )
+    if custom and 'context_window' in custom:
+        model.igraph_capabilities = custom
+    return model
 
 
 def allowed_model(model_id: str, claims: dict, config: AgentRuntimeConfig, custom_model: dict | None = None) -> str:

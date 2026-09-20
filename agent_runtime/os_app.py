@@ -16,6 +16,8 @@ from agent_runtime.custom_models import register_custom_model, remove_custom_mod
 from agent_runtime.skill_api import create_skill_router
 from agent_runtime.memory_api import create_memory_router
 from agent_runtime.recovery import create_recovery_router
+from agent_runtime.model_catalog import ModelCatalog
+from agent_runtime.model_api import create_model_router
 from agent_runtime.execution_control import ExecutionController, create_control_router
 from agent_runtime.execution_store import ExecutionStore, ControlError
 from agent_runtime.execution_store import TERMINAL
@@ -35,17 +37,20 @@ class RuntimeCustomModelReq(BaseModel):
 def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     settings = config or AgentRuntimeConfig.from_env()
     db = create_db(settings)
+    store = ExecutionStore(db.db_engine)
+    catalog = ModelCatalog(store, settings)
     controller = None
     if controls_enabled():
         manager = RunCancellationManager()
         set_cancellation_manager(manager)
-        controller = ExecutionController(db, ExecutionStore(db.db_engine), manager)
+        controller = ExecutionController(db, store, manager)
+        controller.model_catalog = catalog
 
     @asynccontextmanager
     async def lifespan(_app):
         validate_service_configuration()
+        await asyncio.to_thread(store.migrate)
         if controller:
-            await asyncio.to_thread(controller.store.migrate)
             await controller.restore()
         try:
             yield
@@ -59,11 +64,12 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
 
     @base_app.exception_handler(ControlError)
     async def control_error(_request, exc):
-        return JSONResponse({"detail": {"code": exc.code}}, status_code=exc.status,
+        return JSONResponse({"detail": {"code": exc.code, **({'sessions': exc.sessions} if hasattr(exc, 'sessions') else {})}}, status_code=exc.status,
                             headers={"Retry-After": "2"} if exc.status == 429 else None)
     base_app.include_router(create_skill_router(settings))
     base_app.include_router(create_memory_router(db))
     base_app.include_router(create_recovery_router(db))
+    base_app.include_router(create_model_router(catalog, db))
 
     @base_app.get("/internal/health")
     def internal_health():
@@ -167,6 +173,10 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
                         raise ControlError('RUN_NOT_REGISTERED', 404)
                     if row['state']['cancel_status'] != 'none':
                         raise ControlError('RUN_CANCELLED')
+                    snapshot = row['state'].get('model_snapshot')
+                    if snapshot:
+                        request.state.igraph_model_snapshot = snapshot
+                        request.state.igraph_model_config = await asyncio.to_thread(catalog.resolve, uid, snapshot)
                 except ControlError as exc:
                     return JSONResponse({'detail': {'code': exc.code}}, status_code=exc.status)
                 except HTTPException as exc:

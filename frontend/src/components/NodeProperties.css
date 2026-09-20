@@ -11,7 +11,11 @@
 .node-properties dt, .node-properties dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .node-properties dt { color: #64748b; }
 .node-properties dd { color: #334155; }
+.node-properties dl > div.is-scrollable-text { grid-template-columns: minmax(0, 1fr); }
+.node-properties .is-scrollable-text dd { max-height: 150px; overflow: auto; padding: 9px 10px; border: 1px solid #e2e8f0; border-radius: 7px; background: #f8fafc; line-height: 1.55; overscroll-behavior: contain; scrollbar-width: thin; }
+.node-properties .is-scrollable-text dd:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .12); }
 .node-properties p { color: #64748b; font-size: 11px; line-height: 1.5; }
 [data-theme="dark"] .node-properties, [data-theme="dark"] .node-properties dl > div { border-color: #313a49; }
 [data-theme="dark"] .node-properties h4, [data-theme="dark"] .node-properties dd { color: #e2e8f0; }
 [data-theme="dark"] .node-properties dt, [data-theme="dark"] .node-properties p { color: #94a3b8; }
+[data-theme="dark"] .node-properties .is-scrollable-text dd { border-color: #334155; background: #182234; }

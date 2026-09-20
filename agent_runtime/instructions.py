@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from response_language import build_turn_language_instruction
+
 
 BASE_INSTRUCTIONS = """
 你是 iGraph 的专业图数据分析 Agent。你的结论必须来自用户输入、当前会话状态或工具返回，
@@ -28,7 +30,7 @@ BASE_INSTRUCTIONS = """
    run_id、request_id、job_id、tool_call_id、event_index、protocol_version 等属于内部运行元数据，
    只用于工具参数和状态校验；除非用户明确要求排错，不得在面向用户的回答中展示，也不要附加
    类似“（graph_version: 1）”的括注。
-8. 最终回答使用中文，先给结论，再给依据和下一步建议。
+8. 最终回答必须遵循本轮动态注入的语言约束，先给结论，再给依据和下一步建议。
 9. 用户明确要求训练模型时，该请求即视为本次训练授权；直接执行一次 train，并持续等待其完成。
    不要为 epoch、轮询、评估或紧随其后的只读 infer 重复请求用户批准。
 10. session_state.project_training_summary 是后端核验的同项目跨会话训练摘要。用户要求比较模型或实验时，
@@ -66,7 +68,12 @@ Memory 与 Learning 由 Agno LearningMachine 管理；只有稳定的用户偏�
 """.strip()
 
 
-def instructions_for(*, reasoning_mode: str, planning_mode: str) -> list[str]:
+def instructions_for(
+    *,
+    reasoning_mode: str,
+    planning_mode: str,
+    response_language: str = "Auto",
+) -> list[str]:
     instructions = [BASE_INSTRUCTIONS, (
         "会话文件工作区分为 Uploaded（只读上传）、Ephemeral（中间文件）、Derived（已发布产物）"
         "和 Environment（只读 Python 环境）。"
@@ -92,4 +99,5 @@ def instructions_for(*, reasoning_mode: str, planning_mode: str) -> list[str]:
         instructions.append("对多步骤任务始终维护明确的目标、步骤和进度；每完成一步后更新会话计划。")
     elif planning_mode == "never":
         instructions.append("除非用户明确要求，不生成独立计划，优先直接完成当前请求。")
+    instructions.append(build_turn_language_instruction(response_language))
     return instructions

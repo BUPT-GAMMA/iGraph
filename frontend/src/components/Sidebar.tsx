@@ -4,14 +4,7 @@ import type { Project, Session } from '../types';
 import { Icon } from './Icon';
 import { getUserId } from '../api';
 import { useI18n, type Translate } from '../i18n';
-
-const pinKey = (userId: string) => 'igraph-pinned-sessions:v1:' + encodeURIComponent(userId);
-function readPins(userId: string): Set<string> {
-  try {
-    const value = JSON.parse(localStorage.getItem(pinKey(userId)) || '[]');
-    return new Set(Array.isArray(value) ? value.filter(item => typeof item === 'string') : []);
-  } catch { return new Set(); }
-}
+import { pinKey, readPins } from '../sessionPins';
 
 function sessionTitle(session: Session, t: Translate) { return session.title || session.preview || session.last_message || t('Untitled analysis', '未命名分析'); }
 function noopLoginValueChange(_value: string) { /* Optional account controls are omitted in isolated component tests. */ }
@@ -20,7 +13,12 @@ function noopLogin() { /* Optional account controls are omitted in isolated comp
 type Props = {
   projects: Project[];
   sessions: Session[];
+  hasMoreSessions?: boolean;
+  loadingSessions?: boolean;
+  sessionListError?: string;
+  onLoadMoreSessions?: () => void;
   runStatuses?: Record<string, string>;
+  unreadCompletions?: Record<string, boolean>;
   activeId?: string;
   activeProjectId?: string;
   userId: string;
@@ -62,7 +60,22 @@ function runStatusLabel(status: string | undefined, t: Translate) {
   return '';
 }
 
-export function Sidebar({ projects, sessions, runStatuses = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+const ACTIVE_RUN_STATUSES = new Set(['preparing', 'starting', 'streaming', 'submitting_feedback', 'reconnecting', 'detached']);
+
+function SessionRunIndicator({ status, unread, t }: { status?: string; unread?: boolean; t: Translate }) {
+  const statusLabel = runStatusLabel(status, t);
+  if (ACTIVE_RUN_STATUSES.has(status || '')) {
+    return <i className={`session-run-indicator is-running ${status || ''}`} role="status" aria-label={statusLabel} title={statusLabel} />;
+  }
+  if (unread) {
+    const label = t('New completed response', '回复已完成');
+    return <i className="session-run-indicator is-unread" role="status" aria-label={label} title={label} />;
+  }
+  if (!statusLabel) return null;
+  return <i className={`session-run-indicator is-static ${status || ''}`} role="status" aria-label={statusLabel} title={statusLabel} />;
+}
+
+export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
   const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
@@ -218,11 +231,14 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
   <aside className={`sidebar ${effectivelyCollapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
     <div className="sidebar-head"><button className="sidebar-collapse" onClick={onCollapse} aria-label={mobileOpen ? t('Close left sidebar', '关闭左侧栏') : effectivelyCollapsed ? t('Expand left sidebar', '展开左侧栏') : t('Collapse left sidebar', '收起左侧栏')} title={mobileOpen ? t('Close left sidebar', '关闭左侧栏') : effectivelyCollapsed ? t('Expand left sidebar', '展开左侧栏') : t('Collapse left sidebar', '收起左侧栏')}><Icon name={effectivelyCollapsed ? 'panel-left-open' : 'panel-left-close'} size={18} /></button></div>
     <div className="sidebar-content" aria-hidden={effectivelyCollapsed}>
-    <button className="new-task" onClick={createTaskFromContext}><Icon name="plus" size={18} /> {t('New task', '新建任务')}</button>
+    <button className="new-task sidebar-primary-action" onClick={createTaskFromContext}>
+      <span className="sidebar-primary-action-icon sidebar-new-task-icon"><Icon name="plus" size={18} /></span>
+      <span className="sidebar-primary-action-label">{t('New task', '新建任务')}</span>
+    </button>
     <nav className="sidebar-create-graph" aria-label={t('Graph construction workspace', '构图工作区')}>
-      <button className={createGraphActive ? 'active' : ''} aria-current={createGraphActive ? 'page' : undefined} onClick={() => { onCreateGraph(); onCloseMobile(); }}>
-        <span className="sidebar-create-graph-icon"><Icon name="graph-create" size={19} /></span>
-        <span>{t('Create your graph', '创建你的图')}</span>
+      <button className={`sidebar-primary-action ${createGraphActive ? 'active' : ''}`} aria-current={createGraphActive ? 'page' : undefined} onClick={() => { onCreateGraph(); onCloseMobile(); }}>
+        <span className="sidebar-primary-action-icon sidebar-create-graph-icon"><Icon name="graph-create" size={19} /></span>
+        <span className="sidebar-primary-action-label">{t('Create your graph', '创建你的图')}</span>
       </button>
     </nav>
     <nav className="sidebar-utilities" aria-label={t('Knowledge and capability management', '知识与能力管理')}>
@@ -246,7 +262,7 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
               </div>
               <div className="project-session-collapse" aria-hidden={!expanded} {...(!expanded ? { inert: '' } : {})}><div className="project-session-clip"><div className="project-session-list">
                 {projectSessions.length === 0 ? <div className="project-tree-empty">{t('No conversations', '暂无会话')}</div> : projectSessions.map(session => <div className={`project-session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id}>
-                  <button className="project-session-main" onClick={() => { onSelect(session.session_id); onCloseMobile(); }} title={titleFor(session)}><Icon name="file" size={13} />{statusFor(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={statusFor(runStatuses[session.session_id])} />}<span>{titleFor(session)}</span></button>
+                  <button className="project-session-main" onClick={() => { onSelect(session.session_id); onCloseMobile(); }} title={titleFor(session)}><Icon name="file" size={13} /><SessionRunIndicator status={runStatuses[session.session_id]} unread={unreadCompletions[session.session_id]} t={t} /><span>{titleFor(session)}</span></button>
                   {pinButton(session)}<button className="project-session-delete" onClick={() => onDelete(session.session_id)} title={t('Delete conversation', '删除会话')} aria-label={t('Delete conversation', '删除会话')}><Icon name="trash" size={12} /></button>
                 </div>)}
               </div></div></div>
@@ -258,10 +274,14 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
         <div className="sidebar-section-head"><span>{t('Recent tasks', '最近任务')}</span><button onClick={() => requireAccount(() => { onNew(); onCloseMobile(); })} title={t('Create standalone conversation', '新建独立会话')} aria-label={t('Create standalone conversation', '新建独立会话')}><Icon name="plus" size={15} /></button></div>
         <div className="session-list">
           {independentSessions.length === 0 ? <div className="sidebar-empty">{t('No tasks', '暂无任务')}</div> : independentSessions.map(session => <div className={`session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id} title={titleFor(session)} onClick={() => { onSelect(session.session_id); onCloseMobile(); }}>
-            <Icon name="file" size={15} /><div className="session-copy"><strong><span className="recent-session-name">{titleFor(session)}</span></strong><span>{statusFor(runStatuses[session.session_id]) || (session.has_graph ? t('Graph loaded', '已加载图') : t('Ready to analyze', '待开始分析'))}</span></div>{statusFor(runStatuses[session.session_id]) && <i className={`session-run-dot ${runStatuses[session.session_id]}`} aria-label={statusFor(runStatuses[session.session_id])} />}{pinButton(session)}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title={t('Delete task', '删除任务')} aria-label={t('Delete task', '删除任务')}><Icon name="trash" size={14} /></button>
+            <Icon name="file" size={15} /><div className="session-copy"><strong><span className="recent-session-name">{titleFor(session)}</span></strong><span>{statusFor(runStatuses[session.session_id]) || (session.has_graph ? t('Graph loaded', '已加载图') : t('Ready to analyze', '待开始分析'))}</span></div><SessionRunIndicator status={runStatuses[session.session_id]} unread={unreadCompletions[session.session_id]} t={t} />{pinButton(session)}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title={t('Delete task', '删除任务')} aria-label={t('Delete task', '删除任务')}><Icon name="trash" size={14} /></button>
           </div>)}
         </div>
       </section>
+    </div>
+    <div className="sidebar-pagination">
+      {sessionListError && <span role="alert">{sessionListError}</span>}
+      {hasMoreSessions && <button className="text-button" onClick={onLoadMoreSessions} disabled={loadingSessions}>{loadingSessions ? t('Loading…', '加载中…') : sessionListError ? t('Retry loading tasks', '重试加载任务') : t('Load older tasks', '加载更多任务')}</button>}
     </div>
     <div className="sidebar-footer">
       <div className="account-area">

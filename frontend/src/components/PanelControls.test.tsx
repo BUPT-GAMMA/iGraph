@@ -43,6 +43,11 @@ describe('docked panel controls', () => {
     const { rerender } = render(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} onCloseMobile={onCloseMobile} collapsed={false} onCollapse={noop} />);
 
     const entry = screen.getByRole('button', { name: '创建你的图' });
+    const newTask = screen.getByRole('button', { name: '新建任务' });
+    expect(entry.classList.contains('sidebar-primary-action')).toBe(true);
+    expect(newTask.classList.contains('sidebar-primary-action')).toBe(true);
+    expect(entry.querySelector('.sidebar-primary-action-icon')).toBeTruthy();
+    expect(newTask.querySelector('.sidebar-primary-action-icon')).toBeTruthy();
     expect(entry.getAttribute('aria-current')).toBeNull();
     fireEvent.click(entry);
     expect(onCreateGraph).toHaveBeenCalledOnce();
@@ -177,6 +182,25 @@ describe('docked panel controls', () => {
     expect(container.querySelector('.project-session-list')?.textContent).toContain('会话一');
     expect(screen.getAllByText('独立对话')).toHaveLength(1);
     expect(screen.getAllByText('会话一')).toHaveLength(1);
+  });
+
+  it('uses a spinner for active replies and a blue dot for unread completions', () => {
+    const sessions = [{ session_id: 'running', title: '进行中' }, { session_id: 'done', title: '后台完成' }];
+    const { container, rerender } = render(<Sidebar {...sidebarProps} sessions={sessions}
+      runStatuses={{ running: 'streaming', done: 'completed' }} unreadCompletions={{ done: true }}
+      collapsed={false} onCollapse={noop} />);
+
+    const running = screen.getByLabelText('正在运行');
+    expect(running.classList.contains('is-running')).toBe(true);
+    expect(running.classList.contains('is-unread')).toBe(false);
+    const completed = screen.getByLabelText('回复已完成');
+    expect(completed.classList.contains('is-unread')).toBe(true);
+    expect(container.querySelectorAll('.session-run-indicator')).toHaveLength(2);
+
+    rerender(<Sidebar {...sidebarProps} sessions={sessions} activeId="done"
+      runStatuses={{ running: 'streaming', done: 'completed' }} unreadCompletions={{}}
+      collapsed={false} onCollapse={noop} />);
+    expect(screen.queryByLabelText('回复已完成')).toBeNull();
   });
 
   it('creates tasks in the focused project and keeps the recent-task action independent', () => {
@@ -400,7 +424,7 @@ describe('docked panel controls', () => {
       onClose={noop}
     />);
 
-    expect(screen.getByText('已预处理 · 10,000,000 nodes · 100,000,000 edges')).toBeTruthy();
+    expect(screen.getByText('已预处理 · 10,000,000 个节点 · 100,000,000 条边')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '使用' }));
     expect(onUseServer).toHaveBeenCalledOnce();
   });

@@ -86,13 +86,13 @@ export function DatasetPanel({ datasets, serverDatasets = [], projectName, activ
         </div><details className="dataset-description"><summary>{t('Dataset description', '数据集描述')}</summary><DatasetDescriptionEditor dataset={dataset} disabled={busy} onSaved={onDatasetUpdated} /></details></div>) : <div className="drawer-empty"><Icon name="database" size={24} /><strong>{t('No datasets', '暂无数据集')}</strong></div>}
       </div>
       <div className="server-dataset-section">
-        <div className="server-dataset-heading"><strong>服务器数据源</strong><span>{onUseServer ? '服务器端只预处理一次；使用时为当前会话绑定独立逻辑版本' : '请先创建或选择项目，再将服务器数据源添加到项目'}</span></div>
+        <div className="server-dataset-heading"><strong>{t('Server datasets', '服务器数据源')}</strong><span>{onUseServer ? t('Prepared once on the server; each session uses an independent logical version.', '服务器端只预处理一次；使用时为当前会话绑定独立逻辑版本') : t('Create or select a project to add a server dataset.', '请先创建或选择项目，再将服务器数据源添加到项目')}</span></div>
         <div className="server-dataset-list">
           {availableServerDatasets.length ? availableServerDatasets.map(dataset => <div className="server-dataset-row" key={dataset.server_dataset_id}>
             <span className="project-dataset-icon"><Icon name="database" size={15} /></span>
-            <span className="server-dataset-copy"><strong>{dataset.name}</strong><small>{dataset.relative_path} · {fileSize(dataset.size_bytes)} · {dataset.directed === false ? '无向图' : '有向图'}</small>{serverDatasetPreparationLabel(dataset) && <em className={`server-preparation ${dataset.preparation?.status || ''}`} title={dataset.preparation?.error || dataset.metadata_error || undefined}>{serverDatasetPreparationLabel(dataset)}</em>}</span>
-            <button className="text-button" onClick={() => onUseServer?.(dataset)} disabled={busy || !onUseServer || !serverDatasetReady(dataset)}>{onUseServer ? serverDatasetActionLabel(dataset, '使用') : '选择项目后使用'}</button>
-          </div>) : <div className="server-dataset-empty">{onUseServer ? '暂无可添加的服务器数据源' : '暂无服务器数据源'}</div>}
+            <span className="server-dataset-copy"><strong>{dataset.name}</strong><small>{dataset.relative_path} · {fileSize(dataset.size_bytes)} · {dataset.directed === false ? t('Undirected', '无向图') : t('Directed', '有向图')}</small>{serverDatasetPreparationLabel(dataset, t) && <em className={`server-preparation ${dataset.preparation?.status || ''}`} title={dataset.preparation?.error || dataset.metadata_error || undefined}>{serverDatasetPreparationLabel(dataset, t)}</em>}</span>
+            <button className="text-button" onClick={() => onUseServer?.(dataset)} disabled={busy || !onUseServer || !serverDatasetReady(dataset)}>{onUseServer ? serverDatasetActionLabel(dataset, t('Use', '使用'), t) : t('Select a project first', '选择项目后使用')}</button>
+          </div>) : <div className="server-dataset-empty">{onUseServer ? t('No server datasets available to add', '暂无可添加的服务器数据源') : t('No server datasets', '暂无服务器数据源')}</div>}
         </div>
       </div>
   </>}</DrawerShell>;

@@ -5,8 +5,27 @@ import unittest
 
 import pytest
 
-from backend.app import _messages_from_runs
+from backend.app import _messages_from_runs, _merge_training_job_card, _project_training_summary, _training_cards_from_runs
 from backend.event_mapper import map_agentos_event, map_product_events
+
+
+@pytest.mark.parametrize("result", [{"success": False, "error": "Invalid model"}, "Validation error: Invalid model"])
+def test_failed_training_is_retained_in_history(result):
+    cards = _training_cards_from_runs([{"run_id": "failed-run", "content": "Training failed", "tools": [
+        {"tool_name": "train", "tool_call_id": "failed-call", "result": result, "tool_call_error": True},
+    ]}])
+    assert len(cards) == 1
+    assert cards[0]["result"] == result
+    assert cards[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "cancelling", "done"])
+def test_job_snapshot_and_comparison_keep_actual_status(status):
+    card = {"tool": "train", "result": {"async": True, "status": "queued", "metrics": {"val_acc": 0.5}}}
+    _merge_training_job_card(card, {"job": {"job_id": "job-1", "tool_name": "train", "status": status, "error": "out of memory"}})
+    assert card["result"]["error"] == "out of memory"
+    assert card["done"] == (status != "cancelling")
+    assert _project_training_summary([card])[0]["status"] == status
 
 
 def _completed_tool_event(name: str, result: dict, call_id: str = "call-status") -> dict:

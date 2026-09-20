@@ -2,28 +2,22 @@ import { useId, useState } from 'react';
 import type { ProcessItem, ToolCall } from '../types';
 import { Icon } from './Icon';
 import { useI18n, type Translate } from '../i18n';
+import { executionError, executionLabel, executionPending, executionStatus } from '../toolStatus';
 
 import labels from '../toolLabels.json';
 
 const toolLabels: Readonly<Record<string, string>> = labels;
 
 function toolStatus(tool: ToolCall | undefined, t: Translate) {
-  if (tool?.status === 'failed') return { label: t('Failed', '失败'), className: 'is-error' };
-  if (tool?.status === 'cancelled') return { label: t('Cancelled', '已取消'), className: 'is-cancelled' };
-  if (tool?.done || tool?.status === 'completed') return { label: t('Complete', '完成'), className: 'is-complete' };
-  return { label: t('Running', '运行中'), className: 'is-running' };
-}
-
-function formatError(error: unknown, t: Translate): string {
-  if (error && typeof error === 'object' && 'message' in error) return String(error.message).split('\n')[0];
-  return typeof error === 'string' ? error.split('\n')[0] : t('Tool execution failed', '工具执行失败');
+  const status = executionStatus(tool);
+  if (status === 'completed') return { label: t('Complete', '完成'), className: 'is-complete' };
+  if (status === 'cancelled') return { label: t('Cancelled', '已取消'), className: 'is-cancelled' };
+  return { label: executionLabel(tool || {}, t), className: status === 'failed' ? 'is-error' : status === 'unavailable' ? 'is-cancelled' : 'is-running' };
 }
 
 function safeError(tool: ToolCall, t: Translate) {
-  if (tool.status !== 'failed') return '';
-  const result = tool.result;
-  if (result && typeof result === 'object' && 'error' in result) return formatError((result as { error?: unknown }).error, t);
-  return t('Tool execution failed', '工具执行失败');
+  if (executionStatus(tool) !== 'failed') return '';
+  return executionError(tool).split('\n')[0] || t('Tool execution failed', '工具执行失败');
 }
 
 function englishToolLabel(name: string) {
@@ -71,14 +65,11 @@ export function ProcessTimeline({ items = [], tools: liveTools = [], compact = f
     // Graph jobs can continue after the agent turn; dev's job state remains authoritative.
     const result = live.result && typeof live.result === 'object' ? live.result as Record<string, unknown> : {};
     const jobId = live.job_id || result.job_id || live.progress?.job_id;
-    const failed = result.success === false || result.status === 'failed' || live.progress?.kind === 'job_failed';
-    const cancelled = result.status === 'cancelled' || live.progress?.kind === 'job_cancelled';
-    const status: ToolCall['status'] = cancelled ? 'cancelled' : failed ? 'failed' : live.done ? 'completed' : 'running';
     return { ...item, tool: { ...item.tool, progress: live.progress || item.tool?.progress,
-      ...(jobId ? { ...live, status } : {}) } };
+      ...(jobId ? { ...live, status: live.status } : {}) } };
   }).sort((a, b) => a.sequence - b.sequence);
   const tools = ordered.filter(item => item.kind === 'tool');
-  const running = tools.filter(item => !item.tool?.done && !['completed', 'failed', 'cancelled'].includes(item.tool?.status || '')).length;
+  const running = tools.filter(item => executionPending(item.tool || {})).length;
   const label = running
     ? t(`${running} running`, `${running} 项运行中`)
     : t(`${ordered.length} item${ordered.length === 1 ? '' : 's'}`, `${ordered.length} 项`);

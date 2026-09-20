@@ -5,7 +5,7 @@ vi.mock('./components/GraphWorkspace', () => ({ GraphWorkspace: () => null }));
 vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   validateUser: vi.fn().mockResolvedValue({ valid: true, default_model: 'model' }),
   listSessions: vi.fn().mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] }),
-  listProjects: vi.fn().mockResolvedValue({ projects: [] }), listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
+  listProjects: vi.fn().mockResolvedValue({ projects: [] }), listModels: vi.fn(),
   listProjectConversations: vi.fn().mockResolvedValue({ conversations: [] }),
   listProjectDatasets: vi.fn().mockResolvedValue({ project_id: null, datasets: [], default_dataset_id: null }),
   activateSession: vi.fn(), resumeRun: vi.fn(), getRunSnapshot: vi.fn(), streamChat: vi.fn(),
@@ -15,7 +15,10 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   visualizeGraph: vi.fn().mockRejectedValue(new Error('no graph')),
 }));
 import App from './main';
-import { USER_KEY, activateSession, cancelRun, deleteSession, getCapabilities, getRunControl, getRunSnapshot, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, resumeRun, streamChat, updateSessionModel, validateUser, visualizeGraph } from './api';
+import { activityKey, readSessionActivities } from './sessionActivity';
+import { USER_KEY, activateSession, cancelRun, deleteSession, getCapabilities, getRunControl, getRunSnapshot, listModels, listProjectConversations, listProjectDatasets, listProjects, listSessions, resumeRun, streamChat, updateSessionModel, validateUser, visualizeGraph, type ModelCatalog } from './api';
+
+const catalog = (...ids: string[]): ModelCatalog => ({ default_model: 'model', models: ids.map(id => ({ config_id: id, model_id: id, upstream_model_id: id, display_name: id, base_url: '', source: 'custom', revision: 1, enabled: true, tools: true, vision: false, context_window: 32768, max_output_tokens: 4096 })) });
 
 const active = (content = 'A') => ({ model: 'model', has_graph: false,
   messages: [{ id: 'assistant:r', role: 'assistant' as const, content }],
@@ -30,7 +33,7 @@ beforeEach(() => {
   vi.mocked(validateUser).mockReset().mockResolvedValue({ valid: true, default_model: 'model' });
   vi.mocked(listProjects).mockReset().mockResolvedValue({ projects: [] });
   vi.mocked(listSessions).mockReset().mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] });
-  vi.mocked(listCustomModels).mockReset().mockResolvedValue({ models: [] });
+  vi.mocked(listModels).mockReset().mockResolvedValue(catalog('model', 'old-choice'));
   vi.mocked(listProjectConversations).mockReset().mockResolvedValue({ conversations: [] });
   vi.mocked(listProjectDatasets).mockReset().mockResolvedValue({ project_id: null, datasets: [], default_dataset_id: null });
   vi.mocked(activateSession).mockReset(); vi.mocked(resumeRun).mockReset(); vi.mocked(getRunSnapshot).mockReset();
@@ -54,6 +57,62 @@ beforeEach(() => {
 afterEach(() => { cleanup(); restoreStorage(); restoreStorage = () => {}; });
 
 describe('actual App recovery', () => {
+  it('resumes a background run after remount without posting another question', async () => {
+    vi.mocked(activateSession).mockImplementation(async id => id === 'A' ? active() : { ...complete(), messages: [] });
+    const first = render(<App />);
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
+    navigate('B');
+    await waitFor(() => expect(first.container.querySelector('.session-row.selected')?.textContent).toContain('Session B'));
+    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.runId).toBe('r'));
+    first.unmount();
+    vi.mocked(resumeRun).mockClear();
+    vi.mocked(activateSession).mockClear();
+    const second = render(<App />);
+    await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
+    expect(vi.mocked(resumeRun).mock.calls[0].slice(0, 3)).toEqual(['A', 'r', -1]);
+    expect(vi.mocked(activateSession).mock.calls.every(call => call[0] === 'B')).toBe(true);
+    await waitFor(() => expect(second.container.querySelector('.session-row.selected')?.textContent).toContain('Session B'));
+    expect(second.container.querySelector('.session-run-indicator.is-running')).toBeTruthy();
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it('restores an offline completion, keeps its blue dot across reloads, and clears it permanently when opened', async () => {
+    window.history.replaceState({}, '', '/?session=B');
+    localStorage.setItem(activityKey('recovery-user', 'A'), JSON.stringify({ sessionId: 'A', runId: 'r', status: 'streaming' }));
+    vi.mocked(activateSession).mockResolvedValue({ ...complete(), messages: [] });
+    vi.mocked(getCapabilities).mockResolvedValue({ run_cancel_v1: false, job_cancel_v1: false });
+    vi.mocked(resumeRun).mockImplementationOnce(async (sessionId, runId, _cursor, handlers) => {
+      handlers.onBatch?.({ protocol_version: 2, session_id: sessionId, run_id: runId, event_index: 0, events: [{ type: 'done', content: 'Finished offline' }] });
+    });
+    const first = render(<App />);
+    await screen.findByRole('status', { name: '回复已完成' });
+    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.completedRunId).toBe('r'));
+    first.unmount();
+    const second = render(<App />);
+    await screen.findByRole('status', { name: '回复已完成' });
+    fireEvent.click(screen.getByText('Session A'));
+    await waitFor(() => expect(screen.queryByRole('status', { name: '回复已完成' })).toBeNull());
+    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.readRunId).toBe('r'));
+    second.unmount();
+    window.history.replaceState({}, '', '/?session=B');
+    render(<App />);
+    await screen.findByText('Session A');
+    expect(screen.queryByRole('status', { name: '回复已完成' })).toBeNull();
+    expect(resumeRun).toHaveBeenCalledOnce();
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  it('discards activity for deleted tasks without restoring its run', async () => {
+    localStorage.setItem(activityKey('recovery-user', 'deleted'), JSON.stringify({ sessionId: 'deleted', runId: 'old', status: 'streaming' }));
+    vi.mocked(listSessions).mockImplementation(async options => options?.ids ? { sessions: [] } : { sessions: [{ session_id: 'A', title: 'Session A' }] });
+    vi.mocked(activateSession).mockResolvedValue({ ...complete(), messages: [] });
+    render(<App />);
+    await screen.findByText('Session A');
+    expect(localStorage.getItem(activityKey('recovery-user', 'deleted'))).toBeNull();
+    expect(resumeRun).not.toHaveBeenCalled();
+  });
+
   it.each(['storage', 'focus', 'visibility'])('synchronizes accounts on %s and discards the old stream', async trigger => {
     vi.mocked(activateSession).mockResolvedValue(active('old account response'));
     const { container } = render(<App />);
@@ -251,9 +310,9 @@ describe('actual App recovery', () => {
   });
   it('ignores previous-account loads that finish after switching identities', async () => {
     let resolveOldProjects!: (value: { projects: Array<{ project_id: string; user_id: string; name: string }> }) => void;
-    let resolveOldModels!: (value: { models: Array<{ model_id: string; display_name: string; base_url: string }> }) => void;
+    let resolveOldModels!: (value: ModelCatalog) => void;
     const oldProjects = new Promise<{ projects: Array<{ project_id: string; user_id: string; name: string }> }>(resolve => { resolveOldProjects = resolve; });
-    const oldModels = new Promise<{ models: Array<{ model_id: string; display_name: string; base_url: string }> }>(resolve => { resolveOldModels = resolve; });
+    const oldModels = new Promise<ModelCatalog>(resolve => { resolveOldModels = resolve; });
     vi.mocked(listProjects)
       .mockReset()
       .mockImplementationOnce(() => oldProjects)
@@ -261,14 +320,14 @@ describe('actual App recovery', () => {
     vi.mocked(listSessions)
       .mockReset()
       .mockResolvedValue({ sessions: [{ session_id: 'next-session', title: 'Next Account Session' }] });
-    vi.mocked(listCustomModels)
+    vi.mocked(listModels)
       .mockReset()
       .mockImplementationOnce(() => oldModels)
-      .mockResolvedValue({ models: [{ model_id: 'next-custom', display_name: 'Next custom', base_url: 'https://next.invalid/v1' }] });
+      .mockResolvedValue(catalog('model', 'next-custom'));
     window.history.replaceState({}, '', '/');
     const { container } = render(<App />);
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(listCustomModels).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
     fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
@@ -277,10 +336,10 @@ describe('actual App recovery', () => {
 
     await waitFor(() => expect(container.textContent).toContain('Next Account Session'));
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(listCustomModels).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(2));
     await act(async () => {
       resolveOldProjects({ projects: [{ project_id: 'old-project', user_id: 'recovery-user', name: 'Old Account Project' }] });
-      resolveOldModels({ models: [{ model_id: 'old-custom', display_name: 'Old custom', base_url: 'https://old.invalid/v1' }] });
+      resolveOldModels(catalog('old-custom'));
       await Promise.resolve();
     });
 
@@ -288,8 +347,8 @@ describe('actual App recovery', () => {
     expect(container.textContent).not.toContain('Old Account Project');
     fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
     fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
-    expect(screen.getByRole('button', { name: 'next-custom' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'old-custom' })).toBeNull();
+    expect(screen.getByRole('button', { name: /next-custom/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /old-custom/ })).toBeNull();
   });
   it('releases the global busy state when an account changes during project loading', async () => {
     let resolveOldConversations!: (value: { conversations: [] }) => void;
@@ -340,8 +399,9 @@ describe('actual App recovery', () => {
     render(<App />);
     const modelTrigger = await screen.findByRole('button', { name: '选择模型' });
     fireEvent.click(modelTrigger);
-    fireEvent.click(within(screen.getByRole('group', { name: '可用模型' })).getByRole('button', { name: 'old-choice' }));
-    await waitFor(() => expect(updateSessionModel).toHaveBeenCalledWith('A', 'old-choice'));
+    fireEvent.click(within(screen.getByRole('group', { name: '可用模型' })).getByRole('button', { name: /old-choice/ }));
+    await waitFor(() => expect(updateSessionModel).toHaveBeenCalledWith('A', 'old-choice', 0));
+    vi.mocked(listModels).mockResolvedValue({ ...catalog('fresh-a-model'), default_model: 'fresh-a-model' });
 
     act(() => window.history.replaceState({}, '', '/'));
     fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
