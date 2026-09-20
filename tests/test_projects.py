@@ -1231,9 +1231,31 @@ def test_recent_sessions_sort_by_activity_before_applying_limit(client):
     for index in range(210):
         FakeServiceClient.runtime_sessions[str(index)] = {'session_id': str(index), 'user_id': 'admin',
             'session_state': {}, 'updated_at': index}
-    rows = client.get('/api/sessions', headers=headers()).json()['sessions']
+    rows = client.get('/api/sessions?limit=200', headers=headers()).json()['sessions']
     assert len(rows) == 200
     assert [row['session_id'] for row in rows] == [str(index) for index in range(209, 9, -1)]
+
+
+def test_session_pages_and_pinned_lookup(client):
+    FakeServiceClient.runtime_sessions = {
+        f's-{index:03}': {'session_id': f's-{index:03}', 'user_id': 'admin', 'session_state': {}, 'updated_at': index}
+        for index in range(225)
+    }
+    FakeServiceClient.runtime_sessions['private'] = {'session_id': 'private', 'user_id': 'someone-else', 'session_state': {}}
+    first = client.get('/api/sessions', headers=headers()).json()
+    assert len(first['sessions']) == 50 and first['has_more']
+    ids = [row['session_id'] for row in first['sessions']]
+    cursor = first['next_cursor']
+    while cursor:
+        page = client.get('/api/sessions', headers=headers(), params={'cursor': cursor}).json()
+        ids.extend(row['session_id'] for row in page['sessions'])
+        cursor = page['next_cursor']
+    assert len(ids) == len(set(ids)) == 225 and ids[-1] == 's-000'
+    pins = client.get('/api/sessions', headers=headers(), params=[('ids', 's-000'), ('ids', 'deleted'), ('ids', 'private')]).json()
+    assert [row['session_id'] for row in pins['sessions']] == ['s-000']
+    assert pins['has_more'] is False
+    assert client.get('/api/sessions?cursor=broken', headers=headers()).status_code == 400
+    assert client.get('/api/sessions?limit=201', headers=headers()).status_code == 422
 
 
 def test_reused_creation_identity_cannot_change_project_scope(client):

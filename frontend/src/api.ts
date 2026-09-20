@@ -120,7 +120,13 @@ export async function deleteCustomModel(modelId: string) {
   return json<{ success?: boolean; model_id: string }>(`/api/models/custom/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
 }
 
-export async function listSessions() { return json<{ success?: boolean; sessions?: Session[] }>('/api/sessions'); }
+export async function listSessions(options: { cursor?: string; ids?: string[]; limit?: number } = {}) {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set('cursor', options.cursor);
+  if (options.limit) query.set('limit', String(options.limit));
+  for (const id of options.ids || []) query.append('ids', id);
+  return json<{ success?: boolean; sessions?: Session[]; next_cursor?: string | null; has_more?: boolean }>(`/api/sessions${query.size ? `?${query}` : ''}`);
+}
 export async function createSession(options: {
   clientSessionId?: string;
   model?: string;

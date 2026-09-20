@@ -30,6 +30,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from backend.general_migration import GeneralMigration
+from backend.session_pagination import session_page
 from backend.config import BackendConfig
 from backend.dataset_api import DATASET_API_MIGRATION, MIGRATION_GUIDE_PATH, legacy_dataset_api_notice
 from backend.construction_access import install_construction_access
@@ -3659,12 +3660,36 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                             status_code=200 if status == 'deleted' else 202)
 
     @app.get("/api/sessions")
-    async def list_sessions(request: Request):
+    async def list_sessions(request: Request, limit: int = Query(default=50, ge=1, le=200),
+                            cursor: str | None = Query(default=None, max_length=1024),
+                            ids: list[str] = Query(default=[], max_length=50)):
         user = current_user(request, users)
-        rows = await user_sessions(request, user.user_id, limit=200)
+        next_cursor = None
+        if ids:
+            if any(not re.fullmatch(r'[\w.-]{1,256}', sid) or sid in {'.', '..'} for sid in ids):
+                raise HTTPException(400, 'Invalid session ID')
+            semaphore = asyncio.Semaphore(4)
+
+            async def lookup(sid):
+                async with semaphore:
+                    try:
+                        return await get_session(sid, request, user.user_id)
+                    except HTTPException as exc:
+                        if exc.status_code == 404:
+                            return None
+                        raise
+
+            rows = [row for row in await asyncio.gather(*(lookup(sid) for sid in dict.fromkeys(ids))) if row]
+            if controls_enabled():
+                deleting = await runtime.request('GET', '/internal/sessions/deleting', headers=forwarded_headers(request, user.user_id))
+                rows = [row for row in rows if row.get('session_id') not in set(deleting.get('session_ids', []))]
+        else:
+            rows, next_cursor = session_page(await user_sessions(request, user.user_id),
+                                            limit=limit, cursor=cursor, activity=_session_activity)
         available_models = available_models_for(user)
         default_model = available_models[0] if available_models else "qwen3.6-plus"
-        return {"success": True, "sessions": [_session_row(row, default_model) for row in rows]}
+        return {"success": True, "sessions": [_session_row(row, default_model) for row in rows],
+                "next_cursor": next_cursor, "has_more": next_cursor is not None}
 
     @app.post("/api/sessions")
     async def create_session(req: CreateSessionReq, request: Request):

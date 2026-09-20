@@ -2080,3 +2080,7 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 [data-theme="dark"] .graph-overview-totals dt,
 [data-theme="dark"] .graph-overview-facts dt { color: #93a2b7; }
 [data-theme="dark"] .graph-overview-facts > div { background: #111827; }
+.sidebar-pagination { display: grid; gap: 6px; flex-shrink: 0; padding: 0 12px; }
+.sidebar-pagination:has(button) { padding-bottom: 8px; }
+.sidebar-pagination > span { color: var(--text-secondary); font-size: 12px; }
+.sidebar.is-collapsed .sidebar-pagination { display: none; }
