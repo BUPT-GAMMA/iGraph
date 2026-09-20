@@ -5,6 +5,7 @@ import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
 import { executionError, executionLabel, executionPending, executionStatus } from '../toolStatus';
 import { metricNumber, metricSegments } from '../mlMetrics';
+import { reportLabel } from '../reportLabels';
 import { listProjectTrainingRuns, visualizeGraph } from '../api';
 import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, PartitionedGraphSummary, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
@@ -605,8 +606,8 @@ function reportRecords(value: unknown): Record<string, unknown>[] {
 function reportText(value: unknown, locale: string): string {
   if (value == null || value === '') return '-';
   if (typeof value === 'number') return value.toLocaleString(locale, { maximumFractionDigits: 6 });
-  if (typeof value === 'boolean') return value ? '是' : '否';
-  if (Array.isArray(value)) return value.map(item => reportText(item, locale)).join('、');
+  if (typeof value === 'boolean') return locale.startsWith('zh') ? (value ? '是' : '否') : (value ? 'Yes' : 'No');
+  if (Array.isArray(value)) return value.map(item => reportText(item, locale)).join(locale.startsWith('zh') ? '、' : ', ');
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
@@ -778,15 +779,15 @@ function modernizeLegacyReport(report: Record<string, unknown>, tools: ToolCall[
 }
 
 function ReportChart({ chart, locale }: { chart: Record<string, unknown>; locale: string }) {
-  const rows = reportRecords(chart.data).map(row => ({ label: reportText(row.label, locale), value: Number(row.value), detail: row.detail == null ? '' : reportText(row.detail, locale) })).filter(row => Number.isFinite(row.value));
+  const rows = reportRecords(chart.data).map(row => ({ label: reportText(row.label, locale), value: Number(row.value), detail: row.detail == null ? '' : reportText(reportLabel(row, 'detail', locale), locale) })).filter(row => Number.isFinite(row.value));
   if (!rows.length) return null;
   const max = Math.max(...rows.map(row => Math.max(0, row.value)), 0);
-  return <div className="analysis-report-chart" aria-label={reportText(chart.title, locale)}>
-    <strong>{reportText(chart.title, locale)}</strong>
+  return <div className="analysis-report-chart" aria-label={reportText(reportLabel(chart, 'title', locale), locale)}>
+    <strong>{reportText(reportLabel(chart, 'title', locale), locale)}</strong>
     <div>{rows.map((row, index) => <div className="analysis-report-bar" key={`${row.label}-${index}`}>
       <span title={row.label}>{row.label}</span>
       <i aria-hidden="true"><b style={{ width: `${max > 0 ? Math.max(2, row.value / max * 100) : 0}%` }} /></i>
-      <em><strong>{reportText(row.value, locale)}{chart.unit ? ` ${String(chart.unit)}` : ''}</strong>{row.detail ? <small>{row.detail}</small> : null}</em>
+      <em><strong>{reportText(row.value, locale)}{chart.unit ? ` ${String(reportLabel(chart, 'unit', locale))}` : ''}</strong>{row.detail ? <small>{row.detail}</small> : null}</em>
     </div>)}</div>
   </div>;
 }
@@ -797,8 +798,8 @@ function ReportTable({ table, locale }: { table: Record<string, unknown>; locale
   const columns = declaredColumns.length ? declaredColumns : rows.length ? Object.keys(rows[0]).map(key => ({ key, label: key })) : [];
   if (!rows.length || !columns.length) return null;
   return <div className="analysis-report-table-block">
-    <strong>{reportText(table.title, locale)}</strong>
-    <div className="analysis-report-table-scroll"><table><thead><tr>{columns.map(column => <th key={String(column.key)}>{reportText(column.label || column.key, locale)}</th>)}</tr></thead>
+    <strong>{reportText(reportLabel(table, 'title', locale), locale)}</strong>
+    <div className="analysis-report-table-scroll"><table><thead><tr>{columns.map(column => <th key={String(column.key)}>{reportText(reportLabel(column, 'label', locale) || column.key, locale)}</th>)}</tr></thead>
       <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{columns.map(column => <td key={String(column.key)}>{reportText(row[String(column.key)], locale)}</td>)}</tr>)}</tbody></table></div>
   </div>;
 }
@@ -806,7 +807,7 @@ function ReportTable({ table, locale }: { table: Record<string, unknown>; locale
 function AnalysisReport({ report, index, onBack }: { report: Record<string, unknown>; index: number; onBack: () => void }) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
-  const title = String(report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
+  const title = String(recordValue(report.title_i18n)[language] || report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
   const sections = reportRecords(report.sections);
   const limitations = Array.isArray(report.limitations) ? report.limitations : [];
   return <article className="analysis-report" aria-label={t(`${title} report content`, `${title}报告内容`)}>
@@ -814,7 +815,7 @@ function AnalysisReport({ report, index, onBack }: { report: Record<string, unkn
     <header>
       <span>{t('Analysis report', '分析报告')}</span>
       <h2>{title}</h2>
-      {report.subtitle ? <p>{String(report.subtitle)}</p> : null}
+      {report.subtitle ? <p>{String(reportLabel(report, 'subtitle', locale))}</p> : null}
       {report.summary ? <div className="analysis-report-summary">{String(report.summary)}</div> : null}
     </header>
     {sections.length ? <div className="analysis-report-sections">{sections.map((section, sectionIndex) => {
@@ -824,9 +825,9 @@ function AnalysisReport({ report, index, onBack }: { report: Record<string, unkn
       const insights = Array.isArray(section.insights) ? section.insights : [];
       const sectionLimitations = Array.isArray(section.limitations) ? section.limitations : [];
       return <section key={String(section.id || section.title || sectionIndex)}>
-        <h3>{String(section.title || t(`Section ${sectionIndex + 1}`, `第 ${sectionIndex + 1} 部分`))}</h3>
+        <h3>{String(reportLabel(section, 'title', locale) || t(`Section ${sectionIndex + 1}`, `第 ${sectionIndex + 1} 部分`))}</h3>
         {section.summary ? <p>{String(section.summary)}</p> : null}
-        {metrics.length ? <dl className="analysis-report-metrics">{metrics.map((metric, metricIndex) => <div key={`${String(metric.label)}-${metricIndex}`}><dt>{reportText(metric.label, locale)}</dt><dd>{reportText(metric.value, locale)}{metric.unit ? <small>{String(metric.unit)}</small> : null}</dd></div>)}</dl> : null}
+        {metrics.length ? <dl className="analysis-report-metrics">{metrics.map((metric, metricIndex) => <div key={`${String(metric.label)}-${metricIndex}`}><dt>{reportText(reportLabel(metric, 'label', locale), locale)}</dt><dd>{reportText(metric.value_i18n || ['图方向', '边权重', '节点特征', '弱连通', '强连通', '连通'].includes(String(metric.label)) ? reportLabel(metric, 'value', locale) : metric.value, locale)}{metric.unit ? <small>{String(reportLabel(metric, 'unit', locale))}</small> : null}</dd></div>)}</dl> : null}
         {charts.map((chart, chartIndex) => <ReportChart chart={chart} locale={locale} key={`${String(chart.title)}-${chartIndex}`} />)}
         {tables.map((table, tableIndex) => <ReportTable table={table} locale={locale} key={`${String(table.title)}-${tableIndex}`} />)}
         {insights.length ? <div className="analysis-report-notes"><strong>{t('Findings', '发现')}</strong><ul>{insights.map((insight, insightIndex) => <li key={insightIndex}>{reportText(insight, locale)}</li>)}</ul></div> : null}
@@ -846,7 +847,7 @@ function ArtifactsTab({ messages }: { messages: Message[] }) {
   if (selectedReport != null && reports[selectedReport]) return <div className="tab-content analysis-report-content"><AnalysisReport report={reports[selectedReport].report} index={selectedReport} onBack={() => setSelectedReport(null)} /></div>;
   return <div className="tab-content"><div className="tab-title"><strong>{t('Artifacts', '分析产物')}</strong><span>{t(`${reports.length.toLocaleString(locale)} reports`, `${reports.length.toLocaleString(locale)} 份报告`)}</span></div><div className="workspace-list">{reports.map(({ report }, index) => {
     const type = String(report.intent || report.type || 'analysis');
-    const title = String(report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
+    const title = String(recordValue(report.title_i18n)[language] || report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
     return <button type="button" className="workspace-list-row artifact-report-row" aria-label={t(`Open report: ${title}`, `查看报告：${title}`)} onClick={() => setSelectedReport(index)} key={`${String(report.id || report.title || 'report')}-${index}`}><div className="workspace-list-icon"><Icon name="file" size={15} /></div><div><strong>{title}</strong><span>{type === 'analysis' ? t('Analysis', '分析') : type}</span></div><b>{t('View', '查看')} <Icon name="arrow-right" size={13} /></b></button>;
   })}</div></div>;
 }

@@ -68,7 +68,7 @@ def create_igraph_factory(
             name="iGraph Agent",
             model=create_model(model_id, config, custom_model),
             db=db,
-            tools=[create_graph_tools(config), *create_workspace_tools(), update_agent_notes],
+            tools=[create_graph_tools(config, response_language=options.response_language), *create_workspace_tools(), update_agent_notes],
             skills=build_skills(config, user_id),
             learning=create_learning_machine(config, planning_mode=options.planning_mode),
             instructions=instructions_for(

@@ -31,6 +31,26 @@ afterEach(() => {
 });
 
 describe('GraphWorkspace visualization layers', () => {
+  it('switches report UI labels without changing the narrative or original node names', () => {
+    const report = { version: 'analysis_report.v2', title: '用户标题', summary: '本轮中文结论。', sections: [{
+      id: 'structure-overview', title: '结构概览', title_i18n: { en: 'Graph overview', zh: '结构概览' },
+      summary: '本轮中文说明。', metrics: [{ label: '节点数', value: 5 }],
+      charts: [{ title: '高连接节点', unit: '度', data: [{ label: '节点数', value: 2 }] }],
+    }] };
+    function LanguageToggle() { const { toggleLanguage } = useI18n(); return <button onClick={toggleLanguage}>Switch language</button>; }
+    render(<I18nProvider initialLanguage="en"><LanguageToggle /><GraphWorkspace data={{ nodes: [], edges: [] }} messages={[{ role: 'assistant', content: '', reports: [report] }]} tab="Artifacts" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} /></I18nProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Open report: 用户标题' }));
+    expect(screen.getByRole('heading', { name: 'Graph overview' })).toBeTruthy();
+    expect(screen.getByText('Nodes')).toBeTruthy();
+    expect(screen.getByText('2 Degree')).toBeTruthy();
+    expect(screen.getByText('节点数')).toBeTruthy();
+    expect(screen.getByText('本轮中文结论。')).toBeTruthy();
+    fireEvent.click(screen.getByText('Switch language'));
+    expect(screen.getByRole('heading', { name: '结构概览' })).toBeTruthy();
+    expect(screen.getByText('2 度')).toBeTruthy();
+    expect(screen.getByText('本轮中文结论。')).toBeTruthy();
+  });
+
   it('shows selected instance properties from the latest graph but not in Schema mode', () => {
     const node = { id: 'customer', attrs: { type: 'customers', properties: { name: '张三' } } };
     const props = { data: { nodes: [node], edges: [] }, tab: 'Graph' as const, onTab: vi.fn(), selected: { id: 'customer' }, onSelect: vi.fn(), collapsed: false, onToggle: vi.fn() };

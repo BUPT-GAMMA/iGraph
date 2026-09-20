@@ -424,7 +424,7 @@ describe('docked panel controls', () => {
       onClose={noop}
     />);
 
-    expect(screen.getByText('已预处理 · 10,000,000 nodes · 100,000,000 edges')).toBeTruthy();
+    expect(screen.getByText('已预处理 · 10,000,000 个节点 · 100,000,000 条边')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '使用' }));
     expect(onUseServer).toHaveBeenCalledOnce();
   });

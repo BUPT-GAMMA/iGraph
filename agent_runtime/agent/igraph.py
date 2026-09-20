@@ -774,6 +774,9 @@ class IGraph:
             # durable large-graph engine.  Detect that response generically so
             # callers still get polling/progress/result semantics without
             # submitting the original operation a second time.
+            if name == "create_analysis_report":
+                args = {**args, "options": {**(args.get("options") or {}),
+                        "language": getattr(self.context_manager, "_turn_response_language", "Auto")}}
             initial = await self._mcp_client.call_tool(name, args)
             initial_payload = self._decode_mcp_payload(initial)
             initial_job_id = (
