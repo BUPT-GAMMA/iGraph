@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState }
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { readComposerDraft, writeComposerDraft, clearComposerDraft } from './composerDrafts';
+import { readPins } from './sessionPins';
 import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, importServerDataset, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listServerDatasets, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, ConstructionState, CsvBundleSchema, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, ServerDataset, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
@@ -102,7 +103,12 @@ function normalizeMessages(input: unknown): Message[] {
 function mergeSessionLists(current: Session[], incoming: Session[]) {
   const byId = new Map(current.map(session => [session.session_id, session]));
   for (const session of incoming) byId.set(session.session_id, { ...(byId.get(session.session_id) || {}), ...session });
-  return [...byId.values()].sort((left, right) => String(right.updated_at || right.created_at || '').localeCompare(String(left.updated_at || left.created_at || '')));
+  const activity = (session: Session) => {
+    const raw = session.updated_at || session.created_at || 0;
+    const numeric = Number(raw);
+    return Number.isFinite(numeric) ? numeric * 1000 : Date.parse(String(raw)) || 0;
+  };
+  return [...byId.values()].sort((left, right) => activity(right) - activity(left));
 }
 
 function normalizedModels(input: unknown, selected = '') {
@@ -195,6 +201,10 @@ function App() {
   const [loginPending, setLoginPending] = useState(false);
   const [ready, setReady] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionCursor, setSessionCursor] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [sessionListError, setSessionListError] = useState('');
+  const sessionPageRequest = useRef<object | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [recoveredDrafts, setRecoveredDrafts] = useState<NewConversationDraft[]>([]);
   const [conversation, dispatchConversation] = useReducer(conversationReducer, initialConversationState, state => {
@@ -743,7 +753,15 @@ function App() {
     setRecoveredDrafts(readRecoveredDrafts(identity));
     const sessionResponse = await listSessions();
     if (stale()) return;
-    const nextSessions = sessionResponse.sessions || [];
+    let nextSessions = sessionResponse.sessions || [];
+    setSessionCursor(sessionResponse.next_cursor || null);
+    setSessionListError('');
+    const missingPins = [...readPins(identity)].filter(id => !nextSessions.some(session => session.session_id === id));
+    for (let offset = 0; offset < missingPins.length; offset += 50) {
+      const pinnedResponse = await listSessions({ ids: missingPins.slice(offset, offset + 50) });
+      if (stale()) return;
+      nextSessions = mergeSessionLists(nextSessions, pinnedResponse.sessions || []);
+    }
     const nextProjects = projectResponse.projects || [];
     setSessions(nextSessions); setProjects(nextProjects);
     const route = parseWorkspaceRoute(window.location.search);
@@ -769,6 +787,29 @@ function App() {
     } else if (route.kind === 'session') {
       await selectSession(route.id, nextSessions, false, true);
     } else showWorkspaceHome(false);
+  }
+
+  async function loadMoreSessions() {
+    if (!sessionCursor || sessionPageRequest.current) return;
+    const request = {};
+    sessionPageRequest.current = request;
+    const identity = identityRef.current;
+    const epoch = accountEpochRef.current;
+    setLoadingSessions(true);
+    setSessionListError('');
+    try {
+      const response = await listSessions({ cursor: sessionCursor });
+      if (accountIsStale(identity, epoch) || sessionPageRequest.current !== request) return;
+      setSessions(current => mergeSessionLists(current, response.sessions || []));
+      setSessionCursor(response.next_cursor || null);
+    } catch {
+      if (!accountIsStale(identity, epoch)) setSessionListError(tr('Could not load older tasks. Please retry.', '旧任务加载失败，请重试。'));
+    } finally {
+      if (sessionPageRequest.current === request) {
+        sessionPageRequest.current = null;
+        setLoadingSessions(false);
+      }
+    }
   }
 
   useLayoutEffect(() => bindRequestAccount(userId), [userId]);
@@ -1049,6 +1090,10 @@ function App() {
     dispatchConversation({ type: 'RESET' });
     setBusy(false);
     setSessions([]);
+    sessionPageRequest.current = null;
+    setSessionCursor(null);
+    setLoadingSessions(false);
+    setSessionListError('');
     setProjects([]);
     setRecoveredDrafts([]);
     setDatasetsByProject({});
@@ -2022,7 +2067,7 @@ function App() {
   return <div className="app-shell">
     <TopBar onMenu={() => setMobileSidebarOpen(true)} />
     <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar projects={projects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} loginValue={loginValue} loginError={loginError} loginPending={loginPending} onLoginValueChange={value => { setLoginValue(value); setLoginError(''); }} onLogin={login} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
+      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={projects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} loginValue={loginValue} loginError={loginError} loginPending={loginPending} onLoginValueChange={value => { setLoginValue(value); setLoginError(''); }} onLogin={login} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
         {helpOpen ? <HelpPage onClose={() => showWorkspaceHome()} /> : createGraphOpen ? <>
