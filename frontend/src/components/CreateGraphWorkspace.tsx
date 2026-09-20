@@ -54,7 +54,6 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
   const stateCallback = useRef(onStateChange);
   stateCallback.current = onStateChange;
   const constructible = datasets.filter(supportsConstruction);
-  const otherDatasets = datasets.filter(dataset => !supportsConstruction(dataset));
   const monitored = constructible.filter(dataset => ['building', 'processing'].includes(constructionStatus(dataset)));
   const monitorSignature = monitored.map(dataset => `${dataset.project_id || 'personal'}:${dataset.dataset_id}`).sort().join('|');
 
@@ -104,11 +103,20 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
           <button className="primary-command" onClick={chooseFile} disabled={busy}><Icon name="plus" size={16} /> {t('Choose source file', '选择源文件')}</button>
         </div>
         <div className="create-graph-flow" aria-label={t('Graph construction workflow', '构图流程')}>
-          <div><span>01</span><Icon name="file" size={20} /><strong>{t('Add a data source', '添加数据源')}</strong><small>SQL / CSV / TXT</small></div>
-          <Icon name="arrow-right" size={18} />
-          <div><span>02</span><Icon name="graph" size={20} /><strong>{t('Generate and validate', '生成并验证')}</strong></div>
-          <Icon name="arrow-right" size={18} />
-          <div><span>03</span><Icon name="check" size={20} /><strong>{t('Save and optimize', '保存与优化')}</strong></div>
+          <div className="create-graph-step">
+            <div className="create-graph-step-head"><span>01</span><span className="create-graph-step-icon"><Icon name="file" size={20} /></span></div>
+            <div className="create-graph-step-copy"><strong>{t('Add a data source', '添加数据源')}</strong><small>SQL / CSV / TXT</small></div>
+          </div>
+          <span className="create-graph-flow-arrow" aria-hidden="true"><Icon name="arrow-right" size={16} /></span>
+          <div className="create-graph-step">
+            <div className="create-graph-step-head"><span>02</span><span className="create-graph-step-icon"><Icon name="graph" size={20} /></span></div>
+            <div className="create-graph-step-copy"><strong>{t('Generate and validate', '生成并验证')}</strong></div>
+          </div>
+          <span className="create-graph-flow-arrow" aria-hidden="true"><Icon name="arrow-right" size={16} /></span>
+          <div className="create-graph-step">
+            <div className="create-graph-step-head"><span>03</span><span className="create-graph-step-icon"><Icon name="check" size={20} /></span></div>
+            <div className="create-graph-step-copy"><strong>{t('Save and optimize', '保存与优化')}</strong></div>
+          </div>
         </div>
       </section>
 
@@ -121,7 +129,6 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
         </article>)}</div> : <div className="create-graph-empty">
           <span><Icon name="graph" size={34} /></span><strong>{t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong><button className="secondary-command" onClick={chooseFile} disabled={busy}>{t('Upload your first source', '上传第一个数据源')}</button>
         </div>}
-        {otherDatasets.length > 0 && <div className="create-graph-other-sources"><Icon name="database" size={15} /><span>{t(`${formatNumber(otherDatasets.length)} existing graph ${otherDatasets.length === 1 ? 'dataset is' : 'datasets are'} ready to use directly in analysis tasks without construction.`, `另有 ${formatNumber(otherDatasets.length)} 个现成图数据集无需构图，可在分析任务中直接使用。`)}</span></div>}
       </section>
     </div>
     {csvFiles && <CsvBundleDialog files={csvFiles} onCancel={() => setCsvFiles(null)} onSubmit={(files, schema, name) => { setCsvFiles(null); onUpload(files, schema, name); }} />}

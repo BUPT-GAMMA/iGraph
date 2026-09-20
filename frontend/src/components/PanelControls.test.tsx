@@ -43,6 +43,11 @@ describe('docked panel controls', () => {
     const { rerender } = render(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} onCloseMobile={onCloseMobile} collapsed={false} onCollapse={noop} />);
 
     const entry = screen.getByRole('button', { name: '创建你的图' });
+    const newTask = screen.getByRole('button', { name: '新建任务' });
+    expect(entry.classList.contains('sidebar-primary-action')).toBe(true);
+    expect(newTask.classList.contains('sidebar-primary-action')).toBe(true);
+    expect(entry.querySelector('.sidebar-primary-action-icon')).toBeTruthy();
+    expect(newTask.querySelector('.sidebar-primary-action-icon')).toBeTruthy();
     expect(entry.getAttribute('aria-current')).toBeNull();
     fireEvent.click(entry);
     expect(onCreateGraph).toHaveBeenCalledOnce();
