@@ -49,7 +49,7 @@ describe('ConversationInputArea', () => {
     const { container } = render(<ChatPane {...baseChatProps} messages={[
       { id: 'a', role: 'assistant', content, run_status: 'completed' },
     ]} />);
-    expect(container.querySelector('pre code')?.textContent).toBe(code);
+    expect(container.querySelector('pre code')?.textContent).toBe(`${code}\n`);
     fireEvent.click(screen.getByRole('button', { name: '复制' }));
     await waitFor(() => expect(copy).toHaveBeenCalledWith(content));
   });
@@ -60,7 +60,7 @@ describe('ConversationInputArea', () => {
       { id: 'a', role: 'assistant', content, streaming: true },
     ]} />);
     expect(container.querySelector('p code')?.textContent).toBe('check_status(job_id="job-7")');
-    expect(container.querySelector('pre code')?.textContent).toBe('resume(run_id="partial');
+    expect(container.querySelector('pre code')?.textContent).toBe('resume(run_id="partial\n');
   });
 
   it('uses a project-aware heading only for project drafts', () => {
