@@ -355,7 +355,7 @@ def map_product_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     "progress": job.get("detail") if isinstance(job.get("detail"), dict) else {},
                 })
                 if status != "done" and not final_result.get("error"):
-                    final_result["error"] = job.get("message") or f"training job {status}"
+                    final_result["error"] = job.get("error") or job.get("message") or f"training job {status}"
                 rows.append({
                     "type": "tool_result",
                     "tool": "train",

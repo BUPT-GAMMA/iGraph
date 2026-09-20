@@ -432,6 +432,27 @@ describe('GraphWorkspace visualization layers', () => {
     expect([...container.querySelectorAll('.graph-schema-edge-label')].map(label => label.textContent)).toEqual(expect.arrayContaining(['SELF · 3', 'FIRST · 4', 'SECOND · 5']));
   });
 
+  it.each([
+    ['failed', '失败'], ['cancelled', '已终止'], ['cancelling', '正在停止'], ['queued', '排队中'], ['unavailable', '状态不可用'],
+  ])('shows %s consistently in project comparison and training cards', async (status, label) => {
+    listProjectTrainingRunsMock.mockResolvedValue({ training_runs: [{
+      tool: 'train', training_run_id: 'job-1', session_id: 'old', done: true,
+      result: { job_id: 'job-1', job_status: status },
+    }], has_running: false });
+    const { container } = render(<GraphWorkspace data={null} messages={[]} projectId="project-1" sessionId="new" tab="ML" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} onStopJob={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('.ml-run-header > b')?.textContent).toBe(label));
+    expect(container.querySelector(`.ml-status-${status}`)?.textContent).toBe(label);
+    expect(screen.queryByText('已完成')).toBeNull();
+    if (['failed', 'cancelled', 'unavailable'].includes(status)) expect(screen.queryByRole('button', { name: '终止作业' })).toBeNull();
+  });
+
+  it.each([{ success: false, error: 'Invalid model' }, 'Validation error: Invalid model'])('retains failed local runs and their error without borrowing successful retry metrics', result => {
+    const { container } = render(<GraphWorkspace data={null} messages={[{ role: 'assistant', content: '| 测试集 | 90% |', tools: [{ tool: 'train', done: true, result }] }]} sessionId="new" tab="ML" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+    expect(screen.getByRole('alert').textContent).toContain('Invalid model');
+    expect(container.querySelector('.ml-run-header > b')?.textContent).toBe('失败');
+    expect(screen.queryByText('90.0%')).toBeNull();
+  });
+
   it('shows project training runs in a new session without local history', async () => {
     listProjectTrainingRunsMock.mockResolvedValue({
       training_runs: [{
@@ -470,6 +491,7 @@ describe('GraphWorkspace visualization layers', () => {
     render(<GraphWorkspace data={null} messages={messages} liveTools={[]} projectId="project-1" sessionId="session-current" tab="ML" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText(/200\/200 轮/)).toBeTruthy());
+    expect(document.querySelectorAll('.ml-run-card')).toHaveLength(1);
     expect(screen.getByText('已完成')).toBeTruthy();
     fireEvent.click(screen.getByText('项目对比'));
     expect(screen.getAllByText('当前实验').length).toBeGreaterThan(0);

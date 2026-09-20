@@ -8,6 +8,7 @@ import { BrandLogo, Icon } from './Icon';
 import { ProcessTimeline } from './ProcessTimeline';
 import { fetchArtifact } from './WorkspaceFiles';
 import { useI18n, type Translate } from '../i18n';
+import { executionLabel, executionPending, executionStatus } from '../toolStatus';
 
 function formatBytes(size?: number) {
   if (!Number.isFinite(size) || (size as number) < 0) return '';
@@ -66,9 +67,10 @@ function toolList(tools: ToolCall[] | undefined, t: Translate) {
     const epochs = Number(progress.epochs);
     const hasEpoch = Number.isFinite(epoch) && Number.isFinite(epochs) && epochs > 0;
     const progressLabel = hasEpoch ? t(`Epoch ${epoch}/${epochs}`, `轮次 ${epoch}/${epochs}`) : progress.message;
-    const statusLabel = tool.done ? t('Complete', '已完成') : progressLabel ? String(progressLabel) : t('Running', '运行中');
-    return <div className={`tool-row ${tool.done ? 'done' : 'running'}`} key={`${tool.tool}-${index}`} role="status" aria-label={`${tool.tool || 'graph_tool'}${t(': ', '：')}${statusLabel}`} title={`${tool.tool || 'graph_tool'} · ${statusLabel}`}>
-      <span className={tool.done ? 'tool-state done' : 'tool-state'}>{tool.done ? <Icon name="check" size={12} /> : <span className="loader" />}</span>
+    const pending = executionPending(tool);
+    const statusLabel = pending && progressLabel ? String(progressLabel) : executionLabel(tool, t);
+    return <div className={`tool-row ${pending ? 'running' : 'done'}`} key={`${tool.tool}-${index}`} role="status" aria-label={`${tool.tool || 'graph_tool'}${t(': ', '：')}${statusLabel}`} title={`${tool.tool || 'graph_tool'} · ${statusLabel}`}>
+      <span className={pending ? 'tool-state' : 'tool-state done'}>{pending ? <span className="loader" /> : <Icon name={executionStatus(tool) === 'completed' ? 'check' : 'close'} size={12} />}</span>
       <span>{tool.tool || 'graph_tool'}</span>
       {progressLabel ? <span className="tool-progress-label">{String(progressLabel)}</span> : null}
     </div>;

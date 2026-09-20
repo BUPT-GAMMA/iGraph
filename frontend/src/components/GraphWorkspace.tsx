@@ -3,6 +3,7 @@ import { createGraphCanvasState, GraphCanvas } from './GraphCanvas';
 import { GraphCoverage } from './GraphCoverage';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
+import { executionError, executionLabel, executionPending, executionStatus } from '../toolStatus';
 import { listProjectTrainingRuns, visualizeGraph } from '../api';
 import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, PartitionedGraphSummary, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
@@ -420,21 +421,14 @@ function legacyTrainingMetrics(content: string) {
   return Object.keys(metrics).length ? metrics : null;
 }
 
-function failedTrainingRun(tool: ToolCall) {
-  if (String(tool.tool || '') !== 'train' || tool.result == null) return false;
-  const result = recordValue(tool.result);
-  if (Object.keys(result).length) return result.success === false || Boolean(result.error && !result.async);
-  return typeof tool.result === 'string' && /(validation error|error executing tool|invalid (?:argument|input)|tool.*failed)/i.test(tool.result);
-}
-
 function mergeMlRuns(messages: Message[], liveTools: ToolCall[]) {
-  const saved = messages.flatMap(message => (message.tools || []).filter(tool => ML_TOOLS.has(String(tool.tool || '')) && !failedTrainingRun(tool)).map(tool => {
-    if (String(tool.tool || '') !== 'train' || Object.keys(recordValue(recordValue(tool.result).metrics)).length) return tool;
+  const saved = messages.flatMap(message => (message.tools || []).filter(tool => ML_TOOLS.has(String(tool.tool || ''))).map(tool => {
+    if (String(tool.tool || '') !== 'train' || executionStatus(tool) !== 'completed' || Object.keys(recordValue(recordValue(tool.result).metrics)).length) return tool;
     const metrics = legacyTrainingMetrics(message.content || '');
     return metrics ? { ...tool, result: { ...recordValue(tool.result), metrics } } : tool;
   }));
   const runs = [...saved];
-  liveTools.filter(tool => ML_TOOLS.has(String(tool.tool || '')) && !failedTrainingRun(tool)).forEach(live => {
+  liveTools.filter(tool => ML_TOOLS.has(String(tool.tool || ''))).forEach(live => {
     const index = live.call_id ? runs.findIndex(run => run.call_id === live.call_id) : -1;
     if (index < 0) runs.push(live);
     else runs[index] = { ...runs[index], ...live, result: live.result ?? runs[index].result, history: live.history?.length ? live.history : runs[index].history };
@@ -444,7 +438,7 @@ function mergeMlRuns(messages: Message[], liveTools: ToolCall[]) {
 
 function trainingRunIdentity(run: ToolCall) {
   const result = recordValue(run.result);
-  return String((run as ProjectTrainingRun).training_run_id || run.call_id || result.job_id || '');
+  return String((run as ProjectTrainingRun).training_run_id || run.job_id || result.job_id || run.call_id || '');
 }
 
 function trainingRunEpoch(run: ToolCall) {
@@ -533,10 +527,10 @@ function JobStopButton({ run, sessionId, onStopJob }: { run: ToolCall; sessionId
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const result = recordValue(run.result);
-  const jobId = String(result.job_id || recordValue(run.progress).job_id || '');
-  const terminal = ['done', 'completed', 'cancelled', 'failed'].includes(String(result.job_status || result.status || ''));
+  const jobId = String(run.job_id || result.job_id || recordValue(run.progress).job_id || '');
+  const terminal = !executionPending(run);
   if (!onStopJob || !jobId || !sessionId || terminal || status === 'confirmed') return status === 'confirmed' ? <span role="status">{t('Job ended', '作业已结束')}</span> : null;
-  const pending = status === 'stopping';
+  const pending = status === 'stopping' || executionStatus(run) === 'cancelling';
   return <button type="button" disabled={pending} aria-label={t('Stop job', '终止作业')} onClick={() => onStopJob(sessionId, jobId, next => { if (mounted.current) setStatus(next); })}>
     {pending ? t('Stopping…', '正在停止…') : status === 'unconfirmed' ? t('Stop not confirmed; retry', '停止尚未确认，重试') : t('Stop job', '终止作业')}
   </button>;
@@ -565,9 +559,11 @@ function MLRunCard({ run, index, sessionId, onStopJob }: { run: ToolCall; index:
   const totalEpochs = Number(progress.epochs || recordValue(args.train_config).epochs || recordValue(args.algo_config).epochs || completedEpochs || 0);
   const projectRun = run as ProjectTrainingRun;
   const source = [projectRun.session_title, projectRun.dataset_name].filter(Boolean).join(' · ');
-  const jobStatus = String(result.job_status || result.status || progress.status || '');
-  const statusLabel = projectRun.status_unavailable ? t('Status unavailable', '状态不可用') : jobStatus === 'cancelled' ? t('Stopped', '已终止') : jobStatus === 'cancelling' ? t('Stopping', '正在停止') : jobStatus === 'failed' ? t('Failed', '失败') : run.done ? (metrics.stopped_early ? t('Stopped early', '提前停止') : t('Completed', '已完成')) : t('Training', '训练中');
-  return <article className="ml-run-card"><header className="ml-run-header"><div className="workspace-list-icon"><Icon name="cube" size={16} /></div><div><strong>{taskLabel}</strong><span>{model}{totalEpochs ? t(` · ${completedEpochs}/${totalEpochs} epochs`, ` · ${completedEpochs}/${totalEpochs} 轮`) : ''}{source ? ` · ${source}` : ''}</span></div><b className={projectRun.status_unavailable ? 'unavailable' : run.done ? 'done' : 'running'}>{statusLabel}</b></header>
+  const status = executionStatus(run);
+  const statusLabel = status === 'completed' && metrics.stopped_early ? t('Stopped early', '提前停止') : executionLabel(run, t);
+  const error = executionError(run);
+  return <article className="ml-run-card"><header className="ml-run-header"><div className="workspace-list-icon"><Icon name="cube" size={16} /></div><div><strong>{taskLabel}</strong><span>{model}{totalEpochs ? t(` · ${completedEpochs}/${totalEpochs} epochs`, ` · ${completedEpochs}/${totalEpochs} 轮`) : ''}{source ? ` · ${source}` : ''}</span></div><b className={status}>{statusLabel}</b></header>
+    {status === 'failed' ? <div className="ml-run-error" role="alert">{error || t('Training failed. See the conversation for details.', '训练失败，请查看对话中的具体原因。')}</div> : null}
     <JobStopButton run={run} sessionId={projectRun.session_id || sessionId} onStopJob={onStopJob} />
     {summaryKeys.length ? <div className="ml-metric-grid">{summaryKeys.map(key => <div key={key}><span>{metricLabel(key, t)}</span><strong>{formatMetric(key, metrics[key], locale)}</strong></div>)}</div> : null}
     <div className="ml-view-bar"><span>{history.length ? t(`${history.length.toLocaleString(locale)} training points`, `${history.length.toLocaleString(locale)} 个训练点`) : t(`Run ${index + 1}`, `运行 ${index + 1}`)}</span><SlidingTabs ariaLabel={t('Training result view', '训练结果视图')} className="ml-view-toggle" indicatorClassName="ml-view-indicator" options={[{ value: 'chart', label: t('Chart', '曲线'), disabled: !history.length }, { value: 'table', label: t('Table', '表格') }]} value={view} onChange={setView} /></div>
@@ -582,8 +578,7 @@ function ProjectTrainingComparison({ runs }: { runs: ProjectTrainingRun[] }) {
     const context = { ...recordValue(run.args), ...recordValue(run.result), ...recordValue(run.progress) };
     const metrics = recordValue(recordValue(run.result).metrics);
     const model = String(context.display_model || context.model || context.method || t('Model training', '模型训练'));
-    const statusLabel = run.status_unavailable ? t('Status unavailable', '状态不可用') : run.done ? t('Completed', '已完成') : t('Training', '训练中');
-    return <tr key={run.training_run_id || `${run.session_id}-${index}`}><td>{model}</td><td title={run.session_title}>{run.session_title || t('New conversation', '新会话')}</td><td>{run.dataset_name || '-'}</td><td><span className={run.status_unavailable ? 'ml-status-unavailable' : run.done ? 'ml-status-done' : 'ml-status-running'}>{statusLabel}</span></td><td>{trainingRunEpoch(run) || '-'}</td><td>{formatMetric('val_acc', metrics.val_acc, locale)}</td><td>{formatMetric('test_acc', metrics.test_acc, locale)}</td><td>{formatMetric('best_epoch', metrics.best_epoch, locale)}</td></tr>;
+    return <tr key={run.training_run_id || `${run.session_id}-${index}`}><td>{model}</td><td title={run.session_title}>{run.session_title || t('New conversation', '新会话')}</td><td>{run.dataset_name || '-'}</td><td><span className={`ml-status-${executionStatus(run)}`}>{executionLabel(run, t)}</span></td><td>{trainingRunEpoch(run) || '-'}</td><td>{formatMetric('val_acc', metrics.val_acc, locale)}</td><td>{formatMetric('test_acc', metrics.test_acc, locale)}</td><td>{formatMetric('best_epoch', metrics.best_epoch, locale)}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -604,7 +599,7 @@ function MLTab({ hasProject, messages, liveTools, projectRuns, sessionId, loadin
     {error ? <div className="ml-sync-error">{error}</div> : null}
     {effectiveScope === 'project' && visibleTrainingRuns.length ? <ProjectTrainingComparison runs={projectRuns} /> : null}
     {!visibleTrainingRuns.length && !loading ? <div className="ml-no-runs">{hasProject ? t('This conversation has no training records. Switch to “Project comparison” to view other conversations.', '该会话还没有训练记录，可切换到“项目对比”查看其他会话。') : t('This conversation has no training records.', '该会话还没有训练记录。')}</div> : visibleTrainingRuns.map((run, index) => <MLRunCard onStopJob={onStopJob} sessionId={sessionId} key={`${trainingRunIdentity(run) || 'train'}-${index}`} run={run} index={index} />)}
-    {effectiveScope === 'current' && otherRuns.length ? <div className="ml-activity"><strong>{t('Data and inference activity', '数据与推理记录')}</strong><div className="workspace-list">{otherRuns.map((run, index) => <div className="workspace-list-row" key={`${run.call_id || run.tool}-${index}`}><div className="workspace-list-icon"><Icon name="cube" size={15} /></div><div><strong>{String(run.tool) === 'infer' ? t('Inference', '推理') : String(run.tool) === 'load_graph_classification_dataset' ? t('Load graph classification dataset', '加载图分类数据集') : String(run.tool)}</strong><span>{run.done ? t('Completed', '已完成') : t('Running', '运行中')}</span></div><b>{run.done ? t('Done', '完成') : t('Running', '运行中')}</b><JobStopButton run={run} sessionId={sessionId} onStopJob={onStopJob} /></div>)}</div></div> : null}</div>;
+    {effectiveScope === 'current' && otherRuns.length ? <div className="ml-activity"><strong>{t('Data and inference activity', '数据与推理记录')}</strong><div className="workspace-list">{otherRuns.map((run, index) => <div className="workspace-list-row" key={`${run.call_id || run.tool}-${index}`}><div className="workspace-list-icon"><Icon name="cube" size={15} /></div><div><strong>{String(run.tool) === 'infer' ? t('Inference', '推理') : String(run.tool) === 'load_graph_classification_dataset' ? t('Load graph classification dataset', '加载图分类数据集') : String(run.tool)}</strong><span>{executionLabel(run, t)}</span></div><b>{executionLabel(run, t)}</b><JobStopButton run={run} sessionId={sessionId} onStopJob={onStopJob} /></div>)}</div></div> : null}</div>;
 }
 
 function reportRecords(value: unknown): Record<string, unknown>[] {
