@@ -912,6 +912,11 @@ body { font-size: 14px; }
 .suggestions button, .card-heading, .plan-step, .inline-result, .graph-context-link, .attachment-chip { font-size: 12px; }
 .tool-row, .card-heading span, .tool-progress-label, .auto-mode { font-size: 11px; }
 .composer-dataset, .composer-model, .composer-model select { font-size: 12px; }
+.markdown-content img { display: block; max-width: 100%; height: auto; margin: 12px 0; border-radius: 8px; }
+.markdown-image-fallback { color: var(--text-muted, #64748b); }
+.markdown-table-scroll { max-width: 100%; overflow-x: auto; }
+.markdown-content .contains-task-list { padding-left: 0; list-style: none; }
+.markdown-content .task-list-item input { margin-right: 7px; }
 .markdown-content h1 { font-size: 21px; }
 .markdown-content h2 { font-size: 18px; }
 .markdown-content h3 { font-size: 16px; }

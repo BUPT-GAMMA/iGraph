@@ -1,4 +1,5 @@
-import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { MarkdownContent } from './MarkdownContent';
 import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { editableLatestTurn } from '../latestTurn';
@@ -77,105 +78,6 @@ function toolList(tools: ToolCall[] | undefined, t: Translate) {
   })}</div>;
 }
 
-function renderInline(text: string, keyPrefix: string): ReactNode[] {
-  const token = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|\[([^\]]+)\]\(([^)\s]+)\))/g;
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  let index = 0;
-  while ((match = token.exec(text))) {
-    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
-    const value = match[0];
-    if (value.startsWith('`')) parts.push(<code key={`${keyPrefix}-code-${index}`}>{value.slice(1, -1)}</code>);
-    else if (value.startsWith('**') || value.startsWith('__')) parts.push(<strong key={`${keyPrefix}-strong-${index}`}>{value.slice(2, -2)}</strong>);
-    else if (value.startsWith('*') || value.startsWith('_')) parts.push(<em key={`${keyPrefix}-em-${index}`}>{value.slice(1, -1)}</em>);
-    else if (match[2] && match[3] && /^https?:\/\//i.test(match[3])) parts.push(<a key={`${keyPrefix}-link-${index}`} href={match[3]} target="_blank" rel="noreferrer">{match[2]}</a>);
-    else parts.push(value);
-    cursor = match.index + value.length;
-    index += 1;
-  }
-  if (cursor < text.length) parts.push(text.slice(cursor));
-  return parts;
-}
-
-function splitTableRow(line: string) {
-  const normalized = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-  return normalized.split('|').map(cell => cell.trim());
-}
-
-function isTableSeparator(line: string) {
-  const cells = splitTableRow(line);
-  return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
-}
-
-function MarkdownContent({ content }: { content: string }) {
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
-  const blocks: ReactNode[] = [];
-  let paragraph: string[] = [];
-  let list: { ordered: boolean; items: string[] } | null = null;
-  const flushParagraph = () => {
-    if (!paragraph.length) return;
-    const linesInParagraph = paragraph;
-    blocks.push(<p key={`p-${blocks.length}`}>{linesInParagraph.map((line, index) => <Fragment key={index}>{renderInline(line, `p-${blocks.length}-${index}`)}{index < linesInParagraph.length - 1 ? <br /> : null}</Fragment>)}</p>);
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (!list) return;
-    const current = list;
-    const ListTag = current.ordered ? 'ol' : 'ul';
-    blocks.push(<ListTag key={`list-${blocks.length}`}>{current.items.map((item, index) => <li key={index}>{renderInline(item, `list-${blocks.length}-${index}`)}</li>)}</ListTag>);
-    list = null;
-  };
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index];
-    const trimmed = line.trim();
-    if (!trimmed) { flushParagraph(); flushList(); index += 1; continue; }
-    if (trimmed.startsWith('```')) {
-      flushParagraph(); flushList();
-      const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && !lines[index].trim().startsWith('```')) { codeLines.push(lines[index]); index += 1; }
-      if (index < lines.length) index += 1;
-      blocks.push(<pre key={`pre-${blocks.length}`}><code>{codeLines.join('\n')}</code></pre>);
-      continue;
-    }
-    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
-    if (heading) {
-      flushParagraph(); flushList();
-      const Heading = `h${heading[1].length}` as keyof JSX.IntrinsicElements;
-      blocks.push(<Heading key={`heading-${blocks.length}`}>{renderInline(heading[2], `heading-${blocks.length}`)}</Heading>);
-      index += 1;
-      continue;
-    }
-    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(trimmed)) {
-      flushParagraph(); flushList(); blocks.push(<hr key={`hr-${blocks.length}`} />); index += 1; continue;
-    }
-    if (index + 1 < lines.length && line.includes('|') && isTableSeparator(lines[index + 1])) {
-      flushParagraph(); flushList();
-      const headers = splitTableRow(line);
-      const rows: string[][] = [];
-      index += 2;
-      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) { rows.push(splitTableRow(lines[index])); index += 1; }
-      blocks.push(<table key={`table-${blocks.length}`}><thead><tr>{headers.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell, `th-${cellIndex}`)}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{headers.map((_, cellIndex) => <td key={cellIndex}>{renderInline(row[cellIndex] || '', `td-${rowIndex}-${cellIndex}`)}</td>)}</tr>)}</tbody></table>);
-      continue;
-    }
-    const unordered = /^\s*[-*+]\s+(.+)$/.exec(line);
-    const ordered = /^\s*\d+[.)]\s+(.+)$/.exec(line);
-    if (unordered || ordered) {
-      flushParagraph();
-      const orderedList = Boolean(ordered);
-      if (list && list.ordered !== orderedList) flushList();
-      if (!list) list = { ordered: orderedList, items: [] };
-      list.items.push((ordered || unordered)![1]);
-      index += 1;
-      continue;
-    }
-    flushList(); paragraph.push(line); index += 1;
-  }
-  flushParagraph(); flushList();
-  return <div className="markdown-content">{blocks}</div>;
-}
 
 function renderContent(content: string, role: Message['role']) {
   // Runtime IDs live in structured message fields. Never infer metadata from

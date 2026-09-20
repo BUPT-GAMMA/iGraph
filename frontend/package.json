@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "packageManager": "pnpm@10.28.1",
   "type": "module",
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "vite --config vite.config.ts --host 0.0.0.0",
     "build": "tsc -b && vite build",
@@ -20,7 +22,9 @@
     "d3": "^7.9.0",
     "eventsource-parser": "4.1.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
