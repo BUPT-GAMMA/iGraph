@@ -212,12 +212,15 @@ class NativeFCDriver(ProtocolDriver):
         tool_specs: List[dict],
         *,
         system_prompt: str,
+        language_prompt: str = "",
         memory_prompt: str = "",
         skill_prompt: str = "",
         mode_prompt: str = "",
     ) -> List[dict]:
         # native 模式不在 messages 里放工具描述（走 API tools 参数）
         prefix: List[dict] = [{"role": "system", "content": system_prompt}]
+        if language_prompt:
+            prefix.append({"role": "system", "content": language_prompt})
         if mode_prompt:
             prefix.append({"role": "system", "content": mode_prompt})
         if memory_prompt:

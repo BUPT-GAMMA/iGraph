@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from workspace_storage import delete_user_workspaces, delete_workspace, visible_files, derived_file, save_upload
 from runtime_observability import RequestLoggingMiddleware
+from response_language import resolve_response_language
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
@@ -4122,6 +4123,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "planning_mode": req.planning_mode or state.get("planning_mode", "auto"),
             "output_format": req.output_format,
         }
+        factory_options = {
+            **options,
+            "response_language": resolve_response_language(req.message),
+        }
         project_id = session_project_id(session, user.user_id)
         training_payload = await project_training_runs(project_id, request, current_session_id=session_id)
         training_summary = _project_training_summary(training_payload.get("training_runs") or [])
@@ -4168,7 +4173,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "message": _message_with_attachments(req),
             "session_id": session_id,
             "user_id": user.user_id,
-            "factory_input": json.dumps(options, ensure_ascii=False),
+            "factory_input": json.dumps(factory_options, ensure_ascii=False),
             "metadata": json.dumps({"igraph_turn": {"user_message": req.message,
                 "attachments": [item.model_dump() for item in req.attachments or []],
                 "regenerate_of": regeneration}}, ensure_ascii=False),

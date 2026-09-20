@@ -8,7 +8,7 @@ from typing import Literal
 from agno.agent import Agent, AgentFactory
 from agno.db.postgres import PostgresDb
 from agno.factory import FactoryPermissionError, RequestContext
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.custom_models import get_custom_model
@@ -32,6 +32,7 @@ class IGraphFactoryInput(BaseModel):
     reasoning_mode: Literal["direct", "staged"] = "direct"
     planning_mode: Literal["never", "auto", "always"] = "auto"
     output_format: Literal["chat", "report", "json"] = "chat"
+    response_language: str = Field(default="Auto", max_length=32)
 
 
 def create_db(config: AgentRuntimeConfig) -> PostgresDb:
@@ -73,6 +74,7 @@ def create_igraph_factory(
             instructions=instructions_for(
                 reasoning_mode=options.reasoning_mode,
                 planning_mode=options.planning_mode,
+                response_language=options.response_language,
             ),
             add_history_to_context=True,
             add_session_state_to_context=True,

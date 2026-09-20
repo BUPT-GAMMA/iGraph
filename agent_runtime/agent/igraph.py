@@ -3480,6 +3480,7 @@ class IGraph:
     async def _chat_stream_impl(self, user_input: str):
         """实际执行聊天循环。"""
         await self._ensure_connected()
+        self.context_manager.lock_response_language(user_input)
         self._visible_graphs_for_turn = []
         self._visible_reports_for_turn = []
 
