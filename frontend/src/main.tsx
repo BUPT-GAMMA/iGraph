@@ -627,7 +627,8 @@ function App() {
       const graphVersion = nextGraphVersion(id);
       dispatchConversation({
         type: 'HYDRATE_SUCCESS', sessionId: id, requestVersion, messages: restoredMessages,
-        model: selectedModel, activeDatasetId, feedback: response.pending_feedback,
+        model: selectedModel, modelRevision: response.model_revision, modelUnavailableReason: response.model_unavailable_reason,
+        activeDatasetId, feedback: response.pending_feedback,
         activeRun: effectiveActiveRun, generation, control: response.control,
         preserveMessages: Boolean(effectiveActiveRun && previousRun?.runId === effectiveActiveRun.run_id && previousRun.lastAppliedEventIndex >= 0),
         preserveComposer: previousRun?.preserveComposer || savedComposer?.preserveDuringRun,
@@ -1713,18 +1714,24 @@ function App() {
     const previousModel = model;
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
-    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: nextModel, error: undefined } });
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: undefined } });
     setBusy(true);
     try {
-      const response = await updateSessionModel(sessionId, nextModel);
+      const response = await updateSessionModel(sessionId, nextModel, conversationRef.current.viewsBySessionId[sessionId]?.modelRevision ?? 0);
       if (accountIsStale(identity, accountEpoch)) return;
       const selectedModel = response.model || nextModel;
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: selectedModel } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: selectedModel, modelRevision: response.model_revision ?? 0, modelUnavailableReason: null } });
       setAvailableModels(normalizedModels(response.available_models || availableModels, selectedModel));
       setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, model: selectedModel } : session));
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: previousModel, error: cause.message || tr('Could not switch models', '模型切换失败') } });
+      try {
+        const { getSessionModel } = await import('./api');
+        const selection = await getSessionModel(sessionId);
+        if (!accountIsStale(identity, accountEpoch)) dispatchConversation({ type: 'PATCH_VIEW', sessionId,
+          patch: { model: selection.model, modelRevision: selection.model_revision, modelUnavailableReason: selection.model_unavailable_reason } });
+      } catch { /* Preserve the visible error; the next hydration retries. */ }
     } finally {
       if (!accountIsStale(identity, accountEpoch)) setBusy(false);
     }

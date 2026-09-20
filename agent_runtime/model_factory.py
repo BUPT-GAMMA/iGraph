@@ -62,15 +62,15 @@ def create_model(model_id: str, config: AgentRuntimeConfig, custom_model: dict |
         api_key = str(custom.get("api_key") or "").strip()
         if not CUSTOM_MODEL_ID_RE.fullmatch(normalized):
             raise ValueError("自定义模型 ID 格式无效")
-        if not base_url.startswith(("http://", "https://")) or not api_key:
+        if not base_url.startswith(("http://", "https://")) or (not api_key and not custom.get('allow_anonymous')):
             raise ValueError("自定义模型必须配置有效的 Base URL 和 API Key")
     else:
         normalized = normalize_model_name(model_id, default=config.default_model)
         api_key, base_url = _endpoint(normalized, config)
     constructor = CancellableDAGOpenAILike if controls_enabled() else DAGOpenAILike
     return constructor(
-        id=normalized,
-        api_key=api_key,
+        id=str(custom.get('upstream_model_id') or normalized) if custom else normalized,
+        api_key=api_key or 'local-no-auth',
         base_url=base_url,
     )
 

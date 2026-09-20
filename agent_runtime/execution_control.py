@@ -31,6 +31,7 @@ class RegisterRequest(BaseModel):
     fingerprint: str
     preparation_owner: UUID | None = None
     replace_run_id: UUID | None = None
+    model_revision: int | None = None
 
 
 class PreparationAck(BaseModel):
@@ -599,10 +600,13 @@ def create_control_router(controller: ExecutionController):
             from agent_runtime.turn_edit import NativeTurnEditor
             table = await controller.call(controller.db._get_table, table_type='sessions')
             editor = NativeTurnEditor(table)
+        catalog = getattr(controller, 'model_catalog', None)
+        legacy_model = (session.session_data or {}).get('session_state', {}).get('model')
         row, claimed = await controller.call(controller.store.register, uid, sid, str(req.start_request_id), req.fingerprint,
                                             preparation_owner=str(req.preparation_owner) if req.preparation_owner else None,
                                             replace_run_id=str(req.replace_run_id) if req.replace_run_id else None,
-                                            validate_edit=editor.validate if editor else None)
+                                            validate_edit=editor.validate if editor else None,
+                                            capture_model=(lambda conn: catalog.freeze(conn, uid, sid, legacy_model, req.model_revision)) if catalog else None)
         controller.known_runs[row['run_id']] = row
         controller.wake(row['run_id'])
         return {**await controller.call(controller.store.summary, row), "preparation_claimed": claimed}
