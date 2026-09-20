@@ -1813,7 +1813,8 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .graph-display-settings { margin: 8px 12px 0; padding: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: var(--text-secondary); background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 8px; font-size: 11px; }
 .graph-display-settings label, .graph-neighborhood label { display: flex; align-items: center; gap: 6px; }
 .graph-display-settings select, .graph-neighborhood select { color: var(--text-primary); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 4px; }
-.graph-display-settings input { width: 70px; accent-color: var(--accent); }
+.graph-display-settings input { accent-color: var(--accent); }
+.graph-display-settings input[type="range"] { width: 70px; }
 .graph-display-settings button { color: var(--accent); background: transparent; }
 .graph-filter-match { display: flex; align-items: center; gap: 5px; margin: 6px 12px; font-size: 11px; color: var(--text-secondary); }
 .graph-search-results { max-height: 120px; overflow: auto; margin: 0 12px; display: grid; border-radius: 6px; background: var(--surface-subtle); }
@@ -1823,7 +1824,8 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .graph-preview-empty { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 12px; color: var(--text-secondary); }
 .graph-neighborhood { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 8px 0; }
 .graph-neighborhood > span { font-size: 10px; color: var(--text-secondary); }
-.graph-toolbar { flex-wrap: wrap; }
+.graph-toolbar { flex-wrap: wrap; overflow: visible; align-content: flex-start; }
+.graph-toolbar button { flex: 0 0 auto; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { .graph-canvas .graph-node, .graph-canvas .graph-link, .graph-canvas .graph-node-label { transition: none; } }
 .graph-canvas { background: var(--surface); }
 .graph-canvas > svg { position: absolute; inset: 0; width: 100%; height: 100%; }

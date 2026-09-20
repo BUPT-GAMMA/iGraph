@@ -1,17 +1,26 @@
 import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphWorkspace } from './GraphWorkspace';
 
-const { listProjectTrainingRunsMock } = vi.hoisted(() => ({ listProjectTrainingRunsMock: vi.fn() }));
+const { listProjectTrainingRunsMock, visualizeGraphMock } = vi.hoisted(() => ({
+  listProjectTrainingRunsMock: vi.fn(),
+  visualizeGraphMock: vi.fn(),
+}));
 
 vi.mock('../api', () => ({
   listProjectTrainingRuns: listProjectTrainingRunsMock,
+  visualizeGraph: visualizeGraphMock,
 }));
+
+beforeEach(() => {
+  visualizeGraphMock.mockResolvedValue({ nodes: [], edges: [] });
+});
 
 afterEach(() => {
   cleanup();
   listProjectTrainingRunsMock.mockReset();
+  visualizeGraphMock.mockReset();
 });
 
 describe('GraphWorkspace visualization layers', () => {
@@ -25,11 +34,26 @@ describe('GraphWorkspace visualization layers', () => {
     expect(screen.queryByRole('region', { name: '节点属性' })).toBeNull();
   });
 
+  it('loads the complete selected-node text instead of keeping the visualization preview', async () => {
+    const fullText = `完整正文 ${'内容 '.repeat(160)}`;
+    visualizeGraphMock.mockResolvedValue({ nodes: [{ id: '566', attrs: { label: 4, text: fullText } }], edges: [] });
+    render(<GraphWorkspace data={{ nodes: [{ id: '566', attrs: { label: 4, text: '预览内容...' } }], edges: [] }}
+      sessionId="session-1" tab="Graph" onTab={vi.fn()} selected={{ id: '566' }} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText('text 的完整内容').textContent).toBe(fullText));
+    expect(visualizeGraphMock).toHaveBeenCalledWith('session-1', {
+      node_names: ['566'], include_community: false, max_nodes: 1,
+    }, expect.any(AbortSignal));
+  });
+
   it('isolates highlighted result nodes and restores the full graph through the session callback', async () => {
     const onGraphReset = vi.fn();
     const graph = { nodes: ['a', 'b', 'c'].map(id => ({ id })), edges: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }], highlights: [{ type: 'path', nodes: ['a', 'b'] }] };
     const { container } = render(<GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} onGraphReset={onGraphReset} />);
-    fireEvent.click(screen.getByRole('button', { name: '仅看结果子图' }));
+    expect(screen.getByRole('button', { name: '恢复全图' }).closest('.graph-toolbar')).toBeTruthy();
+    expect(screen.queryByText('分析结果')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: '仅看结果子图' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '显示设置' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '仅看结果子图' }));
     await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(2));
     expect(screen.getByRole('meter', { name: '节点' }).getAttribute('aria-valuetext')).toBe('已显示 2 / 3（66.7%）');
     expect(screen.getByRole('meter', { name: '边' }).getAttribute('aria-valuetext')).toBe('已显示 1 / 2（50%）');

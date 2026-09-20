@@ -3,6 +3,7 @@ import { useI18n } from '../i18n';
 import './NodeProperties.css';
 
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const isScrollableText = (value: unknown): value is string => typeof value === 'string' && value.length > 240;
 
 // Graph previews may contain long text or feature vectors; keep inspection bounded.
 function displayValue(value: unknown, depth = 0): string {
@@ -31,8 +32,12 @@ export function NodeProperties({ node }: { node: Record<string, unknown> }) {
   ].filter(group => group.entries.length > 0);
   return <section className="node-properties" aria-label={t('Node properties', '节点属性')}>
     {groups.length ? <>
-      {groups.map(group => <div key={group.title}><h4>{group.title}</h4><dl>{group.entries.slice(0, 100).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{displayValue(value)}</dd></div>)}</dl>{group.entries.length > 100 && <p>{t('Only the first 100 fields are shown.', '仅展示前 100 个字段。')}</p>}</div>)}
-      <p>{t('Loaded properties only; long values are abbreviated.', '仅显示已加载属性；长值省略。')}</p>
+      {groups.map(group => <div key={group.title}><h4>{group.title}</h4><dl>{group.entries.slice(0, 100).map(([key, value]) => {
+        const scrollable = isScrollableText(value);
+        return <div className={scrollable ? 'is-scrollable-text' : undefined} key={key}><dt>{key}</dt><dd tabIndex={scrollable ? 0 : undefined}
+          aria-label={scrollable ? t(`Full value of ${key}`, `${key} 的完整内容`) : undefined}>{scrollable ? value : displayValue(value)}</dd></div>;
+      })}</dl>{group.entries.length > 100 && <p>{t('Only the first 100 fields are shown.', '仅展示前 100 个字段。')}</p>}</div>)}
+      <p>{t('Loaded properties only; large arrays and nested objects are summarized.', '仅显示已加载属性；大型数组和嵌套对象以摘要显示。')}</p>
     </> : <p>{t('No additional properties in the loaded preview.', '当前预览未包含其他属性。')}</p>}
   </section>;
 }

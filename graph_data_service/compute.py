@@ -2251,6 +2251,11 @@ class GraphCompute:
             target_nodes = set(overview_selection.nodes)
             nodes_truncated = True
 
+        # Overview payloads keep node text bounded. An explicit node request is
+        # used by the inspector and must return the complete value so the UI can
+        # offer a real scrollable detail view instead of a truncated preview.
+        include_full_node_text = bool(node_names)
+
         # 构建节点列表
         nodes = []
         for node in sorted(target_nodes, key=lambda value: (type(value).__name__, repr(value))):
@@ -2278,7 +2283,7 @@ class GraphCompute:
                         v = gd.get_node_text_by_id(nid)
                         if v:
                             text = str(v)
-                            attrs["text"] = text[:300] + "..." if len(text) > 300 else text
+                            attrs["text"] = text if include_full_node_text or len(text) <= 300 else text[:300] + "..."
                     except Exception:
                         pass
             # Fallback：从 NetworkX 节点属性读取（adapters.py 已将属性存入节点）
@@ -2291,7 +2296,7 @@ class GraphCompute:
                 attrs["label"] = str(nx_attrs["node_label"])
             if not attrs.get("text") and nx_attrs.get("text"):
                 text = str(nx_attrs["text"])
-                attrs["text"] = text[:300] + "..." if len(text) > 300 else text
+                attrs["text"] = text if include_full_node_text or len(text) <= 300 else text[:300] + "..."
             nodes.append({
                 "id": node,
                 "label": node,

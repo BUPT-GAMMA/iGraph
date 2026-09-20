@@ -18,10 +18,14 @@ describe('instance node properties', () => {
     for (const text of ['0', 'false', 'null', '<script>bad()</script>', '{city: 北京}', 'paper text']) expect(screen.getByText(text)).toBeTruthy();
     expect(container.querySelector('script')).toBeNull();
   });
-  it('bounds long text and arrays and explains missing preview attributes', () => {
+  it('shows complete long text in a scrollable field while bounding large arrays', () => {
     const { rerender, container } = render(<NodeProperties node={{ attrs: { text: 'x'.repeat(5000), features: Array.from({ length: 2000 }, (_, i) => i) } }} />);
-    expect(container.textContent!.length).toBeLessThan(1600);
+    const fullText = screen.getByLabelText('text 的完整内容');
+    expect(fullText.textContent).toHaveLength(5000);
+    expect(fullText.parentElement?.classList.contains('is-scrollable-text')).toBe(true);
+    expect(fullText.getAttribute('tabindex')).toBe('0');
     expect(screen.getByText(/0, 1, 2, 3/).textContent).toContain('…');
+    expect(screen.getByText('仅显示已加载属性；大型数组和嵌套对象以摘要显示。')).toBeTruthy();
     rerender(<NodeProperties node={{ id: 'empty' }} />);
     expect(screen.getByText('当前预览未包含其他属性。')).toBeTruthy();
   });
