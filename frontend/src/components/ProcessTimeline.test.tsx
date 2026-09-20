@@ -37,6 +37,14 @@ it('shows structured failure details without counting failed tools as running', 
   expect(screen.queryByText('1 项运行中')).toBeNull();
 });
 
+it.each([['failed', '失败'], ['cancelled', '已取消']])('overrides completed submission with live %s job status', (status, label) => {
+  render(<ProcessTimeline items={[{ id: 't', kind: 'tool', sequence: 1, tool: { tool: 'train', call_id: 't', done: true, status: 'completed' } }]}
+    tools={[{ tool: 'train', call_id: 't', done: true, result: { job_id: 'job', job_status: status, error: 'Training stopped' } }]} />);
+  expect(screen.getByText(label)).toBeTruthy();
+  expect(screen.queryByText('完成')).toBeNull();
+  expect(screen.queryByText('1 项运行中')).toBeNull();
+});
+
 
 it('shows live reasoning before tools and preserves disclosure choices while deltas arrive', () => {
   const first = { id: 'reasoning:0', kind: 'reasoning' as const, sequence: 0, content: '先检查' };

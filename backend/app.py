@@ -536,6 +536,8 @@ def _merge_training_job_card(card: dict, status_result: dict) -> None:
         current_result = {**current_result, **final_result}
     current_result["job_id"] = job.get("job_id")
     current_result["job_status"] = job.get("status")
+    if job.get("error"):
+        current_result["error"] = job["error"]
     current_result["history"] = merged_history
     card["result"] = current_result
     card["history"] = merged_history
@@ -556,15 +558,6 @@ def _training_cards_from_runs(runs: list[dict]) -> list[dict]:
     for message in _messages_from_runs(runs):
         for tool in message.get("tools") or []:
             if not isinstance(tool, dict) or str(tool.get("tool") or "") != "train":
-                continue
-            result = tool.get("result")
-            if isinstance(result, dict) and (result.get("success") is False or (result.get("error") and not result.get("async"))):
-                continue
-            if isinstance(result, str) and re.search(
-                r"validation errors?|error (?:from|executing) .*train|invalid (?:argument|input)",
-                result,
-                re.IGNORECASE,
-            ):
                 continue
             cards.append(dict(tool))
     return cards
@@ -592,7 +585,9 @@ def _project_training_summary(cards: list[dict], limit: int = 30) -> list[dict]:
             "model_id": result.get("model_id"),
             "train_config": _decoded_result(args.get("train_config")),
             "algo_config": _decoded_result(args.get("algo_config")),
-            "status": "done" if card.get("done") else "running",
+            "status": result.get("job_status") or progress.get("status") or result.get("status")
+            or ("failed" if result.get("success") is False or result.get("error") else None)
+            or card.get("status") or ("done" if card.get("done") else "running"),
             "metrics": metrics,
         })
     return summary[:max(1, limit)]
@@ -667,7 +662,8 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
             tools = [{"tool_name": item["tool"].get("tool"),
                       "tool_call_id": item["tool"].get("call_id"),
                       "tool_args": item["tool"].get("args") or {},
-                      "result": item["tool"].get("result")}
+                      "result": item["tool"].get("result"),
+                      "status": item["tool"].get("status")}
                      for item in projection["processItems"] if item.get("kind") == "tool"]
         for tool in tools if isinstance(tools, list) else []:
             if not isinstance(tool, dict):
@@ -684,6 +680,10 @@ def _messages_from_runs(runs: list[dict]) -> list[dict]:
                 "done": True,
                 "result": result,
             }
+            if tool.get("tool_call_error") or tool.get("status") == "failed":
+                card["status"] = "failed"
+            elif tool.get("status") == "cancelled":
+                card["status"] = "cancelled"
             tool_cards.append(card)
             if name == "train" and isinstance(result, dict) and result.get("async") and result.get("job_id"):
                 job_id = str(result["job_id"])
