@@ -60,6 +60,7 @@ class ReportingBuilderTest(unittest.TestCase):
         self.assertTrue(payload["success"])
         report = payload["report"]
         self.assertEqual(report["intent"], "overview")
+        self.assertEqual(report["version"], "analysis_report.v2")
         self.assertEqual(report["title"], "图分析报告")
         overview = _section(report, "structure-overview")
         labels = {m["label"]: m["value"] for m in overview["metrics"]}
@@ -87,7 +88,7 @@ class ReportingBuilderTest(unittest.TestCase):
         report = payload["report"]
         self.assertEqual(report["intent"], "analysis")
         self.assertEqual(report["title"], "图分析报告")
-        self.assertIn("总结当前图的结构与统计特征", report["summary"])
+        self.assertEqual(report["summary"], "2 个节点 · 1 条边。")
         overview = _section(report, "structure-overview")
         self.assertEqual(overview["insights"], [])
 
@@ -114,10 +115,11 @@ class ReportingBuilderTest(unittest.TestCase):
         )
 
         report = payload["report"]
-        section = _section(report, "degree-distribution")
+        section = _section(report, "connections-and-key-nodes")
+        self.assertEqual(section["title"], "连接与关键节点")
         self.assertEqual(section["charts"][0]["data"], [{"label": "A", "value": 5}, {"label": "B", "value": 4}])
-        self.assertEqual(len(section["tables"][0]["rows"]), 2)
-        self.assertIn("节点列表已按展示上限截断。", report["limitations"])
+        self.assertEqual(section["tables"], [])
+        self.assertIn("仅展示排名前 2 的节点。", report["limitations"])
 
     def test_node_centrality_builds_ranking_section(self) -> None:
         payload = build_analysis_report(
@@ -135,10 +137,76 @@ class ReportingBuilderTest(unittest.TestCase):
             },
         )
 
-        section = _section(payload["report"], "centrality-ranking")
-        self.assertEqual(section["title"], "关键对象")
+        section = _section(payload["report"], "connections-and-key-nodes")
+        self.assertEqual(section["title"], "连接与关键节点")
         self.assertEqual(section["charts"][0]["data"][0], {"label": "A", "value": 0.4})
-        self.assertEqual(section["tables"][0]["rows"][0]["node"], "A")
+        self.assertEqual(section["tables"], [])
+
+    def test_condensed_directed_degree_and_centrality_are_merged(self) -> None:
+        payload = build_analysis_report(
+            "analysis",
+            "分析引文网络",
+            "引文网络报告",
+            {
+                "degree_analysis": {
+                    "success": True,
+                    "avg_in_degree": 3.8981,
+                    "avg_out_degree": 3.8981,
+                    "total_degree_mean": 7.7962,
+                    "top_degree_nodes": [
+                        {"node": "163", "total": 336},
+                        {"node": "565", "total": 156},
+                    ],
+                },
+                "node_centrality": {
+                    "success": True,
+                    "centrality_type": "pagerank",
+                    "top_nodes": [
+                        {"node": "163", "value": 0.012207},
+                        {"node": "565", "value": 0.005058},
+                    ],
+                },
+            },
+        )
+
+        report = payload["report"]
+        section = _section(report, "connections-and-key-nodes")
+        labels = {item["label"]: item["value"] for item in section["metrics"]}
+        self.assertEqual(labels["平均总度"], 7.7962)
+        self.assertEqual(labels["平均入度"], 3.8981)
+        self.assertEqual(section["charts"][0]["data"][0], {
+            "label": "163",
+            "value": 336,
+            "detail": "PageRank 0.012207",
+        })
+        self.assertNotIn("degree-distribution", {item["id"] for item in report["sections"]})
+        self.assertNotIn("centrality-ranking", {item["id"] for item in report["sections"]})
+
+    def test_connectivity_uses_readable_labels_and_nested_summaries(self) -> None:
+        payload = build_analysis_report(
+            "analysis",
+            "查看连通性",
+            "连通性报告",
+            {
+                "graph_connectivity": {
+                    "success": True,
+                    "summary": {
+                        "directed": True,
+                        "is_weakly_connected": True,
+                        "is_strongly_connected": False,
+                        "weakly_connected_components": {"count": 1, "largest_size": 2708},
+                        "strongly_connected_components": {"count": 371, "largest_size": 2336},
+                    },
+                }
+            },
+        )
+
+        section = _section(payload["report"], "connectivity")
+        labels = {item["label"]: item["value"] for item in section["metrics"]}
+        self.assertEqual(labels["弱连通"], "是")
+        self.assertEqual(labels["强连通"], "否")
+        self.assertEqual(labels["最大弱连通分量"], 2708)
+        self.assertNotIn("is_weakly_connected", _visible_report_text(payload["report"]))
 
     def test_community_detection_builds_structure_section(self) -> None:
         payload = build_analysis_report(
@@ -164,7 +232,8 @@ class ReportingBuilderTest(unittest.TestCase):
         report = payload["report"]
         section = _section(report, "structure-patterns")
         labels = {m["label"]: m["value"] for m in section["metrics"]}
-        self.assertEqual(labels["分组数量"], 3)
+        self.assertEqual(labels["社区数"], 3)
+        self.assertEqual(section["title"], "社区结构")
         self.assertEqual(section["charts"][0]["data"][0], {"label": "1", "value": 20})
         self.assertIn("结构分组列表已按展示上限截断。", report["limitations"])
         self.assertIn("部分结构分组的节点预览已截断。", report["limitations"])
@@ -186,6 +255,7 @@ class ReportingBuilderTest(unittest.TestCase):
         labels = {m["label"]: m["value"] for m in section["metrics"]}
         self.assertEqual(labels["密度"], 0.25)
         self.assertEqual(labels["平均聚类系数"], 0.6)
+        self.assertEqual(section["tables"], [])
 
     def test_global_metrics_supports_mapping_results(self) -> None:
         payload = build_analysis_report(

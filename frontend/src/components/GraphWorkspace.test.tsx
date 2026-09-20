@@ -2,23 +2,30 @@ import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GraphWorkspace } from './GraphWorkspace';
+import { I18nProvider, useI18n } from '../i18n';
 
-const { listProjectTrainingRunsMock, visualizeGraphMock } = vi.hoisted(() => ({
+const { apiFetchMock, listProjectTrainingRunsMock, visualizeGraphMock } = vi.hoisted(() => ({
+  apiFetchMock: vi.fn(),
   listProjectTrainingRunsMock: vi.fn(),
   visualizeGraphMock: vi.fn(),
 }));
 
 vi.mock('../api', () => ({
+  apiFetch: apiFetchMock,
+  getUserId: () => '',
+  ApiError: class MockApiError extends Error { static fromResponse() { return new Error('request failed'); } },
   listProjectTrainingRuns: listProjectTrainingRunsMock,
   visualizeGraph: visualizeGraphMock,
 }));
 
 beforeEach(() => {
+  apiFetchMock.mockResolvedValue({ ok: true, json: async () => ({ files: [] }) });
   visualizeGraphMock.mockResolvedValue({ nodes: [], edges: [] });
 });
 
 afterEach(() => {
   cleanup();
+  apiFetchMock.mockReset();
   listProjectTrainingRunsMock.mockReset();
   visualizeGraphMock.mockReset();
 });
@@ -43,6 +50,46 @@ describe('GraphWorkspace visualization layers', () => {
     expect(visualizeGraphMock).toHaveBeenCalledWith('session-1', {
       node_names: ['566'], include_community: false, max_nodes: 1,
     }, expect.any(AbortSignal));
+  });
+
+  it('opens a structured analysis report and renders its readable content', async () => {
+    const report = {
+      id: 'report-1', title: '引文网络图结构分析报告', subtitle: '结构、分布与关键发现摘要', summary: '这是报告总结。',
+      version: 'analysis_report.v1', limitations: ['连接分布缺少统计摘要。'],
+      sections: [
+        { id: 'structure-overview', title: '结构概览', summary: '图的基础规模。', metrics: [{ label: '节点数', value: 2708 }, { label: '边数', value: 10556 }], insights: ['基础规模和属性状态为后续分析提供上下文。'] },
+        { id: 'degree-distribution', title: '连接分布', summary: '旧连接分布。', metrics: [{ label: '平均入度', value: 3.8981 }], charts: [], tables: [] },
+        { id: 'centrality-ranking', title: '关键对象', summary: '旧关键对象。', charts: [{ title: 'Top 关键节点', data: [{ label: '163', value: 0.012207 }] }], tables: [] },
+        { id: 'global-metrics', title: '整体指标', metrics: [{ label: '密度', value: 0.00144 }], tables: [{ title: '整体指标', columns: [{ key: 'metric', label: '指标' }, { key: 'value', label: '值' }], rows: [{ metric: '密度', value: 0.00144 }] }] },
+        { id: 'structure-patterns', title: '结构模式', metrics: [{ label: '分组数量', value: 104 }], insights: ['结构分组结果可用于观察图中局部聚集和整体分化现象。'] },
+        { id: 'supplemental-results', title: '补充分析结果', tables: [{ title: '补充事实', rows: [{ field: 'is_weakly_connected', value: true }] }] },
+      ],
+    };
+    const tools = [
+      { tool: 'degree_analysis', done: true, result: { directed: true, avg_in_degree: 3.8981, avg_out_degree: 3.8981, total_degree_stats: { mean: 7.7962, median: 6, max: 336 }, top_degree_nodes: [{ node: '163', total: 336 }, { node: '565', total: 156 }] } },
+      { tool: 'node_centrality', done: true, result: { centrality_type: 'pagerank', top_nodes: [{ node: '163', value: 0.012207 }, { node: '565', value: 0.005058 }] } },
+      { tool: 'graph_connectivity', done: true, result: { directed: true, is_weakly_connected: true, is_strongly_connected: false, weakly_connected_components: { count: 1, largest_size: 2708 }, strongly_connected_components: { count: 371, largest_size: 2336 } } },
+    ];
+    render(<GraphWorkspace data={{ nodes: [], edges: [] }} messages={[{ role: 'assistant', content: '', reports: [report], tools }]} sessionId="session-1" tab="Artifacts" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '查看报告：引文网络图结构分析报告' }));
+    expect(screen.getByLabelText('引文网络图结构分析报告报告内容')).toBeTruthy();
+    expect(screen.getByText('2,708 个节点 · 10,556 条边；平均度 7.7962；104 个社区。')).toBeTruthy();
+    expect(screen.getAllByText('2,708').length).toBeGreaterThan(0);
+    expect(screen.getByText('密度')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '连接与关键节点' })).toBeTruthy();
+    expect(screen.getByText('336 总度')).toBeTruthy();
+    expect(screen.getByText('PageRank 0.012207')).toBeTruthy();
+    expect(screen.getByText('弱连通')).toBeTruthy();
+    expect(screen.getByText('社区结构')).toBeTruthy();
+    expect(screen.getByText('识别到 104 个社区。')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '连接分布' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '关键对象' })).toBeNull();
+    expect(screen.queryByText('is_weakly_connected')).toBeNull();
+    expect(screen.queryByText('连接分布缺少统计摘要。')).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '返回报告列表' }));
+    expect(screen.getByRole('button', { name: '查看报告：引文网络图结构分析报告' })).toBeTruthy();
   });
 
   it('isolates highlighted result nodes and restores the full graph through the session callback', async () => {
@@ -92,12 +139,93 @@ describe('GraphWorkspace visualization layers', () => {
     fireEvent.change(screen.getByLabelText('查看邻域范围'), { target: { value: '1' } });
     await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(2));
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
-    await waitFor(() => expect(screen.getByText('图分析已就绪')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('分析就绪')).toBeTruthy());
 
     fireEvent.click(screen.getByRole('tab', { name: '图谱' }));
     await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(3));
     expect(container.querySelector('.graph-node.is-selected')).toBeNull();
     expect(screen.getByText('点击图中节点查看属性')).toBeTruthy();
+  });
+
+  it('preserves the graph camera and node positions when returning from another tab', async () => {
+    const graph = {
+      nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      edges: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }],
+    };
+    function WorkspaceHarness() {
+      const [tab, setTab] = useState<'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts'>('Graph');
+      return <GraphWorkspace data={graph} tab={tab} onTab={setTab} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />;
+    }
+
+    const { container } = render(<WorkspaceHarness />);
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(3));
+    fireEvent.click(screen.getByRole('button', { name: '适应画布' }));
+    const canvas = screen.getByLabelText(/图谱画布/);
+    await waitFor(() => expect(container.querySelector('.graph-viewport')?.getAttribute('transform')).toBeTruthy());
+    const fittedCamera = container.querySelector('.graph-viewport')?.getAttribute('transform');
+    fireEvent.wheel(canvas, { deltaY: -360, clientX: 180, clientY: 180 });
+    await waitFor(() => expect(container.querySelector('.graph-viewport')?.getAttribute('transform')).not.toBe(fittedCamera));
+    const camera = container.querySelector('.graph-viewport')?.getAttribute('transform');
+    const positions = [...container.querySelectorAll('.graph-node')].map(node => node.getAttribute('transform'));
+
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    await waitFor(() => expect(screen.getByText('分析就绪')).toBeTruthy());
+    fireEvent.click(screen.getByRole('tab', { name: '图谱' }));
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(3));
+
+    await waitFor(() => expect(container.querySelector('.graph-viewport')?.getAttribute('transform')).toBe(camera));
+    expect([...container.querySelectorAll('.graph-node')].map(node => node.getAttribute('transform'))).toEqual(positions);
+  });
+
+  it('keeps the graph stable across language, appearance and panel visibility changes', async () => {
+    const baseGraph = {
+      nodes: [{ id: 'a', total_degree: 4 }],
+      edges: [],
+      degree_scope: 'full_graph' as const,
+    };
+    function WorkspaceHarness() {
+      const { toggleLanguage } = useI18n();
+      const [highlighted, setHighlighted] = useState(false);
+      const [collapsed, setCollapsed] = useState(false);
+      const data = highlighted ? {
+        ...baseGraph,
+        nodes: [{ ...baseGraph.nodes[0], label: 'renamed', total_degree: 12 }],
+        highlights: [{ type: 'node' as const, nodes: ['a'], color: '#ef4444' }],
+      } : baseGraph;
+      return <>
+        <button onClick={toggleLanguage}>切换测试语言</button>
+        <button onClick={() => setHighlighted(value => !value)}>切换测试高亮</button>
+        <button onClick={() => setCollapsed(value => !value)}>切换测试折叠</button>
+        <GraphWorkspace data={data} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={collapsed} onToggle={vi.fn()} />
+      </>;
+    }
+
+    const { container } = render(<I18nProvider initialLanguage="zh"><WorkspaceHarness /></I18nProvider>);
+    await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: '适应画布' }));
+    fireEvent.wheel(screen.getByLabelText(/图谱画布/), { deltaY: -240, clientX: 180, clientY: 180 });
+    await waitFor(() => expect(container.querySelector('.graph-viewport')?.getAttribute('transform')).toBeTruthy());
+    const camera = container.querySelector('.graph-viewport')?.getAttribute('transform');
+    const position = container.querySelector('.graph-node')?.getAttribute('transform');
+    const expectStable = async () => {
+      await waitFor(() => expect(container.querySelector('.graph-viewport')?.getAttribute('transform')).toBe(camera));
+      expect(container.querySelector('.graph-node')?.getAttribute('transform')).toBe(position);
+    };
+
+    fireEvent.click(screen.getByRole('button', { name: '切换测试语言' }));
+    await waitFor(() => expect(screen.getByLabelText(/Graph canvas/)).toBeTruthy());
+    await expectStable();
+
+    fireEvent.click(screen.getByRole('button', { name: '切换测试高亮' }));
+    await waitFor(() => expect(Number(container.querySelector('.graph-node-halo')?.getAttribute('r'))).toBeGreaterThan(0));
+    await expectStable();
+
+    fireEvent.click(screen.getByRole('button', { name: '切换测试折叠' }));
+    fireEvent.click(screen.getByRole('button', { name: '切换测试折叠' }));
+    await expectStable();
+
+    fireEvent.click(screen.getByRole('button', { name: '切换测试语言' }));
+    await waitFor(() => expect(screen.getByLabelText(/图谱画布/)).toBeTruthy());
   });
 
   it('shows directed edge arrows with a marker unique to each canvas', async () => {
@@ -187,13 +315,33 @@ describe('GraphWorkspace visualization layers', () => {
     stringify.mockRestore();
   });
 
-  it('reports the smart overview node cap instead of the complete graph size', () => {
+  it('keeps canvas sampling details out of the graph overview', () => {
     const nodes = Array.from({ length: 21951 }, (_, index) => ({ id: `node-${index}` }));
     render(<GraphWorkspace data={{ nodes, edges: [], num_nodes: nodes.length, num_edges: 0 }} tab="Overview" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
 
     expect(screen.getByText('21,951')).toBeTruthy();
-    expect(screen.getByText('180')).toBeTruthy();
-    expect(screen.getByText(/画布当前展示 180 个节点/)).toBeTruthy();
+    expect(screen.queryByText('当前画布')).toBeNull();
+    expect(screen.queryByRole('meter', { name: '节点' })).toBeNull();
+  });
+
+  it('presents graph scale and structural signals in the overview', () => {
+    const nodes = Array.from({ length: 200 }, (_, index) => ({ id: `node-${index}` }));
+    const edges = Array.from({ length: 500 }, (_, index) => ({ source: `node-${index % 200}`, target: `node-${(index + 1) % 200}` }));
+    render(<GraphWorkspace datasetName="cora" data={{ nodes, edges, directed: true, total_nodes: 2708, total_edges: 10556, community: { num_communities: 104 } }} tab="Overview" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+
+    expect(screen.getByRole('heading', { name: 'cora' })).toBeTruthy();
+    expect(screen.getByText('分析就绪')).toBeTruthy();
+    expect(screen.getByText('2,708')).toBeTruthy();
+    expect(screen.getByText('10,556')).toBeTruthy();
+    expect(screen.getByText('有向图')).toBeTruthy();
+    expect(screen.getByText('平均总度')).toBeTruthy();
+    expect(screen.getByText('7.8')).toBeTruthy();
+    expect(screen.getByText('连接密度')).toBeTruthy();
+    expect(screen.getByText('0.14%')).toBeTruthy();
+    expect(screen.getByText('社区数')).toBeTruthy();
+    expect(screen.getByText('104')).toBeTruthy();
+    expect(screen.queryByText('当前画布')).toBeNull();
+    expect(screen.queryByRole('meter')).toBeNull();
   });
 
   it('reports displayed counts against full graph totals instead of the loaded sample', () => {

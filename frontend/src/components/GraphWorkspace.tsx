@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { GraphCanvas } from './GraphCanvas';
+import { createGraphCanvasState, GraphCanvas } from './GraphCanvas';
 import { GraphCoverage } from './GraphCoverage';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
@@ -42,7 +42,6 @@ type GraphWorkspaceProps = {
   collapsed: boolean;
   onToggle: () => void;
   onExpand?: (node: Record<string, unknown>) => void;
-  layoutVersion?: number;
   onStopJob?: StopJob;
   embedded?: boolean;
   onConstruct?: () => void;
@@ -58,7 +57,6 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
     && previous.tab === next.tab
     && previous.selected === next.selected
     && previous.collapsed === next.collapsed
-    && previous.layoutVersion === next.layoutVersion
     && previous.projectId === next.projectId
     && previous.onSelect === next.onSelect
     && previous.onExpand === next.onExpand
@@ -95,7 +93,7 @@ function sameWorkspaceGraph(left: GraphData | null, right: GraphData | null) {
     && left.edges.every((edge, index) => sameRecord(edge, right.edges[index]));
 }
 
-export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, layoutVersion = 0, onStopJob, embedded, onConstruct, constructionLabel, onGraphQuery, onGraphReset, graphQueryPending = false }: GraphWorkspaceProps) {
+export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, onStopJob, embedded, onConstruct, constructionLabel, onGraphQuery, onGraphReset, graphQueryPending = false }: GraphWorkspaceProps) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
   const resolvedConstructionLabel = constructionLabel || t('Build graph', '构图');
@@ -122,6 +120,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   const [projectTrainingLoading, setProjectTrainingLoading] = useState(false);
   const [projectTrainingError, setProjectTrainingError] = useState('');
   const hasPendingLiveTraining = liveTools.some(tool => String(tool.tool || '') === 'train' && !tool.done);
+  const canvasIdentity = `${sessionId}\u0000${datasetName || ''}`;
+  const canvasMemory = useRef({ identity: canvasIdentity, state: createGraphCanvasState() });
+  if (canvasMemory.current.identity !== canvasIdentity) canvasMemory.current = { identity: canvasIdentity, state: createGraphCanvasState() };
   const layoutLabel = layout === 'force' ? t('Force-directed', '力导向') : layout === 'radial' ? t('Radial', '径向') : t('Circular', '环形');
   const communityById = useMemo(() => {
     const raw = renderedData?.community || renderedData?.communities;
@@ -256,7 +257,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
                       <label className="graph-filter-match"><input type="checkbox" checked={filterMatches} onChange={event => setFilterMatches(event.target.checked)} />{t('Show matches only', '仅显示匹配项')}</label>
                       {query.trim() && <div className="graph-search-results">{[...preview.matches].slice(0, 8).map(id => <button key={id} onClick={() => locate(id)}>{String(index.nodes.get(id)?.label ?? id)}<small>{id}</small></button>)}{!preview.matches.size && <span>{t('No matching nodes in the loaded data', '当前已加载数据中没有匹配节点')}</span>}</div>}
                     </div> : null}
-                    <div className={`graph-canvas ${schemaMode ? 'is-schema' : ''}`}><GraphCanvas schema={schemaMode} active={!collapsed} key={`${sessionId}:${datasetName || ''}`} preview={preview} directed={renderedData?.directed} communities={communityById} highlights={highlights} selected={selected} onSelect={node => { onSelect(node); if (!node) { setFocusId(''); setDepth(0); } }} layout={layout} layoutVersion={layoutVersion} sizeMode={sizeMode} labels={labels} edgeWidth={edgeWidth} fitVersion={fitVersion} focusId={focusId} />{!preview.nodes.length && <div className="graph-preview-empty">{t('No nodes match the current filters', '没有符合条件的节点')}</div>}</div>
+                    <div className={`graph-canvas ${schemaMode ? 'is-schema' : ''}`}><GraphCanvas state={canvasMemory.current.state} schema={schemaMode} active={!collapsed} key={`${sessionId}:${datasetName || ''}`} preview={preview} directed={renderedData?.directed} communities={communityById} highlights={highlights} selected={selected} onSelect={node => { onSelect(node); if (!node) { setFocusId(''); setDepth(0); } }} layout={layout} sizeMode={sizeMode} labels={labels} edgeWidth={edgeWidth} fitVersion={fitVersion} focusId={focusId} />{!preview.nodes.length && <div className="graph-preview-empty">{t('No nodes match the current filters', '没有符合条件的节点')}</div>}</div>
                     <GraphCoverage nodes={preview.nodes.length} edges={preview.edges.length}
                       totalNodes={schemaMode || tablesMode ? index.nodes.size : renderedData?.total_nodes ?? renderedData?.num_nodes ?? index.nodes.size}
                       totalEdges={schemaMode || tablesMode ? index.edges.length : renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length}
@@ -264,7 +265,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
                     {(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">{t('Legend', '图例')}</span>{communityById.size ? <span><i className="legend-dot community" />{t('Community colors', '社区着色')}</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className="legend-dot node-highlight" />{t('Highlighted nodes', '节点高亮')}</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />{t('Highlighted paths', '路径高亮')}</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />{t('Highlighted subgraphs', '子图高亮')}</span> : null}</div> : null}
                     <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? t('Selected node', '已选节点'))}</strong><span>{t('Selected', '已选择')}</span></div><div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div><div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String(nodePropertyType(detailedSelected || selectedInfo || selected) ?? t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div>{!schemaMode && <NodeProperties node={detailedSelected || selectedInfo || selected} />}<div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
                   </>
-                    : <WorkspaceTab tab={tab} data={data} messages={messages} previewNodes={preview.nodes.length} previewEdges={preview.edges.length} />}
+                    : <WorkspaceTab tab={tab} data={data} datasetName={datasetName} messages={messages} />}
     </div>
   </aside>;
 }, graphWorkspacePropsEqual);
@@ -312,14 +313,39 @@ function CollectionTab({ tab, datasetName, summary }: { tab: Tab; datasetName?: 
   return <div className="tab-content collection-data"><div className="tab-title"><strong>{t('Dataset splits and features', '数据集划分与特征')}</strong><span>{t(`${displayCount(summary.num_graphs, locale)} graphs`, `${displayCount(summary.num_graphs, locale)} 张图`)}</span></div><div className="collection-section"><strong>{t('Data splits', '数据划分')}</strong><div className="stat-grid"><div><span>{t('Training', '训练集')}</span><strong>{displayCount(splits.train, locale)}</strong></div><div><span>{t('Validation', '验证集')}</span><strong>{displayCount(validationSize, locale)}</strong></div><div><span>{t('Test', '测试集')}</span><strong>{displayCount(splits.test, locale)}</strong></div><div><span>{t('Edgeless graphs', '无边图')}</span><strong>{displayCount(summary.num_edgeless_graphs, locale)}</strong></div></div></div><div className="collection-section"><strong>{t('Vocabularies and labels', '词表与标签')}</strong><div className="stat-grid"><div><span>{t('Node vocabulary', '节点词表')}</span><strong>{displayCount(summary.node_vocab_size, locale)}</strong></div><div><span>{t('Edge vocabulary', '边词表')}</span><strong>{displayCount(summary.edge_vocab_size, locale)}</strong></div><div><span>{t('Missing labels', '缺失标签')}</span><strong>{Number.isFinite(missingRate) ? `${(missingRate * 100).toFixed(2)}%` : '-'}</strong></div><div><span>{t('Edge features', '边特征')}</span><strong>{summary.uses_edge_features == null ? '-' : summary.uses_edge_features ? t('Yes', '是') : t('No', '否')}</strong></div></div></div></div>;
 }
 
-function WorkspaceTab({ tab, data, messages, previewNodes, previewEdges }: { tab: Tab; data: GraphData; messages: Message[]; previewNodes: number; previewEdges: number }) {
+function WorkspaceTab({ tab, data, datasetName, messages }: { tab: Tab; data: GraphData; datasetName?: string; messages: Message[] }) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
   if (tab === 'Overview') {
     const totalNodes = data.total_nodes ?? data.num_nodes ?? data.nodes.length;
     const totalEdges = data.total_edges ?? data.num_edges ?? data.edges.length;
-    const renderedNodes = previewNodes;
-    return <div className="overview-content"><div className="overview-hero"><span className="eyebrow">{t('Current graph', '当前图')}</span><h2>{t('Current dataset', '当前数据集')}</h2><strong>{t('Graph analysis ready', '图分析已就绪')}</strong></div><div className="stat-grid"><div><span>{t('Nodes', '节点数')}</span><strong>{totalNodes.toLocaleString(locale)}</strong></div><div><span>{t('Edges', '边数')}</span><strong>{totalEdges.toLocaleString(locale)}</strong></div><div><span>{t('Direction', '方向')}</span><strong>{data.directed ? t('Directed', '有向图') : t('Undirected', '无向图')}</strong></div><div><span>{t('Canvas nodes', '画布节点')}</span><strong>{renderedNodes.toLocaleString(locale)}</strong></div></div>{renderedNodes < totalNodes || previewEdges < totalEdges ? <div className="workspace-note"><Icon name="spark" size={15} /> {t(`The canvas shows ${renderedNodes.toLocaleString(locale)} nodes and ${previewEdges.toLocaleString(locale)} edges; dataset totals remain complete.`, `画布当前展示 ${renderedNodes.toLocaleString(locale)} 个节点、${previewEdges.toLocaleString(locale)} 条边，数据集总量统计保持完整。`)}</div> : null}</div>;
+    const averageDegree = totalNodes > 0 ? totalEdges * 2 / totalNodes : 0;
+    const possibleEdges = totalNodes > 1 && data.directed != null ? data.directed ? totalNodes * (totalNodes - 1) : totalNodes * (totalNodes - 1) / 2 : 0;
+    const density = possibleEdges > 0 ? totalEdges / possibleEdges : null;
+    const densityPercent = new Intl.NumberFormat(locale, {
+      style: 'percent', maximumFractionDigits: density != null && density > 0 && density < .0001 ? 4 : 2,
+    });
+    const decimal = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
+    const communityCount = data.community?.num_communities ?? data.communities?.num_communities;
+    const facts = [
+      { label: t('Direction', '方向'), value: data.directed == null ? t('Unknown', '未知') : data.directed ? t('Directed graph', '有向图') : t('Undirected graph', '无向图') },
+      { label: data.directed ? t('Average total degree', '平均总度') : t('Average degree', '平均度'), value: decimal.format(averageDegree) },
+      density == null ? null : { label: t('Link density', '连接密度'), value: densityPercent.format(density) },
+      communityCount == null ? null : { label: t('Communities', '社区数'), value: Number(communityCount).toLocaleString(locale) },
+    ].filter((item): item is { label: string; value: string } => Boolean(item));
+    return <div className="overview-content graph-overview">
+      <section className="graph-overview-summary" aria-labelledby="graph-overview-title">
+        <div className="graph-overview-heading"><div><span className="eyebrow">{t('Graph overview', '图概览')}</span><h2 id="graph-overview-title">{datasetName || t('Current dataset', '当前数据集')}</h2></div><span className="graph-overview-ready"><i />{t('Ready', '分析就绪')}</span></div>
+        <dl className="graph-overview-totals" aria-label={t('Graph scale', '图规模')}>
+          <div><dt>{t('Nodes', '节点')}</dt><dd>{totalNodes.toLocaleString(locale)}</dd></div>
+          <div><dt>{t('Edges', '边')}</dt><dd>{totalEdges.toLocaleString(locale)}</dd></div>
+        </dl>
+      </section>
+      <section className="graph-overview-section" aria-labelledby="graph-structure-title">
+        <header><h3 id="graph-structure-title">{t('Structure', '结构概况')}</h3></header>
+        <dl className="graph-overview-facts">{facts.map(fact => <div key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl>
+      </section>
+    </div>;
   }
   if (tab === 'Data') return <div className="tab-content"><div className="tab-title"><strong>{t('Node and edge data', '节点与边数据')}</strong><span>{t(`${(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString(locale)} nodes`, `${(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString(locale)} 个节点`)}</span></div><div className="data-list">{data.nodes.slice(0, 20).map((node, index) => <div key={index}><Icon name="project" size={14} /><span>{String(node.label ?? node.id ?? t(`Node ${index + 1}`, `节点 ${index + 1}`))}</span><small>{String(node.type ?? t('Node', '节点'))}</small></div>)}</div>{data.nodes.length < (data.total_nodes ?? data.num_nodes ?? data.nodes.length) ? <div className="workspace-note">{t(`This is a visualization preview with ${data.nodes.length.toLocaleString(locale)} loaded node samples.`, `当前为可视化预览，已加载 ${data.nodes.length.toLocaleString(locale)} 个节点样本。`)}</div> : null}</div>;
   return <ArtifactsTab messages={messages} />;
@@ -581,10 +607,255 @@ function MLTab({ hasProject, messages, liveTools, projectRuns, sessionId, loadin
     {effectiveScope === 'current' && otherRuns.length ? <div className="ml-activity"><strong>{t('Data and inference activity', '数据与推理记录')}</strong><div className="workspace-list">{otherRuns.map((run, index) => <div className="workspace-list-row" key={`${run.call_id || run.tool}-${index}`}><div className="workspace-list-icon"><Icon name="cube" size={15} /></div><div><strong>{String(run.tool) === 'infer' ? t('Inference', '推理') : String(run.tool) === 'load_graph_classification_dataset' ? t('Load graph classification dataset', '加载图分类数据集') : String(run.tool)}</strong><span>{run.done ? t('Completed', '已完成') : t('Running', '运行中')}</span></div><b>{run.done ? t('Done', '完成') : t('Running', '运行中')}</b><JobStopButton run={run} sessionId={sessionId} onStopJob={onStopJob} /></div>)}</div></div> : null}</div>;
 }
 
+function reportRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item)) : [];
+}
+
+function reportText(value: unknown, locale: string): string {
+  if (value == null || value === '') return '-';
+  if (typeof value === 'number') return value.toLocaleString(locale, { maximumFractionDigits: 6 });
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (Array.isArray(value)) return value.map(item => reportText(item, locale)).join('、');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function reportToolResult(tools: ToolCall[], name: string): Record<string, unknown> {
+  const tool = [...tools].reverse().find(item => String(item.tool || '') === name && item.result != null);
+  const result = recordValue(tool?.result);
+  const summary = recordValue(result.summary);
+  return Object.keys(summary).length ? summary : result;
+}
+
+function reportMetric(label: string, value: unknown, unit?: string) {
+  if (value == null || value === '') return null;
+  return unit ? { label, value, unit } : { label, value };
+}
+
+function reportNumber(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function centralityTitle(value: unknown) {
+  const name = String(value || '').toLowerCase();
+  return ({ pagerank: 'PageRank', degree: '度中心性', betweenness: '中介中心性', closeness: '接近中心性', eigenvector: '特征向量中心性' } as Record<string, string>)[name] || String(value || '中心性');
+}
+
+function legacyConnectionSection(tools: ToolCall[], oldSections: Record<string, unknown>[]) {
+  const degree = reportToolResult(tools, 'degree_analysis');
+  const centrality = reportToolResult(tools, 'node_centrality');
+  const oldDegree = oldSections.find(section => section.id === 'degree-distribution');
+  const oldCentrality = oldSections.find(section => section.id === 'centrality-ranking');
+  if (!Object.keys(degree).length && !Object.keys(centrality).length && !oldDegree && !oldCentrality) return null;
+
+  const degreeRows = reportRecords(degree.top_degree_nodes);
+  const centralityRows = reportRecords(centrality.top_nodes);
+  const directed = degree.directed === true || degree.avg_in_degree != null || degree.avg_out_degree != null
+    || degreeRows.some(row => row.total != null || row.in != null || row.out != null);
+  const stats = recordValue(directed ? degree.total_degree_stats : degree.degree_stats);
+  let average = reportNumber(degree.avg_degree ?? degree.total_degree_mean ?? stats.mean);
+  if (average == null) {
+    const averageIn = reportNumber(degree.avg_in_degree);
+    const averageOut = reportNumber(degree.avg_out_degree);
+    if (averageIn != null && averageOut != null) average = averageIn + averageOut;
+  }
+  const metrics = [
+    reportMetric(directed ? '平均总度' : '平均度', average),
+    reportMetric(directed ? '中位总度' : '中位度', stats.median),
+    reportMetric(directed ? '最大总度' : '最大度', stats.max),
+    reportMetric('平均入度', directed ? degree.avg_in_degree : null),
+    reportMetric('平均出度', directed ? degree.avg_out_degree : null),
+  ].filter(Boolean);
+  const centralityName = centralityTitle(centrality.centrality_type);
+  const scores = new Map(centralityRows.map(row => [String(row.node), reportNumber(row.value)]));
+  let data = degreeRows.slice(0, 10).flatMap(row => {
+    const value = reportNumber(directed ? row.total ?? row.degree : row.degree ?? row.total);
+    if (row.node == null || value == null) return [];
+    const score = scores.get(String(row.node));
+    return [{ label: String(row.node), value, ...(score == null ? {} : { detail: `${centralityName} ${score}` }) }];
+  });
+  let chartTitle = scores.size ? '关键节点：连接规模与全局影响力' : '高连接节点';
+  let unit = directed ? '总度' : '度';
+  if (!data.length && centralityRows.length) {
+    data = centralityRows.slice(0, 10).flatMap(row => {
+      const value = reportNumber(row.value);
+      return row.node == null || value == null ? [] : [{ label: String(row.node), value }];
+    });
+    chartTitle = `${centralityName} 排名`;
+    unit = centralityName;
+  }
+  if (!data.length) {
+    const fallback = reportRecords(reportRecords(oldDegree?.charts)[0]?.data || reportRecords(oldCentrality?.charts)[0]?.data);
+    data = fallback.flatMap(row => {
+      const value = reportNumber(row.value);
+      return value == null ? [] : [{ label: String(row.label ?? '-'), value }];
+    });
+  }
+  return {
+    id: 'connections-and-key-nodes',
+    title: '连接与关键节点',
+    summary: degreeRows.length && centralityRows.length
+      ? `条形长度表示${directed ? '总度' : '度'}，右侧同时给出 ${centralityName}。`
+      : degreeRows.length ? `用${directed ? '总度' : '度'}对比节点的连接规模。` : `按 ${centralityName} 对关键节点排序。`,
+    metrics,
+    charts: data.length ? [{ type: 'bar', title: chartTitle, data, unit }] : [],
+    tables: [], insights: [], limitations: [],
+  };
+}
+
+function legacyConnectivitySection(tools: ToolCall[]) {
+  const result = reportToolResult(tools, 'graph_connectivity');
+  if (!Object.keys(result).length) return null;
+  const directed = result.directed === true || 'is_weakly_connected' in result || 'is_strongly_connected' in result;
+  const strong = recordValue(result.strongly_connected_components);
+  const weak = recordValue(result.weakly_connected_components);
+  const connected = recordValue(result.connected_components);
+  const metrics = [
+    reportMetric('弱连通', directed && result.is_weakly_connected != null ? result.is_weakly_connected ? '是' : '否' : null),
+    reportMetric('强连通', directed && result.is_strongly_connected != null ? result.is_strongly_connected ? '是' : '否' : null),
+    reportMetric('连通', !directed && result.is_connected != null ? result.is_connected ? '是' : '否' : null),
+    reportMetric('强连通分量', strong.count), reportMetric('最大强连通分量', strong.largest_size, '节点'),
+    reportMetric('弱连通分量', weak.count), reportMetric('最大弱连通分量', weak.largest_size, '节点'),
+    reportMetric('连通分量', connected.count), reportMetric('最大连通分量', connected.largest_size, '节点'),
+  ].filter(Boolean);
+  const component = directed ? Object.keys(weak).length ? weak : strong : connected;
+  const kind = directed ? Object.keys(weak).length ? '弱连通' : '强连通' : '连通';
+  return {
+    id: 'connectivity', title: '连通性',
+    summary: component.count != null ? `图包含 ${component.count} 个${kind}分量，最大分量有 ${component.largest_size ?? 0} 个节点。` : '图的连通状态和分量规模。',
+    metrics, charts: [], tables: [], insights: [], limitations: [],
+  };
+}
+
+function conciseLegacySummary(sections: Record<string, unknown>[]) {
+  const metricMap = (id: string) => new Map(reportRecords(sections.find(section => section.id === id)?.metrics).map(metric => [String(metric.label), metric.value]));
+  const overview = metricMap('structure-overview');
+  const connection = metricMap('connections-and-key-nodes');
+  const community = metricMap('structure-patterns');
+  const parts: string[] = [];
+  if (reportNumber(overview.get('节点数')) != null && reportNumber(overview.get('边数')) != null) parts.push(`${Number(overview.get('节点数')).toLocaleString('zh-CN')} 个节点 · ${Number(overview.get('边数')).toLocaleString('zh-CN')} 条边`);
+  const average = connection.get('平均总度') ?? connection.get('平均度');
+  if (average != null) parts.push(`平均度 ${average}`);
+  const communities = community.get('社区数') ?? community.get('分组数量');
+  if (communities != null) parts.push(`${communities} 个社区`);
+  return parts.length ? `${parts.join('；')}。` : '';
+}
+
+function modernizeLegacyReport(report: Record<string, unknown>, tools: ToolCall[]) {
+  if (report.version === 'analysis_report.v2') return report;
+  const oldSections = reportRecords(report.sections);
+  const hasLegacyStructure = oldSections.some(section => ['degree-distribution', 'centrality-ranking', 'global-metrics', 'structure-patterns', 'supplemental-results'].includes(String(section.id)));
+  if (!hasLegacyStructure) return report;
+  const connection = legacyConnectionSection(tools, oldSections);
+  const connectivity = legacyConnectivitySection(tools);
+  const sections: Record<string, unknown>[] = [];
+  let connectionInserted = false;
+  oldSections.forEach(section => {
+    const id = String(section.id || '');
+    if (id === 'degree-distribution' || id === 'centrality-ranking') {
+      if (!connectionInserted && connection) { sections.push(connection); connectionInserted = true; }
+      return;
+    }
+    if (id === 'supplemental-results' && connectivity) return;
+    if (id === 'structure-overview') sections.push({ ...section, insights: [] });
+    else if (id === 'global-metrics') sections.push({ ...section, title: '整体结构指标', summary: '图的稀疏程度、路径距离、聚集性与连接倾向。', tables: [], insights: [] });
+    else if (id === 'structure-patterns') {
+      const metrics = reportRecords(section.metrics).map(metric => metric.label === '分组数量' ? { ...metric, label: '社区数' } : metric);
+      const values = new Map(metrics.map(metric => [String(metric.label), metric.value]));
+      const summary = values.get('社区数') != null
+        ? `识别到 ${values.get('社区数')} 个社区${values.get('模块度') == null ? '。' : `，模块度为 ${values.get('模块度')}。`}`
+        : section.summary;
+      sections.push({ ...section, title: '社区结构', summary, metrics, insights: [] });
+    }
+    else sections.push(section);
+  });
+  if (connection && !connectionInserted) sections.splice(Math.min(1, sections.length), 0, connection);
+  if (connectivity) {
+    const connectionIndex = sections.findIndex(section => section.id === 'connections-and-key-nodes');
+    sections.splice(connectionIndex < 0 ? Math.min(1, sections.length) : connectionIndex + 1, 0, connectivity);
+  }
+  return {
+    ...report,
+    subtitle: '规模、连接、关键节点与结构特征',
+    summary: conciseLegacySummary(sections) || report.summary,
+    sections,
+    limitations: Array.isArray(report.limitations)
+      ? report.limitations.filter(item => String(item) !== '连接分布缺少统计摘要。')
+      : [],
+  };
+}
+
+function ReportChart({ chart, locale }: { chart: Record<string, unknown>; locale: string }) {
+  const rows = reportRecords(chart.data).map(row => ({ label: reportText(row.label, locale), value: Number(row.value), detail: row.detail == null ? '' : reportText(row.detail, locale) })).filter(row => Number.isFinite(row.value));
+  if (!rows.length) return null;
+  const max = Math.max(...rows.map(row => Math.max(0, row.value)), 0);
+  return <div className="analysis-report-chart" aria-label={reportText(chart.title, locale)}>
+    <strong>{reportText(chart.title, locale)}</strong>
+    <div>{rows.map((row, index) => <div className="analysis-report-bar" key={`${row.label}-${index}`}>
+      <span title={row.label}>{row.label}</span>
+      <i aria-hidden="true"><b style={{ width: `${max > 0 ? Math.max(2, row.value / max * 100) : 0}%` }} /></i>
+      <em><strong>{reportText(row.value, locale)}{chart.unit ? ` ${String(chart.unit)}` : ''}</strong>{row.detail ? <small>{row.detail}</small> : null}</em>
+    </div>)}</div>
+  </div>;
+}
+
+function ReportTable({ table, locale }: { table: Record<string, unknown>; locale: string }) {
+  const rows = reportRecords(table.rows);
+  const declaredColumns = reportRecords(table.columns);
+  const columns = declaredColumns.length ? declaredColumns : rows.length ? Object.keys(rows[0]).map(key => ({ key, label: key })) : [];
+  if (!rows.length || !columns.length) return null;
+  return <div className="analysis-report-table-block">
+    <strong>{reportText(table.title, locale)}</strong>
+    <div className="analysis-report-table-scroll"><table><thead><tr>{columns.map(column => <th key={String(column.key)}>{reportText(column.label || column.key, locale)}</th>)}</tr></thead>
+      <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{columns.map(column => <td key={String(column.key)}>{reportText(row[String(column.key)], locale)}</td>)}</tr>)}</tbody></table></div>
+  </div>;
+}
+
+function AnalysisReport({ report, index, onBack }: { report: Record<string, unknown>; index: number; onBack: () => void }) {
+  const { language, t } = useI18n();
+  const locale = localeFor(language);
+  const title = String(report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
+  const sections = reportRecords(report.sections);
+  const limitations = Array.isArray(report.limitations) ? report.limitations : [];
+  return <article className="analysis-report" aria-label={t(`${title} report content`, `${title}报告内容`)}>
+    <button type="button" className="analysis-report-back" onClick={onBack}><Icon name="arrow-left" size={14} /> {t('Back to reports', '返回报告列表')}</button>
+    <header>
+      <span>{t('Analysis report', '分析报告')}</span>
+      <h2>{title}</h2>
+      {report.subtitle ? <p>{String(report.subtitle)}</p> : null}
+      {report.summary ? <div className="analysis-report-summary">{String(report.summary)}</div> : null}
+    </header>
+    {sections.length ? <div className="analysis-report-sections">{sections.map((section, sectionIndex) => {
+      const metrics = reportRecords(section.metrics);
+      const charts = reportRecords(section.charts);
+      const tables = reportRecords(section.tables);
+      const insights = Array.isArray(section.insights) ? section.insights : [];
+      const sectionLimitations = Array.isArray(section.limitations) ? section.limitations : [];
+      return <section key={String(section.id || section.title || sectionIndex)}>
+        <h3>{String(section.title || t(`Section ${sectionIndex + 1}`, `第 ${sectionIndex + 1} 部分`))}</h3>
+        {section.summary ? <p>{String(section.summary)}</p> : null}
+        {metrics.length ? <dl className="analysis-report-metrics">{metrics.map((metric, metricIndex) => <div key={`${String(metric.label)}-${metricIndex}`}><dt>{reportText(metric.label, locale)}</dt><dd>{reportText(metric.value, locale)}{metric.unit ? <small>{String(metric.unit)}</small> : null}</dd></div>)}</dl> : null}
+        {charts.map((chart, chartIndex) => <ReportChart chart={chart} locale={locale} key={`${String(chart.title)}-${chartIndex}`} />)}
+        {tables.map((table, tableIndex) => <ReportTable table={table} locale={locale} key={`${String(table.title)}-${tableIndex}`} />)}
+        {insights.length ? <div className="analysis-report-notes"><strong>{t('Findings', '发现')}</strong><ul>{insights.map((insight, insightIndex) => <li key={insightIndex}>{reportText(insight, locale)}</li>)}</ul></div> : null}
+        {sectionLimitations.length ? <div className="analysis-report-limit"><strong>{t('Notes', '说明')}</strong><ul>{sectionLimitations.map((item, itemIndex) => <li key={itemIndex}>{reportText(item, locale)}</li>)}</ul></div> : null}
+      </section>;
+    })}</div> : <div className="analysis-report-empty">{t('This report has no readable sections.', '这份报告没有可读的内容。')}</div>}
+    {limitations.length ? <div className="analysis-report-limit analysis-report-root-limit"><strong>{t('Report notes', '报告说明')}</strong><ul>{limitations.map((item, itemIndex) => <li key={itemIndex}>{reportText(item, locale)}</li>)}</ul></div> : null}
+  </article>;
+}
+
 function ArtifactsTab({ messages }: { messages: Message[] }) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
-  const reports = messages.flatMap(message => message.reports || []);
+  const reports = messages.flatMap(message => (message.reports || []).map(report => ({ report: modernizeLegacyReport(report, message.tools || []), tools: message.tools || [] })));
+  const [selectedReport, setSelectedReport] = useState<number | null>(null);
   if (!reports.length) return null;
-  return <div className="tab-content"><div className="tab-title"><strong>{t('Artifacts', '分析产物')}</strong><span>{t(`${reports.length.toLocaleString(locale)} reports`, `${reports.length.toLocaleString(locale)} 份报告`)}</span></div><div className="workspace-list">{reports.map((report, index) => { const type = String(report.intent || report.type || 'analysis'); return <div className="workspace-list-row" key={`${String(report.id || report.title || 'report')}-${index}`}><div className="workspace-list-icon"><Icon name="file" size={15} /></div><div><strong>{String(report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`))}</strong><span>{type === 'analysis' ? t('Analysis', '分析') : type}</span></div></div>; })}</div></div>;
+  if (selectedReport != null && reports[selectedReport]) return <div className="tab-content analysis-report-content"><AnalysisReport report={reports[selectedReport].report} index={selectedReport} onBack={() => setSelectedReport(null)} /></div>;
+  return <div className="tab-content"><div className="tab-title"><strong>{t('Artifacts', '分析产物')}</strong><span>{t(`${reports.length.toLocaleString(locale)} reports`, `${reports.length.toLocaleString(locale)} 份报告`)}</span></div><div className="workspace-list">{reports.map(({ report }, index) => {
+    const type = String(report.intent || report.type || 'analysis');
+    const title = String(report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
+    return <button type="button" className="workspace-list-row artifact-report-row" aria-label={t(`Open report: ${title}`, `查看报告：${title}`)} onClick={() => setSelectedReport(index)} key={`${String(report.id || report.title || 'report')}-${index}`}><div className="workspace-list-icon"><Icon name="file" size={15} /></div><div><strong>{title}</strong><span>{type === 'analysis' ? t('Analysis', '分析') : type}</span></div><b>{t('View', '查看')} <Icon name="arrow-right" size={13} /></b></button>;
+  })}</div></div>;
 }

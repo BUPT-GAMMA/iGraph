@@ -218,11 +218,14 @@ export function Sidebar({ projects, sessions, runStatuses = {}, activeId, active
   <aside className={`sidebar ${effectivelyCollapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
     <div className="sidebar-head"><button className="sidebar-collapse" onClick={onCollapse} aria-label={mobileOpen ? t('Close left sidebar', '关闭左侧栏') : effectivelyCollapsed ? t('Expand left sidebar', '展开左侧栏') : t('Collapse left sidebar', '收起左侧栏')} title={mobileOpen ? t('Close left sidebar', '关闭左侧栏') : effectivelyCollapsed ? t('Expand left sidebar', '展开左侧栏') : t('Collapse left sidebar', '收起左侧栏')}><Icon name={effectivelyCollapsed ? 'panel-left-open' : 'panel-left-close'} size={18} /></button></div>
     <div className="sidebar-content" aria-hidden={effectivelyCollapsed}>
-    <button className="new-task" onClick={createTaskFromContext}><Icon name="plus" size={18} /> {t('New task', '新建任务')}</button>
+    <button className="new-task sidebar-primary-action" onClick={createTaskFromContext}>
+      <span className="sidebar-primary-action-icon sidebar-new-task-icon"><Icon name="plus" size={18} /></span>
+      <span className="sidebar-primary-action-label">{t('New task', '新建任务')}</span>
+    </button>
     <nav className="sidebar-create-graph" aria-label={t('Graph construction workspace', '构图工作区')}>
-      <button className={createGraphActive ? 'active' : ''} aria-current={createGraphActive ? 'page' : undefined} onClick={() => { onCreateGraph(); onCloseMobile(); }}>
-        <span className="sidebar-create-graph-icon"><Icon name="graph-create" size={19} /></span>
-        <span>{t('Create your graph', '创建你的图')}</span>
+      <button className={`sidebar-primary-action ${createGraphActive ? 'active' : ''}`} aria-current={createGraphActive ? 'page' : undefined} onClick={() => { onCreateGraph(); onCloseMobile(); }}>
+        <span className="sidebar-primary-action-icon sidebar-create-graph-icon"><Icon name="graph-create" size={19} /></span>
+        <span className="sidebar-primary-action-label">{t('Create your graph', '创建你的图')}</span>
       </button>
     </nav>
     <nav className="sidebar-utilities" aria-label={t('Knowledge and capability management', '知识与能力管理')}>

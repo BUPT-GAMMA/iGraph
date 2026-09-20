@@ -227,7 +227,6 @@ function App() {
   const [dark, setDark] = useState(() => localStorage.getItem('igraph-theme') === 'dark');
   const [sidebarWidth, setSidebarWidth] = useState(() => storedWidth('igraph-layout-sidebar-width', window.innerWidth <= 1280 ? 230 : SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX));
   const [graphWidth, setGraphWidth] = useState(() => storedWidth('igraph-layout-graph-width', window.innerWidth <= 1280 ? 330 : GRAPH_DEFAULT, GRAPH_MIN, GRAPH_MAX));
-  const [graphLayoutVersion, setGraphLayoutVersion] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [cancelEnabled, setCancelEnabled] = useState(false);
   const [editEnabled, setEditEnabled] = useState(false);
@@ -373,12 +372,10 @@ function App() {
 
   function nudgeResize(side: ResizeSide, delta: number) {
     updateColumnWidth(side, (side === 'sidebar' ? sidebarWidth : graphWidth) + delta);
-    setGraphLayoutVersion(current => current + 1);
   }
 
   function resetResize(side: ResizeSide) {
     updateColumnWidth(side, side === 'sidebar' ? SIDEBAR_DEFAULT : GRAPH_DEFAULT);
-    setGraphLayoutVersion(current => current + 1);
   }
 
   useEffect(() => {
@@ -392,7 +389,6 @@ function App() {
       if (!resizeRef.current) return;
       resizeRef.current = null;
       document.body.classList.remove('is-resizing-columns');
-      setGraphLayoutVersion(current => current + 1);
     }
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
@@ -2022,9 +2018,7 @@ function App() {
     .map(([sessionId, view]) => [sessionId, view.activeRun!.status]));
   return <div className="app-shell">
     <TopBar onMenu={() => setMobileSidebarOpen(true)} />
-    <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle} onTransitionEnd={event => {
-      if (event.target === event.currentTarget && event.propertyName === 'grid-template-columns') setGraphLayoutVersion(current => current + 1);
-    }}>
+    <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
       <Sidebar projects={projects} sessions={sessions} runStatuses={runStatuses} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} loginValue={loginValue} loginError={loginError} loginPending={loginPending} onLoginValueChange={value => { setLoginValue(value); setLoginError(''); }} onLogin={login} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
@@ -2042,7 +2036,7 @@ function App() {
             : <div className={`workspace-home ${userId ? '' : 'signed-out'}`}><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{userId ? t('Start a new graph analysis', '开始新的图分析') : t('Explore graph data, starting with a question', '探索图数据，从一个问题开始')}</h1>{!userId && <p>{t('Select the avatar in the lower-left corner to sign in.', '点击左下角头像登录。')}</p>}{userId ? <button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> {t('New task', '新建任务')}</button> : null}</div></div>}
         </>}
       </div>
-      {activeSession && !createGraphOpen && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onGraphQuery={prompt => void send(undefined, prompt)} graphQueryPending={!runGate.canStartRun || uploading || busy} onGraphReset={() => void refreshSessionGraph(activeSession.session_id, {}, true, undefined, true)} onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : t('Build graph', '构图')} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} layoutVersion={graphLayoutVersion} /></>}
+      {activeSession && !createGraphOpen && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onGraphQuery={prompt => void send(undefined, prompt)} graphQueryPending={!runGate.canStartRun || uploading || busy} onGraphReset={() => void refreshSessionGraph(activeSession.session_id, {}, true, undefined, true)} onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : t('Build graph', '构图')} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} /></>}
     </div>
     {activeDraft && !activeDraft.projectId && recoveredDrafts.length > 0 && <div className="recovered-draft-notice" role="status"><button className="text-button" onClick={recoverOldDraft}>{t(`Restore pre-upgrade drafts (${recoveredDrafts.length})`, `恢复升级前草稿（${recoveredDrafts.length}）`)}</button></div>}
     {datasetOpen && <DatasetPanel onDatasetUpdated={datasetUpdated} onLoadConstructed={panelProject ? () => { setDatasetOpen(false); setImportProject(panelProject); } : undefined} onConstruct={openConstruction} datasets={panelDatasets} serverDatasets={serverDatasets} projectName={panelProject?.name} activeDatasetId={panelMatchesConversation ? activeDatasetId : null} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, panelMatchesConversation && Boolean(activeSession), datasetProjectId)} onUseServer={panelProjectId ? dataset => addServerDataset(dataset, panelMatchesConversation && Boolean(activeSession), datasetProjectId) : undefined} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}
