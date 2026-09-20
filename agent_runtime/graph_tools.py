@@ -189,9 +189,10 @@ def graph_identity_headers(
     }
 
 
-def create_graph_tools(config: AgentRuntimeConfig) -> MCPTools:
+def create_graph_tools(config: AgentRuntimeConfig, *, response_language: str = "Auto") -> MCPTools:
     from agent_runtime.graph_jobs import GraphMCPTools
     return GraphMCPTools(
+        response_language=response_language,
         url=config.mcp_url,
         header_provider=graph_identity_headers,
         requires_confirmation_tools=sorted(GRAPH_TOOLS_REQUIRING_CONFIRMATION),
