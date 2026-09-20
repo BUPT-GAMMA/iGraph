@@ -74,6 +74,7 @@ export type SessionViewState = {
   activeDatasetId?: string | null;
   error?: string;
   activeRun: SessionRunState | null;
+  unreadCompletion: boolean;
   lastAccessedAt: number;
 };
 
@@ -199,6 +200,7 @@ export function createSessionView(sessionId: string, model = 'qwen3.6-plus', acc
     model,
     activeDatasetId: null,
     activeRun: null,
+    unreadCompletion: false,
     lastAccessedAt: accessedAt,
   };
 }
@@ -656,6 +658,7 @@ function evictViews(state: ConversationState): ConversationState {
         && view.attachments.length === 0
         && view.pendingAttachments.length === 0
         && !view.uploading
+        && !view.unreadCompletion
         && !PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle');
     })
     .sort((left, right) => state.viewsBySessionId[left].lastAccessedAt - state.viewsBySessionId[right].lastAccessedAt);
@@ -765,7 +768,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
     if (sessionId === null) return { ...state, activeSessionId: null, activeDraftKey: null };
     const current = state.viewsBySessionId[sessionId];
     const view = current
-      ? { ...current, model: action.model || current.model, lastAccessedAt: action.accessedAt ?? current.lastAccessedAt }
+      ? { ...current, model: action.model || current.model,
+        unreadCompletion: action.type === 'SET_ACTIVE_SESSION' ? false : current.unreadCompletion,
+        lastAccessedAt: action.accessedAt ?? current.lastAccessedAt }
       : createSessionView(sessionId, action.model, action.accessedAt);
     return evictViews({
       ...state,
@@ -854,6 +859,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       view = {
         ...view,
         error: undefined,
+        unreadCompletion: false,
         activeRun: {
           generation: action.generation,
           startRequestId: action.generation,
@@ -925,6 +931,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
         ...view,
         draft: editBackup || action.preserveComposer ? view.draft : '',
         error: undefined,
+        unreadCompletion: false,
         activeRun: {
           generation: action.generation,
           startRequestId: action.generation,
@@ -1170,6 +1177,10 @@ export function conversationReducer(state: ConversationState, action: Conversati
       delete viewsBySessionId[action.sessionId];
       return { ...state, activeSessionId: state.activeSessionId === action.sessionId ? null : state.activeSessionId, viewsBySessionId };
     }
+  }
+  const completedNow = current.activeRun?.status !== 'completed' && view.activeRun?.status === 'completed';
+  if (completedNow) {
+    view = { ...view, unreadCompletion: state.activeSessionId !== action.sessionId };
   }
   const updated = { ...state, viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view } };
   const control = action.type === 'APPLY_SNAPSHOT' ? action.snapshot.control : action.type === 'HYDRATE_SUCCESS' ? action.control : null;
