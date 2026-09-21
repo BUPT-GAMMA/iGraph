@@ -5,6 +5,7 @@ import { diagramNames, diagramTitle, renderDiagram } from './diagrams.mjs';
 import { loadPages, toolsIn } from './content.mjs';
 import { renderCover, renderCloudFallback } from './cover.mjs';
 import { experimentTableHtml, experimentTableMarkdown } from './experiment-tables.mjs';
+import { constructionResultsHtml, constructionResultsMarkdown } from './construction-results.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const out = join(root, 'dist');
@@ -59,6 +60,7 @@ function toolHtml(tool, locale) {
 function blockHtml(block, locale, index) {
   switch (block.type) {
     case 'experiment-table': return experimentTableHtml(block, locale, index);
+    case 'construction-results': return constructionResultsHtml(block, locale);
     case 'paragraph': return `<p>${esc(block.text[locale])}</p>`;
     case 'note': return `<aside class="callout"><span class="callout-symbol">i</span><div><strong>${esc(block.title[locale])}</strong><p>${esc(block.text[locale])}</p></div></aside>`;
     case 'list': return `<ul class="prose-list">${block.items.map(item => `<li>${esc(item[locale])}</li>`).join('')}</ul>`;
@@ -75,6 +77,7 @@ function blockHtml(block, locale, index) {
 }
 function markdownBlock(block, locale) {
   if (block.type === 'experiment-table') return experimentTableMarkdown(block, locale);
+  if (block.type === 'construction-results') return constructionResultsMarkdown(block, locale);
   if (block.type === 'diagram' || block.type === 'architecture') { const name=block.name || 'architecture'; return `![${diagramTitle(name,locale)}](${origin}/diagrams/${name}-${locale}.svg)`; }
   if (block.type === 'tools') return block.items.map(tool=>`### ${tool.displayName?.[locale] || tool.name} · ${tool.name}\n\n${tool.description[locale]}\n\n`+tool.parameters.map(param=>`- \`${param.name}\` (${param.type}${param.required?text(locale,', 必填',', required'):''}): ${param.description[locale]}${param.enum?.length?text(locale,' 可选值：',' Options: ')+param.enum.join(', '):''}${param.default!==undefined?text(locale,' 默认：',' Default: ')+JSON.stringify(param.default):''}`).join('\n')+`\n\n${text(locale,'返回：','Returns: ')}${tool.result[locale]}\n\n`+(tool.notes||[]).map(note=>'- '+note[locale]).join('\n')).join('\n\n');
   if (block.type === 'paragraph') return block.text[locale];

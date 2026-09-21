@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { loadPages, toolsIn } from './content.mjs';
 import { diagramNames, renderDiagram } from './diagrams.mjs';
 import { scoreRank } from './experiment-tables.mjs';
+import { selectedConstructionResults } from './construction-results.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const out=resolve(root,'dist');
@@ -98,6 +99,26 @@ const experiments=pages.find(page=>page.slug==='experiments');
 const experimentTables=experiments.sections.flatMap(section=>section.blocks.filter(block=>block.type==='experiment-table'));
 assert.equal(experimentTables.length,4,'Expected four experiment tables');
 assert.deepEqual(experimentTables.map(table=>table.rows.length),[2,2,4,4],'Unexpected harness coverage');
+const constructionTables=experiments.sections.flatMap(section=>section.blocks.filter(block=>block.type==='construction-results'));
+assert.equal(constructionTables.length,1,'Expected a construction comparison');
+const constructionTable=constructionTables[0];
+assert.equal(constructionTable.baseline,'PK/FK');
+assert.equal(constructionTable.unit,'percent');
+assert.equal(constructionTable.datasets.length,4);
+const selectedConstruction=selectedConstructionResults(constructionTable);
+for(const dataset of constructionTable.datasets) {
+  assert.ok(Number.isInteger(dataset.realRecords) && dataset.realRecords>0);
+  assert.equal(dataset.results.length,2,'Retain both supplied results for provenance');
+  assert.equal(new Set(dataset.results.map(result=>result.source)).size,2);
+  const selected=selectedConstruction.find(result=>result.name===dataset.name);
+  for(const result of dataset.results) {
+    assert.ok(constructionTable.sources.some(source=>source.id===result.source),'Unknown result source');
+    for(const metric of ['optimizationCostReduction','holdoutCostReduction']) {
+      assert.ok(Number.isFinite(result[metric]) && result[metric]<=100,'Invalid cost reduction');
+      assert.ok(selected[metric]>=result[metric],`Selected result must dominate both metrics: ${dataset.name}`);
+    }
+  }
+}
 // Covers ties and columns where iGraph is second rather than first.
 const tiedScores=[{scores:[95]},{scores:[95]},{scores:[90]},{scores:[80]}];
 assert.deepEqual(tiedScores.map(row=>scoreRank(tiedScores,0,row.scores[0])),[1,1,2,3]);
@@ -107,6 +128,16 @@ for(const locale of ['zh','en']) {
   const tables=[...html.matchAll(/<table class="experiment-table">([\s\S]*?)<\/table>/g)];
   assert.equal(tables.length,4,'Missing rendered experiment table');
   assert.ok(!/TSA|Qwen|DeepSeek|GPT-5-mini|Gemini|GLM-4\.5/.test(html),'Unexpected metric or base model');
+  const constructionHtml=html.match(/<table class="construction-results-table">([\s\S]*?)<\/table>/)?.[1];
+  assert.ok(constructionHtml,'Missing construction comparison');
+  for(const result of selectedConstruction) {
+    const expected=[result.name,result.realRecords.toLocaleString('en-US'),result.optimizationCostReduction.toFixed(2),result.holdoutCostReduction.toFixed(2)];
+    assert.ok(constructionHtml.includes(`<th scope="row">${result.name}<small`));
+    for(const value of expected) {
+      assert.ok(constructionHtml.includes(value),`Missing construction value in HTML: ${value}`);
+      assert.ok(markdown.includes(value),`Missing construction value in Markdown: ${value}`);
+    }
+  }
   for(const [index,match] of tables.entries()) {
     const table=experimentTables[index];
     const renderedRows=[...match[1].matchAll(/<tr[^>]*><th scope="row">([^<]+)<\/th>([\s\S]*?)<\/tr>/g)];

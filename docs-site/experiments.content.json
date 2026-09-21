@@ -7,8 +7,8 @@
     "en": "Experimental results"
   },
   "description": {
-    "zh": "以 GLM-5-turbo 为统一基座模型，对比不同智能体运行框架（agent harness）在图检索、图论、图机器学习和图开放式问答中的任务成功率。",
-    "en": "Task success rates for graph retrieval, graph theory, graph machine learning, and open-ended graph question answering, comparing agent harnesses with GLM-5-turbo as the shared base model."
+    "zh": "汇总图分析智能体在四类任务中的成功率，以及构图智能体相对 PK/FK 规则构图的查询成本改善。",
+    "en": "Success rates across four graph-analysis task families, plus query cost reductions from the construction agent relative to PK/FK rule-based construction."
   },
   "sections": [
     {
@@ -21,15 +21,15 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "所有实验均使用 GLM-5-turbo 作为基座模型；行名表示 agent harness。原始结果中只写模型名的行对应 OpenClaw。表中仅保留 SR（任务成功率），统一换算为百分数并保留两位小数，数值越高越好。",
-            "en": "All experiments use GLM-5-turbo as the base model; rows identify the agent harness. A model-only row in the source results denotes OpenClaw. Only SR (task success rate) is reported, as a percentage with two decimal places; higher is better."
+            "zh": "图分析智能体的四类实验均使用 GLM-5-turbo 作为基座模型；行名表示 agent harness。原始结果中只写模型名的行对应 OpenClaw。这四张表仅保留 SR（任务成功率），统一换算为百分数并保留两位小数，数值越高越好。",
+            "en": "The four graph-analysis experiments use GLM-5-turbo as the base model; rows identify the agent harness. A model-only row in the source results denotes OpenClaw. These four tables report only SR (task success rate), as a percentage with two decimal places; higher is better."
           }
         },
         {
           "type": "paragraph",
           "text": {
-            "zh": "每列单独比较：最高分加粗，次高分加下划线；并列成绩使用相同标记。图检索和图论各比较 OpenClaw、iGraph；图机器学习和图开放式问答各比较 Hermes、Claude Code、OpenClaw、iGraph。",
-            "en": "Scores are ranked independently within each column: the highest score is bold, the second-highest score is underlined, and ties receive the same marking. Retrieval and theory compare OpenClaw and iGraph; machine learning and open-ended question answering compare Hermes, Claude Code, OpenClaw, and iGraph."
+            "zh": "SR 表中每列单独比较：最高分加粗，次高分加下划线；并列成绩使用相同标记。图检索和图论各比较 OpenClaw、iGraph；图机器学习和图开放式问答各比较 Hermes、Claude Code、OpenClaw、iGraph。",
+            "en": "Each SR column is ranked independently: the highest score is bold, the second-highest score is underlined, and ties share the same marking. Retrieval and theory compare OpenClaw and iGraph; machine learning and open-ended question answering compare Hermes, Claude Code, OpenClaw, and iGraph."
           }
         },
         {
@@ -46,6 +46,18 @@
             {
               "zh": "TPG：文本配对图（Text-Paired Graph）。",
               "en": "TPG: Text-Paired Graph."
+            }
+          ]
+        },
+        {
+          "type": "links",
+          "items": [
+            {
+              "href": "/experiments#graph-construction",
+              "label": {
+                "zh": "查看构图实验：与 PK/FK 规则构图对比",
+                "en": "Construction experiments: comparison with PK/FK rule-based construction"
+              }
             }
           ]
         }
@@ -629,6 +641,182 @@
                 21
               ],
               "source": "figure-6 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-construction",
+      "title": {
+        "zh": "构图智能体实验",
+        "en": "Graph construction agent"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "以主键、外键（PK/FK）规则构图为基线，比较构图智能体优化图表示后，查询成本的下降幅度。优化查询集用于搜索和评估候选图表示，留出查询集用于检验这些改进在另一组查询上的表现。",
+            "en": "The baseline graph is built using primary-key and foreign-key (PK/FK) rules. Results compare query cost after the construction agent optimizes the graph representation. Optimization queries guide the search and evaluation of candidate representations; held-out queries assess improvements on a separate query set."
+          }
+        },
+        {
+          "type": "construction-results",
+          "title": {
+            "zh": "构图智能体与 PK/FK 规则构图对比",
+            "en": "Construction agent versus PK/FK rule-based construction"
+          },
+          "baseline": "PK/FK",
+          "unit": "percent",
+          "selection": "per-dataset-dominant-result",
+          "sources": [
+            {
+              "id": "construction-table-1",
+              "file": "92fa631ce10c72fa29f270bd586df627.png",
+              "optimizationLabel": {
+                "zh": "搜索成本改善",
+                "en": "Search cost improvement"
+              },
+              "holdoutLabel": {
+                "zh": "留出成本改善",
+                "en": "Held-out cost improvement"
+              }
+            },
+            {
+              "id": "construction-table-2",
+              "file": "5b23269770d1c1857da18f6093db1693.png",
+              "optimizationLabel": {
+                "zh": "优化查询成本下降",
+                "en": "Optimization query cost reduction"
+              },
+              "holdoutLabel": {
+                "zh": "留出查询成本下降",
+                "en": "Held-out query cost reduction"
+              }
+            }
+          ],
+          "datasets": [
+            {
+              "name": "Amazon",
+              "realRecords": 15001,
+              "selectedSource": "construction-table-1",
+              "results": [
+                {
+                  "source": "construction-table-1",
+                  "optimizationCostReduction": 27.33,
+                  "holdoutCostReduction": 53.2,
+                  "virtualRecords": 0,
+                  "retainedColumns": 11,
+                  "totalColumns": 16,
+                  "acceptedCandidates": 2
+                },
+                {
+                  "source": "construction-table-2",
+                  "optimizationCostReduction": 21.74,
+                  "holdoutCostReduction": 44.02,
+                  "queryCount": 100,
+                  "beforeMilliseconds": 1792.06,
+                  "afterMilliseconds": 1399.22
+                }
+              ]
+            },
+            {
+              "name": "AVS",
+              "realRecords": 15037,
+              "selectedSource": "construction-table-1",
+              "results": [
+                {
+                  "source": "construction-table-1",
+                  "optimizationCostReduction": 14.8,
+                  "holdoutCostReduction": 20.71,
+                  "virtualRecords": 9996,
+                  "retainedColumns": 18,
+                  "totalColumns": 27,
+                  "acceptedCandidates": 2
+                },
+                {
+                  "source": "construction-table-2",
+                  "optimizationCostReduction": 7.22,
+                  "holdoutCostReduction": 17.97,
+                  "queryCount": 100,
+                  "beforeMilliseconds": 925,
+                  "afterMilliseconds": 852.88
+                }
+              ]
+            },
+            {
+              "name": "MAG",
+              "realRecords": 15254,
+              "selectedSource": "construction-table-2",
+              "results": [
+                {
+                  "source": "construction-table-1",
+                  "optimizationCostReduction": 9.8,
+                  "holdoutCostReduction": 17.07,
+                  "virtualRecords": 3825,
+                  "retainedColumns": 10,
+                  "totalColumns": 15,
+                  "acceptedCandidates": 1
+                },
+                {
+                  "source": "construction-table-2",
+                  "optimizationCostReduction": 11.79,
+                  "holdoutCostReduction": 19.91,
+                  "queryCount": 100,
+                  "beforeMilliseconds": 653.05,
+                  "afterMilliseconds": 573.06
+                }
+              ]
+            },
+            {
+              "name": "StackExchange",
+              "realRecords": 14961,
+              "selectedSource": "construction-table-2",
+              "results": [
+                {
+                  "source": "construction-table-1",
+                  "optimizationCostReduction": -1.61,
+                  "holdoutCostReduction": -2.92,
+                  "virtualRecords": 0,
+                  "retainedColumns": 50,
+                  "totalColumns": 76,
+                  "acceptedCandidates": 0
+                },
+                {
+                  "source": "construction-table-2",
+                  "optimizationCostReduction": 8.4,
+                  "holdoutCostReduction": 6.74,
+                  "queryCount": 100,
+                  "beforeMilliseconds": 376.77,
+                  "afterMilliseconds": 342.32
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "对每个数据集，从提供的两组实验中选取优化成本和留出成本均更低的一组：Amazon、AVS 采用第一组，MAG、StackExchange 采用第二组。同一行的两项下降率均来自同一组实验，保留原表报告值；这里展示的是各数据集的最优结果汇总。",
+            "en": "For each dataset, select the supplied result with lower costs on both optimization and held-out queries: the first result set for Amazon and AVS, and the second for MAG and StackExchange. Both reductions in a row come from the same result set and retain the reported values. This is a per-dataset best-result summary."
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "这里的百分数表示相对 PK/FK 规则构图的成本下降幅度，数值越大，改善越明显。真实记录数沿用原表统计，不包含虚拟记录。各行对应不同数据集，不作跨数据集的名次比较。",
+            "en": "Percentages indicate cost reduction relative to PK/FK rule-based construction; larger reductions are better. Real-record counts follow the source tables and exclude virtual records. Rows represent different datasets and are not ranked against one another."
+          }
+        },
+        {
+          "type": "links",
+          "items": [
+            {
+              "href": "/construction",
+              "label": {
+                "zh": "了解构图智能体的优化与验收流程",
+                "en": "How the construction agent optimizes and validates graph representations"
+              }
             }
           ]
         }
