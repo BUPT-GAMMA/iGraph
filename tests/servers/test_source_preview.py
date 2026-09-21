@@ -118,6 +118,39 @@ def test_sql_unterminated_comment_is_consumed_once_then_rejected(tmp_path):
     assert "未闭合" in str(error.value)
 
 
+def test_sql_unterminated_bracket_is_consumed_once_then_rejected(tmp_path):
+    from graph_data_service.source_preview import _TOKENS
+    hostile = "[" * 100_000
+    assert [match.group() for match in _TOKENS.finditer(hostile)] == [hostile]
+    with pytest.raises(ConstructionError, match="未闭合"):
+        preview(tmp_path, hostile)
+
+
+def test_sql_validates_insert_arity_beyond_the_sample(tmp_path):
+    with pytest.raises(ConstructionError, match="不匹配"):
+        preview(tmp_path, "CREATE TABLE t(id INT); INSERT INTO t VALUES (1),(2),(3),(4),(5),(6,7);")
+
+
+@pytest.mark.parametrize("kind", ["csv", "sql", "sqlite"])
+@pytest.mark.parametrize("value,clipped", [("x" * (CELL_CHARS + 1), True), ("原文省略号…", False)])
+def test_value_clipping_does_not_claim_additional_rows(tmp_path, kind, value, clipped):
+    if kind == "csv":
+        result = preview(tmp_path, f"note\n{value}\n", "source.csv")
+    elif kind == "sql":
+        result = preview(tmp_path, f"CREATE TABLE t(note TEXT); INSERT INTO t VALUES ('{value}');")
+    else:
+        path = tmp_path / "source.sql"
+        with sqlite3.connect(path) as connection:
+            connection.execute("CREATE TABLE t(note TEXT)")
+            connection.execute("INSERT INTO t VALUES(?)", (value,))
+        result = source_preview(str(path), path.name, "sample")
+    table = result["tables"][0]
+    assert table["row_count"] == 1
+    assert table["sample_truncated"] is False
+    assert table["values_truncated"] is clipped
+    assert result["truncated"] is clipped
+
+
 def test_sql_large_quoted_literal_does_not_allocate_per_character_regex_frames():
     import tracemalloc
     from graph_data_service.source_preview import _TOKENS

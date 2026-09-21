@@ -59,7 +59,7 @@ _FIELD_NAME_HINTS = {
 # regex backtracking frame per character of a large literal/quoted identifier.
 _TOKENS = re.compile(
     r"--[^\n]*(?:\n|$)|/\*[\s\S]*?(?:\*/|\Z)|'(?:[^']++|'')*+'|"
-    r'"(?:[^"]++|"")*+"|`(?:[^`]++|``)*+`|\[[^\]]*\]|'
+    r'"(?:[^"]++|"")*+"|`(?:[^`]++|``)*+`|\[[^\]]*(?:\]|\Z)|'
     r"[A-Za-z_\u0080-\uffff][\w$]*|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[^\s]"
 )
 
@@ -154,7 +154,7 @@ def _table(name: str, columns: list[str]) -> dict:
         _fail("数据预览要求有效且不重复的表头，每张表最多 256 列。")
     return {"name": name, "columns": columns, "column_types": {}, "primary_key": [],
             "foreign_keys": [], "column_descriptions": {}, "sample_rows": [],
-            "row_count": 0, "sample_truncated": False}
+            "row_count": 0, "sample_truncated": False, "values_truncated": False}
 
 
 def _describe(table: dict):
@@ -176,6 +176,15 @@ def _describe(table: dict):
             table["column_descriptions"][column] = (
                 {"text": f"按字段名推测：{hint}；需结合数据字典核实。", "source": "inferred"}
                 if hint else {"text": "源文件未提供字段含义注释", "source": "unavailable"})
+
+
+def _sample_row(table: dict, values) -> dict:
+    row = {}
+    for column, value in zip(table["columns"], values):
+        if isinstance(value, str) and len(value) > CELL_CHARS:
+            table["values_truncated"] = True
+        row[column] = _clip(value)
+    return row
 
 
 def _insert_columns(requested: list[str], declared: list[str]) -> list[str]:
@@ -265,7 +274,7 @@ def _literal(tokens: list[str]):
     if value.upper() in {"TRUE", "FALSE"}:
         return value.upper() == "TRUE"
     if re.fullmatch(r"[+-]?\d+", value):
-        return int(value) if len(value) < 100 else _clip(value)
+        return int(value) if len(value) < 100 else value
     if re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value):
         return _clip(float(value))
     return "[SQL 表达式，未执行]"
@@ -318,15 +327,17 @@ def _sql_text(content: str, warnings: list[str]) -> list[dict]:
                     skipped = True
                     break
                 cells, index = _parenthesized(clean, index)
+                groups = list(_groups(cells))
+                if len(groups) != len(columns):
+                    _fail(f"SQL 表 {name} 的 INSERT 列与示例值不匹配。")
                 if table["row_count"] is not None:
                     table["row_count"] += 1
                 if len(table["sample_rows"]) < SAMPLE_ROWS:
-                    values = [_clip(_literal(group)) for group in _groups(cells)]
-                    if len(values) != len(columns) or any(column not in table["columns"] for column in columns):
-                        _fail(f"SQL 表 {name} 的 INSERT 列与示例值不匹配。")
+                    values = [_literal(group) for group in groups]
                     row = dict(zip(columns, values))
                     # Defaults may be expressions; never silently present them as NULL.
-                    table["sample_rows"].append({column: row.get(column, "[未在 INSERT 中提供]") for column in table["columns"]})
+                    table["sample_rows"].append(_sample_row(
+                        table, (row.get(column, "[未在 INSERT 中提供]") for column in table["columns"])))
                 else:
                     table["sample_truncated"] = True
         elif upper[0] == "COMMENT" and upper[1:3] == ["ON", "COLUMN"]:
@@ -348,6 +359,8 @@ def _sql_text(content: str, warnings: list[str]) -> list[dict]:
         token = match.group()
         if token.startswith("/*") and not token.endswith("*/"):
             _fail("SQL 包含未闭合的块注释。")
+        if token.startswith("[") and not token.endswith("]"):
+            _fail("SQL 包含未闭合的方括号标识符。")
         if token == ";":
             consume(statement)
             statement = []
@@ -371,7 +384,7 @@ def _csv_table(data: bytes, name: str, delimiter: str, definition: dict | None =
                 _fail(f"CSV 表 {name} 第 {number} 行的列数与表头不一致。")
             table["row_count"] += 1
             if len(table["sample_rows"]) < SAMPLE_ROWS:
-                table["sample_rows"].append(dict(zip(table["columns"], map(_clip, cells))))
+                table["sample_rows"].append(_sample_row(table, cells))
     except csv.Error:
         _fail(f"CSV 表 {name} 格式无效或单元格过长。")
     table["column_types"] = {column: "TEXT" for column in table["columns"]}
@@ -454,7 +467,7 @@ def _sqlite_image(path: Path) -> list[dict]:
                 _fail("SQLite 表包含生成或隐藏列，请先将其物化为普通列再预览。")
             columns = ",".join(quote(column) for column in table["columns"])
             rows = connection.execute(f"SELECT {columns} FROM {quote(name)} LIMIT ?", (SAMPLE_ROWS + 1,)).fetchall()
-            table["sample_rows"] = [dict(zip(table["columns"], map(_clip, row))) for row in rows[:SAMPLE_ROWS]]
+            table["sample_rows"] = [_sample_row(table, row) for row in rows[:SAMPLE_ROWS]]
             table["sample_truncated"] = len(rows) > SAMPLE_ROWS
             table["row_count"] = None if table["sample_truncated"] else len(rows)
             tables.append(table)
@@ -503,9 +516,8 @@ def source_preview(source_path: str, source_filename: str, dataset_id: str, deli
             result["tables"] = _sql_text(_decode(data), result["warnings"])
         for table in result["tables"]:
             _describe(table)
-            table["sample_truncated"] = table["sample_truncated"] or any(
-                isinstance(value, str) and value.endswith("…") for row in table["sample_rows"] for value in row.values())
-        result["truncated"] = result["truncated"] or any(table["sample_truncated"] for table in result["tables"])
+        result["truncated"] = result["truncated"] or any(
+            table["sample_truncated"] or table["values_truncated"] for table in result["tables"])
         # Bound the serialized response as well as input, rows, columns and cells.
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > MAX_RESPONSE_BYTES:
             _fail("预览内容超过 4 MiB 响应上限；请拆分数据表。", "source_preview_too_large", 413)

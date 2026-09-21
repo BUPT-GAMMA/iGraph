@@ -15,13 +15,15 @@ function sampleValue(row: Record<string, unknown>, column: string, t: Translate)
   return { value: text.length > 300 ? `${text.slice(0, 300)}…` : text, empty: false };
 }
 
-export function SourceDataPreview({ dataset, delimiter }: { dataset: Dataset; delimiter?: string }) {
+export function SourceDataPreview({ dataset, delimiter, graphReady = false }: { dataset: Dataset; delimiter?: string; graphReady?: boolean }) {
   const { t } = useI18n();
+  const [expanded, setExpanded] = useState(!graphReady);
   const [preview, setPreview] = useState<ConstructionSourcePreview | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [attempt, setAttempt] = useState(0);
   const [selectedTable, setSelectedTable] = useState('');
+  useEffect(() => { setExpanded(!graphReady); }, [graphReady]);
   useEffect(() => {
     const controller = new AbortController();
     setPreview(null); setError(''); setLoading(true); setSelectedTable('');
@@ -39,7 +41,7 @@ export function SourceDataPreview({ dataset, delimiter }: { dataset: Dataset; de
   const descriptionSource = (source: string) => source === 'comment' ? t('Source comment', '源文件注释')
     : source === 'schema' ? t('Schema definition', '结构定义')
       : source === 'inferred' ? t('Inferred · verify', '推断 · 待核对') : t('Not documented', '未提供说明');
-  return <details className="source-data-preview" open>
+  return <details className="source-data-preview" open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>
     <summary><Icon name="table" size={16} /><strong>{t('Source data preview', '源数据示例')}</strong><span>{dataset.file_type.toUpperCase()}</span></summary>
     <div className="source-preview-content">
       <p className="source-preview-intro">{t('Inspect sample records and field definitions before constructing the graph.', '构图前先查看样例记录与字段说明，确认源数据内容。')}</p>
