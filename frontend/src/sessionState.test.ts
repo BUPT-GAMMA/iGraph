@@ -353,6 +353,24 @@ describe('conversationReducer session/run isolation', () => {
     expect(state.viewsBySessionId.A.activeRun?.status).toBe('completed');
   });
 
+  it('marks only background completions unread and clears them when opened', () => {
+    let state = session(session(initialConversationState, 'A'), 'B');
+    state = conversationReducer(state, { type: 'SET_ACTIVE_SESSION', sessionId: 'A' });
+    state = start(state, 'A', 'foreground');
+    state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'foreground',
+      batch: batch('A', 'foreground-run', 0, [{ type: 'done', content: 'seen' }]) });
+    expect(state.viewsBySessionId.A.unreadCompletion).toBe(false);
+
+    state = start(state, 'A', 'background');
+    state = conversationReducer(state, { type: 'SET_ACTIVE_SESSION', sessionId: 'B' });
+    state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'background',
+      batch: batch('A', 'background-run', 0, [{ type: 'done', content: 'new' }]) });
+    expect(state.viewsBySessionId.A.unreadCompletion).toBe(true);
+
+    state = conversationReducer(state, { type: 'SET_ACTIVE_SESSION', sessionId: 'A' });
+    expect(state.viewsBySessionId.A.unreadCompletion).toBe(false);
+  });
+
   it('does not reactivate a terminal run and ignores events after deletion', () => {
     let state = start(session(initialConversationState, 'A'), 'A', 'gen');
     state = conversationReducer(state, {

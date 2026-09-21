@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState }
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { readComposerDraft, writeComposerDraft, clearComposerDraft } from './composerDrafts';
+import { readPins } from './sessionPins';
+import { forgetSessionActivity, pendingActivity, readSessionActivities, saveSessionActivity } from './sessionActivity';
 import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, importServerDataset, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listServerDatasets, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, ConstructionState, CsvBundleSchema, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, ServerDataset, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
@@ -24,6 +26,9 @@ import { ManagementPanel } from './components/ManagementPanel';
 import { DeleteProjectDialog, ProjectDialog } from './components/ProjectDialogs';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
+import { ModelManager } from './components/ModelManager';
+import { ModelCatalogContext } from './components/ModelPicker';
+import { listModels, getSessionModel, modelErrorMessage, type ModelCatalog } from './api';
 import { parseWorkspaceRoute, writeWorkspaceRoute } from './navigation';
 import { migrateGeneralDraft, readRecoveredDrafts, recoveredDraftsKey } from './draftMigration';
 import { I18nProvider, tr, useI18n } from './i18n';
@@ -102,7 +107,12 @@ function normalizeMessages(input: unknown): Message[] {
 function mergeSessionLists(current: Session[], incoming: Session[]) {
   const byId = new Map(current.map(session => [session.session_id, session]));
   for (const session of incoming) byId.set(session.session_id, { ...(byId.get(session.session_id) || {}), ...session });
-  return [...byId.values()].sort((left, right) => String(right.updated_at || right.created_at || '').localeCompare(String(left.updated_at || left.created_at || '')));
+  const activity = (session: Session) => {
+    const raw = session.updated_at || session.created_at || 0;
+    const numeric = Number(raw);
+    return Number.isFinite(numeric) ? numeric * 1000 : Date.parse(String(raw)) || 0;
+  };
+  return [...byId.values()].sort((left, right) => activity(right) - activity(left));
 }
 
 function normalizedModels(input: unknown, selected = '') {
@@ -195,6 +205,10 @@ function App() {
   const [loginPending, setLoginPending] = useState(false);
   const [ready, setReady] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionCursor, setSessionCursor] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [sessionListError, setSessionListError] = useState('');
+  const sessionPageRequest = useRef<object | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [recoveredDrafts, setRecoveredDrafts] = useState<NewConversationDraft[]>([]);
   const [conversation, dispatchConversation] = useReducer(conversationReducer, initialConversationState, state => {
@@ -216,6 +230,9 @@ function App() {
   const [helpOpen, setHelpOpen] = useState(() => parseWorkspaceRoute(window.location.search).kind === 'help');
   const [importProject, setImportProject] = useState<Project | null>(null);
   const [managementOpen, setManagementOpen] = useState(false);
+  const [modelManagerOpen, setModelManagerOpen] = useState(false);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [modelNotice, setModelNotice] = useState<{ sessionId: string; name: string } | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [managementTab, setManagementTab] = useState<'memory' | 'skills'>('memory');
   const [defaultModel, setDefaultModel] = useState(DEFAULT_MODEL);
@@ -616,7 +633,8 @@ function App() {
       const graphVersion = nextGraphVersion(id);
       dispatchConversation({
         type: 'HYDRATE_SUCCESS', sessionId: id, requestVersion, messages: restoredMessages,
-        model: selectedModel, activeDatasetId, feedback: response.pending_feedback,
+        model: selectedModel, modelRevision: response.model_revision, modelUnavailableReason: response.model_unavailable_reason,
+        activeDatasetId, feedback: response.pending_feedback,
         activeRun: effectiveActiveRun, generation, control: response.control,
         preserveMessages: Boolean(effectiveActiveRun && previousRun?.runId === effectiveActiveRun.run_id && previousRun.lastAppliedEventIndex >= 0),
         preserveComposer: previousRun?.preserveComposer || savedComposer?.preserveDuringRun,
@@ -677,6 +695,7 @@ function App() {
       if (!requestWasAborted(cause) && cause instanceof ApiError && cause.status === 404) {
         connectionManagerRef.current.abort(id);
         clearPersistedRun(id);
+        forgetSessionActivity(identity, id);
         dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
         cancellationRef.current?.forget(id);
         setSessions(current => current.filter(item => item.session_id !== id));
@@ -743,10 +762,30 @@ function App() {
     setRecoveredDrafts(readRecoveredDrafts(identity));
     const sessionResponse = await listSessions();
     if (stale()) return;
-    const nextSessions = sessionResponse.sessions || [];
+    let nextSessions = sessionResponse.sessions || [];
+    setSessionCursor(sessionResponse.next_cursor || null);
+    setSessionListError('');
+    const activities = readSessionActivities(identity);
+    const relevantActivities = activities.filter(item => pendingActivity(item) || item.completedRunId !== item.readRunId);
+    const wantedIds = new Set([...readPins(identity), ...relevantActivities.map(item => item.sessionId)]);
+    const missingPins = [...wantedIds].filter(id => !nextSessions.some(session => session.session_id === id));
+    for (let offset = 0; offset < missingPins.length; offset += 50) {
+      const pinnedResponse = await listSessions({ ids: missingPins.slice(offset, offset + 50) });
+      if (stale()) return;
+      nextSessions = mergeSessionLists(nextSessions, pinnedResponse.sessions || []);
+    }
     const nextProjects = projectResponse.projects || [];
     setSessions(nextSessions); setProjects(nextProjects);
     const route = parseWorkspaceRoute(window.location.search);
+    for (const activity of activities) {
+      if (nextSessions.some(session => session.session_id === activity.sessionId)) {
+        // Foreground activation owns its authoritative hydration. Avoid racing
+        // it with a second observer for the saved (possibly older) run.
+        const restored = route.kind === 'session' && route.id === activity.sessionId
+          ? { ...activity, runId: undefined, startRequestId: undefined } : activity;
+        dispatchConversation({ type: 'RESTORE_SESSION_ACTIVITY', activity: restored });
+      } else if (wantedIds.has(activity.sessionId)) forgetSessionActivity(identity, activity.sessionId);
+    }
     if (route.kind === 'help') {
       showHelp(false);
     } else if (route.kind === 'create-graph') {
@@ -769,6 +808,29 @@ function App() {
     } else if (route.kind === 'session') {
       await selectSession(route.id, nextSessions, false, true);
     } else showWorkspaceHome(false);
+  }
+
+  async function loadMoreSessions() {
+    if (!sessionCursor || sessionPageRequest.current) return;
+    const request = {};
+    sessionPageRequest.current = request;
+    const identity = identityRef.current;
+    const epoch = accountEpochRef.current;
+    setLoadingSessions(true);
+    setSessionListError('');
+    try {
+      const response = await listSessions({ cursor: sessionCursor });
+      if (accountIsStale(identity, epoch) || sessionPageRequest.current !== request) return;
+      setSessions(current => mergeSessionLists(current, response.sessions || []));
+      setSessionCursor(response.next_cursor || null);
+    } catch {
+      if (!accountIsStale(identity, epoch)) setSessionListError(tr('Could not load older tasks. Please retry.', '旧任务加载失败，请重试。'));
+    } finally {
+      if (sessionPageRequest.current === request) {
+        sessionPageRequest.current = null;
+        setLoadingSessions(false);
+      }
+    }
   }
 
   useLayoutEffect(() => bindRequestAccount(userId), [userId]);
@@ -943,6 +1005,10 @@ function App() {
       committedCursorsRef.current.set(id, { generation: run.generation, index: run.lastAppliedEventIndex });
     }
   }, [conversation.viewsBySessionId]);
+  useLayoutEffect(() => {
+    if (!userId || demoMode || getUserId() !== userId || identityRef.current !== userId) return;
+    for (const view of Object.values(conversation.viewsBySessionId)) saveSessionActivity(userId, view);
+  }, [conversation.viewsBySessionId, userId]);
   useEffect(() => {
     const wake = () => { if (document.visibilityState !== 'hidden') { cancellationRef.current?.wake(); recoveryRef.current?.wake(); } };
     window.addEventListener('online', wake);
@@ -1009,13 +1075,13 @@ function App() {
     const identity = userId;
     let disposed = false;
     const stale = () => disposed || identityRef.current !== identity;
-    listCustomModels().then(response => {
+    const refresh = () => listModels().then(response => {
       if (stale()) return;
-      const rows = Array.isArray(response.models) ? response.models : [];
-      setCustomModels(rows);
-      setAvailableModels(current => normalizedModels([...current, ...rows.map(item => item.model_id)]));
-    }).catch(() => { if (!stale()) setCustomModels([]); });
-    return () => { disposed = true; };
+      applyModelCatalog(response);
+    }).catch(() => undefined);
+    void refresh();
+    window.addEventListener('focus', refresh);
+    return () => { disposed = true; window.removeEventListener('focus', refresh); };
   }, [userId]);
 
   function recoverOldDraft() {
@@ -1049,11 +1115,17 @@ function App() {
     dispatchConversation({ type: 'RESET' });
     setBusy(false);
     setSessions([]);
+    sessionPageRequest.current = null;
+    setSessionCursor(null);
+    setLoadingSessions(false);
+    setSessionListError('');
     setProjects([]);
     setRecoveredDrafts([]);
     setDatasetsByProject({});
     setServerDatasets([]);
     setCustomModels([]);
+    setModelCatalog(null);
+    setModelManagerOpen(false);
     setDatasetOpen(false);
     setConstructionDataset(null);
     setManagementOpen(false);
@@ -1149,6 +1221,7 @@ function App() {
       clearPersistedRun(id);
       clearPendingFirstTurn(id);
       clearComposerDraft(identity, id); cancelSessionUploads(id);
+      forgetSessionActivity(identity, id);
       dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
       setSessions(current => current.filter(item => item.session_id !== id));
       if (deleted?.project_id) setProjects(current => current.map(project => project.project_id === deleted.project_id ? { ...project, conversation_count: Math.max(0, (project.conversation_count || 0) - 1) } : project));
@@ -1203,6 +1276,7 @@ function App() {
       hydrationControllersRef.current.get(id)?.abort(); hydrationControllersRef.current.delete(id);
       clearPersistedRun(id); clearPendingFirstTurn(id);
       clearComposerDraft(identity, id); cancelSessionUploads(id);
+      forgetSessionActivity(identity, id);
       dispatchConversation({ type: 'REMOVE_SESSION', sessionId: id });
     }
     setSessions(current => current.filter(item => item.project_id !== targetId));
@@ -1334,6 +1408,11 @@ function App() {
     const selectedProjectId = conversationRef.current.activeDraftKey;
     const draft = draftOverride || (selectedProjectId ? conversationRef.current.draftsByScope[selectedProjectId] : null);
     if (!draft || !['editing', 'failed'].includes(draft.phase)) return;
+    const unavailable = unavailableModel(draft.model);
+    if (!uploadOnly && unavailable) {
+      dispatchConversation({ type: 'PATCH_DRAFT', projectId: draft.projectId, draftId: draft.draftId, patch: { error: modelErrorMessage(unavailable) } });
+      return;
+    }
     const projectId = draft.projectId;
     const message = draft.text.trim();
     if (!message && !uploadOnly) return;
@@ -1440,6 +1519,11 @@ function App() {
     if (!activeSession) return;
     const sessionId = activeSession.session_id;
     const targetView = conversationRef.current.viewsBySessionId[sessionId];
+    const unavailable = targetView?.modelUnavailableReason || unavailableModel(targetView?.model || defaultModel);
+    if (unavailable) {
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: modelErrorMessage(unavailable) } });
+      return;
+    }
     const message = String(edit?.message ?? messageOverride ?? targetView?.draft ?? '').trim();
     if (!message) return;
     const gate = selectRunGate(targetView);
@@ -1648,18 +1732,24 @@ function App() {
     const previousModel = model;
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
-    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: nextModel, error: undefined } });
+    dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: undefined } });
     setBusy(true);
     try {
-      const response = await updateSessionModel(sessionId, nextModel);
+      const response = await updateSessionModel(sessionId, nextModel, conversationRef.current.viewsBySessionId[sessionId]?.modelRevision ?? 0);
       if (accountIsStale(identity, accountEpoch)) return;
       const selectedModel = response.model || nextModel;
-      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: selectedModel } });
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: selectedModel, modelRevision: response.model_revision ?? 0, modelUnavailableReason: null } });
       setAvailableModels(normalizedModels(response.available_models || availableModels, selectedModel));
       setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, model: selectedModel } : session));
+      setModelNotice({ sessionId, name: modelCatalog?.models.find(item => item.config_id === selectedModel)?.display_name || selectedModel });
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
       dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { model: previousModel, error: cause.message || tr('Could not switch models', '模型切换失败') } });
+      try {
+        const selection = await getSessionModel(sessionId);
+        if (!accountIsStale(identity, accountEpoch)) dispatchConversation({ type: 'PATCH_VIEW', sessionId,
+          patch: { model: selection.model, modelRevision: selection.model_revision, modelUnavailableReason: selection.model_unavailable_reason } });
+      } catch { /* Preserve the visible error; the next hydration retries. */ }
     } finally {
       if (!accountIsStale(identity, accountEpoch)) setBusy(false);
     }
@@ -1672,7 +1762,7 @@ function App() {
     const saved = response.model;
     setCustomModels(current => [...current.filter(item => item.model_id !== saved.model_id), saved]);
     setAvailableModels(current => normalizedModels([...current, saved.model_id], saved.model_id));
-    await changeModel(saved.model_id);
+    void refreshModelCatalog();
   }
   async function removeCustomModel(modelId: string) {
     const identity = identityRef.current;
@@ -1683,6 +1773,28 @@ function App() {
     setAvailableModels(current => current.filter(item => item !== modelId));
   }
   function openManagement(tab: 'memory' | 'skills') { setManagementTab(tab); setManagementOpen(true); }
+  function unavailableModel(id: string) {
+    if (!modelCatalog) return null;
+    const config = modelCatalog.models.find(item => item.config_id === id);
+    return config ? config.unavailable_reason : 'MODEL_REMOVED';
+  }
+  function applyModelCatalog(catalog: ModelCatalog) {
+    setModelCatalog(catalog);
+    setDefaultModel(catalog.default_model);
+    setCustomModels(catalog.models.filter(item => item.source === 'custom'));
+    setAvailableModels(catalog.models.filter(item => !item.unavailable_reason).map(item => item.config_id));
+    // Refresh availability without mutating graph, messages or per-session selection.
+    for (const view of Object.values(conversationRef.current.viewsBySessionId)) {
+      const config = catalog.models.find(item => item.config_id === view.model);
+      dispatchConversation({ type: 'PATCH_VIEW', sessionId: view.sessionId, patch: { modelUnavailableReason: config ? config.unavailable_reason : 'MODEL_REMOVED' } });
+    }
+  }
+  async function refreshModelCatalog() {
+    const identity = identityRef.current;
+    const epoch = accountEpochRef.current;
+    try { const catalog = await listModels(); if (!accountIsStale(identity, epoch)) applyModelCatalog(catalog); }
+    catch { /* Management shows errors and offers a retry without blocking history. */ }
+  }
   async function openDatasets(targetProjectId?: string) {
     const key = conversationRef.current.activeDraftKey;
     const draft = key ? conversationRef.current.draftsByScope[key] : null;
@@ -2016,10 +2128,13 @@ function App() {
   const runStatuses = Object.fromEntries(Object.entries(conversation.viewsBySessionId)
     .filter(([, view]) => Boolean(view.activeRun))
     .map(([sessionId, view]) => [sessionId, view.activeRun!.status]));
-  return <div className="app-shell">
-    <TopBar onMenu={() => setMobileSidebarOpen(true)} />
+  const unreadCompletions = Object.fromEntries(Object.entries(conversation.viewsBySessionId)
+    .filter(([, view]) => view.unreadCompletion)
+    .map(([sessionId]) => [sessionId, true]));
+  return <ModelCatalogContext.Provider value={demoMode ? null : { catalog: modelCatalog, userId, unavailable: activeDraft ? null : activeView?.modelUnavailableReason, manage: () => setModelManagerOpen(true), refresh: () => void refreshModelCatalog() }}><div className="app-shell">
+    <TopBar onMenu={() => setMobileSidebarOpen(true)} onModels={userId && !demoMode ? () => setModelManagerOpen(true) : undefined} />
     <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar projects={projects} sessions={sessions} runStatuses={runStatuses} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} loginValue={loginValue} loginError={loginError} loginPending={loginPending} onLoginValueChange={value => { setLoginValue(value); setLoginError(''); }} onLogin={login} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
+      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={projects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} loginValue={loginValue} loginError={loginError} loginPending={loginPending} onLoginValueChange={value => { setLoginValue(value); setLoginError(''); }} onLogin={login} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
         {helpOpen ? <HelpPage onClose={() => showWorkspaceHome()} /> : createGraphOpen ? <>
@@ -2029,6 +2144,7 @@ function App() {
             : <CreateGraphWorkspace datasets={datasets} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onStateChange={constructionStateUpdated} />}
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
+          {modelNotice?.sessionId === activeSession?.session_id && modelNotice && <div className="model-switch-notice" role="status">{t(`Next message: ${modelNotice.name}`, `下一条消息将使用：${modelNotice.name}`)}<button className="plain-icon" onClick={() => setModelNotice(null)} aria-label={t('Dismiss model notice', '关闭模型切换提示')}><Icon name="close" size={12} /></button></div>}
           {activeDraft
             ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={() => void openDatasets()} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
@@ -2043,9 +2159,10 @@ function App() {
     {constructionDataset && !createGraphOpen && <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} onUse={activeSession || activeDraft ? useConstructedDataset : undefined} />}
     {importProject && <ConstructedDatasetPicker key={`${userId}:${importProject.project_id}`} projectId={importProject.project_id} projectName={importProject.name} onImport={loadConstructedIntoProject} onClose={() => setImportProject(null)} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
+    {modelManagerOpen && userId && <ModelManager key={userId} onClose={() => setModelManagerOpen(false)} onUpdated={applyModelCatalog} />}
     {projectEditor && <ProjectDialog key={`${projectEditor}-${projectEditorTarget?.project_id || 'new'}`} project={projectEditor === 'edit' ? projectEditorTarget : null} onClose={() => { setProjectEditor(null); setProjectEditorTarget(null); }} onSave={saveProject} />}
     {deleteProjectTarget && <DeleteProjectDialog project={deleteProjectTarget} onClose={() => setDeleteProjectTarget(null)} onConfirm={deleteCurrentProject} />}
-  </div>;
+  </div></ModelCatalogContext.Provider>;
 }
 
 function ChatPaneWithState(props: any) {

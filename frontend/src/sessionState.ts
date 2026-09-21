@@ -2,7 +2,9 @@ import { editableLatestTurn } from './latestTurn';
 import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
 import type { RunSnapshot, RunControl } from './api';
+import { modelErrorMessage } from './api';
 import { tr } from './i18n';
+import { pendingActivity, type SavedSessionActivity } from './sessionActivity';
 
 export const PERSONAL_DRAFT_KEY = 'personal';
 export function draftScopeKey(projectId: string | null | undefined) { return projectId || PERSONAL_DRAFT_KEY; }
@@ -71,9 +73,14 @@ export type SessionViewState = {
   pendingAttachments: DraftAttachment[];
   uploading: boolean;
   model: string;
+  modelRevision?: number;
+  modelUnavailableReason?: string | null;
   activeDatasetId?: string | null;
   error?: string;
   activeRun: SessionRunState | null;
+  unreadCompletion: boolean;
+  lastCompletedRunId?: string;
+  lastReadRunId?: string;
   lastAccessedAt: number;
 };
 
@@ -86,6 +93,7 @@ export type ConversationState = {
 
 export type ConversationAction =
   | { type: 'RESET' }
+  | { type: 'RESTORE_SESSION_ACTIVITY'; activity: SavedSessionActivity }
   | { type: 'ENSURE_SESSION'; sessionId: string; model?: string; accessedAt?: number }
   | { type: 'SET_ACTIVE_SESSION'; sessionId: string | null; model?: string; accessedAt?: number }
   | { type: 'OPEN_DRAFT'; draft: NewConversationDraft }
@@ -95,14 +103,14 @@ export type ConversationAction =
   | { type: 'HYDRATE_START'; sessionId: string; requestVersion: number }
   | {
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
-      model: string; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
+      model: string; modelRevision?: number; modelUnavailableReason?: string | null; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
       activeRun?: ActiveRun | null; generation?: string; preserveMessages?: boolean;
       preserveComposer?: boolean;
       control?: RunControl | null;
       datasetView?: DatasetView | null; hasGraph?: boolean;
     }
   | { type: 'HYDRATE_FAILED'; sessionId: string; requestVersion: number; error: string }
-  | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'pendingAttachments' | 'uploading' | 'model' | 'activeDatasetId' | 'error' | 'selectedNode'>> }
+  | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'pendingAttachments' | 'uploading' | 'model' | 'modelRevision' | 'modelUnavailableReason' | 'activeDatasetId' | 'error' | 'selectedNode'>> }
   | { type: 'APPEND_MESSAGES'; sessionId: string; messages: Message[] }
   | { type: 'BEGIN_RUN_PREPARATION'; sessionId: string; generation: string }
   | { type: 'START_PREPARED_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
@@ -199,6 +207,7 @@ export function createSessionView(sessionId: string, model = 'qwen3.6-plus', acc
     model,
     activeDatasetId: null,
     activeRun: null,
+    unreadCompletion: false,
     lastAccessedAt: accessedAt,
   };
 }
@@ -547,13 +556,17 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
     const content = typeof event.content === 'string' ? event.content : current?.content || '';
     view = { ...view,
       messagesById: { ...view.messagesById, [messageId]: { ...current, id: messageId, role: 'assistant', content, streaming: false,
+        model_snapshot: event.model_snapshot ?? current?.model_snapshot,
+        history_compacted: event.history_compacted ?? current?.history_compacted,
         tools: run.toolOrder.map(id => run.toolsById[id]), plan: run.plan } },
       messageOrder: view.messageOrder.includes(messageId) ? view.messageOrder : [...view.messageOrder, messageId] };
     run = { ...run, status: run.status === 'cancelled' ? 'cancelled' : 'completed', feedback: null };
   }
 
   if (eventType === 'error') {
-    const error = String(event.error || tr('Analysis failed', '分析失败'));
+    const rawError = String(event.error || tr('Analysis failed', '分析失败'));
+    const modelCode = rawError.match(/MODEL_[A-Z_]+/)?.[0];
+    const error = modelCode ? modelErrorMessage(modelCode) : rawError;
     const cancelled = Boolean(event.cancelled || eventName.includes('cancel') || run.status === 'cancelled');
     const messageId = run.assistantMessageId || '';
     view = {
@@ -656,6 +669,7 @@ function evictViews(state: ConversationState): ConversationState {
         && view.attachments.length === 0
         && view.pendingAttachments.length === 0
         && !view.uploading
+        && !view.unreadCompletion
         && !PROTECTED_RUN_STATUSES.has(view.activeRun?.status || 'idle');
     })
     .sort((left, right) => state.viewsBySessionId[left].lastAccessedAt - state.viewsBySessionId[right].lastAccessedAt);
@@ -760,12 +774,35 @@ export function conversationReducer(state: ConversationState, action: Conversati
       viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view },
     });
   }
+  if (action.type === 'RESTORE_SESSION_ACTIVITY') {
+    const saved = action.activity;
+    const current = state.viewsBySessionId[saved.sessionId];
+    // Never overwrite a live/hydrated run with an older browser record.
+    if (current?.activeRun || current?.hydration === 'ready') return state;
+    const active = state.activeSessionId === saved.sessionId;
+    const view = { ...(current || createSessionView(saved.sessionId)),
+      lastCompletedRunId: saved.completedRunId,
+      lastReadRunId: active ? saved.completedRunId : saved.readRunId,
+      unreadCompletion: !active && Boolean(saved.completedRunId && saved.completedRunId !== saved.readRunId),
+    };
+    if (pendingActivity(saved)) {
+      view.activeRun = { runId: saved.runId, startRequestId: saved.startRequestId,
+        generation: `restore:${saved.runId || saved.startRequestId}`,
+        status: saved.status === 'awaiting_feedback' ? 'awaiting_feedback' : 'starting',
+        lastAppliedEventIndex: -1, reception: 'connecting', synchronized: false,
+        toolsById: {}, toolOrder: [], plan: null, feedback: null };
+    }
+    return { ...state, viewsBySessionId: { ...state.viewsBySessionId, [saved.sessionId]: view } };
+  }
   if (action.type === 'ENSURE_SESSION' || action.type === 'SET_ACTIVE_SESSION') {
     const sessionId = action.sessionId;
     if (sessionId === null) return { ...state, activeSessionId: null, activeDraftKey: null };
     const current = state.viewsBySessionId[sessionId];
     const view = current
-      ? { ...current, model: action.model || current.model, lastAccessedAt: action.accessedAt ?? current.lastAccessedAt }
+      ? { ...current, model: action.model || current.model,
+        unreadCompletion: action.type === 'SET_ACTIVE_SESSION' ? false : current.unreadCompletion,
+        lastReadRunId: action.type === 'SET_ACTIVE_SESSION' ? current.lastCompletedRunId : current.lastReadRunId,
+        lastAccessedAt: action.accessedAt ?? current.lastAccessedAt }
       : createSessionView(sessionId, action.model, action.accessedAt);
     return evictViews({
       ...state,
@@ -832,6 +869,8 @@ export function conversationReducer(state: ConversationState, action: Conversati
         graph: hydratedGraph,
         hydration: 'ready',
         model: action.model,
+        modelRevision: action.modelRevision ?? 0,
+        modelUnavailableReason: action.modelUnavailableReason,
         activeDatasetId: action.activeDatasetId,
         selectedNode: hydratedGraph.status === 'ready' ? view.selectedNode : null,
         activeRun,
@@ -854,6 +893,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       view = {
         ...view,
         error: undefined,
+        unreadCompletion: false,
         activeRun: {
           generation: action.generation,
           startRequestId: action.generation,
@@ -925,6 +965,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
         ...view,
         draft: editBackup || action.preserveComposer ? view.draft : '',
         error: undefined,
+        unreadCompletion: false,
         activeRun: {
           generation: action.generation,
           startRequestId: action.generation,
@@ -1170,6 +1211,14 @@ export function conversationReducer(state: ConversationState, action: Conversati
       delete viewsBySessionId[action.sessionId];
       return { ...state, activeSessionId: state.activeSessionId === action.sessionId ? null : state.activeSessionId, viewsBySessionId };
     }
+  }
+  const completedNow = current.activeRun?.status !== 'completed' && view.activeRun?.status === 'completed';
+  if (completedNow) {
+    const completedId = view.activeRun!.runId || view.activeRun!.generation;
+    const active = state.activeSessionId === action.sessionId;
+    view = { ...view, lastCompletedRunId: completedId,
+      lastReadRunId: active ? completedId : view.lastReadRunId,
+      unreadCompletion: !active && view.lastReadRunId !== completedId };
   }
   const updated = { ...state, viewsBySessionId: { ...state.viewsBySessionId, [action.sessionId]: view } };
   const control = action.type === 'APPLY_SNAPSHOT' ? action.snapshot.control : action.type === 'HYDRATE_SUCCESS' ? action.control : null;

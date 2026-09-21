@@ -3,6 +3,9 @@ import { createGraphCanvasState, GraphCanvas } from './GraphCanvas';
 import { GraphCoverage } from './GraphCoverage';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
+import { executionError, executionLabel, executionPending, executionStatus } from '../toolStatus';
+import { metricNumber, metricSegments } from '../mlMetrics';
+import { reportLabel } from '../reportLabels';
 import { listProjectTrainingRuns, visualizeGraph } from '../api';
 import type { GraphCollectionSummary, GraphData, GraphViewState, Highlight, Message, PartitionedGraphSummary, ProjectTrainingRun, ToolCall } from '../types';
 import { BrandLogo, Icon } from './Icon';
@@ -370,14 +373,9 @@ function recordValue(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
 }
 
-function metricNumber(value: unknown) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
 function formatMetric(key: string, value: unknown, locale: string) {
   const number = metricNumber(value);
-  if (number === null) return String(value ?? '-');
+  if (number === null) return '—';
   if (/(acc|accuracy|auc|f1|precision|recall)$/i.test(key) && Math.abs(number) <= 1) return `${(number * 100).toFixed(1)}%`;
   if (Number.isInteger(number)) return number.toLocaleString(locale);
   return number.toFixed(Math.abs(number) < 0.01 ? 5 : 4).replace(/0+$/, '').replace(/\.$/, '');
@@ -420,21 +418,14 @@ function legacyTrainingMetrics(content: string) {
   return Object.keys(metrics).length ? metrics : null;
 }
 
-function failedTrainingRun(tool: ToolCall) {
-  if (String(tool.tool || '') !== 'train' || tool.result == null) return false;
-  const result = recordValue(tool.result);
-  if (Object.keys(result).length) return result.success === false || Boolean(result.error && !result.async);
-  return typeof tool.result === 'string' && /(validation error|error executing tool|invalid (?:argument|input)|tool.*failed)/i.test(tool.result);
-}
-
 function mergeMlRuns(messages: Message[], liveTools: ToolCall[]) {
-  const saved = messages.flatMap(message => (message.tools || []).filter(tool => ML_TOOLS.has(String(tool.tool || '')) && !failedTrainingRun(tool)).map(tool => {
-    if (String(tool.tool || '') !== 'train' || Object.keys(recordValue(recordValue(tool.result).metrics)).length) return tool;
+  const saved = messages.flatMap(message => (message.tools || []).filter(tool => ML_TOOLS.has(String(tool.tool || ''))).map(tool => {
+    if (String(tool.tool || '') !== 'train' || executionStatus(tool) !== 'completed' || Object.keys(recordValue(recordValue(tool.result).metrics)).length) return tool;
     const metrics = legacyTrainingMetrics(message.content || '');
     return metrics ? { ...tool, result: { ...recordValue(tool.result), metrics } } : tool;
   }));
   const runs = [...saved];
-  liveTools.filter(tool => ML_TOOLS.has(String(tool.tool || '')) && !failedTrainingRun(tool)).forEach(live => {
+  liveTools.filter(tool => ML_TOOLS.has(String(tool.tool || ''))).forEach(live => {
     const index = live.call_id ? runs.findIndex(run => run.call_id === live.call_id) : -1;
     if (index < 0) runs.push(live);
     else runs[index] = { ...runs[index], ...live, result: live.result ?? runs[index].result, history: live.history?.length ? live.history : runs[index].history };
@@ -444,7 +435,7 @@ function mergeMlRuns(messages: Message[], liveTools: ToolCall[]) {
 
 function trainingRunIdentity(run: ToolCall) {
   const result = recordValue(run.result);
-  return String((run as ProjectTrainingRun).training_run_id || run.call_id || result.job_id || '');
+  return String((run as ProjectTrainingRun).training_run_id || run.job_id || result.job_id || run.call_id || '');
 }
 
 function trainingRunEpoch(run: ToolCall) {
@@ -490,7 +481,7 @@ function MetricChart({ rows, keys, title }: { rows: Array<Record<string, unknown
   const { language, t } = useI18n();
   const locale = localeFor(language);
   const width = 560; const height = 190; const left = 46; const right = 12; const top = 18; const bottom = 28;
-  const series = keys.map(key => ({ key, values: rows.map(row => ({ epoch: Number(row.epoch), value: metricNumber(row[key]) })).filter(point => point.value !== null) as Array<{ epoch: number; value: number }> })).filter(item => item.values.length);
+  const series = keys.map(key => { const segments = metricSegments(rows, key); return { key, segments, values: segments.flat() }; }).filter(item => item.values.length);
   if (!series.length) return null;
   const values = series.flatMap(item => item.values.map(point => point.value));
   const epochs = series.flatMap(item => item.values.map(point => point.epoch));
@@ -503,7 +494,7 @@ function MetricChart({ rows, keys, title }: { rows: Array<Record<string, unknown
   return <div className="ml-chart-panel"><div className="ml-chart-heading"><strong>{title}</strong><div>{series.map((item, index) => <span key={item.key}><i style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }} />{metricLabel(item.key, t)}</span>)}</div></div><svg className="ml-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t(`${title} training curve`, `${title}训练曲线`)}>
     {[0, .25, .5, .75, 1].map(fraction => { const value = maxY - (maxY - minY) * fraction; const py = top + (height - top - bottom) * fraction; return <g key={fraction}><line x1={left} x2={width - right} y1={py} y2={py} /><text x={left - 7} y={py + 4} textAnchor="end">{formatMetric(keys[0], value, locale)}</text></g>; })}
     <text x={left} y={height - 7}>{t(`Epoch ${minX}`, `第 ${minX} 轮`)}</text><text x={width - right} y={height - 7} textAnchor="end">{t(`Epoch ${maxX}`, `第 ${maxX} 轮`)}</text>
-    {series.map((item, index) => { const points = item.values.map(point => `${x(point.epoch)},${y(point.value)}`).join(' '); return <g key={item.key}><polyline points={points} style={{ stroke: CHART_COLORS[index % CHART_COLORS.length] }} />{item.values.map(point => <circle key={point.epoch} cx={x(point.epoch)} cy={y(point.value)} r={item.values.length < 25 ? 2.4 : 1.4} style={{ fill: CHART_COLORS[index % CHART_COLORS.length] }} />)}</g>; })}
+    {series.map((item, index) => <g key={item.key} data-metric={item.key}>{item.segments.filter(segment => segment.length > 1).map((segment, segmentIndex) => <polyline key={segmentIndex} points={segment.map(point => `${x(point.epoch)},${y(point.value)}`).join(' ')} style={{ stroke: CHART_COLORS[index % CHART_COLORS.length] }} />)}{item.values.map(point => <circle key={point.epoch} cx={x(point.epoch)} cy={y(point.value)} r={item.values.length < 25 ? 2.4 : 1.4} style={{ fill: CHART_COLORS[index % CHART_COLORS.length] }} />)}</g>)}
   </svg></div>;
 }
 
@@ -533,10 +524,10 @@ function JobStopButton({ run, sessionId, onStopJob }: { run: ToolCall; sessionId
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const result = recordValue(run.result);
-  const jobId = String(result.job_id || recordValue(run.progress).job_id || '');
-  const terminal = ['done', 'completed', 'cancelled', 'failed'].includes(String(result.job_status || result.status || ''));
+  const jobId = String(run.job_id || result.job_id || recordValue(run.progress).job_id || '');
+  const terminal = !executionPending(run);
   if (!onStopJob || !jobId || !sessionId || terminal || status === 'confirmed') return status === 'confirmed' ? <span role="status">{t('Job ended', '作业已结束')}</span> : null;
-  const pending = status === 'stopping';
+  const pending = status === 'stopping' || executionStatus(run) === 'cancelling';
   return <button type="button" disabled={pending} aria-label={t('Stop job', '终止作业')} onClick={() => onStopJob(sessionId, jobId, next => { if (mounted.current) setStatus(next); })}>
     {pending ? t('Stopping…', '正在停止…') : status === 'unconfirmed' ? t('Stop not confirmed; retry', '停止尚未确认，重试') : t('Stop job', '终止作业')}
   </button>;
@@ -565,9 +556,11 @@ function MLRunCard({ run, index, sessionId, onStopJob }: { run: ToolCall; index:
   const totalEpochs = Number(progress.epochs || recordValue(args.train_config).epochs || recordValue(args.algo_config).epochs || completedEpochs || 0);
   const projectRun = run as ProjectTrainingRun;
   const source = [projectRun.session_title, projectRun.dataset_name].filter(Boolean).join(' · ');
-  const jobStatus = String(result.job_status || result.status || progress.status || '');
-  const statusLabel = projectRun.status_unavailable ? t('Status unavailable', '状态不可用') : jobStatus === 'cancelled' ? t('Stopped', '已终止') : jobStatus === 'cancelling' ? t('Stopping', '正在停止') : jobStatus === 'failed' ? t('Failed', '失败') : run.done ? (metrics.stopped_early ? t('Stopped early', '提前停止') : t('Completed', '已完成')) : t('Training', '训练中');
-  return <article className="ml-run-card"><header className="ml-run-header"><div className="workspace-list-icon"><Icon name="cube" size={16} /></div><div><strong>{taskLabel}</strong><span>{model}{totalEpochs ? t(` · ${completedEpochs}/${totalEpochs} epochs`, ` · ${completedEpochs}/${totalEpochs} 轮`) : ''}{source ? ` · ${source}` : ''}</span></div><b className={projectRun.status_unavailable ? 'unavailable' : run.done ? 'done' : 'running'}>{statusLabel}</b></header>
+  const status = executionStatus(run);
+  const statusLabel = status === 'completed' && metrics.stopped_early ? t('Stopped early', '提前停止') : executionLabel(run, t);
+  const error = executionError(run);
+  return <article className="ml-run-card"><header className="ml-run-header"><div className="workspace-list-icon"><Icon name="cube" size={16} /></div><div><strong>{taskLabel}</strong><span>{model}{totalEpochs ? t(` · ${completedEpochs}/${totalEpochs} epochs`, ` · ${completedEpochs}/${totalEpochs} 轮`) : ''}{source ? ` · ${source}` : ''}</span></div><b className={status}>{statusLabel}</b></header>
+    {status === 'failed' ? <div className="ml-run-error" role="alert">{error || t('Training failed. See the conversation for details.', '训练失败，请查看对话中的具体原因。')}</div> : null}
     <JobStopButton run={run} sessionId={projectRun.session_id || sessionId} onStopJob={onStopJob} />
     {summaryKeys.length ? <div className="ml-metric-grid">{summaryKeys.map(key => <div key={key}><span>{metricLabel(key, t)}</span><strong>{formatMetric(key, metrics[key], locale)}</strong></div>)}</div> : null}
     <div className="ml-view-bar"><span>{history.length ? t(`${history.length.toLocaleString(locale)} training points`, `${history.length.toLocaleString(locale)} 个训练点`) : t(`Run ${index + 1}`, `运行 ${index + 1}`)}</span><SlidingTabs ariaLabel={t('Training result view', '训练结果视图')} className="ml-view-toggle" indicatorClassName="ml-view-indicator" options={[{ value: 'chart', label: t('Chart', '曲线'), disabled: !history.length }, { value: 'table', label: t('Table', '表格') }]} value={view} onChange={setView} /></div>
@@ -582,8 +575,7 @@ function ProjectTrainingComparison({ runs }: { runs: ProjectTrainingRun[] }) {
     const context = { ...recordValue(run.args), ...recordValue(run.result), ...recordValue(run.progress) };
     const metrics = recordValue(recordValue(run.result).metrics);
     const model = String(context.display_model || context.model || context.method || t('Model training', '模型训练'));
-    const statusLabel = run.status_unavailable ? t('Status unavailable', '状态不可用') : run.done ? t('Completed', '已完成') : t('Training', '训练中');
-    return <tr key={run.training_run_id || `${run.session_id}-${index}`}><td>{model}</td><td title={run.session_title}>{run.session_title || t('New conversation', '新会话')}</td><td>{run.dataset_name || '-'}</td><td><span className={run.status_unavailable ? 'ml-status-unavailable' : run.done ? 'ml-status-done' : 'ml-status-running'}>{statusLabel}</span></td><td>{trainingRunEpoch(run) || '-'}</td><td>{formatMetric('val_acc', metrics.val_acc, locale)}</td><td>{formatMetric('test_acc', metrics.test_acc, locale)}</td><td>{formatMetric('best_epoch', metrics.best_epoch, locale)}</td></tr>;
+    return <tr key={run.training_run_id || `${run.session_id}-${index}`}><td>{model}</td><td title={run.session_title}>{run.session_title || t('New conversation', '新会话')}</td><td>{run.dataset_name || '-'}</td><td><span className={`ml-status-${executionStatus(run)}`}>{executionLabel(run, t)}</span></td><td>{trainingRunEpoch(run) || '-'}</td><td>{formatMetric('val_acc', metrics.val_acc, locale)}</td><td>{formatMetric('test_acc', metrics.test_acc, locale)}</td><td>{formatMetric('best_epoch', metrics.best_epoch, locale)}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -604,7 +596,7 @@ function MLTab({ hasProject, messages, liveTools, projectRuns, sessionId, loadin
     {error ? <div className="ml-sync-error">{error}</div> : null}
     {effectiveScope === 'project' && visibleTrainingRuns.length ? <ProjectTrainingComparison runs={projectRuns} /> : null}
     {!visibleTrainingRuns.length && !loading ? <div className="ml-no-runs">{hasProject ? t('This conversation has no training records. Switch to “Project comparison” to view other conversations.', '该会话还没有训练记录，可切换到“项目对比”查看其他会话。') : t('This conversation has no training records.', '该会话还没有训练记录。')}</div> : visibleTrainingRuns.map((run, index) => <MLRunCard onStopJob={onStopJob} sessionId={sessionId} key={`${trainingRunIdentity(run) || 'train'}-${index}`} run={run} index={index} />)}
-    {effectiveScope === 'current' && otherRuns.length ? <div className="ml-activity"><strong>{t('Data and inference activity', '数据与推理记录')}</strong><div className="workspace-list">{otherRuns.map((run, index) => <div className="workspace-list-row" key={`${run.call_id || run.tool}-${index}`}><div className="workspace-list-icon"><Icon name="cube" size={15} /></div><div><strong>{String(run.tool) === 'infer' ? t('Inference', '推理') : String(run.tool) === 'load_graph_classification_dataset' ? t('Load graph classification dataset', '加载图分类数据集') : String(run.tool)}</strong><span>{run.done ? t('Completed', '已完成') : t('Running', '运行中')}</span></div><b>{run.done ? t('Done', '完成') : t('Running', '运行中')}</b><JobStopButton run={run} sessionId={sessionId} onStopJob={onStopJob} /></div>)}</div></div> : null}</div>;
+    {effectiveScope === 'current' && otherRuns.length ? <div className="ml-activity"><strong>{t('Data and inference activity', '数据与推理记录')}</strong><div className="workspace-list">{otherRuns.map((run, index) => <div className="workspace-list-row" key={`${run.call_id || run.tool}-${index}`}><div className="workspace-list-icon"><Icon name="cube" size={15} /></div><div><strong>{String(run.tool) === 'infer' ? t('Inference', '推理') : String(run.tool) === 'load_graph_classification_dataset' ? t('Load graph classification dataset', '加载图分类数据集') : String(run.tool)}</strong><span>{executionLabel(run, t)}</span></div><b>{executionLabel(run, t)}</b><JobStopButton run={run} sessionId={sessionId} onStopJob={onStopJob} /></div>)}</div></div> : null}</div>;
 }
 
 function reportRecords(value: unknown): Record<string, unknown>[] {
@@ -614,8 +606,8 @@ function reportRecords(value: unknown): Record<string, unknown>[] {
 function reportText(value: unknown, locale: string): string {
   if (value == null || value === '') return '-';
   if (typeof value === 'number') return value.toLocaleString(locale, { maximumFractionDigits: 6 });
-  if (typeof value === 'boolean') return value ? '是' : '否';
-  if (Array.isArray(value)) return value.map(item => reportText(item, locale)).join('、');
+  if (typeof value === 'boolean') return locale.startsWith('zh') ? (value ? '是' : '否') : (value ? 'Yes' : 'No');
+  if (Array.isArray(value)) return value.map(item => reportText(item, locale)).join(locale.startsWith('zh') ? '、' : ', ');
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
@@ -787,15 +779,15 @@ function modernizeLegacyReport(report: Record<string, unknown>, tools: ToolCall[
 }
 
 function ReportChart({ chart, locale }: { chart: Record<string, unknown>; locale: string }) {
-  const rows = reportRecords(chart.data).map(row => ({ label: reportText(row.label, locale), value: Number(row.value), detail: row.detail == null ? '' : reportText(row.detail, locale) })).filter(row => Number.isFinite(row.value));
+  const rows = reportRecords(chart.data).map(row => ({ label: reportText(row.label, locale), value: Number(row.value), detail: row.detail == null ? '' : reportText(reportLabel(row, 'detail', locale), locale) })).filter(row => Number.isFinite(row.value));
   if (!rows.length) return null;
   const max = Math.max(...rows.map(row => Math.max(0, row.value)), 0);
-  return <div className="analysis-report-chart" aria-label={reportText(chart.title, locale)}>
-    <strong>{reportText(chart.title, locale)}</strong>
+  return <div className="analysis-report-chart" aria-label={reportText(reportLabel(chart, 'title', locale), locale)}>
+    <strong>{reportText(reportLabel(chart, 'title', locale), locale)}</strong>
     <div>{rows.map((row, index) => <div className="analysis-report-bar" key={`${row.label}-${index}`}>
       <span title={row.label}>{row.label}</span>
       <i aria-hidden="true"><b style={{ width: `${max > 0 ? Math.max(2, row.value / max * 100) : 0}%` }} /></i>
-      <em><strong>{reportText(row.value, locale)}{chart.unit ? ` ${String(chart.unit)}` : ''}</strong>{row.detail ? <small>{row.detail}</small> : null}</em>
+      <em><strong>{reportText(row.value, locale)}{chart.unit ? ` ${String(reportLabel(chart, 'unit', locale))}` : ''}</strong>{row.detail ? <small>{row.detail}</small> : null}</em>
     </div>)}</div>
   </div>;
 }
@@ -806,8 +798,8 @@ function ReportTable({ table, locale }: { table: Record<string, unknown>; locale
   const columns = declaredColumns.length ? declaredColumns : rows.length ? Object.keys(rows[0]).map(key => ({ key, label: key })) : [];
   if (!rows.length || !columns.length) return null;
   return <div className="analysis-report-table-block">
-    <strong>{reportText(table.title, locale)}</strong>
-    <div className="analysis-report-table-scroll"><table><thead><tr>{columns.map(column => <th key={String(column.key)}>{reportText(column.label || column.key, locale)}</th>)}</tr></thead>
+    <strong>{reportText(reportLabel(table, 'title', locale), locale)}</strong>
+    <div className="analysis-report-table-scroll"><table><thead><tr>{columns.map(column => <th key={String(column.key)}>{reportText(reportLabel(column, 'label', locale) || column.key, locale)}</th>)}</tr></thead>
       <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{columns.map(column => <td key={String(column.key)}>{reportText(row[String(column.key)], locale)}</td>)}</tr>)}</tbody></table></div>
   </div>;
 }
@@ -815,7 +807,7 @@ function ReportTable({ table, locale }: { table: Record<string, unknown>; locale
 function AnalysisReport({ report, index, onBack }: { report: Record<string, unknown>; index: number; onBack: () => void }) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
-  const title = String(report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
+  const title = String(recordValue(report.title_i18n)[language] || report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
   const sections = reportRecords(report.sections);
   const limitations = Array.isArray(report.limitations) ? report.limitations : [];
   return <article className="analysis-report" aria-label={t(`${title} report content`, `${title}报告内容`)}>
@@ -823,7 +815,7 @@ function AnalysisReport({ report, index, onBack }: { report: Record<string, unkn
     <header>
       <span>{t('Analysis report', '分析报告')}</span>
       <h2>{title}</h2>
-      {report.subtitle ? <p>{String(report.subtitle)}</p> : null}
+      {report.subtitle ? <p>{String(reportLabel(report, 'subtitle', locale))}</p> : null}
       {report.summary ? <div className="analysis-report-summary">{String(report.summary)}</div> : null}
     </header>
     {sections.length ? <div className="analysis-report-sections">{sections.map((section, sectionIndex) => {
@@ -833,9 +825,9 @@ function AnalysisReport({ report, index, onBack }: { report: Record<string, unkn
       const insights = Array.isArray(section.insights) ? section.insights : [];
       const sectionLimitations = Array.isArray(section.limitations) ? section.limitations : [];
       return <section key={String(section.id || section.title || sectionIndex)}>
-        <h3>{String(section.title || t(`Section ${sectionIndex + 1}`, `第 ${sectionIndex + 1} 部分`))}</h3>
+        <h3>{String(reportLabel(section, 'title', locale) || t(`Section ${sectionIndex + 1}`, `第 ${sectionIndex + 1} 部分`))}</h3>
         {section.summary ? <p>{String(section.summary)}</p> : null}
-        {metrics.length ? <dl className="analysis-report-metrics">{metrics.map((metric, metricIndex) => <div key={`${String(metric.label)}-${metricIndex}`}><dt>{reportText(metric.label, locale)}</dt><dd>{reportText(metric.value, locale)}{metric.unit ? <small>{String(metric.unit)}</small> : null}</dd></div>)}</dl> : null}
+        {metrics.length ? <dl className="analysis-report-metrics">{metrics.map((metric, metricIndex) => <div key={`${String(metric.label)}-${metricIndex}`}><dt>{reportText(reportLabel(metric, 'label', locale), locale)}</dt><dd>{reportText(metric.value_i18n || ['图方向', '边权重', '节点特征', '弱连通', '强连通', '连通'].includes(String(metric.label)) ? reportLabel(metric, 'value', locale) : metric.value, locale)}{metric.unit ? <small>{String(reportLabel(metric, 'unit', locale))}</small> : null}</dd></div>)}</dl> : null}
         {charts.map((chart, chartIndex) => <ReportChart chart={chart} locale={locale} key={`${String(chart.title)}-${chartIndex}`} />)}
         {tables.map((table, tableIndex) => <ReportTable table={table} locale={locale} key={`${String(table.title)}-${tableIndex}`} />)}
         {insights.length ? <div className="analysis-report-notes"><strong>{t('Findings', '发现')}</strong><ul>{insights.map((insight, insightIndex) => <li key={insightIndex}>{reportText(insight, locale)}</li>)}</ul></div> : null}
@@ -855,7 +847,7 @@ function ArtifactsTab({ messages }: { messages: Message[] }) {
   if (selectedReport != null && reports[selectedReport]) return <div className="tab-content analysis-report-content"><AnalysisReport report={reports[selectedReport].report} index={selectedReport} onBack={() => setSelectedReport(null)} /></div>;
   return <div className="tab-content"><div className="tab-title"><strong>{t('Artifacts', '分析产物')}</strong><span>{t(`${reports.length.toLocaleString(locale)} reports`, `${reports.length.toLocaleString(locale)} 份报告`)}</span></div><div className="workspace-list">{reports.map(({ report }, index) => {
     const type = String(report.intent || report.type || 'analysis');
-    const title = String(report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
+    const title = String(recordValue(report.title_i18n)[language] || report.title || report.name || t(`Analysis report ${index + 1}`, `分析报告 ${index + 1}`));
     return <button type="button" className="workspace-list-row artifact-report-row" aria-label={t(`Open report: ${title}`, `查看报告：${title}`)} onClick={() => setSelectedReport(index)} key={`${String(report.id || report.title || 'report')}-${index}`}><div className="workspace-list-icon"><Icon name="file" size={15} /></div><div><strong>{title}</strong><span>{type === 'analysis' ? t('Analysis', '分析') : type}</span></div><b>{t('View', '查看')} <Icon name="arrow-right" size={13} /></b></button>;
   })}</div></div>;
 }

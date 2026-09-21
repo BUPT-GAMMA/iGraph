@@ -8,7 +8,7 @@ from typing import Literal
 from agno.agent import Agent, AgentFactory
 from agno.db.postgres import PostgresDb
 from agno.factory import FactoryPermissionError, RequestContext
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.custom_models import get_custom_model
@@ -32,6 +32,7 @@ class IGraphFactoryInput(BaseModel):
     reasoning_mode: Literal["direct", "staged"] = "direct"
     planning_mode: Literal["never", "auto", "always"] = "auto"
     output_format: Literal["chat", "report", "json"] = "chat"
+    response_language: str = Field(default="Auto", max_length=32)
 
 
 def create_db(config: AgentRuntimeConfig) -> PostgresDb:
@@ -56,7 +57,12 @@ def create_igraph_factory(
         options = IGraphFactoryInput.model_validate(raw_input)
         claims = dict(ctx.trusted.claims or {})
         user_id = str(ctx.user_id or claims.get("sub") or "anonymous")
+        snapshot = getattr(getattr(ctx.request, 'state', None), 'igraph_model_snapshot', None)
+        frozen = getattr(getattr(ctx.request, 'state', None), 'igraph_model_config', None)
         custom_model = get_custom_model(user_id, options.model)
+        if snapshot and frozen:
+            options.model = snapshot['config_id']
+            custom_model = {**frozen, 'model_id': snapshot['config_id'], 'upstream_model_id': snapshot['model_id'], 'allow_anonymous': True}
         try:
             model_id = allowed_model(options.model, claims, config, custom_model)
         except (PermissionError, ValueError) as exc:
@@ -67,12 +73,14 @@ def create_igraph_factory(
             name="iGraph Agent",
             model=create_model(model_id, config, custom_model),
             db=db,
-            tools=[create_graph_tools(config), *create_workspace_tools(), update_agent_notes],
+            metadata={'model_snapshot': snapshot} if snapshot else None,
+            tools=[create_graph_tools(config, response_language=options.response_language), *create_workspace_tools(), update_agent_notes],
             skills=build_skills(config, user_id),
             learning=create_learning_machine(config, planning_mode=options.planning_mode),
             instructions=instructions_for(
                 reasoning_mode=options.reasoning_mode,
                 planning_mode=options.planning_mode,
+                response_language=options.response_language,
             ),
             add_history_to_context=True,
             add_session_state_to_context=True,
