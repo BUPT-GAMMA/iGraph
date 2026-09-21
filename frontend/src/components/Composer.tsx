@@ -1,12 +1,11 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { CustomModel } from '../api';
 import type { AttachmentRef, DraftAttachment } from '../types';
 import { Icon } from './Icon';
 import { FileTypeIcon } from './FileTypeIcon';
 import { ModelProviderIcon } from './ModelProviderIcon';
-import { ModelCatalogContext, ModelPicker } from './ModelPicker';
-import { modelErrorMessage } from '../api';
+import { selectRepresentativeModels } from './modelProviders';
 import { useI18n, type Translate } from '../i18n';
 
 export type ComposerAttachment = AttachmentRef | DraftAttachment;
@@ -72,11 +71,9 @@ export type ComposerProps = {
 
 export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const { t } = useI18n();
-  const catalogContext = useContext(ModelCatalogContext);
-  const unavailable = catalogContext?.unavailable || (catalogContext?.catalog && (catalogContext.catalog.models.find(item => item.config_id === model)?.unavailable_reason || (!catalogContext.catalog.models.some(item => item.config_id === model) ? 'MODEL_REMOVED' : null)));
   const inputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
-  const cannotSend = disabled || uploading || sendBlocked || Boolean(unavailable) || attachments.some(item => 'status' in item && ['uploading', 'failed', 'needs_reselect'].includes(item.status));
+  const cannotSend = disabled || uploading || sendBlocked || attachments.some(item => 'status' in item && ['uploading', 'failed', 'needs_reselect'].includes(item.status));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -88,7 +85,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
   const [customDraft, setCustomDraft] = useState({ model_id: '', base_url: '', api_key: '' });
   const modelOptions = models.length ? models : [model].filter(Boolean);
   const customIds = new Set(customModels.map(item => item.model_id));
-  const builtInOptions = [...new Set(modelOptions.filter(option => !customIds.has(option)))];
+  const builtInOptions = selectRepresentativeModels(modelOptions.filter(option => !customIds.has(option)), model);
   const runControl = canCancel;
   const stopping = cancellation === 'requested' || cancellation === 'stopping' || cancellation === 'saving';
   const runControlLabel = t('Stop current task', '终止当前任务');
@@ -210,7 +207,6 @@ export function Composer({ value, model, models, customModels = [], activeDatase
           <button type="button" onClick={() => onRemoveAttachment(id)} aria-label={t(`Remove ${attachment.filename}`, `移除 ${attachment.filename}`)} title={t('Remove attachment', '移除附件')} disabled={disabled || loading || runtimeControlsDisabled}><Icon name="close" size={13} /></button>
         </div>;
       })}</div> : null}
-    {unavailable && <div className="model-unavailable" role="status">{modelErrorMessage(unavailable)}</div>}
     <div ref={composerRef} className="composer">
       <textarea ref={textareaRef} value={value} disabled={disabled} rows={2} placeholder={t('What would you like to analyze? Paste an edge list or ask in natural language', '今天帮你分析什么？粘贴边列表，或直接用自然语言提问')} onChange={event => onChange(event.target.value)}
         onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }}
@@ -222,7 +218,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
         <input ref={inputRef} type="file" hidden accept=".sql,.txt,.csv,.edgelist,.dat,.json,.xlsx,.pdf,.pt,.npz,.py,.md,.zip,.yaml,.yml,.js,.tsv" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
         <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title={t('Upload graph file', '上传图文件')} aria-label={t('Upload graph file', '上传图文件')} disabled={disabled || runtimeControlsDisabled}><Icon name="plus" size={20} /></button>
         <button className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={() => onDataset()} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? t(`Current dataset: ${activeDatasetName}`, `当前数据集：${activeDatasetName}`) : t('Select project dataset', '选择项目数据集')}><Icon name="database" size={12} /><span>{activeDatasetName || t('Dataset', '数据集')}</span></button>
-        {catalogContext ? <ModelPicker key={catalogContext.userId} model={model} disabled={disabled || loading || runtimeControlsDisabled} onChange={onModelChange} /> : <div ref={modelPickerRef} className={`composer-model ${modelOpen ? 'is-open' : ''}`}>
+        <div ref={modelPickerRef} className={`composer-model ${modelOpen ? 'is-open' : ''}`}>
           <button type="button" className="composer-model-trigger" onClick={() => setModelOpen(current => !current)} disabled={disabled || loading || runtimeControlsDisabled || modelOptions.length === 0} aria-label={t('Select model', '选择模型')} aria-expanded={modelOpen}>
             <span className="composer-model-icon"><ModelProviderIcon modelId={model} size={13} /></span>
             <span className="composer-model-value">{model}</span>
@@ -236,7 +232,6 @@ export function Composer({ value, model, models, customModels = [], activeDatase
             {onSaveCustomModel ? <button type="button" className="composer-model-config" onClick={openCustomModelDialog}><Icon name="edit" size={15} /> {t('Configure custom model', '配置自定义模型')}</button> : null}
           </div> : null}
         </div>
-        }
         <div className="composer-spacer" />
         <span className="auto-mode" role="status">{cancellationLabel || t('◉ Auto', '◉ 自动')}</span>
         <button

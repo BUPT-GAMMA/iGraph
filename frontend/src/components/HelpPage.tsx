@@ -1,23 +1,26 @@
 import { useState } from 'react';
 import { useI18n } from '../i18n';
 import { helpCategories, helpModels, helpTasks, helpTools, helpToolTitle, matchesHelpQuery } from '../helpCatalog';
+import { DrawerShell } from './DrawerShell';
 import { Icon } from './Icon';
 import './HelpPage.css';
 
-export function HelpPage({ onClose }: { onClose?: () => void }) {
+export function HelpPage({ onClose = () => undefined }: { onClose?: () => void }) {
   const { language, t } = useI18n();
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'tools' | 'models'>('tools');
   const [category, setCategory] = useState('all');
   const tools = helpTools.filter(item => (category === 'all' || item.category === category) && matchesHelpQuery(query, item.name, helpToolTitle(item.name, 'zh'), item.description.en, item.description.zh, helpCategories[item.category].en, helpCategories[item.category].zh));
   const models = helpModels.filter(item => matchesHelpQuery(query, item.name, item.title, item.description.en, item.description.zh, ...item.tasks.flatMap(task => [helpTasks[task].en, helpTasks[task].zh])));
+  const title = t('Help & capabilities', '帮助与能力清单');
 
-  return <section className="help-page" aria-labelledby="help-page-title">
-    <div className="help-page-inner">
-      <header className="help-page-header">
-        <div><h1 id="help-page-title">{t('Help & capabilities', '帮助与能力清单')}</h1></div>
-        {onClose && <button type="button" className="icon-button" onClick={onClose} aria-label={t('Close help', '关闭帮助')}><Icon name="close" /></button>}
-      </header>
+  return <DrawerShell ariaLabel={title} className="help-drawer" onClose={onClose}>{requestClose => <>
+    <header className="drawer-head help-drawer-head">
+      <h1 id="help-page-title">{title}</h1>
+      <button type="button" className="plain-icon" onClick={requestClose} aria-label={t('Close help', '关闭帮助')}><Icon name="close" size={17} /></button>
+    </header>
+    <section className="help-page" aria-labelledby="help-page-title">
+      <div className="help-page-inner">
       <div className="help-toolbar">
         <div className="help-tabs" role="tablist" aria-label={t('Help sections', '帮助分类')}>
           <button type="button" id="help-tools-tab" role="tab" aria-controls="help-tools-panel" aria-selected={tab === 'tools'} onClick={() => setTab('tools')}>{t('Graph analysis tools', '图分析计算工具')}<span>{helpTools.length}</span></button>
@@ -33,6 +36,7 @@ export function HelpPage({ onClose }: { onClose?: () => void }) {
         <div className="help-model-grid">{models.map(item => <article className="help-model-card" key={item.name}><h2>{item.name === 'node2vec' ? 'Node2Vec' : item.name}</h2><strong>{item.title}</strong><p>{item.description[language]}</p><div className="help-task-tags" aria-label={t('Supported tasks', '支持任务')}>{item.tasks.map(task => <span key={task}>{helpTasks[task][language]}</span>)}</div></article>)}</div>
         {!models.length && <p className="help-empty">{t('No matching models. Try another keyword.', '没有匹配的模型，请更换关键词。')}</p>}
       </div>}
-    </div>
-  </section>;
+      </div>
+    </section>
+  </>}</DrawerShell>;
 }

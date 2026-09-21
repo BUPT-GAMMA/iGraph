@@ -24,14 +24,18 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('actual App help destination', () => {
-  it('opens help from the sidebar and closes back to the workspace home', async () => {
+  it('opens help as an independent drawer without leaving the workspace', async () => {
     render(<I18nProvider initialLanguage="zh"><App /></I18nProvider>);
     const entry = await screen.findByRole('button', { name: '帮助' });
+    expect(screen.getByRole('heading', { name: '开始新的图分析' })).toBeTruthy();
     fireEvent.click(entry);
     expect(await screen.findByRole('heading', { name: '帮助与能力清单' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: '帮助与能力清单' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '开始新的图分析' })).toBeTruthy();
     expect(entry.getAttribute('aria-current')).toBe('page');
-    expect(window.location.search).toBe('?view=help');
+    expect(window.location.search).toBe('');
     fireEvent.click(screen.getByRole('button', { name: '关闭帮助' }));
+    fireEvent.animationEnd(screen.getByRole('dialog', { name: '帮助与能力清单' }).parentElement!);
     await waitFor(() => expect(screen.queryByRole('heading', { name: '帮助与能力清单' })).toBeNull());
     expect(window.location.search).toBe('');
     expect(entry.getAttribute('aria-current')).toBeNull();
@@ -41,6 +45,7 @@ describe('actual App help destination', () => {
     window.history.replaceState({}, '', '/?view=help');
     render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
     expect(await screen.findByRole('heading', { name: 'Help & capabilities' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Help & capabilities' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Help' }).getAttribute('aria-current')).toBe('page');
     window.history.replaceState({}, '', '/');
     fireEvent.popState(window);

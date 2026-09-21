@@ -31,19 +31,6 @@ export type ModelConfiguration = CustomModel & {
 };
 export type ModelCatalog = { models: ModelConfiguration[]; default_model: string };
 export const listModels = () => json<ModelCatalog>('/api/models');
-export const saveModelConfiguration = (input: Record<string, unknown>) => json<{ model: ModelConfiguration }>('/api/models', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
-});
-export const setModelEnabled = (model: ModelConfiguration, enabled: boolean) => json('/api/models/state', {
-  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config_id: model.config_id, revision: model.revision, enabled }),
-});
-export const setDefaultModelConfiguration = (configId: string) => json('/api/models/default', {
-  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config_id: configId }),
-});
-export const testModelConfiguration = (model: ModelConfiguration) => json('/api/models/test', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config_id: model.config_id, revision: model.revision }),
-});
-export const deleteModelConfiguration = (model: ModelConfiguration) => json(`/api/models/${encodeURIComponent(model.config_id)}?revision=${model.revision}`, { method: 'DELETE' });
 
 export function modelErrorMessage(code?: string | null) {
   const messages: Record<string, string> = {

@@ -347,8 +347,8 @@ describe('actual App recovery', () => {
     expect(container.textContent).not.toContain('Old Account Project');
     fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
     fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
-    expect(screen.getByRole('button', { name: /next-custom/ })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /old-custom/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'next-custom' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'old-custom' })).toBeNull();
   });
   it('releases the global busy state when an account changes during project loading', async () => {
     let resolveOldConversations!: (value: { conversations: [] }) => void;
@@ -399,7 +399,7 @@ describe('actual App recovery', () => {
     render(<App />);
     const modelTrigger = await screen.findByRole('button', { name: '选择模型' });
     fireEvent.click(modelTrigger);
-    fireEvent.click(within(screen.getByRole('group', { name: '可用模型' })).getByRole('button', { name: /old-choice/ }));
+    fireEvent.click(within(screen.getByRole('group', { name: '可用模型' })).getByRole('button', { name: 'old-choice' }));
     await waitFor(() => expect(updateSessionModel).toHaveBeenCalledWith('A', 'old-choice', 0));
     vi.mocked(listModels).mockResolvedValue({ ...catalog('fresh-a-model'), default_model: 'fresh-a-model' });
 
