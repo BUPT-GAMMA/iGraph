@@ -113,7 +113,7 @@ for(const locale of ['zh','en']) {
     assert.equal(renderedRows.length,table.rows.length);
     for(const [rowIndex,row] of table.rows.entries()) {
       assert.equal(renderedRows[rowIndex][1],row.harness);
-      const cells=[...renderedRows[rowIndex][2].matchAll(/<td>([\s\S]*?)<\/td>/g)].map(cell=>cell[1]);
+      const cells=[...renderedRows[rowIndex][2].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)].map(cell=>cell[1]);
       assert.equal(cells.length,row.scores.length);
       row.scores.forEach((value,column)=>{
         assert.equal(cells[column].replace(/<[^>]+>/g,''),value.toFixed(2),'Rendered SR differs from source');

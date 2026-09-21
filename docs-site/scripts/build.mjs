@@ -58,7 +58,7 @@ function toolHtml(tool, locale) {
 }
 function blockHtml(block, locale, index) {
   switch (block.type) {
-    case 'experiment-table': return experimentTableHtml(block, locale);
+    case 'experiment-table': return experimentTableHtml(block, locale, index);
     case 'paragraph': return `<p>${esc(block.text[locale])}</p>`;
     case 'note': return `<aside class="callout"><span class="callout-symbol">i</span><div><strong>${esc(block.title[locale])}</strong><p>${esc(block.text[locale])}</p></div></aside>`;
     case 'list': return `<ul class="prose-list">${block.items.map(item => `<li>${esc(item[locale])}</li>`).join('')}</ul>`;
