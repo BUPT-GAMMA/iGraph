@@ -1,0 +1,638 @@
+{
+  "slug": "experiments",
+  "group": "start",
+  "layout": "wide",
+  "title": {
+    "zh": "实验结果",
+    "en": "Experimental results"
+  },
+  "description": {
+    "zh": "以 GLM-5-turbo 为统一基座模型，对比不同智能体运行框架（agent harness）在图检索、图论、图机器学习和图开放式问答中的任务成功率。",
+    "en": "Task success rates for graph retrieval, graph theory, graph machine learning, and open-ended graph question answering, comparing agent harnesses with GLM-5-turbo as the shared base model."
+  },
+  "sections": [
+    {
+      "id": "reading-the-results",
+      "title": {
+        "zh": "如何读表",
+        "en": "Reading the results"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "所有实验均使用 GLM-5-turbo 作为基座模型；行名表示 agent harness。原始结果中只写模型名的行对应 OpenClaw。表中仅保留 SR（任务成功率），统一换算为百分数并保留两位小数，数值越高越好。",
+            "en": "All experiments use GLM-5-turbo as the base model; rows identify the agent harness. A model-only row in the source results denotes OpenClaw. Only SR (task success rate) is reported, as a percentage with two decimal places; higher is better."
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "每列单独比较：最高分加粗，次高分加下划线；并列成绩使用相同标记。图检索和图论各比较 OpenClaw、iGraph；图机器学习和图开放式问答各比较 Hermes、Claude Code、OpenClaw、iGraph。",
+            "en": "Scores are ranked independently within each column: the highest score is bold, the second-highest score is underlined, and ties receive the same marking. Retrieval and theory compare OpenClaw and iGraph; machine learning and open-ended question answering compare Hermes, Claude Code, OpenClaw, and iGraph."
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            {
+              "zh": "NAG：数值属性图（Numerical-Attribute Graph）。",
+              "en": "NAG: Numerical-Attribute Graph."
+            },
+            {
+              "zh": "TAG：文本属性图（Text-Attributed Graph）。",
+              "en": "TAG: Text-Attributed Graph."
+            },
+            {
+              "zh": "TPG：文本配对图（Text-Paired Graph）。",
+              "en": "TPG: Text-Paired Graph."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-retrieval",
+      "title": {
+        "zh": "图检索问题",
+        "en": "Graph retrieval"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "按节点、边和整图三个层级展示检索任务的 SR。",
+            "en": "Retrieval SR is reported at the node, edge, and graph levels."
+          }
+        },
+        {
+          "type": "experiment-table",
+          "title": {
+            "zh": "图检索问题",
+            "en": "Graph retrieval"
+          },
+          "baseModel": "GLM-5-turbo",
+          "metric": "SR",
+          "unit": "percent",
+          "groups": [
+            {
+              "label": "NAG",
+              "name": {
+                "zh": "数值属性图",
+                "en": "Numerical-Attribute Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TAG",
+              "name": {
+                "zh": "文本属性图",
+                "en": "Text-Attributed Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TPG",
+              "name": {
+                "zh": "文本配对图",
+                "en": "Text-Paired Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            }
+          ],
+          "rows": [
+            {
+              "harness": "OpenClaw",
+              "scores": [
+                8.33,
+                6.25,
+                6.67,
+                72.91,
+                18.18,
+                27.27,
+                60,
+                11.11,
+                42.86
+              ],
+              "source": "figure-1 / GLM-5-turbo / SR"
+            },
+            {
+              "harness": "iGraph",
+              "scores": [
+                31,
+                94.74,
+                18.67,
+                100,
+                100,
+                82.5,
+                100,
+                100,
+                100
+              ],
+              "source": "figure-1 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-theory",
+      "title": {
+        "zh": "图论问题",
+        "en": "Graph theory"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "按节点、边和整图三个层级展示图论任务的 SR。",
+            "en": "Graph-theory SR is reported at the node, edge, and graph levels."
+          }
+        },
+        {
+          "type": "experiment-table",
+          "title": {
+            "zh": "图论问题",
+            "en": "Graph theory"
+          },
+          "baseModel": "GLM-5-turbo",
+          "metric": "SR",
+          "unit": "percent",
+          "groups": [
+            {
+              "label": "NAG",
+              "name": {
+                "zh": "数值属性图",
+                "en": "Numerical-Attribute Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TAG",
+              "name": {
+                "zh": "文本属性图",
+                "en": "Text-Attributed Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TPG",
+              "name": {
+                "zh": "文本配对图",
+                "en": "Text-Paired Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            }
+          ],
+          "rows": [
+            {
+              "harness": "OpenClaw",
+              "scores": [
+                24,
+                26.81,
+                7.4,
+                61.02,
+                9.52,
+                21.66,
+                28,
+                13.33,
+                10.49
+              ],
+              "source": "figure-2 / GLM-5-Turbo / SR"
+            },
+            {
+              "harness": "iGraph",
+              "scores": [
+                37.53,
+                38.14,
+                45,
+                94.44,
+                88.24,
+                88.89,
+                100,
+                100,
+                100
+              ],
+              "source": "figure-2 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-machine-learning",
+      "title": {
+        "zh": "图机器学习",
+        "en": "Graph machine learning"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "NC 表示节点分类，LP 表示链接预测，GC 表示图分类。这里比较的是智能体完成相应任务的成功率（SR）。",
+            "en": "NC denotes node classification, LP link prediction, and GC graph classification. Scores measure the agent’s success rate (SR) on the corresponding tasks."
+          }
+        },
+        {
+          "type": "experiment-table",
+          "title": {
+            "zh": "图机器学习",
+            "en": "Graph machine learning"
+          },
+          "baseModel": "GLM-5-turbo",
+          "metric": "SR",
+          "unit": "percent",
+          "groups": [
+            {
+              "label": "NAG",
+              "name": {
+                "zh": "数值属性图",
+                "en": "Numerical-Attribute Graph"
+              },
+              "tasks": [
+                {
+                  "label": "NC",
+                  "name": {
+                    "zh": "节点分类",
+                    "en": "Node classification"
+                  }
+                },
+                {
+                  "label": "LP",
+                  "name": {
+                    "zh": "链接预测",
+                    "en": "Link prediction"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TAG",
+              "name": {
+                "zh": "文本属性图",
+                "en": "Text-Attributed Graph"
+              },
+              "tasks": [
+                {
+                  "label": "NC",
+                  "name": {
+                    "zh": "节点分类",
+                    "en": "Node classification"
+                  }
+                },
+                {
+                  "label": "LP",
+                  "name": {
+                    "zh": "链接预测",
+                    "en": "Link prediction"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TPG",
+              "name": {
+                "zh": "文本配对图",
+                "en": "Text-Paired Graph"
+              },
+              "tasks": [
+                {
+                  "label": "GC",
+                  "name": {
+                    "zh": "图分类",
+                    "en": "Graph classification"
+                  }
+                }
+              ]
+            }
+          ],
+          "rows": [
+            {
+              "harness": "Hermes",
+              "scores": [
+                61.54,
+                90.9,
+                54.35,
+                87.18,
+                7.14
+              ],
+              "source": "figure-5 / Hermes"
+            },
+            {
+              "harness": "Claude Code",
+              "scores": [
+                95.23,
+                78.57,
+                86.79,
+                89.53,
+                88.89
+              ],
+              "source": "figure-5 / Claude Code"
+            },
+            {
+              "harness": "OpenClaw",
+              "scores": [
+                26.66,
+                65.18,
+                19.36,
+                36.77,
+                26.74
+              ],
+              "source": "figure-5 / OpenClaw"
+            },
+            {
+              "harness": "iGraph",
+              "scores": [
+                90,
+                100,
+                95,
+                100,
+                85
+              ],
+              "source": "figure-4 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "open-ended-qa",
+      "title": {
+        "zh": "图开放式问答",
+        "en": "Open-ended graph question answering"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "Insight 表示洞察分析类问题，Prediction 表示预测分析类问题；两类任务均以 SR 比较。",
+            "en": "Insight and Prediction identify the two open-ended task categories. Both are compared using SR."
+          }
+        },
+        {
+          "type": "experiment-table",
+          "title": {
+            "zh": "图开放式问答",
+            "en": "Open-ended graph question answering"
+          },
+          "baseModel": "GLM-5-turbo",
+          "metric": "SR",
+          "unit": "percent",
+          "groups": [
+            {
+              "label": "NAG",
+              "name": {
+                "zh": "数值属性图",
+                "en": "Numerical-Attribute Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Insight",
+                  "name": {
+                    "zh": "洞察分析",
+                    "en": "Insight"
+                  }
+                },
+                {
+                  "label": "Prediction",
+                  "name": {
+                    "zh": "预测分析",
+                    "en": "Prediction"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TAG",
+              "name": {
+                "zh": "文本属性图",
+                "en": "Text-Attributed Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Insight",
+                  "name": {
+                    "zh": "洞察分析",
+                    "en": "Insight"
+                  }
+                },
+                {
+                  "label": "Prediction",
+                  "name": {
+                    "zh": "预测分析",
+                    "en": "Prediction"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TPG",
+              "name": {
+                "zh": "文本配对图",
+                "en": "Text-Paired Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Insight",
+                  "name": {
+                    "zh": "洞察分析",
+                    "en": "Insight"
+                  }
+                },
+                {
+                  "label": "Prediction",
+                  "name": {
+                    "zh": "预测分析",
+                    "en": "Prediction"
+                  }
+                }
+              ]
+            }
+          ],
+          "rows": [
+            {
+              "harness": "Hermes",
+              "scores": [
+                0,
+                8.22,
+                1.28,
+                15.12,
+                16.28,
+                8.11
+              ],
+              "source": "figure-7 / Hermes"
+            },
+            {
+              "harness": "Claude Code",
+              "scores": [
+                7.63,
+                3.7,
+                18.59,
+                20,
+                29.63,
+                20.69
+              ],
+              "source": "figure-7 / Claude Code"
+            },
+            {
+              "harness": "OpenClaw",
+              "scores": [
+                7.65,
+                3.22,
+                13.56,
+                10.47,
+                14.29,
+                12.5
+              ],
+              "source": "figure-7 / OpenClaw"
+            },
+            {
+              "harness": "iGraph",
+              "scores": [
+                25,
+                8.6,
+                55,
+                42.5,
+                35,
+                21
+              ],
+              "source": "figure-6 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
