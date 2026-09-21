@@ -22,9 +22,10 @@ describe('interface language', () => {
   });
 
   it('switches the rendered copy, document language, and persisted preference', async () => {
-    render(<I18nProvider initialLanguage="en"><TopBar onMenu={() => undefined} /><Probe /></I18nProvider>);
+    render(<I18nProvider initialLanguage="en"><TopBar onMenu={() => undefined} onHome={() => undefined} /><Probe /></I18nProvider>);
 
     expect(screen.getByText('English interface')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Go to home' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Open sidebar' })).toBeTruthy();
     await waitFor(() => expect(document.documentElement.lang).toBe('en'));
     expect(document.title).toBe('iGraph · Graph Intelligence Workspace');

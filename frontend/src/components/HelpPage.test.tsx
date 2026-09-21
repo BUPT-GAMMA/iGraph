@@ -70,10 +70,12 @@ describe('HelpPage', () => {
   it('supports closing help and case-insensitive multi-term search', () => {
     const close = vi.fn();
     render(<I18nProvider initialLanguage="en"><HelpPage onClose={close} /></I18nProvider>);
+    expect(screen.getByRole('dialog', { name: 'Help & capabilities' })).toBeTruthy();
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: ' SHORTEST minimum ' } });
     expect(screen.getByText('shortest_path')).toBeTruthy();
     expect(screen.queryByText('train')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Close help' }));
+    fireEvent.animationEnd(screen.getByRole('dialog', { name: 'Help & capabilities' }).parentElement!);
     expect(close).toHaveBeenCalledOnce();
   });
 });

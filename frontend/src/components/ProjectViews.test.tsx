@@ -57,11 +57,14 @@ describe('project dialogs', () => {
   });
 });
 describe('top bar', () => {
-  it('opens the mobile navigation from the top bar', () => {
+  it('opens the home workspace and mobile navigation from the top bar', () => {
     const onMenu = vi.fn();
-    render(<TopBar onMenu={onMenu} />);
+    const onHome = vi.fn();
+    render(<TopBar onMenu={onMenu} onHome={onHome} />);
     expect(screen.getByText('iGraph')).toBeTruthy();
     expect(screen.queryByText('图分析工作台')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '返回主界面' }));
+    expect(onHome).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: '打开侧栏' }));
     expect(onMenu).toHaveBeenCalledOnce();
   });

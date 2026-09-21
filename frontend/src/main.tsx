@@ -26,8 +26,6 @@ import { ManagementPanel } from './components/ManagementPanel';
 import { DeleteProjectDialog, ProjectDialog } from './components/ProjectDialogs';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
-import { ModelManager } from './components/ModelManager';
-import { ModelCatalogContext } from './components/ModelPicker';
 import { listModels, getSessionModel, modelErrorMessage, type ModelCatalog } from './api';
 import { parseWorkspaceRoute, writeWorkspaceRoute } from './navigation';
 import { migrateGeneralDraft, readRecoveredDrafts, recoveredDraftsKey } from './draftMigration';
@@ -230,7 +228,6 @@ function App() {
   const [helpOpen, setHelpOpen] = useState(() => parseWorkspaceRoute(window.location.search).kind === 'help');
   const [importProject, setImportProject] = useState<Project | null>(null);
   const [managementOpen, setManagementOpen] = useState(false);
-  const [modelManagerOpen, setModelManagerOpen] = useState(false);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [modelNotice, setModelNotice] = useState<{ sessionId: string; name: string } | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -453,10 +450,15 @@ function App() {
     if (updateUrl) writeWorkspaceRoute({ kind: 'home' }, replaceUrl);
   }
 
-  function showHelp(updateUrl = true) {
-    showWorkspaceHome(false);
+  function showHelp() {
+    setManagementOpen(false);
     setHelpOpen(true);
-    if (updateUrl) writeWorkspaceRoute({ kind: 'help' });
+    setMobileSidebarOpen(false);
+  }
+
+  function closeHelp() {
+    setHelpOpen(false);
+    if (parseWorkspaceRoute(window.location.search).kind === 'help') writeWorkspaceRoute({ kind: 'home' });
   }
 
   async function showCreateGraphWorkspace(updateUrl = true) {
@@ -787,7 +789,7 @@ function App() {
       } else if (wantedIds.has(activity.sessionId)) forgetSessionActivity(identity, activity.sessionId);
     }
     if (route.kind === 'help') {
-      showHelp(false);
+      showHelp();
     } else if (route.kind === 'create-graph') {
       await showCreateGraphWorkspace(false);
     } else if (route.kind === 'new-session') {
@@ -895,7 +897,7 @@ function App() {
       if (route.kind === 'home') {
         showWorkspaceHome(false);
       } else if (route.kind === 'help') {
-        showHelp(false);
+        showHelp();
       } else if (route.kind === 'create-graph') {
         void showCreateGraphWorkspace(false);
       } else if (route.kind === 'session') {
@@ -1125,7 +1127,6 @@ function App() {
     setServerDatasets([]);
     setCustomModels([]);
     setModelCatalog(null);
-    setModelManagerOpen(false);
     setDatasetOpen(false);
     setConstructionDataset(null);
     setManagementOpen(false);
@@ -1762,6 +1763,7 @@ function App() {
     const saved = response.model;
     setCustomModels(current => [...current.filter(item => item.model_id !== saved.model_id), saved]);
     setAvailableModels(current => normalizedModels([...current, saved.model_id], saved.model_id));
+    await changeModel(saved.model_id);
     void refreshModelCatalog();
   }
   async function removeCustomModel(modelId: string) {
@@ -1772,7 +1774,7 @@ function App() {
     setCustomModels(current => current.filter(item => item.model_id !== modelId));
     setAvailableModels(current => current.filter(item => item !== modelId));
   }
-  function openManagement(tab: 'memory' | 'skills') { setManagementTab(tab); setManagementOpen(true); }
+  function openManagement(tab: 'memory' | 'skills') { setHelpOpen(false); setManagementTab(tab); setManagementOpen(true); }
   function unavailableModel(id: string) {
     if (!modelCatalog) return null;
     const config = modelCatalog.models.find(item => item.config_id === id);
@@ -1793,7 +1795,7 @@ function App() {
     const identity = identityRef.current;
     const epoch = accountEpochRef.current;
     try { const catalog = await listModels(); if (!accountIsStale(identity, epoch)) applyModelCatalog(catalog); }
-    catch { /* Management shows errors and offers a retry without blocking history. */ }
+    catch { /* Keep the last known model list without blocking conversation history. */ }
   }
   async function openDatasets(targetProjectId?: string) {
     const key = conversationRef.current.activeDraftKey;
@@ -2131,13 +2133,13 @@ function App() {
   const unreadCompletions = Object.fromEntries(Object.entries(conversation.viewsBySessionId)
     .filter(([, view]) => view.unreadCompletion)
     .map(([sessionId]) => [sessionId, true]));
-  return <ModelCatalogContext.Provider value={demoMode ? null : { catalog: modelCatalog, userId, unavailable: activeDraft ? null : activeView?.modelUnavailableReason, manage: () => setModelManagerOpen(true), refresh: () => void refreshModelCatalog() }}><div className="app-shell">
-    <TopBar onMenu={() => setMobileSidebarOpen(true)} onModels={userId && !demoMode ? () => setModelManagerOpen(true) : undefined} />
+  return <div className="app-shell">
+    <TopBar onMenu={() => setMobileSidebarOpen(true)} onHome={() => showWorkspaceHome()} />
     <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
       <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={projects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} loginValue={loginValue} loginError={loginError} loginPending={loginPending} onLoginValueChange={value => { setLoginValue(value); setLoginError(''); }} onLogin={login} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
-        {helpOpen ? <HelpPage onClose={() => showWorkspaceHome()} /> : createGraphOpen ? <>
+        {createGraphOpen ? <>
           {workspaceError && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {workspaceError}</div>}
           {constructionDataset
             ? <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} embedded onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} />
@@ -2159,10 +2161,10 @@ function App() {
     {constructionDataset && !createGraphOpen && <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} onUse={activeSession || activeDraft ? useConstructedDataset : undefined} />}
     {importProject && <ConstructedDatasetPicker key={`${userId}:${importProject.project_id}`} projectId={importProject.project_id} projectName={importProject.name} onImport={loadConstructedIntoProject} onClose={() => setImportProject(null)} />}
     {managementOpen && <ManagementPanel initialTab={managementTab} onClose={() => setManagementOpen(false)} />}
-    {modelManagerOpen && userId && <ModelManager key={userId} onClose={() => setModelManagerOpen(false)} onUpdated={applyModelCatalog} />}
+    {helpOpen && <HelpPage onClose={closeHelp} />}
     {projectEditor && <ProjectDialog key={`${projectEditor}-${projectEditorTarget?.project_id || 'new'}`} project={projectEditor === 'edit' ? projectEditorTarget : null} onClose={() => { setProjectEditor(null); setProjectEditorTarget(null); }} onSave={saveProject} />}
     {deleteProjectTarget && <DeleteProjectDialog project={deleteProjectTarget} onClose={() => setDeleteProjectTarget(null)} onConfirm={deleteCurrentProject} />}
-  </div></ModelCatalogContext.Provider>;
+  </div>;
 }
 
 function ChatPaneWithState(props: any) {
