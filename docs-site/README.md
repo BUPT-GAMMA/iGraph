@@ -46,9 +46,9 @@ $env:SITE_URL = 'https://igraph-docs.YOUR_SUBDOMAIN.workers.dev'
 npm run deploy
 ```
 
-独立工作流为 `.github/workflows/docs-site.yml`。PR 自动构建检查；手动运行工作流并选中 deploy 时才发布。设置仓库 secrets `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`；可选仓库 variable `DOCS_SITE_URL`。
+当前仓库的 `.github/workflows/ci.yml` 检查应用代码，没有独立的文档站发布工作流。修改文档后需运行这里的构建与检查命令。若要接入自动发布，可另行配置 Cloudflare 凭据 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`，并将实际站点域名传给 `SITE_URL`。
 
-The separate workflow validates pull requests and publishes only when manually dispatched with deploy enabled. Configure the two Cloudflare secrets above and optionally the `DOCS_SITE_URL` repository variable.
+The current `.github/workflows/ci.yml` checks application code; the repository has no separate docs publishing workflow. Run the build and check commands here after documentation changes. If adding automated publishing, configure `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, and pass the actual site origin as `SITE_URL`.
 
 ## 内容与页面 / Content and pages
 
@@ -56,8 +56,8 @@ The separate workflow validates pull requests and publishes only when manually d
 
 The documentation presents iGraph as a graph-driven data analysis agent, connecting questions, graph representations, computed evidence, and interpretation. Skills organize analysis workflows; self-evolving construction prepares and optimizes representations for analysis.
 
-- `content.json`：16 篇核心双语文档；`construction-example.content.json` 为电商构图报告，`graph-tools.content.json` 为 61 个业务工具及 3 个会话管理接口的分类参考。核心章节包括智能体运行机制、图算法、构图策略进化、图学习训练与推理及 24 项术语表。相同 slug 和 section ID 在语言切换时保持章节位置。
-- `scripts/content.mjs`：组合 18 篇文档；`scripts/build.mjs` 生成 36 个文档页面、中英文封面、根入口、真实 404、Markdown、章节与工具搜索索引、llms.txt / llms-full.txt、可选 sitemap。
+- `content.json`：16 篇核心双语文档；`workspace.content.json` 为工作台操作指南，`construction-example.content.json` 为电商构图报告，`graph-tools.content.json` 为 72 项业务工具（含可选的报告工具）及 3 个会话管理接口的分类参考。核心章节包括源数据预览、构图流程、图算法、大图处理、图学习、接口与配置、记忆和技能。相同 slug 和 section ID 在语言切换时保持章节位置。
+- `scripts/content.mjs`：组合 19 篇文档；`scripts/build.mjs` 生成 38 个文档页面、中英文封面、根入口、真实 404、Markdown、章节与工具搜索索引、llms.txt / llms-full.txt、可选 sitemap。
 - `scripts/cover.mjs`：中英文封面文案、导航与静态点云后备图。根地址默认进入 `/en/`，仅在用户主动切换语言后记住所选语言；不按浏览器语言自动选择中文。直接访问 `/zh/` 或 `/en/` 保留对应语言，文档页标识链接返回对应语言的封面；关闭 JavaScript 时根页面仍为英文。
 - `assets/cover.css`、`assets/cover.js`：封面布局和主题及语言切换。`assets/particles.js` 与 `assets/cloud-geometry.js` 绘制覆盖整页的密集三维星云，支持全页鼠标交互、设备性能适配和减少动态效果偏好；页面不可见时停止动画。
 - `scripts/diagrams.mjs`：生成图驱动分析流程、系统架构、Graph Engine 执行、技能驱动的构图进化四种 SVG，每种提供中英文和深浅主题。
@@ -70,6 +70,15 @@ All pages have complete server-independent HTML. Reading and navigation work wit
 
 Cloudflare 官方要求见 [静态资产](https://developers.cloudflare.com/workers/static-assets/) 与 [计费/限制](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)。
 
-After editing any content file, run `npm run build` and `npm run check`, preview the affected Chinese and English pages, then run `npm run deploy` to publish the updated documentation to the existing Worker.
+After editing content, run `npm run build` and `npm run check`, then preview the affected Chinese and English pages. To publish, verify the Cloudflare account and Worker name before running `npm run deploy`. A successful local build does not publish the site.
 
-修改上述内容文件后，执行 `npm run build` 与 `npm run check`，预览中英文页面，再执行 `npm run deploy` 将新版文档发布到原 Worker。
+修改内容后，执行 `npm run build` 与 `npm run check`，并预览中英文页面。需要发布时，先核对 Cloudflare 账号和 Worker 名称，再运行 `npm run deploy`。本地构建成功不等于网站已经发布。
+
+## 内容维护约定 / Editorial conventions
+
+- 以代码中的工具目录、路由、配置和前端入口为依据。更新功能说明时同步中英文；历史实验保留日期与原始测量，不改写成当前版本的性能保证。
+- 中文先说操作和用途，再解释实现。构图中的 workload 称为“评测查询集”，SQL oracle 称为“独立 SQL 参考执行器”，artifact 按上下文写成“分析结果”或“结果文件”；引用界面按钮时沿用界面原文。
+- API 路径、参数、枚举、模型名和文件名保持原样，例如 `feature_source="embedding"`、`embedding.npy`。正文可解释“嵌入向量”，不能翻译配置值或文件名。
+- 补充能力时写清入口、前提、结果和限制。区分源数据与当前图、数据集版本与会话图版本、训练指标与推理指标、报告内容与下载文件。
+
+Use the tool catalog, routes, configuration, and UI as the source of truth. Keep factual changes aligned in both languages, preserve historical experiment dates and measurements, and never translate identifiers or literal configuration values. Describe how to access a capability, its prerequisites, its output, and its limits.

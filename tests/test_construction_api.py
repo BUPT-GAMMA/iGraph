@@ -99,3 +99,17 @@ def test_project_scope_and_delete_remove_construction(client, engine):
     assert client.delete(f"{scope}/{dataset['dataset_id']}", headers=headers()).status_code == 200
     assert ('admin', dataset['dataset_id']) not in engine[0]
     assert not saved_path.exists()
+
+
+def test_source_preview_bff_preserves_dataset_ownership_and_scope(client, engine):
+    project = client.post('/api/projects', headers=headers(), json={'name': 'Preview'}).json()['project']
+    scope = f"/api/projects/{project['project_id']}/datasets"
+    dataset = client.post(scope, headers=headers(), files={'file': ('source.csv', b'id,name\n1,Alice\n')}).json()['dataset']
+    endpoint = f"{scope}/{dataset['dataset_id']}/construction/source-preview"
+    assert client.get(endpoint, headers=headers('alice')).status_code == 404
+    assert client.get(f"/api/personal-datasets/{dataset['dataset_id']}/construction/source-preview", headers=headers()).status_code == 404
+    result = client.get(endpoint, headers={**headers(), 'X-iGraph-Construction-Scope': 'personal'})
+    assert result.status_code == 200
+    method, path, forwarded, body = engine[1][-1]
+    assert method == 'GET' and path.endswith('/source-preview') and body is None
+    assert forwarded['X-iGraph-Construction-Scope'] == f"project:{project['project_id']}"

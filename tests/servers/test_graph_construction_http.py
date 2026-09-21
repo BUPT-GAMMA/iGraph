@@ -54,6 +54,20 @@ def build_ready(client, store, source, headers):
     assert response.json()["status"] == "ready"
 
 
+def test_source_preview_is_available_before_build_and_authorized(construction_http):
+    client, _service, store, _source, headers = construction_http
+    endpoint = "/construction/ds-people/source-preview"
+    assert client.get(endpoint).status_code == 403
+    assert client.get(endpoint, headers={**headers, "X-User-ID": "bob"}).status_code == 404
+    assert client.get(endpoint, headers={**headers, "X-iGraph-Construction-Scope": "project:other"}).status_code == 404
+    result = client.get(endpoint, headers=headers)
+    assert result.status_code == 200, result.text
+    assert result.json()["tables"][0]["sample_rows"] == [{"id": "alice", "phone": "123"}]
+    assert "source_path" not in result.text
+    assert store.status("alice", "ds-people")["status"] == "not_built"
+    assert client.get(endpoint, headers=headers, params={"delimiter": "bad"}).status_code == 422
+
+
 def test_construction_http_requires_service_owner_and_confined_source(construction_http, tmp_path):
     client, _service, _store, source, headers = construction_http
     assert client.get("/construction/capabilities").status_code == 403

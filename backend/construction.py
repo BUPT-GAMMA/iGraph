@@ -139,6 +139,15 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
         return await graph.request("GET", f"/construction/{dataset_id}/schema",
                                    headers=headers(request, user.user_id, project_id))
 
+    @app.get("/api/personal-datasets/{dataset_id}/construction/source-preview")
+    @app.get("/api/datasets/{dataset_id}/construction/source-preview", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
+    @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction/source-preview")
+    async def read_source_preview(dataset_id: str, request: Request, project_id: str | None = None,
+                                  delimiter: str = ","):
+        user, _ = owned(dataset_id, request, project_id)
+        return await graph.request("GET", f"/construction/{dataset_id}/source-preview",
+                                   params={"delimiter": delimiter}, headers=headers(request, user.user_id, project_id))
+
     @app.post("/api/personal-datasets/{dataset_id}/construction/preview")
     @app.post("/api/datasets/{dataset_id}/construction/preview", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.post("/api/projects/{project_id}/datasets/{dataset_id}/construction/preview")

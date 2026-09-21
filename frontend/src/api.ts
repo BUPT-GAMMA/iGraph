@@ -1,6 +1,6 @@
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
-import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
+import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionSourcePreview, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
 import { currentLanguage, tr } from './i18n';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -375,6 +375,10 @@ export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
 }
 export function getConstructionSchema(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionSchemaResponse>(`${constructionUrl(dataset)}/schema`, { signal });
+}
+export function getConstructionSourcePreview(dataset: Dataset, signal?: AbortSignal, delimiter?: string) {
+  const query = delimiter ? `?delimiter=${encodeURIComponent(delimiter)}` : '';
+  return json<ConstructionSourcePreview>(`${constructionUrl(dataset)}/source-preview${query}`, { signal });
 }
 export function previewConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[]) {
   return json<ConstructionResult>(`${constructionUrl(dataset)}/preview`, {
