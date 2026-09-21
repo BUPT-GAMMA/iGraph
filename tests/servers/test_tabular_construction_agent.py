@@ -11,10 +11,10 @@ from unittest.mock import patch
 
 from graph_data_service.construction import ConstructionStore, validate_graph
 from graph_engine.construction import register_builtin_algorithms
-from graph_engine.construction.agent import ConstructionFailed, EvolutionConfig, TabularConstructionSubAgent
+from graph_engine.construction.agent import ConstructionFailed, EvolutionConfig, QUERY_DSL, TabularConstructionSubAgent
 from graph_engine.construction.sources import initial_graph, load_source
 from graph_engine.construction.tools import fidelity_errors, transform
-from graph_engine.construction.workload import evaluate_workload, generate_workload
+from graph_engine.construction.workload import evaluate_workload, generate_workload, validate_queries
 
 
 SQL = """
@@ -107,6 +107,69 @@ class TabularConstructionAgentTest(unittest.TestCase):
         result = TabularConstructionSubAgent(llm_factory=lambda _: llm).run(self.path)
         self.assertEqual(len(result.report["queries"]), 15)
         self.assertIn("workload is immutable", json.dumps(llm.messages[-1]))
+
+    def test_aggregate_alias_error_explains_repair_without_relaxing_validation(self):
+        llm = self.script()
+        args = json.loads(llm.responses[0]["tool_calls"][0]["function"]["arguments"])
+        invalid = copy.deepcopy(args["queries"])
+        invalid[0]["projection"] = [{"column": "cnt", "as": "copied_count"}]
+        llm.responses.insert(0, call("set_workload", {"queries": invalid}, 0))
+
+        result = TabularConstructionSubAgent(llm_factory=lambda _: llm).run(self.path)
+
+        feedback = json.loads(llm.messages[1][-1]["content"])
+        self.assertFalse(feedback["success"])
+        self.assertIn("Invalid column reference: 'cnt'", feedback["error"])
+        self.assertIn("reference it only in order_by", feedback["repair_hint"])
+        self.assertIn("There is no HAVING support", feedback["repair_hint"])
+        self.assertEqual(result.report["workload_origin"], "llm")
+        self.assertTrue(result.report["llm_used"])
+        self.assertEqual(result.report["final"]["accuracy"], 1)
+        self.assertEqual(result.report["queries"], args["queries"])
+
+    def test_join_direction_error_explains_repair_without_changing_frozen_workload(self):
+        llm = self.script()
+        args = json.loads(llm.responses[0]["tool_calls"][0]["function"]["arguments"])
+        invalid = copy.deepcopy(args["queries"])
+        join = next(query["joins"][0] for query in invalid if query["joins"])
+        join["direction"] = "reverse" if join["direction"] == "forward" else "forward"
+        llm.responses.insert(0, call("set_workload", {"queries": invalid}, 0))
+
+        result = TabularConstructionSubAgent(llm_factory=lambda _: llm).run(self.path)
+
+        feedback = json.loads(llm.messages[1][-1]["content"])
+        self.assertFalse(feedback["success"])
+        self.assertEqual(feedback["error"], "Join tables disagree with foreign-key direction")
+        self.assertIn("forward: child -> parent", feedback["repair_hint"])
+        self.assertIn("reverse: parent -> child", feedback["repair_hint"])
+        self.assertIn("Do not swap these fields", feedback["repair_hint"])
+        self.assertIn("validated seed plans unchanged", feedback["repair_hint"])
+        self.assertEqual(result.report["workload_origin"], "llm")
+        self.assertEqual(result.report["queries"], args["queries"])
+        self.assertEqual(result.report["final"]["accuracy"], 1)
+
+    def test_documented_forward_reverse_joins_validate_and_preserve_key_orientation(self):
+        source = self.source()
+        key = {"table": "orders", "columns": ["customer_id"], "ref_table": "customers", "ref_columns": ["id"]}
+        queries = []
+        try:
+            for direction, root, target in (("forward", "orders", "customers"), ("reverse", "customers", "orders")):
+                query = {"id": direction, "question": f"Traverse declared relationship {direction}",
+                         "root": {"table": root, "alias": "t0"},
+                         "joins": [{"from": "t0", "alias": "t1", "table": target, "direction": direction,
+                                    "kind": "inner", "foreign_key": copy.deepcopy(key)}],
+                         "projection": [{"column": "t0.id", "as": "source_id"}, {"column": "t1.id", "as": "target_id"}]}
+                queries.append(query)
+                self.assertIn(f"table:'{target}',direction:'{direction}'", QUERY_DSL)
+                invalid = copy.deepcopy(query)
+                invalid["joins"][0]["direction"] = "reverse" if direction == "forward" else "forward"
+                with self.assertRaisesRegex(ValueError, "Join tables disagree with foreign-key direction"):
+                    validate_queries(source, [invalid])
+            validated = validate_queries(source, queries)
+            self.assertEqual(validated[0]["joins"][0]["foreign_key"], validated[1]["joins"][0]["foreign_key"])
+            self.assertEqual(evaluate_workload(source, initial_graph(source), validated, repeats=1)["accuracy"], 1)
+        finally:
+            source.close()
 
     def test_source_fidelity_checks_unqueried_records(self):
         source = self.source()

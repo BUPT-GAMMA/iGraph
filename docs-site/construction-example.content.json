@@ -6,8 +6,8 @@
     "en": "Commerce graph construction experiment"
   },
   "description": {
-    "zh": "从图驱动的数据分析智能体的工作链路出发，用两次真实离线实验说明电商关系数据如何完成图表示准备、查询验收与构图策略反馈，并界定其接入后续图分析的条件。",
-    "en": "Place graph preparation within iGraph’s data analysis workflow. Two real offline experiments demonstrate commerce graph construction, query validation, and strategy feedback, followed by the conditions for using the graph in further analysis."
+    "zh": "以两次真实离线实验说明电商关系表如何构图、验收和复用策略经验，并补充当前工作台的操作入口与分析衔接。",
+    "en": "Two recorded offline experiments show how commerce tables become a graph, pass validation, and inform later strategy choices, with a separate walkthrough for the current workspace and analysis handoff."
   },
   "sections": [
     {
@@ -93,7 +93,7 @@
             ],
             [
               {
-                "zh": "验收工作负载",
+                "zh": "验收评测查询集",
                 "en": "Acceptance workload"
               },
               {
@@ -134,14 +134,10 @@
           ]
         },
         {
-          "type": "note",
-          "title": {
-            "zh": "这次验证覆盖什么",
-            "en": "What this run validates"
-          },
+          "type": "paragraph",
           "text": {
-            "zh": "rules 模式实际执行源导入、图变换、独立查询校验、成本选择与经验读写，仅自动尝试生成的 materialize_join 候选。它没有执行 LLM 规划，也没有自动改写SKILL.md；其他结构重写能力参见构图智能体。",
-            "en": "Rules mode executes source import, graph transformation, independent query validation, cost-based selection, and experience storage. It automatically tries only generated materialize_join candidates. It does not exercise LLM planning or rewrite SKILL.md. See the construction agent guide for other graph rewrites."
+            "zh": "这两次历史 rules 实验实际执行了源导入、图变换、独立查询校验、成本选择和经验读写，当时只尝试 materialize_join 候选，未调用 LLM，也未改写 SKILL.md。当前实现的 rules 还会尝试属性实体与组合变换，并采用更完整的成对计时规则；这些后续能力不属于下面的历史测量。",
+            "en": "These historical rules runs performed source import, transformation, independent query validation, cost-based selection, and experience reads/writes. They tried only materialize_join at that time, without LLM calls or SKILL.md changes. The current rules implementation also tries attribute entities and composed transformations and uses more extensive paired timing; these later capabilities are not part of the historical measurements below."
           }
         }
       ]
@@ -269,8 +265,8 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "初始图由源记录和声明外键直接建立。每个记录对应一个 row node，主键参与生成稳定节点 ID；数据列保存在当前节点的 properties.data 中。外键边方向为引用行指向被引用行，因此存储方向是 orders → customers → regions。",
-            "en": "The initial graph follows source records and declared foreign keys. Each record becomes a row node with a stable ID derived from its primary key. Source columns are stored in the current node’s properties.data. Foreign-key edges point from the referencing row to the referenced row, so their stored direction is orders → customers → regions."
+            "zh": "初始图直接来自源记录和声明外键。每条记录对应一个行节点，主键参与生成稳定的节点 ID；业务列保存在节点的 properties.data 中。外键边从引用行指向被引用行，因此本例的存储方向是 orders → customers → regions。",
+            "en": "The initial graph comes directly from source records and declared foreign keys. Each record becomes a row node with a stable ID derived from its primary key, and business columns reside in properties.data. Foreign-key edges point from the referencing row to the referenced row, so the stored direction is orders → customers → regions."
           }
         },
         {
@@ -367,7 +363,7 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "rules 模式基于当前数据模式和样本生成 15 个不同执行计划，然后记录冻结工作负载的摘要。两轮使用同一输入与配置，覆盖关系、多跳、可选关系、值筛选、空值检查、聚合、分组和排序。候选出现错误或变慢时，工作负载保持不变。",
+            "zh": "rules 模式基于当前数据结构和样本生成 15 个不同执行计划，然后记录冻结评测查询集的摘要。两轮使用同一输入与配置，覆盖关系、多跳、可选关系、值筛选、空值检查、聚合、分组和排序。候选出现错误或变慢时，评测查询集保持不变。",
             "en": "Rules mode generates 15 distinct executable plans from the current schema and samples, then fingerprints the frozen workload. Both runs use the same input and configuration. Coverage includes relationships, multi-hop traversal, optional relationships, value filters, NULL checks, aggregation, grouping, and sorting. Candidate failures or slowdowns do not change the workload."
           }
         },
@@ -463,7 +459,7 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "领域设为 commerce，工作负载包含两跳查询，智能体因此把 materialize_join 作为候选。变换沿当前实际外键路径生成快捷边，保存中间节点标识与路径重复性。两笔订单不会因为属于同一客户而合并。",
+            "zh": "领域设为 commerce，评测查询集包含两跳查询，智能体因此把 materialize_join 作为候选。变换沿当前实际外键路径生成快捷边，保存中间节点标识与路径重复性。两笔订单不会因为属于同一客户而合并。",
             "en": "The domain is commerce and the workload contains two-hop queries, so materialize_join is proposed. This transformation adds shortcut edges along real current foreign-key paths while retaining intermediate node identities and path multiplicity. Two orders are not merged simply because they share a customer."
           }
         },
@@ -533,7 +529,7 @@
               "en": "Result validation compares complete answers and preserves duplicates, NULLs, INNER/LEFT JOINs, aggregation, and ordering. Previews show at most 20 rows; comparison is not limited to those previews."
             },
             {
-              "zh": "最终校验：所有候选处理结束后再次运行选中图，只有冻结工作负载全部通过，才产出可发布的图结果。",
+              "zh": "最终校验：所有候选处理结束后再次运行选中图，只有冻结评测查询集全部通过，才产出可发布的图结果。",
               "en": "Final validation reruns the selected graph after candidate processing. A graph is returned for publication only when the entire frozen workload passes."
             }
           ]
@@ -671,7 +667,7 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "最终图通过验收后，构图模块把这次尝试写为 no_gain。经验保留策略种类、结构模式、正确性和相对收益。它不保存本任务的原始行、表列名、SQL、提示词或真实图 ID，因此后续任务必须把抽象策略重新绑定到自己的数据模式。",
+            "zh": "最终图通过验收后，构图模块把这次尝试写为 no_gain。经验保留策略种类、结构模式、正确性和相对收益。它不保存本任务的原始行、表列名、SQL、提示词或真实图 ID，因此后续任务必须把抽象策略重新绑定到自己的数据结构。",
             "en": "After the final graph passes validation, the construction module stores this attempt as no_gain. Experience retains the strategy, structural pattern, correctness, and relative gain. It stores no raw rows, table or column names, SQL, prompts, or graph IDs. Later tasks must bind the abstract strategy to their own schema."
           }
         },
@@ -695,7 +691,7 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "这条记录描述“微型数据、两跳链、反向关系查询”中的物化尝试。更大数据、更高重复查询量或不同业务工作负载可能改变收益，因此每次迁移仍要重新验证。",
+            "zh": "这条记录描述“微型数据、两跳链、反向关系查询”中的物化尝试。更大数据、更高重复查询量或不同业务评测查询集可能改变收益，因此每次迁移仍要重新验证。",
             "en": "This observation describes materialization for tiny data, a two-hop chain, and reverse-relationship queries. Larger data, more repeated queries, or a different business workload can change the benefit, so every transfer still requires fresh validation."
           }
         }
@@ -711,7 +707,7 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "第二次使用相同 SQL、options 和经验目录，只换一个新的结果目录。构图智能体检索到第一轮的证据；领域、数据结构和工作负载相同，上下文相似度为 1.0。",
+            "zh": "第二次使用相同 SQL、options 和经验目录，只换一个新的结果目录。构图智能体检索到第一轮的证据；领域、数据结构和评测查询集相同，上下文相似度为 1.0。",
             "en": "Run 2 uses the same SQL, options, and experience directory with a new output directory. The construction agent retrieves Run 1’s evidence. Because the domain, structure, and workload are unchanged, context similarity is 1.0."
           }
         },
@@ -826,8 +822,8 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "cautioned 证据使用 0.35 的权重。第二轮仍会尝试这个候选，重新测量后仍因 no_measured_improvement 保留基线。两次 graph.json 内容一致，得到不同的是规划使用的经验与候选优先级。",
-            "en": "Cautioned evidence uses a weight of 0.35. Run 2 still tries this candidate and retimes it, then retains the baseline again for no_measured_improvement. The two graph.json outputs are identical; the experience available to planning and the candidate priority have changed."
+            "zh": "cautioned 证据使用 0.35 的权重。第二轮仍尝试这个候选，重新测量后仍因 no_measured_improvement 保留基线。两次 graph.json 内容相同，改变的是规划所用的经验与候选优先级。",
+            "en": "Evidence marked cautioned receives weight 0.35. Run 2 still tries the candidate and again retains the baseline after measuring no_measured_improvement. The two graph.json files have identical content; the experience used for planning and the candidate priority have changed."
           }
         },
         {
@@ -940,6 +936,84 @@
       ]
     },
     {
+      "id": "workspace-walkthrough",
+      "title": {
+        "zh": "在当前工作台使用这份数据",
+        "en": "Use this data in the current workspace"
+      },
+      "blocks": [
+        {
+          "type": "note",
+          "title": {
+            "zh": "操作说明与实测记录分开",
+            "en": "Walkthrough versus measured results"
+          },
+          "text": {
+            "zh": "本节说明当前代码支持的操作。上文的 15/15、耗时、no_gain 和两轮优先级来自历史离线 rules 实验，不是本节前端操作的新验收结果。前端默认使用 llm 构图，生成的查询、候选和计时可能不同；仅把查询数设为 15 不能复现相同评测查询集。",
+            "en": "This section describes operations supported by the current code. The 15/15 result, timings, no_gain outcome, and two-run priorities above belong to the historical offline rules experiment, not a new frontend acceptance run. Frontend construction defaults to llm, whose queries, candidates, and timings may differ. Setting the query count to 15 does not reproduce the same evaluation workload."
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            {
+              "zh": "下载 commerce.sql，在个人构图工作台上传。记录系统返回的数据集 ID，打开构图面板。该 SQL 包含 regions、customers、orders 三张表。",
+              "en": "Download commerce.sql, upload it in the personal construction workspace, retain the returned dataset ID, and open the construction panel. The SQL contains regions, customers, and orders."
+            },
+            {
+              "zh": "在源数据预览中逐表查看：regions 有 2 行，customers 有 3 行，orders 有 5 行；观察 Carol 的 region_id、订单 103 的 amount 和订单 104 的 customer_id 为 NULL。这里展示的是源样本，尚未开始构图。",
+              "en": "Inspect the source preview table by table: regions has 2 rows, customers 3, and orders 5. Observe NULL in Carol’s region_id, order 103’s amount, and order 104’s customer_id. These are source samples; construction has not started."
+            },
+            {
+              "zh": "核对含义来源：主外键来自 SQL 结构声明；name、amount、status 等常见名称可能显示待核实的名称提示。该 SQL 没有业务字段注释，页面不会凭空补出币种或状态编码定义。",
+              "en": "Check description provenance: key meanings come from SQL declarations, while familiar names such as name, amount, and status may receive tentative hints. This SQL has no business-field comments, so the preview does not invent currency or status-code definitions."
+            },
+            {
+              "zh": "填写电商订单与区域分析的领域说明，按需要设置查询数并构图。等待 ready 后核对实际状态、保存版本及图结构；若失败，根据报告修正配置后重试，不把样本可见当作构图成功。",
+              "en": "Describe the commerce order and region analysis domain, set the query count as needed, and build. After ready, verify actual status, revision, and graph structure. If it fails, use the report to correct the setup; visible samples do not establish a successful build."
+            },
+            {
+              "zh": "进入分析会话，选择或加载这个已保存的构图结果，再核对活动图。需要在项目中复用时，先从项目导入已完成的个人构图，使用返回的新项目数据集 ID。",
+              "en": "In an analysis session, select or load the saved construction and verify the active graph. To reuse it in a project, import the completed personal construction first and use the new project dataset ID returned by that operation."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "可以从“订单 100 属于哪个客户和区域”开始展示关系，再解释为什么 Carol 和订单 104 仍保留在图中。需要查询全体订单金额或判断某个状态的业务含义时，应分别核对 NULL 的处理规则和业务数据字典。图中的一条路径能够说明记录之间的连接，不能单独证明业务因果。",
+            "en": "Begin by showing which customer and region are connected to order 100, then explain why Carol and order 104 remain in the graph. For totals, verify NULL handling; for business interpretations of status values, consult the data dictionary. A graph path shows how records are connected, not business causation."
+          }
+        },
+        {
+          "type": "links",
+          "items": [
+            {
+              "href": "/construction#source-preview",
+              "label": {
+                "zh": "源数据预览的范围与限制",
+                "en": "Source preview scope and limits"
+              }
+            },
+            {
+              "href": "/datasets#project-reuse",
+              "label": {
+                "zh": "导入项目与加载会话",
+                "en": "Project import and session loading"
+              }
+            },
+            {
+              "href": "/workspace",
+              "label": {
+                "zh": "工作台完整操作说明",
+                "en": "Complete workspace guide"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "reproduce",
       "title": {
         "zh": "复现实验",
@@ -949,8 +1023,8 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "下载下面三个文件。将 commerce.sql 和 commerce-options.json 放入项目根目录的 examples 目录，使用 Python 3.11 或更新版本，在项目根目录运行 CLI。commerce-result.json 是两次实际运行的测量摘要，可用于对照查询结果和策略变化。",
-            "en": "Download the three files below. Place commerce.sql and commerce-options.json in an examples directory at the project root, then run the CLI from the project root with Python 3.11 or newer. commerce-result.json summarizes both actual runs for comparing query results and strategy changes."
+            "zh": "下载下面三个文件，将 commerce.sql 和 commerce-options.json 放到项目根目录的 examples 目录。在已安装项目依赖的 Python 3.12 环境中，从项目根目录运行 CLI。commerce-result.json 保留两次历史实测的摘要，用于对照查询结果与策略变化；本页文档更新未重新测量这些数字。",
+            "en": "Download the three files below and place commerce.sql and commerce-options.json in the project-root examples directory. Run the CLI from the project root using Python 3.12 with project dependencies installed. commerce-result.json preserves the two historical measurement summaries for comparing query results and strategy changes; this documentation update did not rerun those measurements."
           }
         },
         {
@@ -1003,8 +1077,8 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "以上为本次 CLI 成功结果的主要字段；真实 CLI 还会输出你指定的结果目录。每次结果目录包含 graph.json 与 evolution-report.json。查看 history 判断候选是否接受；查看 experience.retrieved、candidate_priorities 和 policy_after 检查迁移与学习。",
-            "en": "These are the main fields of this run’s successful CLI response; the real CLI also prints the output directory you specify. Each output directory contains graph.json and evolution-report.json. Inspect history for candidate decisions and experience.retrieved, candidate_priorities, and policy_after for transfer and learning."
+            "zh": "上面的 JSON 摘录自历史 CLI 成功结果，不是要求每次都得到 accepted_candidates=0。当前 CLI 还返回 construction_kind 和指定的输出目录。每轮目录内包含 graph.json 与 evolution-report.json；先核对 ready 和 final 中的全部查询通过，再查看 history、comparison 与 experience。本例初图固定为 10 个行节点、6 条外键边；若当前实现接受派生实体或快捷路径，最终节点、边数会增加。",
+            "en": "The JSON above is an excerpt from the historical successful CLI output, not a requirement that every run return accepted_candidates=0. The current CLI also returns construction_kind and the requested output directory. Each run contains graph.json and evolution-report.json. First verify ready and all final queries passing, then inspect history, comparison, and experience. This source starts with 10 row nodes and 6 foreign-key edges; accepted derived entities or shortcut paths may increase final graph size."
           }
         },
         {

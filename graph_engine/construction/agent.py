@@ -79,6 +79,25 @@ oracle or changing the workload. Learn from failures and explore plausible
 alternatives when the retrieved strategy does not fit.
 """
 
+JOIN_DIRECTION_RULES = """Foreign-key declaration and traversal direction are separate.
+foreign_key always describes the declared child table/columns and parent
+ref_table/ref_columns. Do not swap these fields for reverse traversal.
+forward: child -> parent; the table bound to join.from must be foreign_key.table,
+and join.table must be foreign_key.ref_table.
+reverse: parent -> child; the table bound to join.from must be foreign_key.ref_table,
+and join.table must be foreign_key.table.
+For the declared key orders.customer_id -> customers.id, both examples below
+keep foreign_key:{table:'orders',columns:['customer_id'],ref_table:'customers',ref_columns:['id']}.
+Forward example: root:{table:'orders',alias:'t0'},
+joins:[{from:'t0',alias:'t1',table:'customers',direction:'forward',kind:'inner',
+foreign_key:{table:'orders',columns:['customer_id'],ref_table:'customers',ref_columns:['id']}}].
+Reverse example: root:{table:'customers',alias:'t0'},
+joins:[{from:'t0',alias:'t1',table:'orders',direction:'reverse',kind:'inner',
+foreign_key:{table:'orders',columns:['customer_id'],ref_table:'customers',ref_columns:['id']}}].
+For a multi-hop join, resolve join.from through its already-bound alias before
+choosing direction; it need not refer to the root table.
+"""
+
 QUERY_DSL = """Each query has id, question, root:{table,alias:'t0'},
 joins:[{from:'t0',alias:'t1',table:'parent',direction:'forward'|'reverse',
 kind:'inner'|'left',foreign_key:{table:'child',columns:['parent_id'],
@@ -88,12 +107,21 @@ filters:[{column:'t0.status',op:'eq'|'ne'|'lt'|'le'|'gt'|'ge'|'in'|'contains'|
 projection:[{column:'t0.name',as:'name'}],group_by:['t0.name'],
 aggregations:[{function:'count'|'sum'|'min'|'max'|'avg',column:'*' or 't0.amount',as:'total'}],
 order_by:[{column:'total',direction:'asc'|'desc'}],limit:integer_or_null.
-All columns are alias-qualified. FK joins must match declared source keys.
+Source columns in projection, filters, group_by and aggregations must be
+alias-qualified (for example t0.name); count(*) is the only '*' exception.
+order_by instead references output aliases, without a table prefix.
+Aggregations already add their results to the output: do NOT repeat an
+aggregation alias in projection, filters, group_by or another aggregation.
+For a count-only query use projection:[],group_by:[],
+aggregations:[{function:'count',column:'*',as:'cnt'}],
+order_by:[{column:'cnt',direction:'desc'}],limit:null.
+Filters apply to source rows before aggregation; this DSL has no HAVING.
+FK joins must match declared source keys.
 Group projections must occur in group_by. limit requires order_by covering ALL
 output aliases to make the result deterministic. Use null for no limit.
 Count(*) on empty groups is 0; sum/avg/min/max on no rows is null.
 Distinct questions must have distinct executable plans. Do not add SQL or answers.
-"""
+""" + JOIN_DIRECTION_RULES
 
 
 _PUBLIC_STAGE_MESSAGES = {
@@ -1080,6 +1108,24 @@ class TabularConstructionSubAgent:
                                     raise ValueError("Only inspect_schema and one set_workload are allowed before freezing")
                             except (ValueError, KeyError, TypeError) as exc:
                                 payload = {"success": False, "error": str(exc)[:4000]}
+                                if str(exc).startswith(("Invalid column reference:", "Unknown column reference:")):
+                                    payload["repair_hint"] = (
+                                        "projection, filters, group_by and aggregation inputs require real "
+                                        "alias.column source references, not output aliases. An aggregate's "
+                                        "'as' alias (for example cnt) is already an output; reference it only "
+                                        "in order_by. A count-only plan has projection=[] and group_by=[], "
+                                        "with aggregations=[{function:'count',column:'*',as:'cnt'}]. "
+                                        "There is no HAVING support. Preserve the requested semantics and "
+                                        "required coverage; you may reuse the supplied validated seed plans "
+                                        "unchanged and refine only their question wording."
+                                    )
+                                elif str(exc) in ("Join tables disagree with foreign-key direction",
+                                                  "Joins must use an explicitly declared source foreign key"):
+                                    payload["repair_hint"] = JOIN_DIRECTION_RULES + (
+                                        "Preserve the requested semantics and required coverage. You may "
+                                        "reuse the supplied validated seed plans unchanged and refine only "
+                                        "their question wording. Do not invent or reverse the declared key."
+                                    )
                                 report.setdefault("workload_validation_errors", []).append({"attempt": workload_attempt + 1, "error": payload["error"]})
                             respond(messages, call, payload)
                         save()
