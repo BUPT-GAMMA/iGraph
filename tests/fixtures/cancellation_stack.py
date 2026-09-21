@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 
 
 @asynccontextmanager
-async def cancellation_stack(root: Path, url: str, *, learning=False, training_epochs=100000, request_timeout=8):
+async def cancellation_stack(root: Path, url: str, *, learning=False, training_epochs=100000, request_timeout=30):
     from agno.db.sqlite import SqliteDb
     from agno.run import cancel
     from backend.config import BackendConfig
@@ -96,6 +96,10 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         mcp = FastMCP('iGraph cancellation contract', tools=list(await mcp_server.mcp.list_tools()))
         mcp.custom_route('/internal/capabilities', methods=['GET'])(mcp_server.control_capabilities)
         mcp_api = mcp.http_app(path='/mcp', transport='streamable-http')
+        # A first graph-info request starts an isolated Python/Torch worker.
+        # CI cold starts can exceed eight seconds before cancellation is even
+        # exercised. Keep this setup budget separate from the tests' bounded
+        # cancellation/exit assertions.
         config = replace(BackendConfig.from_env(), agent_runtime_url=url + '/runtime', graph_engine_url=url + '/graph',
                          request_timeout=request_timeout, stream_timeout=120, supported_ids_file=root / 'unused.txt')
         users = UserDirectory(config.users_file, config.supported_ids_file, 'admin')

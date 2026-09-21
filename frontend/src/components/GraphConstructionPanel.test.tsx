@@ -4,10 +4,11 @@ import { ApiError } from '../api';
 import type { ConstructionOperation, Dataset } from '../types';
 import { GraphConstructionPanel } from './GraphConstructionPanel';
 
-const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn() }));
 vi.mock('../api', async importOriginal => ({
   ...await importOriginal<typeof import('../api')>(),
   getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
+  getConstructionSourcePreview: mocks.source,
   previewConstruction: mocks.preview, commitConstruction: mocks.commit,
 }));
 vi.mock('./GraphWorkspace', () => ({ GraphWorkspace: ({ data, onSelect }: any) => <div aria-label="测试图画布">{data.nodes.map((node: any) => <button key={node.id} onClick={() => onSelect(node)}>图节点 {node.id}</button>)}<span>{data.edges.map((edge: any) => `${edge.source} → ${edge.target}`).join(', ')}</span></div> }));
@@ -35,12 +36,27 @@ beforeEach(() => {
   mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'ready', revision: 2, algorithm_available: false });
   mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph });
   mocks.schema.mockResolvedValue(schema);
+  mocks.source.mockResolvedValue({ dataset_id: 'd1', tables: [], warnings: [] });
   mocks.preview.mockResolvedValue(result);
   mocks.commit.mockResolvedValue({ ...result, status: 'ready' });
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('graph construction workflow', () => {
+  it('shows source samples before a graph exists and keeps preview failure independent from building', async () => {
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true });
+    mocks.source.mockResolvedValue({ dataset_id: 'd1', tables: [{ name: 'customers', columns: ['name'], column_types: {}, primary_key: [], foreign_keys: [], sample_rows: [{ name: '源表客户' }], row_count: 1, column_descriptions: {}, sample_truncated: false }], warnings: [] });
+    render(<GraphConstructionPanel dataset={{ ...dataset, status: 'source_ready' }} onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect(await screen.findByText('源表客户')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '开始构图' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(mocks.graph).not.toHaveBeenCalled();
+    expect(mocks.build).not.toHaveBeenCalled();
+    mocks.source.mockRejectedValue(new Error('preview temporarily unavailable'));
+    choose('文本分隔符（选填）', ';');
+    expect(await screen.findByRole('button', { name: '重试预览' })).toBeTruthy();
+    expect(mocks.source).toHaveBeenLastCalledWith(expect.objectContaining({ dataset_id: 'd1' }), expect.any(AbortSignal), ';');
+    expect((screen.getByRole('button', { name: '开始构图' }) as HTMLButtonElement).disabled).toBe(false);
+  });
   it('edits nested business columns while preserving raw schema property paths', async () => {
     const nested = { directed: true, nodes: [{ id: 'row1', type: 'Customer', properties: {
       table: 'customers', row_index: 0, data: { phone: '123', 'a.b': null, table: 'business' },

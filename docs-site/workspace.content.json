@@ -1,0 +1,435 @@
+{
+  "slug": "workspace",
+  "group": "start",
+  "title": {
+    "zh": "工作台操作指南",
+    "en": "Workspace guide"
+  },
+  "description": {
+    "zh": "按前端实际入口完成数据准备、构图、分析、训练和报告，并管理项目、记忆与技能。",
+    "en": "Use the actual UI controls to prepare data, construct graphs, analyze, train, and report, and manage projects, memory, and skills."
+  },
+  "sections": [
+    {
+      "id": "entry-points",
+      "title": {
+        "zh": "先选对入口",
+        "en": "Choose the right entry point"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "先登录，再决定要做什么。左侧“创建你的图”用于准备个人构图数据；“项目”组织共享同一批数据的会话；右侧“图工作台”展示当前会话的分析结果。这里介绍的是应用工作台，文档站本身不会接收数据或调用模型。",
+            "en": "Sign in, then choose the appropriate workflow. Create your graph prepares personal construction data; Projects organize conversations around datasets; the Graph workspace on the right shows the current conversation’s results. These are application features; this documentation site does not accept data or call models."
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            {
+              "zh": "入口",
+              "en": "Entry"
+            },
+            {
+              "zh": "适合做什么",
+              "en": "Purpose"
+            }
+          ],
+          "rows": [
+            [
+              {
+                "zh": "创建你的图",
+                "en": "Create your graph"
+              },
+              {
+                "zh": "上传 SQL / CSV / TXT，查看源数据、设置字段关系并构图。",
+                "en": "Upload SQL / CSV / TXT, inspect source data, configure relationships, and construct a graph."
+              }
+            ],
+            [
+              {
+                "zh": "项目 → 项目数据集",
+                "en": "Project → Project datasets"
+              },
+              {
+                "zh": "上传项目数据，或从已完成的个人构图结果导入独立副本。",
+                "en": "Upload project data or import an independent copy of a completed personal graph."
+              }
+            ],
+            [
+              {
+                "zh": "新建任务 / 项目内新建会话",
+                "en": "New task / New conversation in a project"
+              },
+              {
+                "zh": "选择数据集和模型，通过对话发起查询、分析或训练。",
+                "en": "Select a dataset and model, then request queries, analysis, or training in chat."
+              }
+            ],
+            [
+              {
+                "zh": "图工作台",
+                "en": "Graph workspace"
+              },
+              {
+                "zh": "查看概览、图谱、数据、机器学习结果和分析产物。",
+                "en": "Inspect Overview, Graph, Data, Machine learning, and Artifacts."
+              }
+            ],
+            [
+              {
+                "zh": "记忆 / 技能 / 帮助",
+                "en": "Memory / Skills / Help"
+              },
+              {
+                "zh": "管理可复用的偏好和操作流程，查询工具及模型能力。",
+                "en": "Manage reusable preferences and procedures, and browse available tools and models."
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "source-preview",
+      "title": {
+        "zh": "上传后先核对源数据",
+        "en": "Review the source before building"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "选择“上传数据源”后，点击数据源卡片上的“构图”进入面板，先核对样例，再点击“开始构图”。“源数据示例”显示原始输入的有限样例，与构图后的节点、边和图结构概览分开。构图前、执行中和完成后都可以查看。",
+            "en": "After Upload source, choose Build graph on the source card to open the panel, review the samples, and then start construction. Source data preview shows a bounded sample of the original input, separately from graph nodes, edges, and schema. It remains available before, during, and after construction."
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            {
+              "zh": "SQL：切换表查看字段、类型、主外键和最多 5 条样例。字段解释优先采用源注释，其次说明键关系；按名称推断的解释会明确标为待核对。预览不会执行上传的 SQL 脚本。",
+              "en": "SQL: switch tables to inspect columns, types, keys, and up to five sample rows. Explanations prefer source comments and then key relationships; name-based inference is explicitly marked for review. Preview does not execute an uploaded SQL script."
+            },
+            {
+              "zh": "CSV：选择一个或多个 CSV 都会进入表结构对话框，当前按逗号读取表头。核对表名、主键、外键和复合键各列的顺序，再逐表检查样例。未经过表组配置、通过其他上传入口建立的直接单 CSV 源，可在构图页选择分隔符；不要用这个选项修补已经配置错误的表头。",
+              "en": "CSV: selecting one or more CSV files opens the table-structure dialog, which currently reads comma-separated headers. Check names, keys, composite-key column order, and each table’s samples. A direct single-CSV source created through another upload entry without bundle schema can select a delimiter on the construction page; this does not repair a header already configured incorrectly."
+            },
+            {
+              "zh": "TXT：查看保留换行的原文片段，最多 4000 个字符。逐行记录适合保留原文结构；“智能抽取实体与关系”需要已配置的构图模型，完成后还要人工核对抽取含义。",
+              "en": "TXT: review an excerpt preserving line breaks, up to 4000 characters. Line-based records preserve text structure; intelligent entity and relation extraction requires a configured construction model and manual review of extracted meaning."
+            }
+          ]
+        },
+        {
+          "type": "note",
+          "title": {
+            "zh": "样例用于理解数据",
+            "en": "Samples help you understand the data"
+          },
+          "text": {
+            "zh": "每格较长内容会截断，超出预览限制的输入会给出提示。样例不能证明全表没有空值、重复值或异常值；“含义未知”也不表示数据无效，可能只是源文件没有说明。",
+            "en": "Long cells are truncated, and inputs beyond preview limits return a notice. Samples cannot prove the whole table has no nulls, duplicates, or outliers. Unknown meaning may simply indicate that the source contains no explanation."
+          }
+        },
+        {
+          "type": "cards",
+          "items": [
+            {
+              "slug": "construction",
+              "icon": "book",
+              "title": {
+                "zh": "构图流程与输入限制",
+                "en": "Construction and input limits"
+              },
+              "text": {
+                "zh": "查看文本模式、键关系、评测查询和构图报告的详细说明。",
+                "en": "Read about text modes, key relationships, evaluation queries, and construction reports."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "build-and-reuse",
+      "title": {
+        "zh": "构图、修改与项目复用",
+        "en": "Build, edit, and reuse a graph"
+      },
+      "blocks": [
+        {
+          "type": "list",
+          "items": [
+            {
+              "zh": "填写领域和构图参数，启动构图。状态会自动刷新；失败时阅读具体原因，修正输入或配置后再试。",
+              "en": "Set the domain and construction options, then start construction. Status refreshes automatically; on failure, read the reason and correct the input or configuration before retrying."
+            },
+            {
+              "zh": "完成后查看构图版本、规模和类型关系。图结构概览显示节点类型与关系类型，不等于完整实例图。完整构图报告保存在服务端或 CLI 输出目录，当前构图面板没有对应的报告下载按钮。",
+              "en": "After completion, inspect the revision, counts, and type relationships. The schema overview shows node and relation types rather than the full instance graph. Full construction reports are stored on the server or in CLI output; the current construction panel has no report-download button."
+            },
+            {
+              "zh": "需要修改图时，先选择操作并“应用并预览”，检查差异后再保存。预览不会自动提交；版本冲突时重新读取当前版本。",
+              "en": "To edit the graph, choose an operation and Apply and preview, inspect the changes, and then save. Preview does not commit automatically; reload the current revision after a conflict."
+            },
+            {
+              "zh": "在项目中“加载已构好的图”会导入独立副本。它有自己的 dataset_id 和后续版本，不会随个人源图的修改自动同步。",
+              "en": "Load a constructed graph imports an independent copy into a project. It has its own dataset_id and subsequent revisions, and does not automatically follow edits to the personal source."
+            },
+            {
+              "zh": "在目标项目中新建会话，选择导入的数据集。加载完成后核对当前图；数据集的 construction_revision 与会话 graph_version 是两套编号。",
+              "en": "Create a conversation in the target project and select the imported dataset. Confirm the active graph after loading; construction_revision and session graph_version are separate version numbers."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "inspect-and-query",
+      "title": {
+        "zh": "查看图、查找对象和追踪路径",
+        "en": "Inspect entities and trace paths"
+      },
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            {
+              "zh": "界面",
+              "en": "View"
+            },
+            {
+              "zh": "操作与核对方法",
+              "en": "Actions and checks"
+            }
+          ],
+          "rows": [
+            [
+              {
+                "zh": "概览",
+                "en": "Overview"
+              },
+              {
+                "zh": "核对图名、节点数、边数和方向。指标来自当前加载的图，不一定等于源表行数。",
+                "en": "Check the graph name, node count, edge count, and direction. Counts describe the loaded graph and may differ from source row counts."
+              }
+            ],
+            [
+              {
+                "zh": "图谱",
+                "en": "Graph"
+              },
+              {
+                "zh": "点击节点查看属性并复制 ID；可切换布局、过滤节点、调整显示或查看一跳/两跳邻域。局部邻域只基于已加载的数据。",
+                "en": "Select nodes to inspect properties and copy IDs. Change layout, filters, display, or one/two-hop neighborhoods. Local neighborhoods use only loaded data."
+              }
+            ],
+            [
+              {
+                "zh": "图探索",
+                "en": "Explore graph"
+              },
+              {
+                "zh": "将路径、邻居等查询发送到对话执行。核对工具实际返回，再解释高亮结果。",
+                "en": "Send path or neighborhood queries to chat. Inspect the actual tool result before interpreting highlights."
+              }
+            ],
+            [
+              {
+                "zh": "数据",
+                "en": "Data"
+              },
+              {
+                "zh": "核对当前图中的节点和边样例。这里不是构图页的原始 SQL / CSV 表预览。",
+                "en": "Inspect node and edge samples in the active graph. This is distinct from raw SQL / CSV source preview."
+              }
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "可以先问：“请确认当前图的方向、节点类型、关系类型和 graph_version，再根据我提供的两个真实节点 ID 计算最少跳数路径，显式使用 use_weight=false，并展示路径子图。”把 ID 换成从数据或节点详情中复制的值。路径遵循当前图的方向，边多不代表金额高或销量大。",
+            "en": "For example, ask: “Confirm graph direction, node types, relation types, and graph_version, then compute a minimum-hop path between the two real node IDs I provide, explicitly using use_weight=false, and display the path subgraph.” Replace IDs with values copied from data or node details. Paths follow graph direction; more edges do not imply higher revenue or sales."
+          }
+        },
+        {
+          "type": "note",
+          "title": {
+            "zh": "显示范围不等于全图范围",
+            "en": "Displayed scope is not whole-graph scope"
+          },
+          "text": {
+            "zh": "图中会显示实际加载的节点和边数。可视化可能截断，大图分区快照也不支持完整画布渲染；应根据查询返回的范围说明结论。搜索节点的语义检索还需要向量模型和索引，未配置时直接使用真实节点 ID。",
+            "en": "The view reports loaded node and edge counts. Visualizations may be truncated, and partitioned large-graph snapshots do not support full-canvas rendering; interpret results within the returned scope. Semantic entity search also needs an embedding model and index; use real node IDs when it is unavailable."
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "分区大图采用独立的快照和作业流程：先确认 get_large_graph_capabilities 返回的能力，通过 prepare_large_graph 准备分区版本，再用 run_large_graph_algorithm 提交计算，完成后读取结果文件。可以在对话中要求智能体按这些步骤执行。大图算法可能采用采样或近似实现，应按返回的范围和方法解释结果。",
+            "en": "Partitioned large graphs use a separate snapshot and job workflow: check get_large_graph_capabilities, prepare a partitioned version with prepare_large_graph, submit computation with run_large_graph_algorithm, and read the result artifacts after completion. Ask the agent to follow these steps in chat. Large-graph algorithms may use sampling or approximation; interpret the returned scope and method."
+          }
+        }
+      ]
+    },
+    {
+      "id": "training-results",
+      "title": {
+        "zh": "训练、推理与项目对比",
+        "en": "Training, inference, and project comparison"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "通过对话提交任务、模型和参数。节点分类需要合适的特征、标签和数据划分；没有标签的业务关系图可用于适用的预训练任务，不能直接宣称完成了分类评估。多图分类有单独的数据格式和加载流程。",
+            "en": "Submit the task, model, and parameters in chat. Node classification needs suitable features, labels, and splits. An unlabeled business graph can support applicable pretraining tasks but does not by itself provide classification evaluation. Multi-graph classification uses a separate data format and loading workflow."
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            {
+              "zh": "在“机器学习”页查看训练状态、损失与评估曲线，也可切换表格。已提交或仍在运行的作业还不能作为最终训练结果。",
+              "en": "Use Machine learning to view status, loss, evaluation curves, or tables. A submitted or running job is not a completed training result."
+            },
+            {
+              "zh": "项目会话中可在“当前会话”和“项目对比”间切换，查看任务、模型名称、轮次、指标和完成状态，并确认数据集。完整参数和 model_id 需要从对话中的工具返回核对，也可以请智能体读取。不同任务或划分的指标不能直接排名。",
+              "en": "In a project conversation, switch between Current conversation and Project comparison to inspect the task, model name, epochs, metrics, and completion state, and confirm the dataset. Check full parameters and model_id in the chat tool result, or ask the agent to retrieve them. Metrics from different tasks or splits cannot be ranked directly."
+            },
+            {
+              "zh": "训练完成后用真实 model_id 发起推理。返回样例条数不等于评估样本数；训练列表中某项指标为“-”时，不能当作 0，也不能用推理结果冒充训练时已记录的指标。",
+              "en": "Use the returned model_id for inference after training completes. Displayed row count is not evaluation sample count. A dash in the training list is not zero; inference metrics are separate from metrics recorded during training."
+            }
+          ]
+        },
+        {
+          "type": "cards",
+          "items": [
+            {
+              "slug": "graph-ml",
+              "icon": "book",
+              "title": {
+                "zh": "图学习任务与参数",
+                "en": "Graph learning tasks and parameters"
+              },
+              "text": {
+                "zh": "查看支持的模型、输入要求、训练协议和结果解释。",
+                "en": "Check supported models, input requirements, training protocols, and result interpretation."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reports-and-files",
+      "title": {
+        "zh": "查看报告与下载文件",
+        "en": "View reports and download files"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "“分析产物”页同时显示结构化报告和会话文件。报告卡片用于阅读分析内容；文件列表会列出上传文件，并为 Derived 中允许下载的结果文件提供下载按钮。对话中出现一段报告文字，不代表已经生成可下载文件。",
+            "en": "Artifacts shows structured reports and conversation files. Report cards display analysis content; the file list includes uploads and provides download buttons for downloadable results in Derived. Report text in chat does not itself mean a downloadable file has been created."
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            {
+              "zh": "要求报告列明数据来源、dataset_id、construction_revision、graph_version、所用工具和指标口径。结构化报告工具默认启用；服务端将 MCP_ENABLE_REPORTING_TOOLS 设为 false 时不可用。",
+              "en": "Ask the report to record the source, dataset_id, construction_revision, graph_version, tools, and metric definitions. The structured reporting tool is enabled by default and unavailable when the server sets MCP_ENABLE_REPORTING_TOOLS=false."
+            },
+            {
+              "zh": "需要下载时，明确要求生成 Markdown 等结果文件并发布到 Derived。文件生成后，打开“分析产物”中的“会话文件”，必要时点击“刷新文件”，再使用对应下载按钮。",
+              "en": "For a download, ask for a result file such as Markdown and publication to Derived. Open Conversation files under Artifacts, select Refresh files if needed, and use the file’s download button."
+            },
+            {
+              "zh": "检查报告中的数值是否来自完成的工具结果，区分原始事实、结构指标和模型推断。",
+              "en": "Verify that report numbers come from completed tool results and distinguish source facts, structural metrics, and model inferences."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "memory-skills-help",
+      "title": {
+        "zh": "管理记忆、技能与帮助",
+        "en": "Manage memory, skills, and help"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "左侧“记忆”用于查看和删除用户记忆，可搜索内容。若希望后续会话沿用某项偏好，应明确要求保存为用户记忆，再重新打开记忆面板核对。学习经验库与用户记忆采用不同存储方式，save_learning 的结果不一定出现在这个列表中。",
+            "en": "Memory in the sidebar lets you search, inspect, and delete user memories. Explicitly ask to save a preference as user memory if it should carry into future conversations, then reopen the memory panel to verify it. Learned knowledge uses separate storage, so save_learning results may not appear in this list."
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "“技能”显示已发现的操作流程及详情，可上传 .md 或 .zip 技能，并按权限审核；上传或生成成功不等于已经获准使用。只有符合来源和权限条件的技能可以删除。“帮助”支持按名称、任务或用途搜索图工具与图学习模型。",
+            "en": "Skills lists discovered procedures and their details, accepts .md or .zip uploads, and supports review according to permissions. Uploading or generating a skill does not automatically approve it for use; deletion depends on source and permissions. Help searches graph tools and models by name, task, or purpose."
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "一项可复用的偏好可以写成：“先核对源字段和主外键；报告注明数据来源和图版本；连接数反映当前图的全部关系结构，不能解释为销量或金额。”在新会话中询问已保存的偏好，可以检验是否成功读取。",
+            "en": "A reusable preference could be: “Check source columns and keys first; report the data source and graph versions; connection counts reflect all relationships in the current graph, not sales volume or revenue.” Ask about saved preferences in a new conversation to check retrieval."
+          }
+        }
+      ]
+    },
+    {
+      "id": "completion-and-recovery",
+      "title": {
+        "zh": "确认完成与处理异常",
+        "en": "Confirm completion and recover"
+      },
+      "blocks": [
+        {
+          "type": "list",
+          "items": [
+            {
+              "zh": "页面暂时没有新消息时，先读取会话状态或重新打开会话。后台任务可能仍在执行，不要因等待而反复提交同一写入。",
+              "en": "If messages pause, inspect status or reopen the conversation. Background work may still be running; do not repeatedly submit the same write."
+            },
+            {
+              "zh": "取消是否可用取决于服务端 capabilities。支持取消时，“正在停止”不等于已经停止，应等待终态；关闭页面也不等于取消。",
+              "en": "Cancellation depends on server capabilities. When supported, Stopping is not yet Stopped; wait for the terminal state. Closing the page does not cancel execution."
+            },
+            {
+              "zh": "一次完整分析应能核对数据来源、图版本、已完成查询、最终模型或报告文件。只显示进度、图像或模型生成的结论还不够。",
+              "en": "A complete analysis should identify its source, graph versions, completed queries, and final model or report files. Progress, an image, or model-generated prose alone is insufficient."
+            }
+          ]
+        },
+        {
+          "type": "cards",
+          "items": [
+            {
+              "slug": "troubleshooting",
+              "icon": "book",
+              "title": {
+                "zh": "排错与常见问题",
+                "en": "Troubleshooting"
+              },
+              "text": {
+                "zh": "按模型配置、构图、搜索和会话恢复定位问题。",
+                "en": "Diagnose model configuration, construction, search, and recovery issues."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
