@@ -320,6 +320,7 @@ export type ConstructionSourcePreviewTable = ConstructionSourceTable & {
     source: 'comment' | 'schema' | 'inferred' | 'unavailable';
   }>;
   sample_truncated: boolean;
+  values_truncated?: boolean;
 };
 export type ConstructionSourcePreview = {
   success: boolean;

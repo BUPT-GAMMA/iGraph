@@ -99,4 +99,27 @@ describe('source data preview', () => {
     await screen.findByRole('region', { name: '示例记录：customers' });
     expect(source).toHaveBeenLastCalledWith(expect.objectContaining({ dataset_id: 'd1' }), expect.any(AbortSignal), ';');
   });
+
+  it('does not claim additional records when only a cell is clipped', async () => {
+    source.mockResolvedValue({ ...preview, tables: [{ ...preview.tables[0], columns: ['name'],
+      sample_rows: [{ name: 'x'.repeat(300) + '…' }], row_count: 1,
+      sample_truncated: false, values_truncated: true }] });
+    render(<SourceDataPreview dataset={dataset} />);
+    expect(await screen.findByText(/源表共 1 行/)).toBeTruthy();
+    expect(screen.queryByText(/源表还有未展示的记录/)).toBeNull();
+  });
+
+  it('makes room for the completed graph and allows reopening its source samples', async () => {
+    const view = render(<SourceDataPreview dataset={dataset} />);
+    await screen.findByText('客户甲');
+    const details = view.container.querySelector('details')!;
+    expect(details.open).toBe(true);
+    view.rerender(<SourceDataPreview dataset={dataset} graphReady />);
+    expect(details.open).toBe(false);
+    fireEvent.click(details.querySelector('summary')!);
+    expect(details.open).toBe(true);
+    fireEvent.change(screen.getByLabelText('源数据表'), { target: { value: 'orders' } });
+    expect(details.open).toBe(true);
+    expect(screen.getByText('ORDER-001')).toBeTruthy();
+  });
 });
