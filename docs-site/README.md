@@ -83,6 +83,8 @@ After editing content, run `npm run build` and `npm run check`, then preview the
 
 `scripts/check.mjs` 检查四张表的基座模型、指标、数值范围、分组列数、来源记录，以及 HTML 和 Markdown 的最高分/次高分标记；并列成绩按不同分数排名。截图中的其他基座模型、Avg 和 TSA 均不录入结果页。
 
+实验表格采用两层表头、独立的基座模型与指标栏，以及排名图例。容器宽度不超过 820px 时，通过 NAG／TAG／TPG 分组选项查看对应列；宽屏和打印显示完整对比表。分组切换使用原生单选控件与 CSS，支持键盘操作，无需 JavaScript；Markdown 导出始终包含全部结果。
+
 ### 文字与术语
 
 - 以代码中的工具目录、路由、配置和前端入口为依据。更新功能说明时同步中英文；历史实验保留日期与原始测量，不改写成当前版本的性能保证。
