@@ -131,8 +131,8 @@ for(const locale of ['zh','en']) {
   const constructionHtml=html.match(/<table class="construction-results-table">([\s\S]*?)<\/table>/)?.[1];
   assert.ok(constructionHtml,'Missing construction comparison');
   for(const result of selectedConstruction) {
-    const expected=[result.name,result.realRecords.toLocaleString('en-US'),result.optimizationCostReduction.toFixed(2),result.holdoutCostReduction.toFixed(2)];
-    assert.ok(constructionHtml.includes(`<th scope="row">${result.name}<small`));
+    const expected=[result.name,result.optimizationCostReduction.toFixed(2),result.holdoutCostReduction.toFixed(2)];
+    assert.ok(constructionHtml.includes(`<th scope="row">${result.name}</th>`));
     for(const value of expected) {
       assert.ok(constructionHtml.includes(value),`Missing construction value in HTML: ${value}`);
       assert.ok(markdown.includes(value),`Missing construction value in Markdown: ${value}`);

@@ -85,16 +85,12 @@ main{min-width:0;padding:45px 0 0;max-width:820px;width:100%;margin:0 auto;outli
 .construction-results-table th,.construction-results-table td{padding:19px 22px;min-width:0;vertical-align:middle}
 .construction-results-table thead th{font-size:12px;white-space:normal;font-weight:500;color:var(--muted);line-height:1.6}
 .construction-results-table thead small{display:block;font-size:11px;font-weight:400;margin-top:3px}
-.construction-results-table th:first-child{text-align:left;width:27%}
-.construction-results-table .construction-record-count{width:21%;color:var(--muted)}
+.construction-results-table th:first-child{text-align:left;width:34%}
 .construction-results-table tbody th{background:transparent;border-top:1px solid var(--line);font-weight:500;font-size:13px}
 .construction-gain{font-size:19px;font-weight:600;letter-spacing:-.4px;white-space:nowrap}
 .construction-gain small{font-size:11px;font-weight:400;margin-left:3px;color:var(--muted)}
 .construction-results-table tbody td:last-child{background:color-mix(in srgb,var(--active) 45%,var(--bg));color:var(--accent)}
-.construction-mobile-count{display:none}
 @container(max-width:550px){
-  .construction-results-table .construction-record-count{display:none}
-  .construction-results-table .construction-mobile-count{display:block;font-size:10px;line-height:1.6;font-weight:400;color:var(--muted);margin-top:5px;white-space:normal}
   .construction-results-table th,.construction-results-table td{padding:17px 14px}
   .construction-results-table th:first-child{width:40%}
   .construction-gain{font-size:17px}
