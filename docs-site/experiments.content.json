@@ -804,8 +804,8 @@
         {
           "type": "paragraph",
           "text": {
-            "zh": "这里的百分数表示相对 PK/FK 规则构图的成本下降幅度，数值越大，改善越明显。真实记录数沿用原表统计，不包含虚拟记录。各行对应不同数据集，不作跨数据集的名次比较。",
-            "en": "Percentages indicate cost reduction relative to PK/FK rule-based construction; larger reductions are better. Real-record counts follow the source tables and exclude virtual records. Rows represent different datasets and are not ranked against one another."
+            "zh": "这里的百分数表示相对 PK/FK 规则构图的成本下降幅度，数值越大，改善越明显。各行对应不同数据集，不作跨数据集的名次比较。",
+            "en": "Percentages indicate cost reduction relative to PK/FK rule-based construction; larger reductions are better. Rows represent different datasets and are not ranked against one another."
           }
         },
         {
