@@ -32,6 +32,42 @@ beforeEach(() => {
   }));
 });
 afterEach(cleanup);
+it('loads older task pages, merges duplicates and retries a failed page', async () => {
+  vi.mocked(listSessions).mockResolvedValueOnce({ sessions: [{ session_id: 'A', title: 'Session A' }], next_cursor: 'page-2' })
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'old', title: 'Older task' }], next_cursor: null });
+  await mount();
+  fireEvent.click(screen.getByRole('button', { name: '加载更多任务' }));
+  fireEvent.click(await screen.findByRole('button', { name: '重试加载任务' }));
+  await screen.findByText('Older task');
+  expect(screen.getAllByText('Session A')).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: '加载更多任务' })).toBeNull();
+  expect(vi.mocked(listSessions).mock.calls.slice(1)).toEqual([[{ cursor: 'page-2' }], [{ cursor: 'page-2' }]]);
+});
+
+it('restores old pinned tasks separately without consuming the next-page cursor', async () => {
+  localStorage.setItem('igraph-pinned-sessions:v1:ux-user', JSON.stringify(['pinned-old', 'deleted']));
+  vi.mocked(listSessions).mockResolvedValueOnce({ sessions: [{ session_id: 'A', title: 'Session A' }], next_cursor: 'more' })
+    .mockResolvedValueOnce({ sessions: [{ session_id: 'pinned-old', title: 'Pinned older task' }] });
+  await mount();
+  expect(screen.getByText('Pinned older task')).toBeTruthy();
+  expect(vi.mocked(listSessions).mock.calls[1]).toEqual([{ ids: ['pinned-old', 'deleted'] }]);
+  expect(screen.getByRole('button', { name: '加载更多任务' })).toBeTruthy();
+});
+
+it('ignores a late page response after switching accounts', async () => {
+  let finish!: (value: any) => void;
+  vi.mocked(listSessions).mockResolvedValueOnce({ sessions: [{ session_id: 'A', title: 'Session A' }], next_cursor: 'old-account' })
+    .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+    .mockResolvedValue({ sessions: [] });
+  await mount();
+  fireEvent.click(screen.getByRole('button', { name: '加载更多任务' }));
+  act(() => { localStorage.setItem(USER_KEY, 'next-account'); window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, storageArea: localStorage })); });
+  await screen.findByRole('button', { name: '账户：next-account' });
+  await act(async () => finish({ sessions: [{ session_id: 'secret', title: 'Private older task' }] }));
+  expect(screen.queryByText('Private older task')).toBeNull();
+});
+
 async function mount() { const view = render(<App />); await screen.findByPlaceholderText(placeholder); return view; }
 function choose(container: HTMLElement, filename = 'data.pt') {
   fireEvent.change(container.querySelector('input[type="file"][accept*=".sql"]')!, { target: { files: [new File(['data'], filename)] } });

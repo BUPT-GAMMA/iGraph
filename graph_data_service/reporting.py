@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from typing import Any
+from graph_data_service.report_locale import label, language_code, serialize, text
 
 _REPORT_VERSION = "analysis_report.v2"
 _VALID_INTENTS = {"overview", "analysis", "diagnosis", "comparison", "custom"}
@@ -27,7 +28,7 @@ def build_analysis_report(
     if intent not in _VALID_INTENTS:
         intent = "analysis"
     goal = str(analysis_goal or "").strip() or _DEFAULT_GOAL
-    report_title = str(title or "").strip() or "图分析报告"
+    report_title = str(title or "").strip() or label("图分析报告")
 
     normalized_sources = _normalize_source_results(source_results)
     data_sources = _data_sources(normalized_sources)
@@ -53,7 +54,7 @@ def build_analysis_report(
             sections.append(built)
 
     if not sections:
-        limitations.append("当前可结构化展示的分析事实有限。")
+        limitations.append(text("Limited structured analysis is available.", "当前可结构化展示的分析事实有限。"))
         sections.append(_minimal_section(data_sources))
 
     report = {
@@ -61,13 +62,14 @@ def build_analysis_report(
         "id": _report_id(intent, goal, report_title, normalized_sources, normalized_options),
         "intent": intent,
         "title": report_title,
-        "subtitle": "规模、连接、关键节点与结构特征",
+        "subtitle": label("规模、连接、关键节点与结构特征"),
         "summary": _build_summary(sections),
         "sections": sections,
         "data_sources": data_sources,
         "limitations": limitations,
     }
-    return {"success": True, "report": _compact_report(report, normalized_options)}
+    report["language"] = normalized_options["language"]
+    return {"success": True, "report": serialize(_compact_report(report, normalized_options), normalized_options["language"])}
 
 
 def _normalize_options(options: dict | None) -> dict:
@@ -76,6 +78,7 @@ def _normalize_options(options: dict | None) -> dict:
         "top_k": _bounded_int(raw.get("top_k"), default=10, min_value=1, max_value=20),
         "max_sections": _bounded_int(raw.get("max_sections"), default=6, min_value=1, max_value=8),
         "include_narrative": _bool_value(raw.get("include_narrative"), default=True),
+        "language": language_code(raw.get("language")),
     }
 
 
@@ -89,9 +92,12 @@ def _source(source_results: dict, *names: str) -> dict | list | None:
 def _metric(label: str, value: Any, unit: str | None = None) -> dict | None:
     if value is None:
         return None
-    item = {"label": label, "value": _json_value(value)}
+    from graph_data_service.report_locale import label as ui_label
+    item = {"label": ui_label(label), "value": _json_value(value)}
+    if label in {"图方向", "边权重", "节点特征", "弱连通", "强连通", "连通"}:
+        item["value"] = ui_label(value)
     if unit:
-        item["unit"] = unit
+        item["unit"] = ui_label(unit)
     return item
 
 
@@ -107,16 +113,16 @@ def _bar_chart(
     for row in rows[:top_k]:
         if not isinstance(row, dict):
             continue
-        label = row.get(label_key)
+        row_label = row.get(label_key)
         value = _number(row.get(value_key))
-        if label is None or value is None:
+        if row_label is None or value is None:
             continue
-        data.append({"label": str(label), "value": value})
+        data.append({"label": str(row_label), "value": value})
     if not data:
         return None
-    chart = {"type": "bar", "title": title, "data": data}
+    chart = {"type": "bar", "title": label(title), "data": data}
     if unit:
-        chart["unit"] = unit
+        chart["unit"] = label(unit)
     return chart
 
 
@@ -129,7 +135,7 @@ def _table(title: str, rows: list[dict], columns: list[dict], top_k: int = 10) -
         out_rows.append({key: _json_value(row.get(key)) for key in keys if key in row})
     if not out_rows:
         return None
-    return {"title": title, "columns": columns, "rows": out_rows}
+    return {"title": label(title), "columns": [{**column, "label": label(column.get("label"))} for column in columns], "rows": out_rows}
 
 
 def _build_overview_section(source_results: dict, options: dict) -> dict | None:
@@ -161,7 +167,7 @@ def _build_overview_section(source_results: dict, options: dict) -> dict | None:
 
     limitations = []
     if info.get("num_nodes") is None or info.get("num_edges") is None:
-        limitations.append("结构概览缺少节点数或边数。")
+        limitations.append(text("Node or edge counts are unavailable.", "结构概览缺少节点数或边数。"))
     return _section(
         section_id="structure-overview",
         title="结构概览",
@@ -180,13 +186,13 @@ def _result_summary(result: Any) -> dict | None:
 
 def _centrality_label(value: Any) -> str:
     name = str(value or "centrality").strip().lower()
-    return {
+    return label({
         "pagerank": "PageRank",
         "degree": "度中心性",
         "betweenness": "中介中心性",
         "closeness": "接近中心性",
         "eigenvector": "特征向量中心性",
-    }.get(name, str(value or "中心性"))
+    }.get(name, str(value or "中心性")))
 
 
 def _build_connection_section(source_results: dict, options: dict) -> dict | None:
@@ -244,27 +250,27 @@ def _build_connection_section(source_results: dict, options: dict) -> dict | Non
             item = {"label": str(row["node"]), "value": value}
             score = centrality_by_node.get(str(row["node"]))
             if score is not None:
-                item["detail"] = f"{centrality_name} {_json_value(score)}"
+                item["detail"] = text("{name} {score}", "{name} {score}", name=centrality_name, score=_json_value(score), ui=True)
             chart_data.append(item)
         if chart_data:
             chart = {
                 "type": "bar",
-                "title": "关键节点：连接规模与全局影响力" if centrality_by_node else "高连接节点",
+                "title": label("关键节点：连接规模与全局影响力" if centrality_by_node else "高连接节点"),
                 "data": chart_data,
-                "unit": "总度" if directed else "度",
+                "unit": label("总度" if directed else "度"),
             }
     elif top_centrality:
-        chart = _bar_chart(f"{centrality_name} 排名", top_centrality, "node", "value", unit=centrality_name, top_k=options["top_k"])
+        chart = _bar_chart(text("{name} ranking", "{name} 排名", name=centrality_name, ui=True), top_centrality, "node", "value", unit=centrality_name, top_k=options["top_k"])
 
     if degree and centrality:
-        summary = f"条形长度表示{'总度' if directed else '度'}，右侧同时给出 {centrality_name}。"
+        summary = text("Bars show {degree}; {name} is shown alongside.", "条形长度表示{degree}，右侧同时给出 {name}。", degree=label('总度' if directed else '度'), name=centrality_name)
     elif degree:
-        summary = f"用{'总度' if directed else '度'}对比节点的连接规模。"
+        summary = text("Node connections compared by {degree}.", "用{degree}对比节点的连接规模。", degree=label('总度' if directed else '度'))
     else:
-        summary = f"按 {centrality_name} 对关键节点排序。"
+        summary = text("Key nodes ranked by {name}.", "按 {name} 对关键节点排序。", name=centrality_name)
     limitations = []
     if (degree and degree.get("truncated")) or (centrality and centrality.get("truncated")):
-        limitations.append(f"仅展示排名前 {options['top_k']} 的节点。")
+        limitations.append(text("Only the top {count} nodes are shown.", "仅展示排名前 {count} 的节点。", count=options['top_k']))
     return _section(
         section_id="connections-and-key-nodes",
         title="连接与关键节点",
@@ -296,9 +302,10 @@ def _build_connectivity_section(source_results: dict, options: dict) -> dict | N
     ])
     component = (weak or strong) if directed else connected
     if component.get("count") is not None:
-        summary = f"图包含 {component['count']} 个{'弱连通' if directed and weak else '强连通' if directed else '连通'}分量，最大分量有 {component.get('largest_size', 0)} 个节点。"
+        kind = text("weakly connected" if directed and weak else "strongly connected" if directed else "connected", '弱连通' if directed and weak else '强连通' if directed else '连通')
+        summary = text("{count} {kind} components; the largest has {largest} nodes.", "图包含 {count} 个{kind}分量，最大分量有 {largest} 个节点。", count=component['count'], kind=kind, largest=component.get('largest_size', 0))
     else:
-        summary = "图的连通状态和分量规模。"
+        summary = text("Connectivity and component sizes.", "图的连通状态和分量规模。")
     return _section(
         section_id="connectivity",
         title="连通性",
@@ -315,7 +322,7 @@ def _build_global_metrics_section(source_results: dict, options: dict) -> dict |
     return _section(
         section_id="global-metrics",
         title="整体结构指标",
-        summary="图的稀疏程度、路径距离、聚集性与连接倾向。",
+        summary=text("Sparsity, path distances, clustering and connection patterns.", "图的稀疏程度、路径距离、聚集性与连接倾向。"),
         metrics=_compact_list(metrics),
     )
 
@@ -333,13 +340,13 @@ def _build_structure_sections(source_results: dict, options: dict) -> list[dict]
         metrics.extend(_stats_metrics("规模", result.get("size_stats") if isinstance(result.get("size_stats"), dict) else {}))
         limitations = []
         if result.get("communities_truncated"):
-            limitations.append("结构分组列表已按展示上限截断。")
+            limitations.append(text("The community list is limited to the display limit.", "结构分组列表已按展示上限截断。"))
         if any(isinstance(c, dict) and c.get("nodes_truncated") for c in communities):
-            limitations.append("部分结构分组的节点预览已截断。")
+            limitations.append(text("Some community node previews are truncated.", "部分结构分组的节点预览已截断。"))
         sections.append(_section(
             section_id="structure-patterns",
             title="社区结构",
-            summary=f"识别到 {result.get('num_communities', '-')} 个社区，模块度为 {result.get('modularity', '-')}。",
+            summary=text("{count} communities detected; modularity {modularity}.", "识别到 {count} 个社区，模块度为 {modularity}。", count=result.get('num_communities', '-'), modularity=result.get('modularity', '-')),
             metrics=metrics,
             charts=_compact_list([chart]),
             limitations=limitations,
@@ -371,7 +378,7 @@ def _build_supplemental_section(source_results: dict, options: dict) -> dict | N
     return _section(
         section_id="supplemental-results",
         title="补充分析结果",
-        summary="其他可展示的补充事实。",
+        summary=text("Additional available facts.", "其他可展示的补充事实。"),
         tables=[table],
     )
 
@@ -382,7 +389,7 @@ def _compact_report(report: dict, options: dict) -> dict:
     sections = report.get("sections") if isinstance(report.get("sections"), list) else []
     root_limitations = list(report.get("limitations") or [])
     if len(sections) > max_sections:
-        root_limitations.append(f"报告 section 已限制为前 {max_sections} 个。")
+        root_limitations.append(text("Only the first {count} report sections are shown.", "报告 section 已限制为前 {count} 个。", count=max_sections))
         sections = sections[:max_sections]
     compacted_sections = []
     for section in sections:
@@ -434,7 +441,7 @@ def _section(
 ) -> dict:
     return {
         "id": section_id,
-        "title": title,
+        "title": label(title),
         "summary": summary,
         "metrics": metrics or [],
         "charts": charts or [],
@@ -448,13 +455,13 @@ def _minimal_section(data_sources: list[str]) -> dict:
     return _section(
         section_id="available-results",
         title="可用分析结果",
-        summary="当前可展示的结构化内容较少，建议补充图规模、连接分布或关键节点等分析结果。",
+        summary=text("Few structured results are available. Add graph size, degree or key-node analysis.", "当前可展示的结构化内容较少，建议补充图规模、连接分布或关键节点等分析结果。"),
         tables=[{
-            "title": "当前状态",
-            "columns": [{"key": "item", "label": "内容"}, {"key": "value", "label": "说明"}],
+            "title": label("当前状态"),
+            "columns": [{"key": "item", "label": label("内容")}, {"key": "value", "label": label("说明")}],
             "rows": [{
-                "item": "可展示事实",
-                "value": f"已识别到 {len(data_sources)} 类分析结果，但缺少可直接图表化的统计字段。",
+                "item": label("可展示事实"),
+                "value": text("{count} result types found, without chartable statistics.", "已识别到 {count} 类分析结果，但缺少可直接图表化的统计字段。", count=len(data_sources)),
             }],
         }],
     )
@@ -469,7 +476,7 @@ def _build_summary(sections: list[dict]) -> str:
     parts = []
     nodes, edges = overview_metrics.get("节点数"), overview_metrics.get("边数")
     if isinstance(nodes, (int, float)) and isinstance(edges, (int, float)):
-        parts.append(f"{nodes:,} 个节点 · {edges:,} 条边")
+        parts.append(text("{nodes:,} nodes · {edges:,} edges", "{nodes:,} 个节点 · {edges:,} 条边", nodes=nodes, edges=edges))
     connection = by_id.get("connections-and-key-nodes", {})
     connection_metrics = {
         str(item.get("label")): item.get("value")
@@ -477,18 +484,19 @@ def _build_summary(sections: list[dict]) -> str:
     }
     average_degree = connection_metrics.get("平均总度", connection_metrics.get("平均度"))
     if average_degree is not None:
-        parts.append(f"平均度 {average_degree}")
+        parts.append(text("Mean degree {degree}", "平均度 {degree}", degree=average_degree))
     community = by_id.get("structure-patterns", {})
     community_metrics = {
         str(item.get("label")): item.get("value")
         for item in community.get("metrics", []) if isinstance(item, dict)
     }
     if community_metrics.get("社区数") is not None:
-        parts.append(f"{community_metrics['社区数']} 个社区")
+        parts.append(text("{count} communities", "{count} 个社区", count=community_metrics['社区数']))
     if parts:
-        return "；".join(parts) + "。"
+        return text("; ".join(serialize(parts, 'en')) + ".", "；".join(parts) + "。")
     section_titles = "、".join(str(section.get("title")) for section in sections[:3] if section.get("title"))
-    return f"报告包含{section_titles}。" if section_titles else "当前可展示的分析事实有限。"
+    english_titles = ", ".join(serialize([section['title'] for section in sections[:3] if section.get('title')], 'en'))
+    return text("Report includes {titles}.", "报告包含{chinese_titles}。", titles=english_titles, chinese_titles=section_titles) if section_titles else text("Limited analysis facts are available.", "当前可展示的分析事实有限。")
 
 
 def _overview_summary(info: dict) -> str:
@@ -496,9 +504,9 @@ def _overview_summary(info: dict) -> str:
     m = info.get("num_edges")
     directed = info.get("directed")
     if n is not None and m is not None:
-        kind = "有向图" if directed is True else "无向图" if directed is False else "图"
-        return f"当前{kind}包含 {n} 个节点和 {m} 条边。"
-    return "当前图的基础结构信息摘要。"
+        kind = text("directed graph" if directed is True else "undirected graph" if directed is False else "graph", "有向图" if directed is True else "无向图" if directed is False else "图")
+        return text("The {kind} has {nodes} nodes and {edges} edges.", "当前{kind}包含 {nodes} 个节点和 {edges} 条边。", kind=kind, nodes=n, edges=m)
+    return text("Basic structure of the current graph.", "当前图的基础结构信息摘要。")
 
 
 def _stats_metrics(prefix: str, stats: dict) -> list[dict]:

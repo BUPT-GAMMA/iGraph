@@ -373,11 +373,14 @@ class TextProtocolDriver(ProtocolDriver):
         tool_specs: List[dict],
         *,
         system_prompt: str,
+        language_prompt: str = "",
         memory_prompt: str = "",
         skill_prompt: str = "",
         mode_prompt: str = "",
     ) -> List[dict]:
         prefix: List[dict] = [{"role": "system", "content": system_prompt}]
+        if language_prompt:
+            prefix.append({"role": "system", "content": language_prompt})
         if mode_prompt:
             prefix.append({"role": "system", "content": mode_prompt})
         if memory_prompt:

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ChatPane, sanitizeAssistantContent } from './ChatPane';
+import { ChatPane } from './ChatPane';
 import { Composer } from './Composer';
 
 const noop = () => undefined;
@@ -36,12 +36,31 @@ const approval = {
 };
 
 describe('ConversationInputArea', () => {
-  it('preserves letters and code when cleaning assistant metadata', () => {
-    for (const value of ['Result: test.', 'weight: 10', 'correct?', 'print: result;', '节点数：3']) {
-      expect(sanitizeAssistantContent(value)).toBe(value);
-    }
-    expect(sanitizeAssistantContent('test \t.')).toBe('test.');
-    expect(sanitizeAssistantContent('结果（job_id: lg_test）。')).toBe('结果。');
+  it.each([
+    'check_status(job_id="job-7")',
+    'resume(run_id="r1", session_id="s1")',
+    'print("test \t.")',
+    '结果（job_id: lg_test）。',
+    'pending(request_id="partial',
+  ])('preserves code and incomplete streamed parameters: %s', async code => {
+    const copy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+    const content = `\`\`\`python\n${code}\n\`\`\``;
+    const { container } = render(<ChatPane {...baseChatProps} messages={[
+      { id: 'a', role: 'assistant', content, run_status: 'completed' },
+    ]} />);
+    expect(container.querySelector('pre code')?.textContent).toBe(`${code}\n`);
+    fireEvent.click(screen.getByRole('button', { name: '复制' }));
+    await waitFor(() => expect(copy).toHaveBeenCalledWith(content));
+  });
+
+  it('preserves inline code and an unfinished fenced code block while streaming', () => {
+    const content = 'Call `check_status(job_id="job-7")` first.\n\n```python\nresume(run_id="partial';
+    const { container } = render(<ChatPane {...baseChatProps} loading messages={[
+      { id: 'a', role: 'assistant', content, streaming: true },
+    ]} />);
+    expect(container.querySelector('p code')?.textContent).toBe('check_status(job_id="job-7")');
+    expect(container.querySelector('pre code')?.textContent).toBe('resume(run_id="partial\n');
   });
 
   it('uses a project-aware heading only for project drafts', () => {
@@ -199,17 +218,17 @@ describe('ConversationInputArea', () => {
     expect(screen.getByText('模型')).toBeTruthy();
     expect(screen.queryByText(/每家精选一款/)).toBeNull();
     const modelGroup = screen.getByRole('group', { name: '可用模型' });
-    expect(within(modelGroup).getAllByRole('button')).toHaveLength(5);
+    expect(within(modelGroup).getAllByRole('button')).toHaveLength(10);
     expect(within(modelGroup).getByRole('button', { name: 'qwen3.6-plus' }).getAttribute('aria-pressed')).toBe('true');
-    expect(within(modelGroup).queryByRole('button', { name: 'qwen3.7-max' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'qwen3.7-max' })).toBeTruthy();
     expect(within(modelGroup).getByRole('button', { name: 'claude-opus-4-6' }).querySelector('[data-model-provider="anthropic"]')).toBeTruthy();
-    expect(within(modelGroup).queryByRole('button', { name: 'claude-sonnet-4-6' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'claude-sonnet-4-6' })).toBeTruthy();
     expect(within(modelGroup).getByRole('button', { name: 'deepseek-v4-pro' }).querySelector('[data-model-provider="deepseek"]')).toBeTruthy();
-    expect(within(modelGroup).queryByRole('button', { name: 'deepseek-v4-flash' })).toBeNull();
-    expect(within(modelGroup).queryByRole('button', { name: 'deepseek-v4-lite' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'deepseek-v4-flash' })).toBeTruthy();
+    expect(within(modelGroup).getByRole('button', { name: 'deepseek-v4-lite' })).toBeTruthy();
     expect(within(modelGroup).getByRole('button', { name: 'doubao-seed-2-0-pro-260215' }).querySelector('[data-model-provider="doubao"]')).toBeTruthy();
     expect(within(modelGroup).getByRole('button', { name: 'gpt-5-4' }).querySelector('[data-model-provider="openai"]')).toBeTruthy();
-    expect(within(modelGroup).queryByRole('button', { name: 'gpt-5-2' })).toBeNull();
+    expect(within(modelGroup).getByRole('button', { name: 'gpt-5-2' })).toBeTruthy();
   });
 
   it('terminates despite upload and draft gates, and allows idempotent retry when unconfirmed', () => {
@@ -317,7 +336,7 @@ describe('ConversationInputArea', () => {
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('preserved draft');
   });
 
-  it('hides internal runtime metadata annotations from assistant messages only', () => {
+  it('preserves authored explanations while keeping structured runtime IDs out of the body', () => {
     const { container } = render(<ChatPane
       {...baseChatProps}
       messages={[
@@ -325,6 +344,7 @@ describe('ConversationInputArea', () => {
         {
           id: 'assistant-1',
           role: 'assistant',
+          run_id: 'internal-run-not-part-of-content',
           content: '这是一个非常大的图，当前已通过分区快照方式加载（graph_version: 1）。分区数量（16 个）保持可见。',
         },
       ]}
@@ -333,9 +353,9 @@ describe('ConversationInputArea', () => {
     const userRow = container.querySelector('.message-row.user');
     const assistantRow = container.querySelector('.message-row.assistant');
     expect(userRow?.textContent).toContain('graph_version: 1');
-    expect(assistantRow?.textContent).toContain('当前已通过分区快照方式加载。');
+    expect(assistantRow?.textContent).toContain('当前已通过分区快照方式加载（graph_version: 1）。');
     expect(assistantRow?.textContent).toContain('分区数量（16 个）保持可见。');
-    expect(assistantRow?.textContent).not.toContain('graph_version');
+    expect(assistantRow?.textContent).not.toContain('internal-run-not-part-of-content');
   });
 
   it('shows a jump-to-latest button without interrupting a user who scrolled up', () => {

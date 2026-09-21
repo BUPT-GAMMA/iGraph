@@ -21,9 +21,10 @@ export type GraphCanvasState = {
   topologySignature: string;
   layout: Props['layout'] | '';
   appliedFitVersion: number;
+  appliedFocusId: string;
 };
 export function createGraphCanvasState(): GraphCanvasState {
-  return { camera: d3.zoomIdentity, positions: new Map(), topologySignature: '', layout: '', appliedFitVersion: 0 };
+  return { camera: d3.zoomIdentity, positions: new Map(), topologySignature: '', layout: '', appliedFitVersion: 0, appliedFocusId: '' };
 }
 export function GraphCanvas(props: Props) {
   const { t } = useI18n();
@@ -179,6 +180,8 @@ export function GraphCanvas(props: Props) {
         zooming = false; svg.classed('is-zooming', false); schedulePaint();
       });
     svg.call(zoom).call(zoom.transform, state.camera).on('dblclick.zoom', null).on('click.clear', event => { if (event.target === ref.current) { hovered = ''; latest.current.onSelect(null); schedulePaint(); } });
+    // Restore the viewport in the same render as the nodes, without an identity-camera frame.
+    viewport.attr('transform', state.camera.toString());
     const simulation = d3.forceSimulation(nodes).alphaDecay(.045).velocityDecay(.45)
       .force('link', d3.forceLink<Node, any>(edges).id(n => n.id).distance(p.schema ? 115 : 65))
       .force('charge', d3.forceManyBody().strength(p.schema ? -300 : -115).distanceMax(550))
@@ -217,8 +220,9 @@ export function GraphCanvas(props: Props) {
       // Reserve enough space for either size mode without restarting physics.
       renderFrame(); paint();
     }
-    function fit() {
+    function fit(manual = true) {
       if (!nodes.length) return;
+      if (manual) interacted = true;
       let x0 = Math.min(...nodes.map(n => (n.x || 0) - radius(n))) - 30, x1 = Math.max(...nodes.map(n => (n.x || 0) + radius(n))) + 30;
       let y0 = Math.min(...nodes.map(n => (n.y || 0) - radius(n))) - 30, y1 = Math.max(...nodes.map(n => (n.y || 0) + radius(n))) + 40;
       // Schema loops and relationship labels extend beyond the node circles.
@@ -234,10 +238,14 @@ export function GraphCanvas(props: Props) {
       svg.call(zoom.transform, d3.zoomIdentity.translate(width / 2 - k * (x0 + x1) / 2, height / 2 - k * (y0 + y1) / 2).scale(k));
     }
     function focus() {
-      const n = byId.get(latest.current.focusId); if (!n) return;
+      const focusId = latest.current.focusId;
+      if (!focusId) { state.appliedFocusId = ''; return; }
+      if (state.appliedFocusId === focusId) return;
+      const n = byId.get(focusId); if (!n) return;
       const k = Math.max(.8, state.camera.k);
       svg.call(zoom.transform, d3.zoomIdentity.translate(width / 2 - (n.x || 0) * k, height / 2 - (n.y || 0) * k).scale(k));
       interacted = true;
+      state.appliedFocusId = focusId;
     }
     node.on('pointerenter', (_, n) => { if (!dragging && !zooming) { hovered = n.id; schedulePaint(); } })
       .on('pointerleave', () => { if (!dragging && !zooming) { hovered = ''; schedulePaint(); } })
@@ -248,7 +256,7 @@ export function GraphCanvas(props: Props) {
         .on('drag', (event, n) => { if (p.layout !== 'circle') simulation.alphaTarget(.15).restart(); n.fx = n.x = event.x; n.fy = n.y = event.y; renderFrame(); })
         .on('end', (_, n) => { dragging = false; hovered = ''; simulation.alphaTarget(0); n.fx = null; n.fy = null; schedulePaint(); }));
     if (p.layout === 'circle') {
-      nodes.forEach((n, i) => { const angle = i * 2 * Math.PI / Math.max(nodes.length, 1), r = Math.min(width, height) * .34; n.x = width / 2 + Math.cos(angle) * r; n.y = height / 2 + Math.sin(angle) * r; });
+      if (!canResume) nodes.forEach((n, i) => { const angle = i * 2 * Math.PI / Math.max(nodes.length, 1), r = Math.min(width, height) * .34; n.x = width / 2 + Math.cos(angle) * r; n.y = height / 2 + Math.sin(angle) * r; });
       simulation.stop();
     }
     const fresh = !nodes.some(node => state.positions.has(node.id));
@@ -259,11 +267,12 @@ export function GraphCanvas(props: Props) {
       renderFrame();
       resizeNodes();
     } else {
-      simulation.on('tick', renderFrame).on('end', () => { if (!interacted && fresh) fit(); paint(); });
-      simulation.tick(); resizeNodes();
-      if (fresh) fit();
+      simulation.on('tick', renderFrame).on('end', () => { if (!interacted && fresh) fit(false); paint(); });
+      if (p.layout !== 'circle') simulation.tick();
+      resizeNodes();
+      if (fresh) fit(false);
     }
-    if (p.focusId) focus();
+    focus();
     controller.current = { paint: schedulePaint, fit, focus, resizeNodes };
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
       width = host.clientWidth || width; height = host.clientHeight || height;
@@ -276,10 +285,10 @@ export function GraphCanvas(props: Props) {
   useEffect(() => { controller.current?.paint(); }, [props.selected, props.labels, props.edgeWidth, props.preview.matches]);
   useEffect(() => { controller.current?.resizeNodes(); }, [props.sizeMode]);
   useEffect(() => {
-    if (!props.fitVersion || state.appliedFitVersion === props.fitVersion) return;
+    if (!controller.current || !props.fitVersion || state.appliedFitVersion === props.fitVersion) return;
     state.appliedFitVersion = props.fitVersion;
-    controller.current?.fit();
-  }, [props.fitVersion, state]);
+    controller.current.fit();
+  }, [props.fitVersion, props.active, signature, props.layout, state]);
   useEffect(() => { controller.current?.focus(); }, [props.focusId]);
   return <svg ref={ref} aria-label={props.schema
     ? t('Graph Schema canvas. Drag to pan and use the mouse wheel to zoom.', 'Graph Schema 画布，可拖动平移并使用滚轮缩放')

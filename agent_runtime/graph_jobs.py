@@ -120,8 +120,10 @@ class GraphMCPTools(OwnedMCPTools):
         *args,
         job_poll_interval_seconds: float = 1.0,
         job_wait_timeout_seconds: float = 0.0,
+        response_language: str = "Auto",
         **kwargs,
     ):
+        self.response_language = response_language
         # These are runtime policy knobs, not Agno Toolkit arguments.  Consume
         # them here so they cannot leak into Toolkit.__init__.
         self.job_poll_interval_seconds = max(
@@ -139,6 +141,10 @@ class GraphMCPTools(OwnedMCPTools):
 
     def _completed_entrypoint(self, entrypoint, tool_name=""):
         async def invoke(_agno_run_context=None, _agno_agent=None, _agno_team=None, **arguments):
+            if tool_name == "create_analysis_report":
+                # The factory locks this once per turn; tool/model output cannot
+                # change the report language midway through the response.
+                arguments["options"] = {**(arguments.get("options") or {}), "language": self.response_language}
             identity = dict(_agno_run_context=_agno_run_context, _agno_agent=_agno_agent, _agno_team=_agno_team)
             result = await entrypoint(**identity, **arguments)
 

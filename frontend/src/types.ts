@@ -66,6 +66,8 @@ export type GraphSnapshot = {
 };
 
 export type Message = {
+  model_snapshot?: { config_id: string; revision: number; model_id: string; display_name: string; provider: string } | null;
+  history_compacted?: boolean;
   run_status?: string;
   regenerate_of?: string | null;
   run_id?: string;

@@ -184,6 +184,25 @@ describe('docked panel controls', () => {
     expect(screen.getAllByText('会话一')).toHaveLength(1);
   });
 
+  it('uses a spinner for active replies and a blue dot for unread completions', () => {
+    const sessions = [{ session_id: 'running', title: '进行中' }, { session_id: 'done', title: '后台完成' }];
+    const { container, rerender } = render(<Sidebar {...sidebarProps} sessions={sessions}
+      runStatuses={{ running: 'streaming', done: 'completed' }} unreadCompletions={{ done: true }}
+      collapsed={false} onCollapse={noop} />);
+
+    const running = screen.getByLabelText('正在运行');
+    expect(running.classList.contains('is-running')).toBe(true);
+    expect(running.classList.contains('is-unread')).toBe(false);
+    const completed = screen.getByLabelText('回复已完成');
+    expect(completed.classList.contains('is-unread')).toBe(true);
+    expect(container.querySelectorAll('.session-run-indicator')).toHaveLength(2);
+
+    rerender(<Sidebar {...sidebarProps} sessions={sessions} activeId="done"
+      runStatuses={{ running: 'streaming', done: 'completed' }} unreadCompletions={{}}
+      collapsed={false} onCollapse={noop} />);
+    expect(screen.queryByLabelText('回复已完成')).toBeNull();
+  });
+
   it('creates tasks in the focused project and keeps the recent-task action independent', () => {
     const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
     const projectSession = { session_id: 'session-1', project_id: 'project-1', title: '项目会话' };
@@ -405,7 +424,7 @@ describe('docked panel controls', () => {
       onClose={noop}
     />);
 
-    expect(screen.getByText('已预处理 · 10,000,000 nodes · 100,000,000 edges')).toBeTruthy();
+    expect(screen.getByText('已预处理 · 10,000,000 个节点 · 100,000,000 条边')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '使用' }));
     expect(onUseServer).toHaveBeenCalledOnce();
   });

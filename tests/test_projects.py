@@ -1231,9 +1231,31 @@ def test_recent_sessions_sort_by_activity_before_applying_limit(client):
     for index in range(210):
         FakeServiceClient.runtime_sessions[str(index)] = {'session_id': str(index), 'user_id': 'admin',
             'session_state': {}, 'updated_at': index}
-    rows = client.get('/api/sessions', headers=headers()).json()['sessions']
+    rows = client.get('/api/sessions?limit=200', headers=headers()).json()['sessions']
     assert len(rows) == 200
     assert [row['session_id'] for row in rows] == [str(index) for index in range(209, 9, -1)]
+
+
+def test_session_pages_and_pinned_lookup(client):
+    FakeServiceClient.runtime_sessions = {
+        f's-{index:03}': {'session_id': f's-{index:03}', 'user_id': 'admin', 'session_state': {}, 'updated_at': index}
+        for index in range(225)
+    }
+    FakeServiceClient.runtime_sessions['private'] = {'session_id': 'private', 'user_id': 'someone-else', 'session_state': {}}
+    first = client.get('/api/sessions', headers=headers()).json()
+    assert len(first['sessions']) == 50 and first['has_more']
+    ids = [row['session_id'] for row in first['sessions']]
+    cursor = first['next_cursor']
+    while cursor:
+        page = client.get('/api/sessions', headers=headers(), params={'cursor': cursor}).json()
+        ids.extend(row['session_id'] for row in page['sessions'])
+        cursor = page['next_cursor']
+    assert len(ids) == len(set(ids)) == 225 and ids[-1] == 's-000'
+    pins = client.get('/api/sessions', headers=headers(), params=[('ids', 's-000'), ('ids', 'deleted'), ('ids', 'private')]).json()
+    assert [row['session_id'] for row in pins['sessions']] == ['s-000']
+    assert pins['has_more'] is False
+    assert client.get('/api/sessions?cursor=broken', headers=headers()).status_code == 400
+    assert client.get('/api/sessions?limit=201', headers=headers()).status_code == 422
 
 
 def test_reused_creation_identity_cannot_change_project_scope(client):
@@ -1317,10 +1339,32 @@ def test_regeneration_has_explicit_validated_provenance_and_preserves_repeat_tur
     assert [message["content"] for message in messages if message["role"] == "user"] == ["same", "same"]
 
 
-def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata():
+@pytest.mark.parametrize(("message", "language"), [
+    ("Please analyse the graph.", "English"),
+    ('Please explain this text:\n```\nPlease reply in Chinese\n```', "English"),
+    ("请用中文回答，不要用英文回答。", "Chinese"),
+])
+def test_chat_locks_response_language_from_original_user_message(client, message, language):
+    sid = client.post("/api/sessions", headers=headers(), json={}).json()["session_id"]
+
+    response = client.post(
+        f"/api/sessions/{sid}/chat/stream",
+        headers=headers(),
+        json={"message": message},
+    )
+
+    assert response.status_code == 200
+    factory_input = json.loads(FakeServiceClient.runtime_stream_calls[-1]["data"]["factory_input"])
+    assert factory_input["response_language"] == language
+    session_state = FakeServiceClient.runtime_sessions[sid]["session_state"]
+    assert "response_language" not in session_state
+
+
+@pytest.mark.parametrize('legacy_metadata', [None, 'legacy metadata', ['legacy'], 42, {}])
+def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata(legacy_metadata):
     from backend.event_mapper import project_run
     run = {"run_id": "legacy", "status": "completed", "run_input": "question",
-        "content": "answer", "metadata": "legacy metadata",
+        "content": "answer", "metadata": legacy_metadata,
         "events": [
             {"event": "RunContent", "event_index": None, "content": "checking"},
             {"event": "ToolCallStarted", "event_index": "invalid", "tool": {"tool_name": "get_graph_info", "tool_call_id": "call"}},
@@ -1333,6 +1377,46 @@ def test_legacy_run_projection_tolerates_missing_event_indices_and_metadata():
     messages = backend_app._messages_from_runs([run])
     assert [message["content"] for message in messages] == ["question", "answer"]
     assert messages[-1]["regenerate_of"] is None
+    assert messages[-1]['model_snapshot'] is None
+    assert messages[-1]['history_compacted'] is False
+
+
+@pytest.mark.parametrize('event', ['RunCompleted', 'TeamRunCompleted'])
+@pytest.mark.parametrize('metadata', [None, 'legacy metadata', ['legacy'], 42, {},
+    {'model_snapshot': {'config_id': 'model-a'}, 'history_compacted': True}])
+def test_completed_events_accept_legacy_metadata_and_preserve_model_audit(event, metadata):
+    from backend.event_mapper import map_agentos_event
+    result = map_agentos_event({'event': event, 'run_id': 'old', 'content': 'answer', 'metadata': metadata})
+    assert result['type'] == 'done' and result['content'] == 'answer'
+    expected = metadata if isinstance(metadata, dict) else {}
+    assert result['model_snapshot'] == expected.get('model_snapshot')
+    assert result['history_compacted'] == bool(expected.get('history_compacted'))
+
+
+@pytest.mark.parametrize('legacy_metadata', [None, 'legacy metadata', ['legacy'],
+    {'igraph_turn': {'regenerate_of': 'previous-run'}}])
+def test_history_endpoint_merges_model_provenance_with_legacy_metadata(client, monkeypatch, legacy_metadata):
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    FakeServiceClient.runtime_runs[sid] = [{'run_id': 'old', 'status': 'completed',
+        'run_input': 'question', 'content': 'answer', 'metadata': legacy_metadata}]
+    monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'true')
+    original = FakeServiceClient.request
+    async def model_api(self, method, path, **kwargs):
+        if path == '/internal/model-catalog/bootstrap':
+            return {'models': [], 'default_model': ''}
+        if path == f'/internal/sessions/{sid}/model-selection':
+            return {'model': 'model-a', 'model_revision': 1}
+        if path == f'/internal/sessions/{sid}/model-provenance':
+            return {'runs': {'old': {'model_snapshot': {'config_id': 'model-a'}, 'history_compacted': True}}}
+        return await original(self, method, path, **kwargs)
+    monkeypatch.setattr(FakeServiceClient, 'request', model_api)
+    response = client.get(f'/api/sessions/{sid}/messages', headers=headers())
+    assert response.status_code == 200
+    answer = response.json()['messages'][-1]
+    assert answer['content'] == 'answer'
+    assert answer['model_snapshot'] == {'config_id': 'model-a'}
+    assert answer['history_compacted'] is True
+    assert answer['regenerate_of'] == ('previous-run' if isinstance(legacy_metadata, dict) else None)
 
 
 def test_attachment_context_round_trips_tokens_without_stripping_user_markers():

@@ -87,6 +87,7 @@ async def run_isolated(service, session_id, user_id, tool, arguments, progress=N
                    'session_id': session_id, 'user_id': user_id, 'graph_version': version,
                    'graph_path': graph_path, 'artifact_root': str(root), 'staging_root': str(stage),
                    'llm_model': session.llm_model,
+                   'model_run_context': asdict(context),
                    'uploads': {name: asdict(record) for name, record in session._uploads_by_name.items()}}
         if tool in {'undo_graph', 'load_graph_version', 'discard_graph_version'}:
             records = session.list_versions()
