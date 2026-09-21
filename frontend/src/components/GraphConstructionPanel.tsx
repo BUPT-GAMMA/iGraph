@@ -9,6 +9,7 @@ import { Icon } from './Icon';
 import { DatasetDescriptionEditor } from './DatasetDescriptionEditor';
 import { ConstructionSchemaFields } from './ConstructionSchemaFields';
 import { TableSchemaPreview } from './TableSchemaPreview';
+import { SourceDataPreview } from './SourceDataPreview';
 import { constructionSourceTables, tableRelationGraph } from '../sourceSchema';
 import { constructionProperties as properties } from '../constructionProperties';
 import './GraphConstructionPanel.css';
@@ -641,6 +642,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
         </fieldset></form>}
       </aside>
       <main className="construction-visual"><div className="construction-visual-head"><div><strong>{showTableSchema ? t('Table relationships', '表关联模式') : preview ? t('Graph Schema · Change Preview', 'Graph Schema · 修改预览') : 'Graph Schema'}</strong><span>{showTableSchema ? preview ? t('Source PK/FK schema; inspect pending changes in Optimized structure.', '源表主外键关系；待保存的优化请切换“优化后结构”查看。') : t('Nodes are tables; links are foreign keys.', '节点为表，连线为外键') : preview ? t('The preview is not saved. Type and relationship statistics reflect the preview.', '预览尚未保存；类型与关系统计已按预览实时更新') : graph ? t('Nodes represent node types; links represent relationship types.', '节点代表节点类型，连线代表关系类型') : t('Node and relationship types appear here after construction.', '构图完成后展示节点类型与关系类型')}</span>{schemaWarningText && !preview && <span className="construction-schema-warning">{schemaWarningText}</span>}</div>{graph && <div className="construction-counts"><span><b>{formatNumber(showTableSchema ? sourceTables.length : schemaNodeTypeCount)}</b> {showTableSchema ? t('tables', '张表') : t(schemaNodeTypeCount === 1 ? 'node type' : 'node types', '节点类型')}</span><span><b>{formatNumber(showTableSchema ? tableGraph!.edges.length : schemaEdgeTypeCount)}</b> {showTableSchema ? t('foreign keys', '外键关系') : t(schemaEdgeTypeCount === 1 ? 'relationship type' : 'relationship types', '关系类型')}</span></div>}</div>
+        <SourceDataPreview key={`${dataset.project_id || 'personal'}:${dataset.dataset_id}`} dataset={dataset} delimiter={sourceType === 'csv' ? delimiter : undefined} graphReady={Boolean(graph)} />
         {graph && tableGraph && <div className="construction-schema-switch" role="group" aria-label={t('Preview mode', '预览模式')}>
           <button type="button" aria-pressed={showTableSchema} onClick={() => setSchemaView('tables')}>{t('Table relationships', '表关联模式')}</button>
           <button type="button" aria-pressed={!showTableSchema} onClick={() => setSchemaView('optimized')}>{t('Optimized structure', '优化后结构')}</button>

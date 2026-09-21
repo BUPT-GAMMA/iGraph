@@ -73,6 +73,21 @@ class ConstructionWorkloadTest(unittest.TestCase):
         self.assertGreaterEqual(report["preparation_ms"], 0)
         self.assertEqual(report["total"], 15)
 
+    def test_aggregate_output_alias_is_valid_only_for_ordering(self):
+        q = query(aggregations=[{"function": "count", "column": "*", "as": "cnt"}],
+                  order_by=[{"column": "cnt", "direction": "desc"}])
+        self.assertEqual(self.evaluate(q)["accuracy"], 1)
+        for field, value in (
+            ("projection", [{"column": "cnt", "as": "copy"}]),
+            ("filters", [{"column": "cnt", "op": "gt", "value": 0}]),
+            ("group_by", ["cnt"]),
+        ):
+            with self.subTest(field=field):
+                invalid = copy.deepcopy(q)
+                invalid[field] = value
+                with self.assertRaisesRegex(ValueError, "Invalid column reference: 'cnt'"):
+                    validate_queries(self.source, [invalid])
+
     def test_all_generated_plans_match_independent_oracle(self):
         report = evaluate_workload(self.source, self.graph, generate_workload(self.source, 100), repeats=1)
         self.assertEqual(report["accuracy"], 1, [r for r in report["results"] if not r["correct"]])

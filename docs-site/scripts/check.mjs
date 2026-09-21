@@ -25,6 +25,7 @@ for(const page of pages) {
   assert.match(page.slug,/^[a-z0-9-]+$/);
   assert.equal(new Set(page.sections.map(section=>section.id)).size,page.sections.length,'Duplicate section anchor');
   for(const section of page.sections) for(const block of section.blocks) {
+    if(block.type==='code' && block.language==='json') assert.doesNotThrow(()=>JSON.parse(block.code),`Invalid JSON example: ${page.slug}#${section.id}`);
     if(block.type==='cards') for(const item of block.items) assert.ok(pages.some(page=>page.slug===item.slug),`Missing card target ${item.slug}`);
     if(block.type==='table') for(const row of block.rows) assert.equal(row.length,block.headers.length,'Invalid table row');
     if(block.type==='tools') for(const tool of block.items) {
@@ -52,7 +53,9 @@ for(const file of files) {
   const body=await readFile(file,'utf8');
   const ids=[...body.matchAll(/\sid="([^"]+)"/g)].map(match=>match[1]);
   assert.equal(new Set(ids).size,ids.length,`Duplicate HTML id: ${file}`);
-  assert.ok(!body.includes('undefined'),'Undefined content rendered');
+  // Descriptions may legitimately discuss undefined metrics or undefined_reason.
+  // Reject missing-value placeholders, rather than that English word in prose.
+  assert.ok(!/>\s*undefined\s*</.test(body) && !/="undefined"/.test(body),`Undefined content rendered: ${relative(out,file)}`);
   assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>\s*[^<\s]/.test(body),'Inline script violates CSP');
   const base='https://docs.invalid/'+relative(out,file).replaceAll('\\','/');
   for(const match of body.matchAll(/\s(?:href|src|data-markdown)="([^"]+)"/g)) {
@@ -93,7 +96,7 @@ for(const locale of ['zh','en']) {
 }
 assert.equal(search.length,pages.reduce((count,page)=>count+page.sections.reduce((n,section)=>n+1+toolsIn(section).length,0)*2,0));
 const catalog=pages.flatMap(page=>page.sections.flatMap(toolsIn));
-assert.equal(catalog.length,61,'Expected 61 Graph Engine business tools');
+assert.equal(catalog.length,72,'Expected 72 Graph Engine business tools (including optional reporting)');
 assert.equal(new Set(catalog.map(tool=>tool.name)).size,catalog.length,'Duplicate tool');
 for(const name of diagramNames) for(const locale of ['zh','en']) for(const dark of [false,true]) {
   const svg=renderDiagram(name,locale,dark);

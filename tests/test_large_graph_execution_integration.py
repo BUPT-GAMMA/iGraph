@@ -12,6 +12,7 @@ from agent_runtime.execution_store import ExecutionStore
 from graph_data_service.app import GraphDataService, create_app
 from graph_data_service.execution_host import GraphExecutionHost, JobContext, job_context
 from graph_data_service.job_manager import Job, JobManager
+from tests.fixtures.large_graph_worker import holding_worker as _holding_worker
 
 
 async def eventually(fn, timeout=15):
@@ -309,19 +310,6 @@ def test_result_lookup_enforces_user_ownership_for_legacy_and_durable_jobs(tmp_p
             allowed = await tool(client, {'X-User-ID': 'alice'}, 'get_job_result', {'job_id': 'legacy'})
             assert allowed['result']['result'] == {'private': 'alice'}
     asyncio.run(scenario())
-
-
-def _holding_worker(request, roots, messages, start_gate):
-    """A real disposable process whose stop cannot be confused with a mock status."""
-    import os
-    import time
-    from graph_data_service.large_graph.runtime import _await_worker_registration
-    os.setsid()
-    _await_worker_registration(start_gate)
-    messages.put({'type': 'progress', 'stage': 'test_worker_ready', 'progress': 0.0,
-                  'message': 'Test worker passed the start gate', 'detail': {}})
-    while True:
-        time.sleep(.05)
 
 
 def test_native_mcp_large_prepare_returns_terminal_result_to_model(tmp_path, monkeypatch):

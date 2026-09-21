@@ -11,7 +11,7 @@ const out = join(root, 'dist');
 if (relative(resolve(root), resolve(out)) !== 'dist') throw new Error('Unsafe output directory');
 await rm(out, { recursive: true, force: true });
 const pages = await loadPages(root);
-const updated = '2026-09-12';
+const updated = '2026-09-20';
 const origin = process.env.SITE_URL?.replace(/\/$/, '') || '';
 if (origin) {
   const url = new URL(origin);
@@ -21,6 +21,12 @@ const groups = { start: ['开始使用', 'Get started'], build: ['构图智能�
 const text = (locale, zh, en) => locale === 'zh' ? zh : en;
 const esc = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const path = (locale, slug) => `/${locale}/${slug}/`;
+function documentationLink(href, locale) {
+  const match = href.match(/^\/([a-z0-9-]+)\/?(#[^\s]*)?$/);
+  return match && pages.some(page => page.slug === match[1])
+    ? path(locale, match[1]) + (match[2] || '')
+    : href;
+}
 const icon = name => {
   const shapes = {
     graph: '<circle cx="5" cy="12" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="18" cy="19" r="2"/><path d="m7 11 9-5M7 13l9 5"/>',
@@ -47,7 +53,7 @@ function diagram(name, locale) {
 }
 function toolHtml(tool, locale) {
   const parameters=tool.parameters.map(param=>`<tr><td><code>${esc(param.name)}</code>${param.required?`<small class="param-required">${text(locale,'必填','Required')}</small>`:''}</td><td><code>${esc(param.type)}</code>${param.enum?.length?`<div class="param-enum">${param.enum.map(value=>`<code>${esc(value)}</code>`).join(' ')}</div>`:''}${param.default!==undefined?`<small>${text(locale,'默认','Default')}: ${esc(JSON.stringify(param.default))}</small>`:''}</td><td>${esc(param.description[locale])}</td></tr>`).join('');
-  return `<div class="tool-entry" id="tool-${tool.name}"><h3><a href="#tool-${tool.name}"><span class="tool-display-name">${esc(tool.displayName?.[locale] || tool.name)}</span><code>${tool.name}</code></a></h3><p>${esc(tool.description[locale])}</p><details><summary>${text(locale,'参数与返回值','Parameters & result')} <span>${tool.parameters.length} ${text(locale,'个参数','parameters')}</span></summary>${parameters?`<div class="table-scroll"><table><thead><tr><th>${text(locale,'参数','Parameter')}</th><th>${text(locale,'类型与可选值','Type & options')}</th><th>${text(locale,'说明','Description')}</th></tr></thead><tbody>${parameters}</tbody></table></div>`:`<p>${text(locale,'无业务参数；身份与会话由运行时注入。','No business parameters; identity and session are injected by the runtime.')}</p>`}<p class="tool-result"><strong>${text(locale,'返回：','Returns: ')}</strong>${esc(tool.result[locale])}</p>${tool.notes?.length?`<ul class="tool-notes">${tool.notes.map(note=>`<li>${esc(note[locale])}</li>`).join('')}</ul>`:''}</details></div>`;
+  return `<div class="tool-entry" id="tool-${tool.name}"><h3><a href="#tool-${tool.name}"><span class="tool-display-name">${esc(tool.displayName?.[locale] || tool.name)}</span><code>${tool.name}</code></a></h3><p>${esc(tool.description[locale])}</p><details><summary>${text(locale,'参数与返回值','Parameters & result')} <span>${tool.parameters.length} ${text(locale,'项参数说明','documented fields')}</span></summary>${parameters?`<div class="table-scroll"><table><thead><tr><th>${text(locale,'参数','Parameter')}</th><th>${text(locale,'类型与可选值','Type & options')}</th><th>${text(locale,'说明','Description')}</th></tr></thead><tbody>${parameters}</tbody></table></div>`:`<p>${text(locale,'无业务参数；身份与会话由运行时注入。','No business parameters; identity and session are injected by the runtime.')}</p>`}<p class="tool-result"><strong>${text(locale,'返回：','Returns: ')}</strong>${esc(tool.result[locale])}</p>${tool.notes?.length?`<ul class="tool-notes">${tool.notes.map(note=>`<li>${esc(note[locale])}</li>`).join('')}</ul>`:''}</details></div>`;
 }
 function blockHtml(block, locale, index) {
   switch (block.type) {
@@ -60,7 +66,7 @@ function blockHtml(block, locale, index) {
     case 'diagram': return diagram(block.name,locale);
     case 'tools': return `<div class="tool-directory">${block.items.map(tool=>toolHtml(tool,locale)).join('')}</div>`;
     case 'endpoint': return `<div class="endpoint"><span class="method method-${esc(block.method.toLowerCase())}">${esc(block.method)}</span><code>${esc(block.path)}</code></div>`;
-    case 'links': return `<ul class="source-links">${block.items.map(item => `<li><a href="${esc(item.href)}" target="_blank" rel="noreferrer">${esc(item.label[locale])}<span aria-hidden="true">↗</span></a></li>`).join('')}</ul>`;
+    case 'links': return `<ul class="source-links">${block.items.map(item => `<li><a href="${esc(documentationLink(item.href,locale))}"${/^https?:/.test(item.href) ? ' target="_blank" rel="noreferrer"' : ''}>${esc(item.label[locale])}<span aria-hidden="true">↗</span></a></li>`).join('')}</ul>`;
     case 'cards': return `<div class="doc-cards">${block.items.map(item => `<a href="${path(locale, item.slug)}" class="doc-card"><span class="card-icon">${icon(item.icon)}</span><strong>${esc(item.title[locale])}</strong><p>${esc(item.text[locale])}</p>${icon('arrow')}</a>`).join('')}</div>`;
     default: throw new Error(`Unknown block ${block.type}`);
   }
@@ -74,7 +80,10 @@ function markdownBlock(block, locale) {
   if (block.type === 'list') return block.items.map(item => `- ${item[locale]}`).join('\n');
   if (block.type === 'table') return ['| ' + block.headers.map(h => h[locale]).join(' | ') + ' |', '| ' + block.headers.map(() => '---').join(' | ') + ' |', ...block.rows.map(row => '| ' + row.map(cell => cell[locale].replace(/\|/g, '\\|')).join(' | ') + ' |')].join('\n');
   if (block.type === 'endpoint') return `**${block.method}** \`${block.path}\``;
-  if (block.type === 'links') return block.items.map(item => `- [${item.label[locale]}](${item.href})`).join('\n');
+  if (block.type === 'links') return block.items.map(item => {
+    const href=documentationLink(item.href,locale);
+    return `- [${item.label[locale]}](${href.startsWith('/') ? origin+href : href})`;
+  }).join('\n');
   if (block.type === 'cards') return block.items.map(item => `- [${item.title[locale]}](${origin}${path(locale, item.slug)}): ${item.text[locale]}`).join('\n');
   return '```text\nFrontend → Backend → Agent Runtime → PostgreSQL + pgvector\n              ↓ HTTP       ↓ MCP\n                  Graph Engine\n```';
 }
