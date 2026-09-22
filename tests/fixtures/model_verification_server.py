@@ -16,6 +16,15 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path.endswith('/models'):
+            body = json.dumps({'object': 'list', 'data': [
+                {'id': 'model-a', 'name': 'Verification A'},
+                {'id': 'model-b', 'name': 'Verification B'},
+                {'id': 'qwen/team-tools', 'name': 'Qwen · Graph tools'},
+                {'id': 'gemini/team-vision', 'name': 'Gemini · Vision'},
+            ]}).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+            return
         with lock:
             body = json.dumps(calls).encode()
         self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)

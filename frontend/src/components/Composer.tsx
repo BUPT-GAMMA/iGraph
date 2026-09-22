@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { CustomModel } from '../api';
+import { modelErrorMessage, type CustomModel } from '../api';
 import type { AttachmentRef, DraftAttachment } from '../types';
 import { Icon } from './Icon';
 import { FileTypeIcon } from './FileTypeIcon';
@@ -65,11 +65,12 @@ export type ComposerProps = {
   cancellation?: 'requested' | 'stopping' | 'unconfirmed' | 'saving' | 'confirmed';
   onCancel?: () => void;
   focusRequest?: number;
+  onManageModels?: () => void;
   onSaveCustomModel?: (input: { model_id: string; display_name: string; base_url: string; api_key: string }) => Promise<void>;
   onDeleteCustomModel?: (modelId: string) => Promise<void>;
 };
 
-export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
+export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
@@ -84,6 +85,10 @@ export function Composer({ value, model, models, customModels = [], activeDatase
   const [modelError, setModelError] = useState('');
   const [customDraft, setCustomDraft] = useState({ model_id: '', base_url: '', api_key: '' });
   const modelOptions = models.length ? models : [model].filter(Boolean);
+  const currentCustom = customModels.find(item => item.model_id === model);
+  const modelLabel = (item: CustomModel) => item.upstream_model_id ? item.display_name || item.upstream_model_id : item.model_id;
+  const customGroups = new Map<string, CustomModel[]>();
+  for (const item of customModels) { const key = item.provider_name || t('Custom models', '自定义模型'); customGroups.set(key, [...(customGroups.get(key) || []), item]); }
   const customIds = new Set(customModels.map(item => item.model_id));
   const builtInOptions = selectRepresentativeModels(modelOptions.filter(option => !customIds.has(option)), model);
   const runControl = canCancel;
@@ -219,17 +224,19 @@ export function Composer({ value, model, models, customModels = [], activeDatase
         <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title={t('Upload graph file', '上传图文件')} aria-label={t('Upload graph file', '上传图文件')} disabled={disabled || runtimeControlsDisabled}><Icon name="plus" size={20} /></button>
         <button className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={() => onDataset()} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? t(`Current dataset: ${activeDatasetName}`, `当前数据集：${activeDatasetName}`) : t('Select project dataset', '选择项目数据集')}><Icon name="database" size={12} /><span>{activeDatasetName || t('Dataset', '数据集')}</span></button>
         <div ref={modelPickerRef} className={`composer-model ${modelOpen ? 'is-open' : ''}`}>
-          <button type="button" className="composer-model-trigger" onClick={() => setModelOpen(current => !current)} disabled={disabled || loading || runtimeControlsDisabled || modelOptions.length === 0} aria-label={t('Select model', '选择模型')} aria-expanded={modelOpen}>
-            <span className="composer-model-icon"><ModelProviderIcon modelId={model} size={13} /></span>
-            <span className="composer-model-value">{model}</span>
+          <button type="button" className="composer-model-trigger" onClick={() => setModelOpen(current => !current)} disabled={disabled || loading || runtimeControlsDisabled || (modelOptions.length === 0 && !onManageModels)} aria-label={t('Select model', '选择模型')} aria-expanded={modelOpen}>
+            <span className="composer-model-icon"><ModelProviderIcon modelId={currentCustom?.upstream_model_id || model} size={13} /></span>
+            <span className="composer-model-value">{currentCustom ? modelLabel(currentCustom) : model}</span>
             <span className="composer-model-chevron"><Icon name="chevron" size={10} /></span>
           </button>
           {modelOpen ? <div ref={modelMenuRef} className="composer-model-menu" role="group" aria-label={t('Available models', '可用模型')}>
             <div className="composer-model-section">{t('Models', '模型')}</div>
             {builtInOptions.map(option => <button type="button" aria-pressed={option === model} className={`composer-model-option ${option === model ? 'is-selected' : ''}`} key={option} onClick={() => chooseModel(option)}><span className="composer-option-mark"><ModelProviderIcon modelId={option} size={15} /></span><span>{option}</span>{option === model ? <Icon name="check" size={14} /> : null}</button>)}
-            {customModels.length ? <div className="composer-model-section">{t('Custom models', '自定义模型')}</div> : null}
-            {customModels.map(item => <div className={`composer-custom-model-row ${item.model_id === model ? 'is-selected' : ''}`} key={`custom-${item.model_id}`}><button type="button" aria-pressed={item.model_id === model} className="composer-model-option" onClick={() => chooseModel(item.model_id)}><span className="composer-option-mark custom"><Icon name="settings" size={14} /></span><span title={item.model_id}>{item.model_id}</span>{item.model_id === model ? <Icon name="check" size={14} /> : null}</button>{onDeleteCustomModel ? <button type="button" className="composer-model-delete" disabled={item.model_id === model} onClick={() => void removeCustom(item.model_id)} aria-label={t(`Delete custom model ${item.model_id}`, `删除自定义模型 ${item.model_id}`)} title={item.model_id === model ? t('Switch to another model first', '请先切换到其他模型') : t('Delete custom model', '删除自定义模型')}><Icon name="trash" size={14} /></button> : null}</div>)}
-            {onSaveCustomModel ? <button type="button" className="composer-model-config" onClick={openCustomModelDialog}><Icon name="edit" size={15} /> {t('Configure custom model', '配置自定义模型')}</button> : null}
+            {Array.from(customGroups, ([name, items]) => <div key={name}><div className="composer-model-section">{name}</div>{items.map(item => <div className={`composer-custom-model-row ${item.model_id === model ? 'is-selected' : ''}`} key={item.model_id}>
+              <button type="button" aria-pressed={item.model_id === model} className="composer-model-option" disabled={!!item.unavailable_reason} title={modelErrorMessage(item.unavailable_reason) || item.upstream_model_id || item.model_id} onClick={() => chooseModel(item.model_id)}><span className="composer-option-mark custom"><ModelProviderIcon modelId={item.upstream_model_id || item.model_id} size={15} /></span><span className="composer-model-label">{modelLabel(item)}{item.upstream_model_id && item.display_name !== item.upstream_model_id && <small>{item.upstream_model_id}</small>}</span>{item.model_id === model ? <Icon name="check" size={14} /> : null}</button>
+              {!onManageModels && onDeleteCustomModel && <button type="button" className="composer-model-delete" disabled={item.model_id === model} onClick={() => void removeCustom(item.model_id)} aria-label={t(`Delete custom model ${item.model_id}`, `删除自定义模型 ${item.model_id}`)}><Icon name="trash" size={14} /></button>}
+            </div>)}</div>)}
+            {onManageModels ? <button type="button" className="composer-model-config" onClick={() => { setModelOpen(false); onManageModels(); }}><Icon name="settings" size={15} />{t('Manage model services', '管理模型服务')}</button> : onSaveCustomModel ? <button type="button" className="composer-model-config" onClick={openCustomModelDialog}><Icon name="edit" size={15} /> {t('Configure custom model', '配置自定义模型')}</button> : null}
           </div> : null}
         </div>
         <div className="composer-spacer" />

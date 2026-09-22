@@ -1,4 +1,4 @@
-type IconName = 'schema' | 'arrow-left' | 'info' | 'tool' | 'message' | 'pin' | 'plus' | 'search' | 'project' | 'folder' | 'folder-open' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'graph-create' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
+type IconName = 'refresh' | 'eye' | 'eye-off' | 'list-check' | 'star' | 'pulse' | 'schema' | 'arrow-left' | 'info' | 'tool' | 'message' | 'pin' | 'plus' | 'search' | 'project' | 'folder' | 'folder-open' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'graph-create' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
 
 export function BrandLogo() {
   return <><img className="brand-logo brand-logo-light" src="/figures/igraph_light.png" alt="" aria-hidden="true" /><img className="brand-logo brand-logo-dark" src="/figures/igraph_dark.png" alt="" aria-hidden="true" /></>;
@@ -7,6 +7,12 @@ export function BrandLogo() {
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true };
   const paths: Record<IconName, JSX.Element> = {
+    refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9" /></>,
+    eye: <><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
+    'eye-off': <><path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.4 0 10 7 10 7a18 18 0 0 1-3 3.8M6.2 6.2A21 21 0 0 0 2 12s3.6 7 10 7c1.8 0 3.4-.5 4.8-1.3M10 10a3 3 0 0 0 4 4" /></>,
+    'list-check': <><path d="M10 6h10M10 12h10M10 18h10m-17-6 2 2 3-4M4 6h1M4 18h1" /></>,
+    star: <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z" />,
+    pulse: <path d="M2 12h4l3-8 5 16 3-8h5" />,
     'arrow-left': <><path d="M19 12H5m6-6-6 6 6 6" /></>,
     schema: <><rect x="3" y="3" width="7" height="8" rx="1.5" /><rect x="14" y="13" width="7" height="8" rx="1.5" /><path d="M3 6h7M14 16h7M6.5 11v6H14M10 7h7.5v6" /></>,
     info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6" /><circle cx="12" cy="7.5" r=".8" fill="currentColor" stroke="none" /></>,

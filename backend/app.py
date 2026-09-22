@@ -1679,6 +1679,40 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         )
         return {"success": True, "model_id": model_id}
 
+    @app.get('/api/model-providers')
+    async def model_providers(request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        return await runtime.request('GET', '/internal/model-providers', headers=service_headers(user.user_id))
+
+    @app.post('/api/model-providers')
+    async def save_model_provider(req: dict, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        return await runtime.request('POST', '/internal/model-providers', headers=service_headers(user.user_id), json_body=req)
+
+    @app.post('/api/model-providers/discover')
+    async def discover_provider_models(req: dict, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        return await runtime.request('POST', '/internal/model-providers/discover',
+            headers=service_headers(user.user_id), json_body=req, timeout=25)
+
+    @app.post('/api/model-providers/import')
+    async def import_provider_models(req: dict, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        return await runtime.request('POST', '/internal/model-providers/import',
+            headers=service_headers(user.user_id), json_body=req)
+
+    @app.delete('/api/model-providers/{provider_id}')
+    async def delete_model_provider(provider_id: str, revision: int, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        from urllib.parse import quote
+        return await runtime.request('DELETE', '/internal/model-providers/' + quote(provider_id, safe=''),
+            headers=service_headers(user.user_id), params={'revision': revision})
+
     @app.get('/api/models')
     async def model_catalog(request: Request):
         user = current_user(request, users)

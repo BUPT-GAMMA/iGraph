@@ -17,7 +17,9 @@ class ModelWrite(BaseModel):
     revision: int | None = None
     upstream_model_id: str = Field(min_length=1, max_length=256)
     display_name: str = Field(default='', max_length=120)
-    base_url: str = Field(min_length=1, max_length=2048)
+    base_url: str = Field(default='', max_length=2048)
+    provider_id: str | None = None
+    provider_revision: int | None = None
     api_key: str = Field(default='', max_length=8192)
     clear_api_key: bool = False
     provider: str = Field(default='openai-compatible', max_length=80)
@@ -25,6 +27,32 @@ class ModelWrite(BaseModel):
     vision: bool = False
     context_window: int = Field(default=131072, ge=2048, le=2_000_000)
     max_output_tokens: int = Field(default=4096, ge=128)
+
+
+class ProviderWrite(BaseModel):
+    provider_id: str | None = None
+    revision: int | None = None
+    name: str = Field(min_length=1, max_length=120)
+    preset_id: str = 'custom'
+    protocol: str = 'openai-compatible'
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str = ''
+    clear_api_key: bool = False
+    enabled: bool = True
+
+
+class ProviderTarget(BaseModel):
+    provider_id: str
+    revision: int
+
+
+class DiscoveredModel(BaseModel):
+    id: str = Field(min_length=1, max_length=256)
+    name: str = Field(default='', max_length=120)
+
+
+class ProviderImport(ProviderTarget):
+    models: list[DiscoveredModel] = Field(min_length=1, max_length=200)
 
 
 class ModelState(BaseModel):
@@ -62,6 +90,36 @@ def create_model_router(catalog, db):
         if not record or record.user_id != uid or not session_matches_component(record, 'agents', 'igraph-agent'):
             raise ControlError('SESSION_NOT_FOUND', 404)
         return record
+
+    @router.get('/internal/model-providers')
+    async def provider_listing(request: Request):
+        return await asyncio.to_thread(catalog.list_providers, identity(request))
+
+    @router.post('/internal/model-providers')
+    async def provider_save(req: ProviderWrite, request: Request):
+        row = await asyncio.to_thread(catalog.save_provider, identity(request),
+            req.model_dump(exclude={'provider_id', 'revision'}), req.provider_id, req.revision)
+        return {'success': True, 'provider': row}
+
+    @router.post('/internal/model-providers/discover')
+    async def provider_discover(req: ProviderTarget, request: Request):
+        from agent_runtime.provider_probe import discover_models
+        uid = identity(request)
+        data = await asyncio.to_thread(catalog.provider_configuration, uid, req.provider_id, req.revision)
+        result = await discover_models(data)
+        # Do not return stale discovery results after another page edits the key.
+        await asyncio.to_thread(catalog.provider_configuration, uid, req.provider_id, req.revision)
+        return {**result, 'provider_id': req.provider_id, 'revision': req.revision}
+
+    @router.post('/internal/model-providers/import')
+    async def provider_import(req: ProviderImport, request: Request):
+        return await asyncio.to_thread(catalog.import_provider_models, identity(request),
+            req.provider_id, req.revision, [m.model_dump() for m in req.models])
+
+    @router.delete('/internal/model-providers/{provider_id}')
+    async def provider_delete(provider_id: str, revision: int, request: Request):
+        await asyncio.to_thread(catalog.delete_provider, identity(request), provider_id, revision)
+        return {'success': True}
 
     @router.post('/internal/model-catalog/bootstrap')
     async def bootstrap(req: BootstrapModels, request: Request):
