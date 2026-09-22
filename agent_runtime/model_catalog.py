@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import Column, Integer, JSON, String, Table, select, text
 
 from agent_runtime.execution_store import ControlError, controls, metadata
+from agent_runtime.provider_catalog import ProviderCatalogMixin, providers, validate_base_url
 from agent_runtime.model_factory import _endpoint
 from agent_runtime.model_registry import SUPPORTED_MODELS, provider_for_model
 
@@ -35,7 +36,8 @@ preferences = Table('igraph_model_preferences', metadata,
     Column('user_id', String(256), primary_key=True), Column('data', JSON, nullable=False))
 
 
-class ModelCatalog:
+class ModelCatalog(ProviderCatalogMixin):
+    model_table = models
     def __init__(self, store, config):
         self.store, self.config = store, config
 
@@ -92,7 +94,8 @@ class ModelCatalog:
                 data = {key: item.get(key, '') for key in ('model_id', 'display_name', 'base_url', 'api_key')}
                 data.update(source='custom', provider='openai-compatible', enabled=True, tools=True,
                             vision=False, context_window=131072, max_output_tokens=4096)
-                self._write(conn, uid, cid, data)
+                self._write(conn, uid, cid, self._legacy_provider(conn, uid, data))
+            self._migrate_providers(conn, uid)
             pref = self._preference(conn, uid)
             pref['allowed'] = list(allowed)
             pref.setdefault('default_model', next(iter(allowed), ''))
@@ -105,6 +108,8 @@ class ModelCatalog:
         data = row['data']
         if data.get('source') == 'deployment' and row['config_id'] not in self._preference(conn, uid).get('allowed', []):
             return 'MODEL_NOT_ALLOWED'
+        if not data.get('provider_enabled', True):
+            return 'MODEL_PROVIDER_DISABLED'
         if not data.get('enabled', True):
             return 'MODEL_DISABLED'
         if not data.get('tools', True):
@@ -115,7 +120,8 @@ class ModelCatalog:
         data = row['data']
         return dict(model_id=row['config_id'], config_id=row['config_id'], revision=row['revision'],
             upstream_model_id=data['model_id'], display_name=data.get('display_name') or data['model_id'],
-            provider=data.get('provider', 'openai-compatible'), base_url=data.get('base_url', ''),
+            provider=data.get('provider', 'openai-compatible'), provider_id=data.get('provider_id'),
+            provider_name=data.get('provider_name'), base_url=data.get('base_url', ''),
             has_api_key=bool(data.get('api_key')), source=data['source'], enabled=data.get('enabled', True),
             tools=data.get('tools', True), vision=data.get('vision', False),
             context_window=data.get('context_window', 131072), max_output_tokens=data.get('max_output_tokens', 4096),
@@ -138,11 +144,17 @@ class ModelCatalog:
             if old.get('source') == 'deployment':
                 raise ControlError('MODEL_DEPLOYMENT_READ_ONLY', 422)
             merged = {**old, **data}
+            provider_row = None
+            if data.get('provider_id'):
+                if data.get('provider_revision') is None:
+                    raise ControlError('MODEL_PROVIDER_CHANGED')
+                provider_row = self._require_provider(conn, uid, data['provider_id'], data['provider_revision'])
+                if old.get('provider_id') and old['provider_id'] != data['provider_id']:
+                    raise ControlError('MODEL_PROVIDER_INVALID', 422)
+                merged.update(self._provider_snapshot(provider_row))
             mid = str(merged.get('upstream_model_id') or merged.get('model_id') or '').strip()
-            base = str(merged.get('base_url') or '').strip().rstrip('/')
-            url = urlsplit(base)
-            if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}', mid)
-                    or url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password or url.query or url.fragment):
+            base = validate_base_url(merged.get('base_url'))
+            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}', mid):
                 raise ControlError('MODEL_INVALID_CONFIG', 422)
             window = int(merged.get('context_window', 131072))
             output = int(merged.get('max_output_tokens', 4096))
@@ -154,6 +166,13 @@ class ModelCatalog:
                 provider=str(merged.get('provider') or 'openai-compatible')[:80], base_url=base, api_key=secret,
                 source='custom', enabled=old.get('enabled', True), tools=bool(merged.get('tools', True)),
                 vision=bool(merged.get('vision', False)), context_window=window, max_output_tokens=output)
+            if provider_row:
+                stored.update(self._provider_snapshot(provider_row))
+                if any(r['config_id'] != cid and r['data']['model_id'] == mid
+                       for r in self._provider_models(conn, uid, data['provider_id'])):
+                    raise ControlError('MODEL_DUPLICATE', 409)
+            else:
+                stored = self._legacy_provider(conn, uid, stored)
             row = self._write(conn, uid, cid or f'custom-{uuid.uuid4()}', stored, existing)
             return self.public(conn, uid, row)
 
@@ -209,7 +228,7 @@ class ModelCatalog:
             if conn.execute(select(controls.c.control_id).where(controls.c.user_id == uid,
                     controls.c.kind == 'run', controls.c.admission_blocked.is_(True))).first():
                 raise ControlError('MODEL_IN_USE')
-            for table in (versions, models, selections, preferences):
+            for table in (versions, models, selections, preferences, providers):
                 conn.execute(table.delete().where(table.c.user_id == uid))
 
     def selection(self, uid, sid, legacy_model=None):
