@@ -96,8 +96,6 @@ def test_local_provider_clear_key_and_revision_safe_delete(service):
     assert catalog.test_configuration('alice', m['config_id'], 1)['api_key'] == ''
     path = f"/internal/model-providers/{p['provider_id']}"
     assert client.delete(path, params={'revision': 1}).status_code == 409
-    assert client.delete(path, params={'revision': 2}).json()['detail']['code'] == 'MODEL_PROVIDER_NOT_EMPTY'
-    assert client.delete(f"/internal/model-catalog/{m['config_id']}?revision=1").status_code == 200
     assert client.delete(path, params={'revision': 2}).status_code == 200
     with catalog.store.transaction('alice', '__models__') as conn:
         assert not conn.execute(select(versions)).first()
@@ -236,3 +234,77 @@ def test_discovery_rejects_oversized_and_malformed_lists(service, monkeypatch):
             mock_upstream(patch, lambda request: response)
             result = client.post('/internal/model-providers/discover', json=p)
             assert result.json()['detail']['code'] == code
+
+
+def test_create_unconfigured_provider_then_configure_or_delete(service):
+    client, catalog = service
+    p = client.post('/internal/model-providers', json={'name': 'Empty provider'}).json()['provider']
+    assert p['base_url'] == '' and p['model_count'] == 0
+    assert client.post('/internal/model-providers/discover', json=p).json()['detail']['code'] == 'MODEL_NOT_CONFIGURED'
+    assert client.post('/internal/model-providers/import', json={**p, 'models': [{'id': 'one'}]}).status_code == 422
+    p = client.post('/internal/model-providers', json={**p, 'base_url': 'https://example.test/v1'}).json()['provider']
+    m = add(client, p).json()['model']
+    p = client.post('/internal/model-providers', json={**p, 'base_url': ''}).json()['provider']
+    assert catalog.list('alice')['models'][0]['unavailable_reason'] == 'MODEL_NOT_CONFIGURED'
+    assert client.delete(f"/internal/model-providers/{p['provider_id']}?revision={p['revision']}").status_code == 200
+    assert catalog.list('alice')['models'] == []
+
+
+def test_delete_provider_cascades_models_secrets_and_preserves_other_connections(service):
+    client, catalog = service
+    p, other = connection(client), connection(client)
+    a, b = add(client, p, 'one').json()['model'], add(client, p, 'two').json()['model']
+    survivor = add(client, other, 'one').json()['model']
+    catalog.set_default('alice', a['config_id'])
+    selected = catalog.selection('alice', 'history')
+    assert client.delete(f"/internal/model-providers/{p['provider_id']}?revision=1", headers={'X-User-ID': 'bob'}).status_code == 404
+    assert client.delete(f"/internal/model-providers/{p['provider_id']}?revision=1").status_code == 200
+    assert [m['config_id'] for m in catalog.list('alice')['models']] == [survivor['config_id']]
+    assert catalog.selection('alice', 'history')['model'] == selected['model']
+    assert catalog.selection('alice', 'history')['model_unavailable_reason'] == 'MODEL_REMOVED'
+    with catalog.store.transaction('alice', '__models__') as conn:
+        for cid in (a['config_id'], b['config_id']):
+            assert not conn.execute(select(versions).where(versions.c.config_id == cid)).first()
+            data = conn.execute(select(models.c.data).where(models.c.config_id == cid)).scalar_one()
+            assert data['deleted'] and not data['api_key'] and not data['base_url']
+    assert len(catalog.list_providers('alice')['providers']) == 1
+
+
+def test_provider_delete_is_all_or_nothing_while_a_child_model_is_running(service):
+    client, catalog = service
+    p = connection(client)
+    a, b = add(client, p, 'idle').json()['model'], add(client, p, 'active').json()['model']
+    catalog.set_default('alice', b['config_id'])
+    run, _ = catalog.store.register('alice', 'active-session', 'request', 'fingerprint',
+        capture_model=lambda conn: catalog.freeze(conn, 'alice', 'active-session'))
+    path = f"/internal/model-providers/{p['provider_id']}?revision=1"
+    response = client.delete(path)
+    assert response.status_code == 409 and response.json()['detail']['code'] == 'MODEL_PROVIDER_IN_USE'
+    assert {m['config_id']: m['revision'] for m in catalog.list('alice')['models']} == {a['config_id']: 1, b['config_id']: 1}
+    assert catalog.resolve('alice', run['state']['model_snapshot'])['api_key'] == 'private-key'
+    catalog.store.acknowledge('alice', 'active-session', run['run_id'], run['generation'],
+        preparation_stopped=True, agent_stopped=True, terminal_persisted=True, run_status='completed')
+    assert client.delete(path).status_code == 200
+    assert catalog.list('alice')['models'] == []
+
+
+def test_provider_delete_racing_run_start_never_removes_active_credentials(service):
+    client, catalog = service
+    p = connection(client)
+    m = add(client, p).json()['model']
+    catalog.set_default('alice', m['config_id'])
+    def attempt(operation):
+        try:
+            return operation()
+        except ControlError as error:
+            return error.code
+    with ThreadPoolExecutor(2) as pool:
+        deletion = pool.submit(attempt, lambda: catalog.delete_provider('alice', p['provider_id'], 1))
+        start = pool.submit(attempt, lambda: catalog.store.register('alice', 'race-session', 'request', 'fingerprint',
+            capture_model=lambda conn: catalog.freeze(conn, 'alice', 'race-session')))
+        deleted, started = deletion.result(), start.result()
+    if deleted is None:
+        assert started == 'MODEL_REMOVED'
+    else:
+        assert deleted == 'MODEL_PROVIDER_IN_USE'
+        assert catalog.resolve('alice', started[0]['state']['model_snapshot'])['api_key'] == 'private-key'

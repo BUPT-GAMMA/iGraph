@@ -114,7 +114,8 @@ class ProviderCatalogMixin:
             secret = '' if data.get('clear_api_key') else str(data.get('api_key') or old.get('api_key', '')).strip()
             if len(secret) > 8192 or any(ord(c) < 32 or ord(c) > 126 for c in secret):
                 raise ControlError('MODEL_PROVIDER_INVALID', 422)
-            stored = dict(name=name, preset_id=preset, base_url=validate_base_url(merged.get('base_url')),
+            base = str(merged.get('base_url') or '').strip()
+            stored = dict(name=name, preset_id=preset, base_url=validate_base_url(base) if base else '',
                           api_key=secret, enabled=bool(merged.get('enabled', True)))
             row = dict(user_id=uid, provider_id=pid or f'provider-{uuid.uuid4()}',
                        revision=existing['revision'] + 1 if existing else 1, data=stored)
@@ -133,6 +134,8 @@ class ProviderCatalogMixin:
             raise ControlError('MODEL_IMPORT_LIMIT', 422)
         with self.store.transaction(uid, '__models__') as conn:
             provider = self._require_provider(conn, uid, pid, revision)
+            if not provider['data']['base_url']:
+                raise ControlError('MODEL_NOT_CONFIGURED', 422)
             known = {row['data']['model_id'] for row in self._provider_models(conn, uid, pid)}
             added = 0
             for item in items:
@@ -151,13 +154,14 @@ class ProviderCatalogMixin:
 
     def provider_configuration(self, uid, pid, revision):
         with self.store.transaction(uid, '__models__') as conn:
-            return dict(self._require_provider(conn, uid, pid, revision)['data'])
+            data = dict(self._require_provider(conn, uid, pid, revision)['data'])
+            if not data['base_url']:
+                raise ControlError('MODEL_NOT_CONFIGURED', 422)
+            return data
 
     def delete_provider(self, uid, pid, revision):
         with self.store.transaction(uid, '__models__') as conn:
             self._require_provider(conn, uid, pid, revision)
-            # Deleting a provider is explicit; users first remove its models. Model
-            # deletion already enforces active-run protection and removes secrets.
-            if self._provider_models(conn, uid, pid):
-                raise ControlError('MODEL_PROVIDER_NOT_EMPTY', 409)
+            self._remove_models(conn, uid, self._provider_models(conn, uid, pid),
+                                in_use_code='MODEL_PROVIDER_IN_USE')
             conn.execute(providers.delete().where(providers.c.user_id == uid, providers.c.provider_id == pid))
