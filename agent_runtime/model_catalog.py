@@ -112,6 +112,8 @@ class ModelCatalog(ProviderCatalogMixin):
             return 'MODEL_PROVIDER_DISABLED'
         if not data.get('enabled', True):
             return 'MODEL_DISABLED'
+        if data.get('source') == 'custom' and not data.get('base_url'):
+            return 'MODEL_NOT_CONFIGURED'
         if not data.get('tools', True):
             return 'MODEL_TOOLS_REQUIRED'
         return data.get('unavailable_reason')
@@ -203,13 +205,21 @@ class ModelCatalog(ProviderCatalogMixin):
                 raise ControlError('MODEL_DEPLOYMENT_READ_ONLY', 422)
             if row['revision'] != expected_revision:
                 raise ControlError('MODEL_CONFIG_CHANGED')
-            active = conn.execute(select(controls.c.session_id).where(controls.c.user_id == uid,
-                controls.c.kind == 'run', controls.c.admission_blocked.is_(True),
-                controls.c.state['model_snapshot']['config_id'].as_string() == cid)).all()
-            if active:
-                exc = ControlError('MODEL_IN_USE')
-                exc.sessions = sorted({item[0] for item in active})
-                raise exc
+            self._remove_models(conn, uid, [row])
+
+    def _remove_models(self, conn, uid, rows, *, in_use_code='MODEL_IN_USE'):
+        if not rows:
+            return
+        ids = [row['config_id'] for row in rows]
+        active = conn.execute(select(controls.c.session_id).where(controls.c.user_id == uid,
+            controls.c.kind == 'run', controls.c.admission_blocked.is_(True),
+            controls.c.state['model_snapshot']['config_id'].as_string().in_(ids))).all()
+        if active:
+            exc = ControlError(in_use_code)
+            exc.sessions = sorted({item[0] for item in active})
+            raise exc
+        for row in rows:
+            cid = row['config_id']
             # Keep a non-secret tombstone for old selections and repeat migration.
             clean = {**row['data'], 'api_key': '', 'base_url': '', 'enabled': False, 'deleted': True}
             self._write(conn, uid, cid, clean, row)

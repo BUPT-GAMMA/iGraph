@@ -35,7 +35,7 @@ class ProviderWrite(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     preset_id: str = 'custom'
     protocol: str = 'openai-compatible'
-    base_url: str = Field(min_length=1, max_length=2048)
+    base_url: str = Field(default='', max_length=2048)
     api_key: str = ''
     clear_api_key: bool = False
     enabled: bool = True

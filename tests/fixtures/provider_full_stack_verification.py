@@ -54,6 +54,9 @@ def main(uid):
                 provider = request('POST', '/api/model-providers', json={**provider,
                     'base_url': 'http://host.docker.internal:21119/updated/v1', 'api_key': 'rotated-synthetic', 'enabled': False})['provider']
                 assert request('GET', base + '/model')['model_unavailable_reason'] == 'MODEL_PROVIDER_DISABLED'
+                rejected = request('DELETE', f"/api/model-providers/{pid}?revision={provider['revision']}", expected=409)
+                assert rejected['detail']['code'] == 'MODEL_PROVIDER_IN_USE'
+                assert len([m for m in request('GET', '/api/models')['models'] if m.get('provider_id') == pid]) == 2
                 done = future.result()
                 assert done['model_snapshot']['model_id'] == 'model-a'
             calls = httpx.get('http://localhost:21119').json()
@@ -64,12 +67,10 @@ def main(uid):
         finally:
             if sid:
                 request('DELETE', f'/api/sessions/{sid}', expected=202)
-            for m in request('GET', '/api/models')['models']:
-                if m.get('provider_id') == pid:
-                    request('DELETE', f"/api/models/{m['config_id']}?revision={m['revision']}")
             current = next(p for p in request('GET', '/api/model-providers')['providers'] if p['provider_id'] == pid)
             request('DELETE', f"/api/model-providers/{pid}?revision={current['revision']}")
-            print('PASS: test session, models and provider cleaned up')
+            assert not [m for m in request('GET', '/api/models')['models'] if m.get('provider_id') == pid]
+            print('PASS: active-run deletion rejected; populated provider deleted atomically after run completion')
 
 
 if __name__ == '__main__':

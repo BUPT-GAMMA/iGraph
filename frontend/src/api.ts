@@ -69,7 +69,7 @@ export function modelErrorMessage(code?: string | null) {
     MODEL_PROVIDER_CHANGED: tr('Provider changed in another page. Refresh before saving.', '提供商已在其他页面修改，请刷新后重试'),
     MODEL_PROVIDER_DISABLED: tr('Provider disabled. Enable it in model settings.', '提供商已停用，请在模型服务中启用'),
     MODEL_PROVIDER_INVALID: tr('Enter a provider name and a valid API key.', '请填写有效的提供商名称和 API 密钥'),
-    MODEL_PROVIDER_NOT_EMPTY: tr('Remove the models in this provider before deleting it.', '请先移除该提供商下的模型，再删除提供商'),
+    MODEL_PROVIDER_IN_USE: tr('This provider is in use. Finish or stop its active tasks before deleting.', '提供商正被任务使用，结束或停止任务后可删除'),
     MODEL_PROTOCOL_UNSUPPORTED: tr('Use an OpenAI Chat Completions compatible endpoint.', '请使用兼容 OpenAI Chat Completions 的接口'),
     MODEL_DUPLICATE: tr('This model is already added to the provider.', '该模型已添加到此提供商'),
     MODEL_DISCOVERY_UNSUPPORTED: tr('This provider cannot list models. Add a model ID manually.', '该接口不支持模型发现，请手动添加模型 ID'),
