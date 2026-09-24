@@ -17,6 +17,7 @@ import './ModelSettings.css';
 type Props = { onClose: () => void; onChanged: (catalog: ModelCatalog) => void };
 type View = 'connection' | 'discover' | 'model';
 type ModelDraft = Omit<ModelWrite, 'provider_id' | 'provider_revision'>;
+type ModelTestResult = { revision: number; state: 'checking' | 'success' | 'error'; message?: string };
 const connectionFields = ['name', 'preset_id', 'protocol', 'base_url', 'enabled'] as const;
 const modelFields = ['upstream_model_id', 'display_name', 'tools', 'vision', 'context_window', 'max_output_tokens'] as const;
 const freshConnection = (): ProviderWrite => ({ name: '', preset_id: 'custom', protocol: 'openai-compatible', base_url: '', enabled: true, api_key: '', clear_api_key: false });
@@ -54,6 +55,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [modelTests, setModelTests] = useState<Record<string, ModelTestResult>>({});
   const [confirm, setConfirm] = useState<{ title: string; detail?: string; label: string; action: () => void } | null>(null);
   const alive = useRef(true);
   const working = useRef(false);
@@ -145,6 +147,8 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     const [connections, models] = await Promise.all([listModelProviders(), listModels()]);
     if (!alive.current) return;
     setProviders(connections.providers); setPresets(connections.presets); setCatalog(models); onChanged(models);
+    setModelTests(current => Object.fromEntries(Object.entries(current).filter(([id, result]) =>
+      models.models.some(model => model.config_id === id && model.revision === result.revision))));
     const target = selectId ?? selected;
     const defaultProvider = models.models.find(m => m.config_id === models.default_model)?.provider_id;
     const next = connections.providers.find(p => p.provider_id === target)
@@ -166,6 +170,18 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     working.current = true; setBusy(label); setError(''); setNotice('');
     try { await operation(); }
     catch (cause) { if (alive.current) setError(cause instanceof Error ? cause.message : t('Request failed', '请求失败')); }
+    finally { working.current = false; if (alive.current) setBusy(''); }
+  }
+  async function testModel(model: ModelConfiguration) {
+    if (working.current) return;
+    working.current = true; setBusy(`test:${model.config_id}`);
+    const update = (state: ModelTestResult['state'], message?: string) => {
+      if (alive.current) setModelTests(current => ({ ...current,
+        [model.config_id]: { revision: model.revision, state, message } }));
+    };
+    update('checking');
+    try { await testModelConfiguration(model); update('success'); }
+    catch (cause) { update('error', cause instanceof Error ? cause.message : t('Request failed', '请求失败')); }
     finally { working.current = false; if (alive.current) setBusy(''); }
   }
   function choose(id: string) {
@@ -299,7 +315,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
             <Icon name="plus" size={17} />{t('Add provider', '添加提供商')}
           </button>
         </aside>
-        <main className="pm-main" aria-busy={loading || !!busy}>
+        <main className="pm-main" aria-busy={loading || (!!busy && !busy.startsWith('test:'))}>
           <div className="pm-title-row">
             <h3 title={!editable ? t('Managed by administrators', '由管理员维护') : undefined}>{heading}</h3>
             <div className="pm-title-actions">
@@ -369,7 +385,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                       <button key={id} aria-pressed={filter === id} className={filter === id ? 'is-active' : ''} onClick={() => setFilter(id)}>{name}</button>)}
                   </div>
                 </div>}
-                <div className="pm-model-list">{visibleModels.map(m => <article key={m.config_id} className={`pm-model-row ${m.unavailable_reason ? 'is-unavailable' : ''}`}>
+                <div className="pm-model-list">{visibleModels.map(m => {
+                  const result = modelTests[m.config_id]?.revision === m.revision ? modelTests[m.config_id] : undefined;
+                  const statusId = `model-test-${m.config_id}`;
+                  return <article key={m.config_id} className={`pm-model-row ${m.unavailable_reason ? 'is-unavailable' : ''}`}>
                   <span className="pm-model-logo"><ModelProviderIcon modelId={m.upstream_model_id} size={22} /></span>
                   <div className="pm-model-copy">
                     <div className="pm-model-name"><strong title={m.display_name}>{m.display_name}</strong>
@@ -382,15 +401,20 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                       {catalog.default_model === m.config_id && <span className="is-default">{t('Default', '默认')}</span>}
                       {m.unavailable_reason && <span className="is-neutral" title={modelErrorMessage(m.unavailable_reason)}><Icon name="info" size={13} /></span>}
                     </div>
+                    <div id={statusId} className={`pm-model-test ${result ? `is-${result.state}` : ''}`}
+                      role="status" aria-live="polite" aria-atomic="true" aria-label={t(`Test result for ${m.display_name}`, `${m.display_name} 检测结果`)}>
+                      {result && <><Icon name={result.state === 'checking' ? 'refresh' : result.state === 'success' ? 'check' : 'info'} size={14} />
+                        <span>{result.state === 'checking' ? t('Testing…', '检测中…') : result.state === 'success' ? t('Test passed', '检测通过')
+                          : t(`Test failed: ${result.message}`, `检测失败：${result.message}`)}</span></>}
+                    </div>
                   </div>
                   <div className="pm-model-actions">
                     <button className="pm-icon-button" disabled={!!busy || !!m.unavailable_reason || catalog.default_model === m.config_id}
                       title={t('Set as default', '设为默认')} aria-label={t(`Set ${m.display_name} as default`, `将 ${m.display_name} 设为默认`)}
                       onClick={() => void run(m.config_id, async () => { await setDefaultModel(m.config_id); await reload(); })}><Icon name="star" size={16} /></button>
                     <button className="pm-icon-button" disabled={!!busy || dirty} title={t('Test model', '检测模型')}
-                      aria-label={t(`Test ${m.display_name}`, `检测 ${m.display_name}`)} onClick={() => void run(m.config_id, async () => {
-                        await testModelConfiguration(m); if (alive.current) setNotice(t('Test passed', '检测通过'));
-                      })}><Icon name="pulse" size={16} /></button>
+                      aria-label={t(`Test ${m.display_name}`, `检测 ${m.display_name}`)} aria-describedby={result ? statusId : undefined}
+                      onClick={() => void testModel(m)}><Icon name="pulse" size={16} /></button>
                     {editable && <>
                       <button className="pm-icon-button" disabled={!!busy || dirty} title={t('Edit model', '编辑模型')}
                         aria-label={t(`Edit ${m.display_name}`, `编辑 ${m.display_name}`)} onClick={() => editModel(m)}><Icon name="settings" size={16} /></button>
@@ -403,7 +427,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                     <button role="switch" aria-checked={m.enabled} className={`pm-switch pm-switch-small ${m.enabled ? 'is-on' : ''}`} disabled={!!busy || dirty}
                       aria-label={t(`Enable ${m.display_name}`, `启用 ${m.display_name}`)} onClick={() => void run(m.config_id, async () => { await setModelEnabled(m, !m.enabled); await reload(); })}><span /></button>
                   </div>
-                </article>)}</div>
+                </article>; })}</div>
                 {!visibleModels.length && <div className="pm-empty">{ownModels.length ? t('No matching models', '无匹配模型') : t('No models', '暂无模型')}</div>}
               </section>}
             </>}

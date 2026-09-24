@@ -397,3 +397,71 @@ describe('connection change baseline', () => {
     expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 });
+
+describe('inline model tests', () => {
+  it('shows progress, failure and retry success inside the tested row without a top banner', async () => {
+    models = [model];
+    let reject!: (reason: Error) => void;
+    vi.mocked(api.testModelConfiguration).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }))
+      .mockResolvedValueOnce({ success: true });
+    const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />); await openProvider();
+    const button = screen.getByRole('button', { name: '检测 团队模型' });
+    const row = button.closest('article')!;
+    await u.click(button);
+    const status = within(row).getByRole('status', { name: '团队模型 检测结果' });
+    expect(status.textContent).toContain('检测中');
+    expect(button.getAttribute('aria-describedby')).toBe(status.id);
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(row.closest('main')!.getAttribute('aria-busy')).toBe('false');
+    await act(async () => reject(new Error('认证失败，请检查 API Key')));
+    expect(status.textContent).toBe('检测失败：认证失败，请检查 API Key');
+    expect(document.querySelector('.pm-feedback')).toBeNull();
+    await u.click(button);
+    await waitFor(() => expect(status.textContent).toBe('检测通过'));
+    expect(status.textContent).not.toContain('认证失败');
+    expect(api.testModelConfiguration).toHaveBeenCalledTimes(2);
+    expect(api.testModelConfiguration).toHaveBeenLastCalledWith(model);
+    expect(document.querySelector('.pm-feedback')).toBeNull();
+  });
+
+  it('keeps results attached to their models across other tests, filtering and provider switches', async () => {
+    models = [model, { ...model, config_id: 'second-model', display_name: '第二模型' }];
+    connections.push({ ...provider, provider_id: 'p2', name: '第二网关' });
+    vi.mocked(api.testModelConfiguration).mockResolvedValueOnce({ success: true }).mockRejectedValueOnce(new Error('连接超时'));
+    const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />); await openProvider();
+    await u.click(screen.getByRole('button', { name: '检测 团队模型' }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '团队模型 检测结果' }).textContent).toBe('检测通过'));
+    await u.click(screen.getByRole('button', { name: '检测 第二模型' }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '第二模型 检测结果' }).textContent).toContain('连接超时'));
+    expect(screen.getByRole('status', { name: '团队模型 检测结果' }).textContent).toBe('检测通过');
+    await u.type(screen.getByLabelText('搜索已添加模型'), '团队');
+    expect(screen.queryByRole('status', { name: '第二模型 检测结果' })).toBeNull();
+    await u.clear(screen.getByLabelText('搜索已添加模型'));
+    expect(screen.getByRole('status', { name: '第二模型 检测结果' }).textContent).toContain('连接超时');
+    await u.click(screen.getByRole('button', { name: /第二网关/ }));
+    expect(screen.queryByText('检测通过')).toBeNull();
+    await u.click(screen.getByRole('button', { name: /我的网关/ }));
+    expect(screen.getByRole('status', { name: '团队模型 检测结果' }).textContent).toBe('检测通过');
+    expect(screen.getByRole('status', { name: '第二模型 检测结果' }).textContent).toContain('连接超时');
+  });
+
+  it('invalidates results after connection or model revisions change, and when a model is removed', async () => {
+    models = [model, { ...model, config_id: 'second-model', display_name: '第二模型' }];
+    vi.mocked(api.testModelConfiguration).mockResolvedValue({ success: true });
+    const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />); await openProvider();
+    for (const name of ['团队模型', '第二模型']) {
+      await u.click(screen.getByRole('button', { name: `检测 ${name}` }));
+      await waitFor(() => expect(screen.getByRole('status', { name: `${name} 检测结果` }).textContent).toBe('检测通过'));
+    }
+    // Provider edits bump every attached model's revision on the server.
+    connections = [{ ...provider, revision: 2 }];
+    models = [{ ...model, revision: 2 }];
+    await u.click(screen.getByRole('button', { name: '刷新模型服务' }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '团队模型 检测结果' }).textContent).toBe(''));
+    expect(screen.queryByRole('status', { name: '第二模型 检测结果' })).toBeNull();
+    await waitFor(() => expect((screen.getByRole('button', { name: '检测 团队模型' }) as HTMLButtonElement).disabled).toBe(false));
+    await u.click(screen.getByRole('button', { name: '检测 团队模型' }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '团队模型 检测结果' }).textContent).toBe('检测通过'));
+    expect(api.testModelConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 2 }));
+  });
+});
