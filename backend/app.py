@@ -1577,7 +1577,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         if not controls_enabled():
             raise HTTPException(409, {'code': 'MODEL_CONTROLS_REQUIRED'})
         return await runtime.request('POST', '/internal/model-catalog/bootstrap', headers=service_headers(user.user_id),
-            json_body={'allowed': user.allowed_models, 'legacy': [asdict(item) for item in custom_models.list(user.user_id)]})
+            json_body={'allowed': user.allowed_models, 'is_admin': 'admin' in user.roles,
+                       'legacy': [asdict(item) for item in custom_models.list(user.user_id)]})
 
     async def available_models_for(user: UserRecord) -> list[str]:
         if controls_enabled():

@@ -1786,7 +1786,7 @@ function App() {
   function applyModelCatalog(catalog: ModelCatalog) {
     setModelCatalog(catalog);
     setDefaultModel(catalog.default_model);
-    setCustomModels(catalog.models.filter(item => item.source === 'custom'));
+    setCustomModels(catalog.models);
     setAvailableModels(catalog.models.filter(item => !item.unavailable_reason).map(item => item.config_id));
     // Refresh availability without mutating graph, messages or per-session selection.
     for (const view of Object.values(conversationRef.current.viewsBySessionId)) {

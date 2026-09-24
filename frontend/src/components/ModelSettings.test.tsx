@@ -159,3 +159,49 @@ it('cancels provider deletion with Escape and displays an active-task rejection'
   expect((await screen.findByRole('alert')).textContent).toContain('正被任务使用');
   expect(screen.getByText('团队模型')).toBeTruthy();
 });
+
+
+it('opens the actual shared provider and exposes the same connection and model controls to admins', async () => {
+  const shared = { ...provider, provider_id: 'shared-zzz', name: '智增增', preset_id: 'zhizengzeng', scope: 'shared' as const, editable: true, model_count: 1 };
+  connections = [provider, shared]; models = [{ ...model, source: 'deployment', provider_id: shared.provider_id, provider_name: shared.name }];
+  vi.mocked(api.listModels).mockImplementation(async () => ({ models, default_model: model.config_id }));
+  const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
+  await screen.findByRole('heading', { name: /智增增\s*共享/ });
+  expect(screen.queryByText('系统模型')).toBeNull();
+  expect((screen.getByLabelText('API 地址') as HTMLInputElement).value).toBe(shared.base_url);
+  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('');
+  expect(screen.getByRole('button', { name: '管理' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '编辑 团队模型' })).toBeTruthy();
+  await u.click(screen.getByRole('button', { name: '删除提供商' }));
+  expect(screen.getByRole('alertdialog').textContent).toContain('所有账户');
+  expect(api.deleteModelProvider).not.toHaveBeenCalled();
+});
+
+it('keeps a shared connection visible but read-only for members and preserves personal model choices', async () => {
+  connections = [{ ...provider, name: '智增增', scope: 'shared', editable: false }];
+  models = [{ ...model, source: 'deployment' }];
+  const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
+  await screen.findByRole('heading', { name: /智增增\s*共享/ });
+  expect((screen.getByLabelText('API 地址') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).disabled).toBe(true);
+  expect(screen.queryByRole('button', { name: '删除提供商' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '管理' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '移除 团队模型' })).toBeNull();
+  await u.click(screen.getByRole('button', { name: '将 团队模型 设为默认' }));
+  await waitFor(() => expect(api.setDefaultModel).toHaveBeenCalledWith(model.config_id));
+  await u.click(screen.getByRole('button', { name: '添加提供商' }));
+  expect(screen.queryByLabelText('使用范围')).toBeNull();
+});
+
+it('lets administrators create shared providers through the ordinary add form', async () => {
+  vi.mocked(api.listModelProviders).mockImplementation(async () => ({ providers: connections, can_manage_shared: true, presets: [
+    { id: 'zhizengzeng', name: '智增增', base_url: 'https://api.zhizengzeng.com/v1', icon: 'unknown' },
+    { id: 'custom', name: '自定义提供商', base_url: '', icon: 'unknown' },
+  ] }));
+  const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
+  await openProvider(); await u.click(screen.getByRole('button', { name: '添加提供商' }));
+  await u.selectOptions(screen.getByLabelText('提供商类型'), 'zhizengzeng');
+  await u.selectOptions(screen.getByLabelText('使用范围'), 'shared');
+  await u.click(screen.getByRole('button', { name: '添加' }));
+  await waitFor(() => expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ scope: 'shared', name: '智增增', base_url: 'https://api.zhizengzeng.com/v1' })));
+});

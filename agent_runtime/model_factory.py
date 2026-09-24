@@ -33,7 +33,7 @@ def _first_env(*names: str, fallback: str = "") -> str:
     return fallback.strip()
 
 
-def _endpoint(model_id: str, config: AgentRuntimeConfig) -> tuple[str, str]:
+def _endpoint(model_id: str, config: AgentRuntimeConfig, *, allow_missing: bool = False) -> tuple[str, str]:
     provider = provider_for_model(model_id)
     if provider == "openai":
         key = _first_env("OPENAI_API_KEY", "LLM_API_KEY", fallback=config.llm_api_key)
@@ -50,7 +50,7 @@ def _endpoint(model_id: str, config: AgentRuntimeConfig) -> tuple[str, str]:
     else:
         key = _first_env("QWEN_API_KEY", "DASHSCOPE_API_KEY", "LLM_API_KEY", fallback=config.llm_api_key)
         base = _first_env("QWEN_BASE_URL", "DASHSCOPE_BASE_URL", "LLM_BASE_URL", fallback=config.llm_base_url)
-    if not key or not base:
+    if not allow_missing and (not key or not base):
         raise RuntimeError(f"模型 {model_id} 缺少 API Key 或 OpenAI-compatible Base URL")
     return key, base
 
