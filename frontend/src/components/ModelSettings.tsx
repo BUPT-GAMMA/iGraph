@@ -16,8 +16,11 @@ import './ModelSettings.css';
 
 type Props = { onClose: () => void; onChanged: (catalog: ModelCatalog) => void };
 type View = 'connection' | 'discover' | 'model';
+type ModelDraft = Omit<ModelWrite, 'provider_id' | 'provider_revision'>;
+const connectionFields = ['name', 'preset_id', 'protocol', 'base_url', 'enabled'] as const;
+const modelFields = ['upstream_model_id', 'display_name', 'tools', 'vision', 'context_window', 'max_output_tokens'] as const;
 const freshConnection = (): ProviderWrite => ({ name: '', preset_id: 'custom', protocol: 'openai-compatible', base_url: '', enabled: true, api_key: '', clear_api_key: false });
-const freshModel = (): Omit<ModelWrite, 'provider_id' | 'provider_revision'> => ({ upstream_model_id: '', display_name: '', tools: true, vision: false, context_window: 131072, max_output_tokens: 4096 });
+const freshModel = (): ModelDraft => ({ upstream_model_id: '', display_name: '', tools: true, vision: false, context_window: 131072, max_output_tokens: 4096 });
 function draftFor(provider: ModelProviderConnection, apiKey = ''): ProviderWrite {
   return { provider_id: provider.provider_id, revision: provider.revision, name: provider.name, preset_id: provider.preset_id,
     protocol: provider.protocol, base_url: provider.base_url, enabled: provider.enabled, api_key: apiKey, clear_api_key: false };
@@ -33,8 +36,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [selected, setSelected] = useState('');
   const [draft, setDraft] = useState<ProviderWrite>(freshConnection);
+  const [connectionBaseline, setConnectionBaseline] = useState<ProviderWrite>(freshConnection);
   const [view, setView] = useState<View>('connection');
   const [modelDraft, setModelDraft] = useState(freshModel);
+  const [modelBaseline, setModelBaseline] = useState(freshModel);
   const [discovered, setDiscovered] = useState<DiscoveredModels | null>(null);
   const [checked, setChecked] = useState<string[]>([]);
   const [search, setSearch] = useState('');
@@ -61,15 +66,26 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const credentialMatches = !!provider && credential?.provider_id === provider.provider_id && credential.revision === provider.revision;
   const keyReady = !provider || !editable || credentialMatches;
   const savedKey = credentialMatches ? credential.api_key : '';
-  const dirty = editable && JSON.stringify(draft) !== JSON.stringify(provider ? draftFor(provider, savedKey) : freshConnection());
+  const dirty = editable && (connectionFields.some(field => draft[field] !== connectionBaseline[field])
+    || (draft.clear_api_key ? '' : draft.api_key || '') !== (connectionBaseline.api_key || ''));
+  const modelDirty = view === 'model' && modelFields.some(field => modelDraft[field] !== modelBaseline[field]);
   const ownModels = catalog.models.filter(m => m.provider_id === selected).sort((a, b) => a.display_name.localeCompare(b.display_name));
   const presetName = (preset: ProviderPreset) => preset.id === 'custom' ? t('Custom provider', '自定义提供商') : preset.id === 'qwen' ? t('Alibaba Cloud', '阿里云百炼') : preset.name;
   const providerIcon = (id: string) => (presets.find(p => p.id === id)?.icon || 'unknown') as ModelProvider;
   const protect = (action: () => void) => {
     if (working.current) return;
-    if (dirty || view === 'model') setConfirm({ title: t('Discard changes?', '放弃修改？'), label: t('Discard', '放弃'), action });
+    if (dirty || modelDirty) setConfirm({ title: t('Discard changes?', '放弃修改？'), label: t('Discard', '放弃'), action });
     else action();
   };
+  function resetConnection(next: ProviderWrite) {
+    setDraft(next); setConnectionBaseline(next);
+  }
+  function resetModel(model?: ModelConfiguration) {
+    const next: ModelDraft = model ? { config_id: model.config_id, revision: model.revision, upstream_model_id: model.upstream_model_id,
+      display_name: model.display_name, tools: model.tools, vision: model.vision,
+      context_window: model.context_window, max_output_tokens: model.max_output_tokens } : freshModel();
+    setModelDraft(next); setModelBaseline(next);
+  }
   closeRef.current = () => { if (confirm) setConfirm(null); else protect(onClose); };
 
   useEffect(() => {
@@ -115,8 +131,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     void getProviderCredentials(provider, controller.signal).then(result => {
       if (cancelled) return;
       setCredential(result);
-      setDraft(current => current.provider_id === result.provider_id && current.revision === result.revision
-        ? { ...current, api_key: result.api_key, clear_api_key: false } : current);
+      // Loading saved credentials changes the baseline too, without erasing edits to other fields.
+      const withKey = (current: ProviderWrite) => current.provider_id === result.provider_id && current.revision === result.revision
+        ? { ...current, api_key: result.api_key, clear_api_key: false } : current;
+      setDraft(withKey); setConnectionBaseline(withKey);
     }).catch(cause => {
       if (!cancelled) setCredentialError(cause instanceof Error ? cause.message : t('Could not load API key', '读取密钥失败'));
     });
@@ -133,8 +151,13 @@ export function ModelSettings({ onClose, onChanged }: Props) {
       || (target !== 'new' ? connections.providers.find(p => p.provider_id === defaultProvider) || connections.providers[0] : undefined);
     setSelected(next?.provider_id || 'new');
     if (selectId !== undefined || !dirty) {
-      setDraft(next ? draftFor(next) : freshConnection());
+      resetConnection(next ? draftFor(next) : freshConnection());
       setCredential(null); setCredentialError(''); setCredentialReload(value => value + 1);
+    }
+    if (selectId !== undefined && view === 'model') {
+      const latest = models.models.find(m => m.config_id === modelDraft.config_id && m.provider_id === next?.provider_id);
+      resetModel(latest);
+      if (modelDraft.config_id && !latest) setView('connection');
     }
   }
 
@@ -149,7 +172,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     if (id === selected) return;
     protect(() => {
       const next = providers.find(p => p.provider_id === id);
-      setSelected(id); setDraft(next ? draftFor(next) : freshConnection()); setView('connection'); setEditIdentity(false);
+      setSelected(id); resetConnection(next ? draftFor(next) : freshConnection()); setView('connection'); setEditIdentity(false);
       setError(''); setNotice(''); setDiscovered(null); setChecked([]); setModelSearch(''); setFilter('all'); setReveal(false);
     });
   }
@@ -166,14 +189,12 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     void run('save', async () => {
       const result = await saveModelProvider(draft);
       if (!alive.current) return;
-      setReveal(false); setEditIdentity(false); setDraft(draftFor(result.provider)); setSelected(result.provider.provider_id);
+      setReveal(false); setEditIdentity(false); resetConnection(draftFor(result.provider)); setSelected(result.provider.provider_id);
       await reload(result.provider.provider_id); if (!isNew) setNotice(t('Saved', '已保存'));
     });
   }
   function editModel(model?: ModelConfiguration) {
-    setModelDraft(model ? { config_id: model.config_id, revision: model.revision, upstream_model_id: model.upstream_model_id,
-      display_name: model.display_name, tools: model.tools, vision: model.vision,
-      context_window: model.context_window, max_output_tokens: model.max_output_tokens } : freshModel());
+    resetModel(model);
     setError(''); setNotice(''); setView('model');
   }
   function saveModel(event: FormEvent) {

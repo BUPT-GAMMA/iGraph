@@ -280,3 +280,120 @@ it('shows a load error and retries without fake dots', async () => {
   await waitFor(() => expect(input.value).toBe('stored-secret'));
   expect(input.type).toBe('password'); expect(screen.queryByRole('alert')).toBeNull();
 });
+
+describe('unsaved model changes', () => {
+  it.each(['返回', '取消', '关闭模型服务', 'Escape', '切换提供商', '刷新模型服务'])('does not prompt on %s after only opening a model', async action => {
+    models = [model]; connections.push({ ...provider, provider_id: 'p2', name: '第二网关' });
+    const close = vi.fn(); const u = user(); render(<ModelSettings onClose={close} onChanged={vi.fn()} />);
+    await openProvider(); await u.click(screen.getByRole('button', { name: '编辑 团队模型' }));
+    expect((screen.getByLabelText('模型 ID') as HTMLInputElement).value).toBe(model.upstream_model_id);
+    if (action === 'Escape') await u.keyboard('{Escape}');
+    else if (action === '切换提供商') await u.click(screen.getByRole('button', { name: /第二网关/ }));
+    else await u.click(screen.getByRole('button', { name: action }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(api.saveModelConfiguration).not.toHaveBeenCalled();
+    if (action === '关闭模型服务' || action === 'Escape') expect(close).toHaveBeenCalledOnce();
+    else if (action === '刷新模型服务') await waitFor(() => expect(api.listModels).toHaveBeenCalledTimes(2));
+    else expect(screen.queryByLabelText('模型 ID')).toBeNull();
+  });
+
+  it.each([
+    ['模型 ID', 'qwen/new'], ['显示名称', '新名称'], ['上下文窗口', '65536'], ['最大输出', '2048'],
+    ['工具调用', null], ['视觉', null],
+  ])('protects changes to %s, but allows returning after restoring its original value', async (label, changed) => {
+    models = [model]; const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openProvider(); await u.click(screen.getByRole('button', { name: '编辑 团队模型' }));
+    const input = screen.getByLabelText(label!) as HTMLInputElement;
+    const initial = input.value;
+    if (changed === null) await u.click(input); else fireEvent.change(input, { target: { value: changed } });
+    await u.click(screen.getByRole('button', { name: '返回' }));
+    expect(screen.getByRole('alertdialog').textContent).toContain('放弃修改');
+    await u.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '取消' }));
+    if (changed === null) await u.click(input); else fireEvent.change(input, { target: { value: initial } });
+    await u.click(screen.getByRole('button', { name: '返回' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.queryByLabelText('模型 ID')).toBeNull();
+    expect(api.saveModelConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('leaves untouched new-model defaults directly and protects a newly entered model', async () => {
+    const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />); await openProvider();
+    await u.click(screen.getByRole('button', { name: '添加' }));
+    await u.click(screen.getByRole('button', { name: '返回' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await u.click(screen.getByRole('button', { name: '添加' }));
+    await u.type(screen.getByLabelText('模型 ID'), 'new-model');
+    await u.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('alertdialog')).toBeTruthy();
+    await u.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '放弃' }));
+    expect(screen.queryByLabelText('模型 ID')).toBeNull();
+    await u.click(screen.getByRole('button', { name: '添加' }));
+    expect((screen.getByLabelText('模型 ID') as HTMLInputElement).value).toBe('');
+    expect(api.saveModelConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('resets discarded model edits to saved values when refreshing', async () => {
+    models = [model]; const close = vi.fn(); const u = user(); render(<ModelSettings onClose={close} onChanged={vi.fn()} />);
+    await openProvider(); await u.click(screen.getByRole('button', { name: '编辑 团队模型' }));
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '未保存名称' } });
+    await u.click(screen.getByRole('button', { name: '刷新模型服务' }));
+    await u.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '放弃' }));
+    await waitFor(() => expect((screen.getByLabelText('显示名称') as HTMLInputElement).value).toBe(model.display_name));
+    await u.click(screen.getByRole('button', { name: '关闭模型服务' }));
+    expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('keeps unsaved edits after a failed save, and is clean after a successful retry', async () => {
+    models = [model]; vi.mocked(api.saveModelConfiguration).mockRejectedValueOnce(new Error('保存失败'));
+    const close = vi.fn(); const u = user(); render(<ModelSettings onClose={close} onChanged={vi.fn()} />);
+    await openProvider(); await u.click(screen.getByRole('button', { name: '编辑 团队模型' }));
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '新名称' } });
+    await u.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByText('保存失败');
+    await u.click(screen.getByRole('button', { name: '返回' }));
+    await u.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '取消' }));
+    expect((screen.getByLabelText('显示名称') as HTMLInputElement).value).toBe('新名称');
+    await u.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByText('已保存');
+    await u.click(screen.getByRole('button', { name: '关闭模型服务' }));
+    expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+});
+
+describe('connection change baseline', () => {
+  it('does not prompt for credentials that are still loading or have just arrived', async () => {
+    let complete!: (value: { provider_id: string; revision: number; api_key: string }) => void;
+    vi.mocked(api.getProviderCredentials).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const close = vi.fn(); const u = user(); render(<ModelSettings onClose={close} onChanged={vi.fn()} />);
+    await screen.findByRole('heading', { name: '我的网关' });
+    await u.click(screen.getByRole('button', { name: '关闭模型服务' }));
+    expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alertdialog')).toBeNull();
+    await act(async () => complete({ provider_id: 'p1', revision: 1, api_key: 'stored-secret' }));
+    await u.click(screen.getByRole('button', { name: '编辑提供商' }));
+    await u.click(screen.getByRole('button', { name: '显示 API 密钥' }));
+    await u.click(screen.getByRole('button', { name: '关闭模型服务' }));
+    expect(close).toHaveBeenCalledTimes(2); expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('preserves real edits made while credentials load and recognizes restored values', async () => {
+    let complete!: (value: { provider_id: string; revision: number; api_key: string }) => void;
+    vi.mocked(api.getProviderCredentials).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const close = vi.fn(); const u = user(); render(<ModelSettings onClose={close} onChanged={vi.fn()} />);
+    await screen.findByRole('heading', { name: '我的网关' });
+    await u.click(screen.getByRole('button', { name: '编辑提供商' }));
+    fireEvent.change(screen.getByLabelText('提供商名称'), { target: { value: '新名称' } });
+    await act(async () => complete({ provider_id: 'p1', revision: 1, api_key: 'stored-secret' }));
+    expect((screen.getByLabelText('提供商名称') as HTMLInputElement).value).toBe('新名称');
+    await u.click(screen.getByRole('button', { name: '关闭模型服务' }));
+    expect(close).not.toHaveBeenCalled();
+    await u.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '取消' }));
+    fireEvent.change(screen.getByLabelText('提供商名称'), { target: { value: provider.name } });
+    fireEvent.change(screen.getByLabelText('API 密钥'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('API 密钥'), { target: { value: 'stored-secret' } });
+    fireEvent.change(screen.getByLabelText('API 地址'), { target: { value: 'https://other.test/v1' } });
+    fireEvent.change(screen.getByLabelText('API 地址'), { target: { value: provider.base_url } });
+    expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+    await u.click(screen.getByRole('button', { name: '关闭模型服务' }));
+    expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+});
