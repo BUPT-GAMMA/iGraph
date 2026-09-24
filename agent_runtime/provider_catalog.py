@@ -186,6 +186,13 @@ class ProviderCatalogMixin:
                 self._sync_shared(conn, uid)
             return dict(success=True, added_count=added, skipped_count=len(items) - added)
 
+    def provider_credentials(self, uid, pid, revision):
+        with self.store.transaction(uid, '__models__') as conn:
+            self._shared_lock(conn)
+            row = self._require_provider(conn, uid, pid, revision)
+            self._assert_provider_editable(conn, uid, row)
+            return dict(provider_id=pid, revision=row['revision'], api_key=row['data']['api_key'])
+
     def provider_configuration(self, uid, pid, revision):
         with self.store.transaction(uid, '__models__') as conn:
             self._sync_shared(conn, uid)

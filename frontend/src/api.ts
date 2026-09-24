@@ -53,6 +53,8 @@ export type ModelWrite = {
 export type DiscoveredModels = { models: { id: string; name: string }[]; latency_ms: number; truncated: boolean };
 const modelJson = (method: string, body: unknown) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 export const listModelProviders = () => json<{ providers: ModelProviderConnection[]; presets: ProviderPreset[] }>('/api/model-providers');
+export const getProviderCredentials = (provider: ModelProviderConnection, signal?: AbortSignal) =>
+  json<{ provider_id: string; revision: number; api_key: string }>(`/api/model-providers/${encodeURIComponent(provider.provider_id)}/credentials?revision=${provider.revision}`, { cache: 'no-store', signal });
 export const saveModelProvider = (input: ProviderWrite) => json<{ provider: ModelProviderConnection }>('/api/model-providers', modelJson('POST', input));
 export const deleteModelProvider = (provider: ModelProviderConnection) => json(`/api/model-providers/${encodeURIComponent(provider.provider_id)}?revision=${provider.revision}`, { method: 'DELETE' });
 export const discoverProviderModels = (provider: ModelProviderConnection) => json<DiscoveredModels>('/api/model-providers/discover', modelJson('POST', { provider_id: provider.provider_id, revision: provider.revision }));

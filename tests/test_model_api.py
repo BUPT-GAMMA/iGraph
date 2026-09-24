@@ -172,3 +172,17 @@ def test_new_provider_api_never_shares_a_users_credentials(api, is_admin):
     assert 'private-key' not in result.text
     assert all(p['provider_id'] != provider['provider_id'] for p in catalog.list_providers('bob')['providers'])
     assert 'can_manage_shared' not in client.get('/internal/model-providers').json()
+
+
+def test_migrated_credentials_require_admin_and_are_not_cached(api):
+    client, catalog = api
+    p = next(p for p in catalog.list_providers('alice')['providers'] if p['scope'] == 'shared')
+    path = f"/internal/model-providers/{p['provider_id']}/credentials?revision={p['revision']}"
+    denied = client.get(path)
+    assert denied.status_code == 403 and 'deployment-secret' not in denied.text
+    catalog.bootstrap('alice', ['qwen3.6-plus'], is_admin=True)
+    response = client.get(path)
+    assert response.status_code == 200 and response.json()['api_key'] == 'deployment-secret'
+    assert response.headers['cache-control'] == 'no-store'
+    catalog.bootstrap('alice', ['qwen3.6-plus'], is_admin=False)
+    assert client.get(path).status_code == 403

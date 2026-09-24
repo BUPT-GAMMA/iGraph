@@ -308,3 +308,31 @@ def test_provider_delete_racing_run_start_never_removes_active_credentials(servi
     else:
         assert deleted == 'MODEL_PROVIDER_IN_USE'
         assert catalog.resolve('alice', started[0]['state']['model_snapshot'])['api_key'] == 'private-key'
+
+
+def test_credentials_are_scoped_uncached_and_revision_checked(service):
+    client, catalog = service
+    p = connection(client)
+    path = f"/internal/model-providers/{p['provider_id']}/credentials"
+    response = client.get(path, params={'revision': p['revision']})
+    assert response.status_code == 200
+    assert response.json() == dict(provider_id=p['provider_id'], revision=1, api_key='private-key')
+    assert response.headers['cache-control'] == 'no-store'
+    assert client.get(path, params={'revision': 1}, headers={'X-User-ID': 'bob'}).status_code == 404
+    assert client.get(path, params={'revision': 1}, headers={'X-iGraph-Service-Key': ''}).status_code == 403
+    assert client.get(path, params={'revision': 1}, headers={'X-User-ID': ''}).status_code == 401
+    assert 'private-key' not in client.get('/internal/model-providers').text
+    changed = client.post('/internal/model-providers', json={**p, 'api_key': 'new-key'}).json()['provider']
+    assert client.get(path, params={'revision': 1}).status_code == 409
+    assert client.get(path, params={'revision': changed['revision']}).json()['api_key'] == 'new-key'
+    cleared = client.post('/internal/model-providers', json={**changed, 'api_key': '', 'clear_api_key': True}).json()['provider']
+    assert client.get(path, params={'revision': cleared['revision']}).json()['api_key'] == ''
+    assert client.delete(f"/internal/model-providers/{p['provider_id']}?revision={cleared['revision']}").status_code == 200
+    assert client.get(path, params={'revision': cleared['revision']}).status_code == 404
+
+
+def test_credentials_can_be_loaded_before_configuring_an_address(service):
+    client, catalog = service
+    p = client.post('/internal/model-providers', json={'name': 'Incomplete', 'api_key': 'saved-key'}).json()['provider']
+    response = client.get(f"/internal/model-providers/{p['provider_id']}/credentials?revision=1")
+    assert response.status_code == 200 and response.json()['api_key'] == 'saved-key'

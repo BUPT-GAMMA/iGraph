@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  deleteModelConfiguration, deleteModelProvider, discoverProviderModels, importProviderModels, listModelProviders, listModels,
+  deleteModelConfiguration, deleteModelProvider, discoverProviderModels, importProviderModels, getProviderCredentials, listModelProviders, listModels,
   modelErrorMessage, saveModelConfiguration, saveModelProvider, setDefaultModel, setModelEnabled, testModelConfiguration,
   type DiscoveredModels, type ModelCatalog, type ModelConfiguration, type ModelProviderConnection,
   type ModelWrite, type ProviderPreset, type ProviderWrite,
@@ -16,9 +16,9 @@ type Props = { onClose: () => void; onChanged: (catalog: ModelCatalog) => void }
 type View = 'connection' | 'discover' | 'model';
 const freshConnection = (): ProviderWrite => ({ name: '', preset_id: 'custom', protocol: 'openai-compatible', base_url: '', enabled: true, api_key: '', clear_api_key: false });
 const freshModel = (): Omit<ModelWrite, 'provider_id' | 'provider_revision'> => ({ upstream_model_id: '', display_name: '', tools: true, vision: false, context_window: 131072, max_output_tokens: 4096 });
-function draftFor(provider: ModelProviderConnection): ProviderWrite {
+function draftFor(provider: ModelProviderConnection, apiKey = ''): ProviderWrite {
   return { provider_id: provider.provider_id, revision: provider.revision, name: provider.name, preset_id: provider.preset_id,
-    protocol: provider.protocol, base_url: provider.base_url, enabled: provider.enabled, api_key: '', clear_api_key: false };
+    protocol: provider.protocol, base_url: provider.base_url, enabled: provider.enabled, api_key: apiKey, clear_api_key: false };
 }
 
 export function ModelSettings({ onClose, onChanged }: Props) {
@@ -37,6 +37,9 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const [filter, setFilter] = useState('all');
   const [editIdentity, setEditIdentity] = useState(false);
   const [reveal, setReveal] = useState(false);
+  const [credential, setCredential] = useState<{ provider_id: string; revision: number; api_key: string } | null>(null);
+  const [credentialError, setCredentialError] = useState('');
+  const [credentialReload, setCredentialReload] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -50,7 +53,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const provider = providers.find(p => p.provider_id === selected);
   const isNew = selected === 'new';
   const editable = provider?.editable !== false;
-  const dirty = editable && JSON.stringify(draft) !== JSON.stringify(provider ? draftFor(provider) : freshConnection());
+  const credentialMatches = !!provider && credential?.provider_id === provider.provider_id && credential.revision === provider.revision;
+  const keyReady = !provider || !editable || credentialMatches;
+  const savedKey = credentialMatches ? credential.api_key : '';
+  const dirty = editable && JSON.stringify(draft) !== JSON.stringify(provider ? draftFor(provider, savedKey) : freshConnection());
   const ownModels = catalog.models.filter(m => m.provider_id === selected).sort((a, b) => a.display_name.localeCompare(b.display_name));
   const presetName = (preset: ProviderPreset) => preset.id === 'custom' ? t('Custom provider', '自定义提供商') : preset.id === 'qwen' ? t('Alibaba Cloud', '阿里云百炼') : preset.name;
   const providerIcon = (id: string) => (presets.find(p => p.id === id)?.icon || 'unknown') as ModelProvider;
@@ -95,6 +101,22 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     return () => { alive.current = false; document.body.style.overflow = overflow; document.removeEventListener('keydown', keydown, true); previous?.focus(); };
   }, []);
 
+  useEffect(() => {
+    setReveal(false); setCredential(null); setCredentialError('');
+    if (!provider || !editable) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    void getProviderCredentials(provider, controller.signal).then(result => {
+      if (cancelled) return;
+      setCredential(result);
+      setDraft(current => current.provider_id === result.provider_id && current.revision === result.revision
+        ? { ...current, api_key: result.api_key, clear_api_key: false } : current);
+    }).catch(cause => {
+      if (!cancelled) setCredentialError(cause instanceof Error ? cause.message : t('Could not load API key', '读取密钥失败'));
+    });
+    return () => { cancelled = true; controller.abort(); };
+  }, [provider?.provider_id, provider?.revision, editable, credentialReload]);
+
   async function reload(selectId?: string) {
     const [connections, models] = await Promise.all([listModelProviders(), listModels()]);
     if (!alive.current) return;
@@ -104,7 +126,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     const next = connections.providers.find(p => p.provider_id === target)
       || (target !== 'new' ? connections.providers.find(p => p.provider_id === defaultProvider) || connections.providers[0] : undefined);
     setSelected(next?.provider_id || 'new');
-    if (selectId !== undefined || !dirty) setDraft(next ? draftFor(next) : freshConnection());
+    if (selectId !== undefined || !dirty) {
+      setDraft(next ? draftFor(next) : freshConnection());
+      setCredential(null); setCredentialError(''); setCredentialReload(value => value + 1);
+    }
   }
 
   async function run(label: string, operation: () => Promise<void>) {
@@ -115,6 +140,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     finally { working.current = false; if (alive.current) setBusy(''); }
   }
   function choose(id: string) {
+    if (id === selected) return;
     protect(() => {
       const next = providers.find(p => p.provider_id === id);
       setSelected(id); setDraft(next ? draftFor(next) : freshConnection()); setView('connection'); setEditIdentity(false);
@@ -130,6 +156,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   }
   function saveConnection(event: FormEvent) {
     event.preventDefault();
+    if (!isNew && !keyReady) return;
     void run('save', async () => {
       const result = await saveModelProvider(draft);
       if (!alive.current) return;
@@ -189,7 +216,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const heading = isNew ? t('Add provider', '添加提供商') : provider?.name || '';
   const back = () => protect(() => { setView('connection'); setError(''); });
 
-  const connectionReady = editable && !!provider?.base_url && !dirty;
+  const connectionReady = editable && keyReady && !!provider?.base_url && !dirty;
   const endpoint = `${draft.base_url.trim().replace(/\/+$/, '')}/chat/completions`;
   const identityFields = <>
     <label>{t('Provider name', '提供商名称')}
@@ -254,7 +281,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
               {provider && editable && <button className="pm-icon-button pm-delete" aria-label={t('Delete provider', '删除提供商')}
                 title={t('Delete provider', '删除提供商')} disabled={!!busy} onClick={removeProvider}><Icon name="trash" size={16} /></button>}
               {provider && editable && <button role="switch" aria-checked={provider.enabled} aria-label={t('Enable provider', '启用提供商')}
-                className={`pm-switch ${provider.enabled ? 'is-on' : ''}`} disabled={!!busy || dirty || view !== 'connection'}
+                className={`pm-switch ${provider.enabled ? 'is-on' : ''}`} disabled={!!busy || !keyReady || dirty || view !== 'connection'}
                 onClick={() => void run('provider-state', async () => {
                   const result = await saveModelProvider({ ...draftFor(provider), enabled: !provider.enabled });
                   await reload(result.provider.provider_id);
@@ -263,7 +290,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                 title={t('Refresh', '刷新')} onClick={() => protect(() => void run('reload', () => reload(selected)))}><Icon name="refresh" size={17} /></button>
             </div>
           </div>
-          {error && <div className="pm-feedback is-error" role="alert"><Icon name="info" size={16} /><span>{error}</span></div>}
+          {(error || credentialError) && <div className="pm-feedback is-error" role="alert"><Icon name="info" size={16} /><span>{error || credentialError}</span></div>}
           {notice && <div className="pm-feedback is-success" role="status"><Icon name="check" size={16} /><span>{notice}</span></div>}
           {loading ? <div className="pm-empty" role="status"><span className="loader" /><span>{t('Loading…', '加载中…')}</span></div> : <>
             {view === 'connection' && <>
@@ -279,25 +306,24 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                   <label className="pm-wide">{t('API key', 'API 密钥')}
                     <span className="pm-key-field">
                       <input aria-label={t('API key', 'API 密钥')} type={reveal ? 'text' : 'password'} autoComplete="new-password"
-                        spellCheck={false} maxLength={8192} value={draft.api_key || ''} disabled={!!busy || !editable || draft.clear_api_key}
-                        onChange={e => setDraft({ ...draft, api_key: e.target.value })}
-                        title={provider.has_api_key ? t('Leave blank to keep the saved key', '留空保留已保存密钥') : undefined}
-                        placeholder={provider.has_api_key ? '••••••••••••••••' : 'API Key'} />
+                        spellCheck={false} maxLength={8192} value={editable && keyReady ? draft.api_key || '' : ''}
+                        disabled={!!busy || !editable || !keyReady} aria-busy={editable && !keyReady && !credentialError}
+                        onChange={e => setDraft({ ...draft, api_key: e.target.value, clear_api_key: !!savedKey && !e.target.value })}
+                        placeholder={!editable ? (provider.has_api_key ? t('Configured', '已配置') : t('Not configured', '未配置'))
+                          : !keyReady ? (credentialError ? t('Load failed', '读取失败') : t('Loading…', '加载中…')) : 'API Key'} />
                       <button type="button" aria-label={reveal ? t('Hide API key', '隐藏 API 密钥') : t('Show API key', '显示 API 密钥')}
-                        onClick={() => setReveal(!reveal)} disabled={!!busy || !editable}><Icon name={reveal ? 'eye-off' : 'eye'} size={17} /></button>
+                        onClick={() => setReveal(!reveal)} disabled={!!busy || !editable || !keyReady}><Icon name={reveal ? 'eye-off' : 'eye'} size={17} /></button>
                       <button type="button" className="pm-key-check" disabled={!!busy || !connectionReady} onClick={() => discover(false)}>
                         {busy === 'discover' ? t('Checking…', '检测中…') : t('Test', '检测')}
                       </button>
                     </span>
                   </label>
-                  {editable && provider.has_api_key && <label className="pm-check pm-wide"><input type="checkbox" checked={!!draft.clear_api_key} disabled={!!busy}
-                    onChange={e => setDraft({ ...draft, clear_api_key: e.target.checked, api_key: '' })} />{t('Clear key', '清除密钥')}</label>}
                   <label className="pm-wide"><span className="pm-field-label">{t('API base URL', 'API 地址')}
                     <span title={`OpenAI Chat Completions${draft.base_url ? ` · ${endpoint}` : ''}`}><Icon name="info" size={13} /></span>
                   </span><input type="url" aria-label={t('API base URL', 'API 地址')} autoComplete="off" spellCheck={false}
                     value={draft.base_url} disabled={!!busy || !editable} onChange={e => setDraft({ ...draft, base_url: e.target.value })} placeholder="https://api.example.com/v1" /></label>
                 </div>
-                {editable && <div className="pm-form-actions"><button type="submit" className="pm-button is-primary" disabled={!!busy || !dirty}>
+                {editable && <div className="pm-form-actions"><button type="submit" className="pm-button is-primary" disabled={!!busy || !keyReady || !dirty}>
                   {busy === 'save' ? t('Saving…', '保存中…') : t('Save', '保存')}
                 </button></div>}
               </form>}

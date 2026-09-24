@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api';
@@ -6,7 +6,7 @@ import { ModelSettings } from './ModelSettings';
 import type { ModelConfiguration, ModelProviderConnection } from '../api';
 
 vi.mock('../api', async () => ({ ...await vi.importActual('../api'),
-  listModelProviders: vi.fn(), listModels: vi.fn(), saveModelProvider: vi.fn(), discoverProviderModels: vi.fn(),
+  getProviderCredentials: vi.fn(), listModelProviders: vi.fn(), listModels: vi.fn(), saveModelProvider: vi.fn(), discoverProviderModels: vi.fn(),
   saveModelConfiguration: vi.fn(), importProviderModels: vi.fn(), deleteModelConfiguration: vi.fn(), deleteModelProvider: vi.fn(),
   setDefaultModel: vi.fn(), setModelEnabled: vi.fn(), testModelConfiguration: vi.fn(),
 }));
@@ -17,20 +17,25 @@ const model: ModelConfiguration = { config_id: 'custom-opaque-id', model_id: 'cu
   base_url: provider.base_url, source: 'custom', enabled: true, tools: true, vision: false, context_window: 131072, max_output_tokens: 4096 };
 let connections: ModelProviderConnection[];
 let models: ModelConfiguration[];
+let keys: Record<string, string>;
 const user = () => userEvent.setup();
 async function openProvider() {
   await screen.findByRole('button', { name: /我的网关/ });
   fireEvent.click(screen.getByRole('button', { name: /我的网关/ }));
+  await waitFor(() => expect((screen.getByLabelText('API 密钥') as HTMLInputElement).disabled).toBe(false));
 }
 beforeEach(() => {
-  vi.resetAllMocks(); connections = [{ ...provider }]; models = [];
+  vi.resetAllMocks(); connections = [{ ...provider }]; models = []; keys = { p1: 'stored-secret', 'shared-zzz': 'stored-secret' };
   vi.mocked(api.listModelProviders).mockImplementation(async () => ({ providers: connections, presets: [
     { id: 'openai', name: 'OpenAI', base_url: 'https://api.openai.com/v1', icon: 'openai' },
     { id: 'custom', name: '自定义提供商', base_url: '', icon: 'unknown' },
   ] }));
   vi.mocked(api.listModels).mockImplementation(async () => ({ models, default_model: '' }));
+  vi.mocked(api.getProviderCredentials).mockImplementation(async p => ({ provider_id: p.provider_id, revision: p.revision, api_key: keys[p.provider_id] || '' }));
   vi.mocked(api.saveModelProvider).mockImplementation(async input => {
-    const saved = { ...provider, ...input, provider_id: input.provider_id || 'new-provider', revision: 2, has_api_key: true, model_count: 0 };
+    const id = input.provider_id || 'new-provider';
+    keys[id] = input.clear_api_key ? '' : input.api_key || keys[id] || '';
+    const saved = { ...provider, ...input, provider_id: id, revision: (input.revision || 0) + 1, has_api_key: !!keys[id], model_count: 0 };
     connections = [saved]; return { provider: saved };
   });
   vi.mocked(api.importProviderModels).mockImplementation(async (p, items) => {
@@ -54,11 +59,12 @@ describe('Model services', () => {
     await u.click(screen.getByRole('button', { name: '添加' }));
     await screen.findByLabelText('API 地址');
     expect((screen.getByLabelText('API 地址') as HTMLInputElement).value).toBe('https://api.openai.com/v1');
+    await waitFor(() => expect((screen.getByLabelText('API 密钥') as HTMLInputElement).disabled).toBe(false));
     await u.type(screen.getByLabelText('API 密钥'), 'new-secret');
     await u.click(screen.getByRole('button', { name: '保存' }));
     await screen.findByText('已保存');
     expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ name: 'OpenAI', api_key: 'new-secret' }));
-    expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('');
+    await waitFor(() => expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('new-secret'));
     await u.click(screen.getByRole('button', { name: '添加' }));
     await u.type(screen.getByLabelText('模型 ID'), 'team/model');
     await u.click(screen.getByRole('button', { name: '保存' }));
@@ -69,8 +75,8 @@ describe('Model services', () => {
   it('preserves a saved key and asks before discarding connection edits', async () => {
     const close = vi.fn(); const u = user(); render(<ModelSettings onClose={close} onChanged={vi.fn()} />);
     await openProvider();
-    expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('');
-    expect(screen.getByLabelText('API 密钥').getAttribute('title')).toContain('保留');
+    expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('stored-secret');
+    expect(screen.getByLabelText('API 密钥').getAttribute('type')).toBe('password');
     await u.click(screen.getByRole('button', { name: '编辑提供商' }));
     await u.clear(screen.getByLabelText('提供商名称')); await u.type(screen.getByLabelText('提供商名称'), '新名称');
     expect((screen.getByRole('button', { name: '检测' }) as HTMLButtonElement).disabled).toBe(true);
@@ -79,7 +85,7 @@ describe('Model services', () => {
     await u.click(screen.getByRole('button', { name: '取消' }));
     await u.click(screen.getByRole('button', { name: '保存' }));
     await screen.findByText('已保存');
-    expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ api_key: '', name: '新名称' }));
+    expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ api_key: 'stored-secret', name: '新名称' }));
   });
 
   it('searches discovery results and imports only selected missing models', async () => {
@@ -169,7 +175,7 @@ it('opens the actual shared provider and exposes the same connection and model c
   await screen.findByRole('heading', { name: '智增增' });
   expect(screen.queryByText('系统模型')).toBeNull();
   expect((screen.getByLabelText('API 地址') as HTMLInputElement).value).toBe(shared.base_url);
-  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('');
+  await waitFor(() => expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('stored-secret'));
   expect(screen.getByRole('button', { name: '管理' })).toBeTruthy();
   expect(screen.getByRole('button', { name: '编辑 团队模型' })).toBeTruthy();
   await u.click(screen.getByRole('button', { name: '删除提供商' }));
@@ -184,6 +190,8 @@ it('keeps a shared connection visible but read-only for members and preserves pe
   await screen.findByRole('heading', { name: '智增增' });
   expect((screen.getByLabelText('API 地址') as HTMLInputElement).disabled).toBe(true);
   expect((screen.getByLabelText('API 密钥') as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByLabelText('API 密钥').getAttribute('placeholder')).toBe('已配置');
+  expect(api.getProviderCredentials).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: '删除提供商' })).toBeNull();
   expect(screen.queryByRole('button', { name: '管理' })).toBeNull();
   expect(screen.queryByRole('button', { name: '移除 团队模型' })).toBeNull();
@@ -207,4 +215,68 @@ it('creates personal providers without an access selector even for administrator
   await u.click(screen.getByRole('button', { name: '添加' }));
   await waitFor(() => expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ name: '智增增', base_url: 'https://api.zhizengzeng.com/v1' })));
   expect(vi.mocked(api.saveModelProvider).mock.calls[0][0]).not.toHaveProperty('scope');
+});
+
+
+it('reads and reveals the actual saved key, then masks it again on reopen', async () => {
+  const close = vi.fn(); const u = user();
+  const first = render(<ModelSettings onClose={close} onChanged={vi.fn()} />); await openProvider();
+  const input = screen.getByLabelText('API 密钥') as HTMLInputElement;
+  expect(input.value).toBe('stored-secret'); expect(input.type).toBe('password'); expect(input.placeholder).toBe('API Key');
+  expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+  await u.click(screen.getByRole('button', { name: '显示 API 密钥' }));
+  expect(input.type).toBe('text'); expect(input.value).toBe('stored-secret');
+  await u.click(screen.getByRole('button', { name: '隐藏 API 密钥' })); expect(input.type).toBe('password');
+  await u.click(screen.getByRole('button', { name: '关闭模型服务' }));
+  expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alertdialog')).toBeNull();
+  first.unmount(); render(<ModelSettings onClose={close} onChanged={vi.fn()} />); await openProvider();
+  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('stored-secret');
+  expect(screen.getByLabelText('API 密钥').getAttribute('type')).toBe('password');
+  expect(api.getProviderCredentials).toHaveBeenCalledTimes(2);
+});
+
+it('persists replacement and clearing through the key input', async () => {
+  const u = user(); const first = render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />); await openProvider();
+  await u.clear(screen.getByLabelText('API 密钥')); await u.type(screen.getByLabelText('API 密钥'), 'replacement-key');
+  await u.click(screen.getByRole('button', { name: '保存' }));
+  await waitFor(() => expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ api_key: 'replacement-key', clear_api_key: false })));
+  await waitFor(() => expect((screen.getByRole('button', { name: '检测' }) as HTMLButtonElement).disabled).toBe(false));
+  first.unmount(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />); await openProvider();
+  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('replacement-key');
+  await u.clear(screen.getByLabelText('API 密钥')); await u.click(screen.getByRole('button', { name: '保存' }));
+  await waitFor(() => expect(api.saveModelProvider).toHaveBeenLastCalledWith(expect.objectContaining({ api_key: '', clear_api_key: true })));
+  await waitFor(() => expect((screen.getByLabelText('API 密钥') as HTMLInputElement).disabled).toBe(false));
+  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('');
+  expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+  await u.click(screen.getByRole('button', { name: '刷新模型服务' }));
+  await waitFor(() => expect((screen.getByLabelText('API 密钥') as HTMLInputElement).disabled).toBe(false));
+  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('');
+});
+
+it('ignores a late credential response after switching providers', async () => {
+  connections.push({ ...provider, provider_id: 'p2', name: '第二网关' });
+  let complete!: (result: { provider_id: string; revision: number; api_key: string }) => void;
+  vi.mocked(api.getProviderCredentials).mockImplementation(p => p.provider_id === 'p1' ? new Promise(resolve => { complete = resolve; })
+    : Promise.resolve({ provider_id: 'p2', revision: 1, api_key: 'second-key' }));
+  const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
+  await screen.findByRole('heading', { name: '我的网关' });
+  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('');
+  expect((screen.getByRole('button', { name: '显示 API 密钥' }) as HTMLButtonElement).disabled).toBe(true);
+  await u.click(screen.getByRole('button', { name: /第二网关/ }));
+  await waitFor(() => expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('second-key'));
+  await act(async () => complete({ provider_id: 'p1', revision: 1, api_key: 'late-first-key' }));
+  expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('second-key');
+  expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('shows a load error and retries without fake dots', async () => {
+  vi.mocked(api.getProviderCredentials).mockRejectedValueOnce(new Error('读取密钥失败'));
+  const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
+  expect((await screen.findByRole('alert')).textContent).toContain('读取密钥失败');
+  const input = screen.getByLabelText('API 密钥') as HTMLInputElement;
+  expect(input.value).toBe(''); expect(input.placeholder).toBe('读取失败'); expect(input.disabled).toBe(true);
+  expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+  await u.click(screen.getByRole('button', { name: '刷新模型服务' }));
+  await waitFor(() => expect(input.value).toBe('stored-secret'));
+  expect(input.type).toBe('password'); expect(screen.queryByRole('alert')).toBeNull();
 });
