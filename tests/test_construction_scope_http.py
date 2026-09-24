@@ -163,7 +163,8 @@ def test_native_session_scope_mcp_reads_restore_and_project_cleanup(tmp_path):
                 schema = await client.get(f'{path}/{did}/construction/schema')
                 assert schema.status_code == 200, schema.text
                 assert schema.json()['schema']['graph']['visualization_kind'] == 'schema'
-                assert '123' not in schema.text
+                # Match a complete JSON value, not digits inside a random dataset UUID.
+                assert json.dumps('123') not in schema.text
             # Follow-up chat receives all current-scope source IDs, including an
             # upload that is not attached again on this turn.
             response = await client.post(a[2], files={'file': ('pending.txt', b'raw')})
