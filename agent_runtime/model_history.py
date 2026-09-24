@@ -43,10 +43,16 @@ def normalize_history(messages, *, protocol="openai-compatible", history_key=Non
             if call.get('id') in answered and call.get('function'):
                 function = call['function']
                 args = function.get('arguments', '{}')
+                try:
+                    parsed_args = json.loads(args) if isinstance(args, str) else args
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(parsed_args, dict):
+                    continue
                 calls.append({'id': call['id'], 'type': 'function', 'function': {
                     'name': function.get('name', ''), 'arguments': args if isinstance(args, str) else json.dumps(args)}})
                 if same_connection:
-                    for field in ('call_id', 'thought_signature'):
+                    for field in ('call_id', 'thought_signature', 'extra_content'):
                         if field in call:
                             calls[-1][field] = call[field]
         if len(calls) != len(message.tool_calls):

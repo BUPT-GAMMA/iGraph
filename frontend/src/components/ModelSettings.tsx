@@ -1,5 +1,5 @@
 import { Popup, PopupBackdrop, PopupPresence } from './PopupMotion';
-import { useIsPresent } from 'motion/react';
+import { AnimatePresence, useIsPresent } from 'motion/react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -328,6 +328,8 @@ export function ModelSettings({ onClose, onChanged }: Props) {
           </button>
         </aside>
         <main className="pm-main" aria-busy={loading || (!!busy && !busy.startsWith('test:'))}>
+          <AnimatePresence initial={false} mode="popLayout">
+          <Popup.div key={isNew ? 'new-provider' : view} className="pm-view">
           <div className="pm-title-row">
             <h3 title={!editable ? t('Managed by administrators', '由管理员维护') : undefined}>{heading}</h3>
             <div className="pm-title-actions">
@@ -488,6 +490,8 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                 </button></div>
             </section>}
           </>}
+          </Popup.div>
+          </AnimatePresence>
         </main>
       </div>
       <PopupPresence>{confirm && <PopupBackdrop className="pm-confirm-overlay" onMouseDown={e => { if (e.target === e.currentTarget) setConfirm(null); }}>
