@@ -102,7 +102,6 @@ def test_non_admin_cannot_repoint_shared_secrets_or_mutate_shared_catalog(catalo
     p = connection(catalog); pid = p['provider_id']; m = model(catalog, 'bob')
     operations = [
         lambda: catalog.save_provider('bob', {'name': 'Forged', 'scope': 'personal', 'base_url': 'https://attacker.test/v1'}, pid, p['revision']),
-        lambda: catalog.save_provider('bob', {'name': 'Forged', 'scope': 'shared'}),
         lambda: catalog.provider_configuration('bob', pid, p['revision']),
         lambda: catalog.import_provider_models('bob', pid, p['revision'], [{'id': 'new'}]),
         lambda: catalog.save('bob', {'provider_id': pid, 'provider_revision': p['revision'], 'upstream_model_id': 'new'}),
@@ -118,13 +117,13 @@ def test_non_admin_cannot_repoint_shared_secrets_or_mutate_shared_catalog(catalo
     assert connection(catalog)['revision'] == p['revision']
 
 
-def test_shared_provider_uses_normal_create_import_edit_delete_flow(catalog):
-    p = catalog.save_provider('admin', {'name': 'Team', 'scope': 'shared'})
+def test_existing_deployment_provider_keeps_model_management(catalog):
+    p = connection(catalog)
     p = catalog.save_provider('admin', {'base_url': 'http://local.test/v1'}, p['provider_id'], p['revision'])
     batch = [{'id': 'team/a'}, {'id': 'team/b'}]
     assert catalog.import_provider_models('admin', p['provider_id'], p['revision'], batch)['added_count'] == 2
     assert catalog.import_provider_models('admin', p['provider_id'], p['revision'], batch)['added_count'] == 0
-    added = [m for m in catalog.list('bob')['models'] if m['provider_id'] == p['provider_id']]
+    added = [m for m in catalog.list('bob')['models'] if m['provider_id'] == p['provider_id'] and m['upstream_model_id'].startswith('team/')]
     assert len(added) == 2  # Explicitly shared new models are available to all accounts.
     cid = added[0]['config_id']; old = model(catalog, cid=cid)
     updated = catalog.save('admin', dict(provider_id=p['provider_id'], provider_revision=p['revision'],
@@ -202,3 +201,14 @@ def test_new_cloud_connections_require_a_key(catalog):
     assert m['unavailable_reason'] == 'MODEL_NOT_CONFIGURED'
     catalog.save_provider('bob', {'api_key': 'personal'}, p['provider_id'], p['revision'])
     assert model(catalog, 'bob', m['config_id'])['unavailable_reason'] is None
+
+
+@pytest.mark.parametrize('uid', ['admin', 'bob'])
+def test_new_connections_are_always_owned_by_the_requesting_user(catalog, uid):
+    other = 'bob' if uid == 'admin' else 'admin'
+    p = catalog.save_provider(uid, {'name': 'Private connection', 'scope': 'shared', 'user_id': other,
+        'base_url': 'http://private.test/v1', 'api_key': 'my-secret'})
+    assert p['scope'] == 'personal' and p['editable'] is True
+    assert all(row['provider_id'] != p['provider_id'] for row in catalog.list_providers(other)['providers'])
+    catalog.import_provider_models(uid, p['provider_id'], p['revision'], [{'id': 'private-model'}])
+    assert all(row['provider_id'] != p['provider_id'] for row in catalog.list(other)['models'])

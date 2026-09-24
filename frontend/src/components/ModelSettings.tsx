@@ -14,11 +14,11 @@ import './ModelSettings.css';
 
 type Props = { onClose: () => void; onChanged: (catalog: ModelCatalog) => void };
 type View = 'connection' | 'discover' | 'model';
-const freshConnection = (): ProviderWrite => ({ name: '', scope: 'personal', preset_id: 'custom', protocol: 'openai-compatible', base_url: '', enabled: true, api_key: '', clear_api_key: false });
+const freshConnection = (): ProviderWrite => ({ name: '', preset_id: 'custom', protocol: 'openai-compatible', base_url: '', enabled: true, api_key: '', clear_api_key: false });
 const freshModel = (): Omit<ModelWrite, 'provider_id' | 'provider_revision'> => ({ upstream_model_id: '', display_name: '', tools: true, vision: false, context_window: 131072, max_output_tokens: 4096 });
 function draftFor(provider: ModelProviderConnection): ProviderWrite {
   return { provider_id: provider.provider_id, revision: provider.revision, name: provider.name, preset_id: provider.preset_id,
-    scope: provider.scope || 'personal', protocol: provider.protocol, base_url: provider.base_url, enabled: provider.enabled, api_key: '', clear_api_key: false };
+    protocol: provider.protocol, base_url: provider.base_url, enabled: provider.enabled, api_key: '', clear_api_key: false };
 }
 
 export function ModelSettings({ onClose, onChanged }: Props) {
@@ -27,7 +27,6 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const [providers, setProviders] = useState<ModelProviderConnection[]>([]);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [selected, setSelected] = useState('');
-  const [canManageShared, setCanManageShared] = useState(false);
   const [draft, setDraft] = useState<ProviderWrite>(freshConnection);
   const [view, setView] = useState<View>('connection');
   const [modelDraft, setModelDraft] = useState(freshModel);
@@ -100,7 +99,6 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     const [connections, models] = await Promise.all([listModelProviders(), listModels()]);
     if (!alive.current) return;
     setProviders(connections.providers); setPresets(connections.presets); setCatalog(models); onChanged(models);
-    setCanManageShared(!!connections.can_manage_shared);
     const target = selectId ?? selected;
     const defaultProvider = models.models.find(m => m.config_id === models.default_model)?.provider_id;
     const next = connections.providers.find(p => p.provider_id === target)
@@ -249,7 +247,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
         </aside>
         <main className="pm-main" aria-busy={loading || !!busy}>
           <div className="pm-title-row">
-            <h3>{heading}{provider?.scope === 'shared' && <span className="pm-scope" title={t('Managed by administrators', '由管理员维护')}>{t('Shared', '共享')}</span>}</h3>
+            <h3 title={!editable ? t('Managed by administrators', '由管理员维护') : undefined}>{heading}</h3>
             <div className="pm-title-actions">
               {provider && editable && view === 'connection' && <button className="pm-icon-button" aria-label={t('Edit provider', '编辑提供商')}
                 title={t('Edit provider', '编辑提供商')} disabled={!!busy} onClick={() => setEditIdentity(!editIdentity)}><Icon name="edit" size={16} /></button>}
@@ -270,13 +268,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
           {loading ? <div className="pm-empty" role="status"><span className="loader" /><span>{t('Loading…', '加载中…')}</span></div> : <>
             {view === 'connection' && <>
               {isNew && <form className="pm-create" onSubmit={saveConnection}>
-                <div className="pm-form-grid">{identityFields}
-                  {canManageShared && <label className="pm-wide">{t('Access', '使用范围')}
-                    <select value={draft.scope || 'personal'} onChange={e => setDraft({ ...draft, scope: e.target.value as 'personal' | 'shared' })} disabled={!!busy}>
-                      <option value="personal">{t('Only me', '仅自己')}</option><option value="shared">{t('All users', '共享')}</option>
-                    </select>
-                  </label>}
-                </div>
+                <div className="pm-form-grid">{identityFields}</div>
                 <div className="pm-form-actions"><button className="pm-button is-primary" type="submit" disabled={!!busy || !draft.name.trim()}>
                   {busy === 'save' ? t('Adding…', '添加中…') : t('Add', '添加')}
                 </button></div>

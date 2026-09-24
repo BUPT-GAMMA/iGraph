@@ -1,7 +1,6 @@
 """Service-authenticated model configuration and selection routes."""
 import asyncio
 import httpx
-from typing import Literal
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from execution_protocol import require_service
@@ -32,7 +31,6 @@ class ModelWrite(BaseModel):
 
 
 class ProviderWrite(BaseModel):
-    scope: Literal['personal', 'shared'] = 'personal'
     provider_id: str | None = None
     revision: int | None = None
     name: str = Field(min_length=1, max_length=120)

@@ -13,6 +13,7 @@ from sqlalchemy.schema import CreateSchema, DropSchema
 
 from agent_runtime.execution_store import ControlError, ExecutionStore
 from agent_runtime.model_catalog import ModelCatalog
+from agent_runtime.shared_provider_catalog import shared_providers
 
 
 def main():
@@ -57,7 +58,14 @@ def main():
             except ControlError as exc:
                 return exc.code
         for i in range(12):
-            p = admin.save_provider('admin', dict(name='Race', scope='shared', base_url='http://localhost/v1', api_key='race-key'))
+            # Seed only this isolated test schema; public creation is user-owned.
+            pid = f'shared-{uuid.uuid4()}'
+            with store.transaction('admin', '__models__') as conn:
+                admin._shared_lock(conn)
+                conn.execute(shared_providers.insert().values(provider_id=pid, revision=1, data=dict(
+                    name='Race', scope='shared', preset_id='custom', enabled=True,
+                    base_url='http://localhost/v1', api_key='race-key', models={})))
+            p = next(row for row in admin.list_providers('admin')['providers'] if row['provider_id'] == pid)
             admin.import_provider_models('admin', p['provider_id'], p['revision'], [{'id': 'race-model'}])
             m = next(row for row in replica.list('member')['models'] if row['provider_id'] == p['provider_id'])
             sid = f'race-{i}'

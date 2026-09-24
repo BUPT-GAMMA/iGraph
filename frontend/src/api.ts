@@ -42,7 +42,7 @@ export type ModelProviderConnection = {
   protocol: 'openai-compatible'; base_url: string; enabled: boolean; has_api_key: boolean; model_count: number;
 };
 export type ProviderPreset = { id: string; name: string; base_url: string; icon: string };
-export type ProviderWrite = Omit<ModelProviderConnection, 'provider_id' | 'revision' | 'has_api_key' | 'model_count' | 'editable'> & {
+export type ProviderWrite = Omit<ModelProviderConnection, 'provider_id' | 'revision' | 'has_api_key' | 'model_count' | 'editable' | 'scope'> & {
   provider_id?: string; revision?: number; api_key?: string; clear_api_key?: boolean;
 };
 export type ModelWrite = {
@@ -52,7 +52,7 @@ export type ModelWrite = {
 };
 export type DiscoveredModels = { models: { id: string; name: string }[]; latency_ms: number; truncated: boolean };
 const modelJson = (method: string, body: unknown) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-export const listModelProviders = () => json<{ providers: ModelProviderConnection[]; presets: ProviderPreset[]; can_manage_shared?: boolean }>('/api/model-providers');
+export const listModelProviders = () => json<{ providers: ModelProviderConnection[]; presets: ProviderPreset[] }>('/api/model-providers');
 export const saveModelProvider = (input: ProviderWrite) => json<{ provider: ModelProviderConnection }>('/api/model-providers', modelJson('POST', input));
 export const deleteModelProvider = (provider: ModelProviderConnection) => json(`/api/model-providers/${encodeURIComponent(provider.provider_id)}?revision=${provider.revision}`, { method: 'DELETE' });
 export const discoverProviderModels = (provider: ModelProviderConnection) => json<DiscoveredModels>('/api/model-providers/discover', modelJson('POST', { provider_id: provider.provider_id, revision: provider.revision }));

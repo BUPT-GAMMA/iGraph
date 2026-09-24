@@ -166,7 +166,7 @@ it('opens the actual shared provider and exposes the same connection and model c
   connections = [provider, shared]; models = [{ ...model, source: 'deployment', provider_id: shared.provider_id, provider_name: shared.name }];
   vi.mocked(api.listModels).mockImplementation(async () => ({ models, default_model: model.config_id }));
   const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
-  await screen.findByRole('heading', { name: /智增增\s*共享/ });
+  await screen.findByRole('heading', { name: '智增增' });
   expect(screen.queryByText('系统模型')).toBeNull();
   expect((screen.getByLabelText('API 地址') as HTMLInputElement).value).toBe(shared.base_url);
   expect((screen.getByLabelText('API 密钥') as HTMLInputElement).value).toBe('');
@@ -181,7 +181,7 @@ it('keeps a shared connection visible but read-only for members and preserves pe
   connections = [{ ...provider, name: '智增增', scope: 'shared', editable: false }];
   models = [{ ...model, source: 'deployment' }];
   const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
-  await screen.findByRole('heading', { name: /智增增\s*共享/ });
+  await screen.findByRole('heading', { name: '智增增' });
   expect((screen.getByLabelText('API 地址') as HTMLInputElement).disabled).toBe(true);
   expect((screen.getByLabelText('API 密钥') as HTMLInputElement).disabled).toBe(true);
   expect(screen.queryByRole('button', { name: '删除提供商' })).toBeNull();
@@ -193,15 +193,18 @@ it('keeps a shared connection visible but read-only for members and preserves pe
   expect(screen.queryByLabelText('使用范围')).toBeNull();
 });
 
-it('lets administrators create shared providers through the ordinary add form', async () => {
-  vi.mocked(api.listModelProviders).mockImplementation(async () => ({ providers: connections, can_manage_shared: true, presets: [
+it('creates personal providers without an access selector even for administrators', async () => {
+  connections = [{ ...provider, scope: 'shared', editable: true }];
+  vi.mocked(api.listModelProviders).mockImplementation(async () => ({ providers: connections, presets: [
     { id: 'zhizengzeng', name: '智增增', base_url: 'https://api.zhizengzeng.com/v1', icon: 'unknown' },
     { id: 'custom', name: '自定义提供商', base_url: '', icon: 'unknown' },
   ] }));
   const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
   await openProvider(); await u.click(screen.getByRole('button', { name: '添加提供商' }));
   await u.selectOptions(screen.getByLabelText('提供商类型'), 'zhizengzeng');
-  await u.selectOptions(screen.getByLabelText('使用范围'), 'shared');
+  expect(screen.queryByLabelText('使用范围')).toBeNull();
+  expect(screen.queryByText('共享')).toBeNull();
   await u.click(screen.getByRole('button', { name: '添加' }));
-  await waitFor(() => expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ scope: 'shared', name: '智增增', base_url: 'https://api.zhizengzeng.com/v1' })));
+  await waitFor(() => expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ name: '智增增', base_url: 'https://api.zhizengzeng.com/v1' })));
+  expect(vi.mocked(api.saveModelProvider).mock.calls[0][0]).not.toHaveProperty('scope');
 });

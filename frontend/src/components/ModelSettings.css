@@ -144,6 +144,4 @@
 }
 @media (prefers-reduced-motion: reduce) { .provider-settings *, .provider-settings *::before { transition: none !important; } }
 
-.pm-title-row h3 { display: flex; align-items: center; gap: 10px; }
-.pm-scope { padding: 3px 7px; border-radius: 5px; font-size: 11px; font-weight: 500; color: var(--text-muted); background: var(--surface-subtle); }
 .pm-avatar.preset-zhizengzeng { color: #746df5; background: rgba(116, 109, 245, .12); font-size: 22px; }
