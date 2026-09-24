@@ -106,7 +106,7 @@ class ProviderCatalogMixin:
             rows = conn.execute(select(providers).where(providers.c.user_id == uid)).mappings().all()
             shared = [row for row in self._shared_rows(conn) if self._is_admin(conn, uid) or self._provider_models(conn, uid, row['provider_id'])]
             return dict(providers=[self._public_provider(conn, uid, r) for r in [*shared, *rows]],
-                        presets=PROVIDER_PRESETS, can_manage_shared=self._is_admin(conn, uid))
+                        presets=PROVIDER_PRESETS)
 
     def save_provider(self, uid, data, pid=None, expected_revision=None):
         with self.store.transaction(uid, '__models__') as conn:
@@ -115,7 +115,9 @@ class ProviderCatalogMixin:
             if existing and existing['revision'] != expected_revision:
                 raise ControlError('MODEL_PROVIDER_CHANGED')
             old = existing['data'] if existing else {}
-            shared = old.get('scope') == 'shared' if existing else data.get('scope') == 'shared'
+            # Ownership is derived from stored configuration, never client input.
+            # New connections always belong to the current user.
+            shared = old.get('scope') == 'shared'
             if shared and not self._is_admin(conn, uid):
                 raise ControlError('MODEL_PROVIDER_READ_ONLY', 403)
             merged = {**old, **data}
@@ -134,12 +136,8 @@ class ProviderCatalogMixin:
             if shared:
                 from agent_runtime.shared_provider_catalog import shared_providers
                 stored.update(scope='shared', models=old.get('models', {}))
-                row = dict(provider_id=pid or f'shared-{uuid.uuid4()}',
-                           revision=existing['revision'] + 1 if existing else 1, data=stored)
-                if existing:
-                    conn.execute(shared_providers.update().where(shared_providers.c.provider_id == pid).values(**row))
-                else:
-                    conn.execute(shared_providers.insert().values(**row))
+                row = dict(provider_id=pid, revision=existing['revision'] + 1, data=stored)
+                conn.execute(shared_providers.update().where(shared_providers.c.provider_id == pid).values(**row))
                 self._sync_shared(conn, uid)
                 return self._public_provider(conn, uid, row)
             row = dict(user_id=uid, provider_id=pid or f'provider-{uuid.uuid4()}',
