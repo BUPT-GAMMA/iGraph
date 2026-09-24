@@ -1,0 +1,826 @@
+{
+  "slug": "experiments",
+  "group": "start",
+  "layout": "wide",
+  "title": {
+    "zh": "实验结果",
+    "en": "Experimental results"
+  },
+  "description": {
+    "zh": "汇总图分析智能体在四类任务中的成功率，以及构图智能体相对 PK/FK 规则构图的查询成本改善。",
+    "en": "Success rates across four graph-analysis task families, plus query cost reductions from the construction agent relative to PK/FK rule-based construction."
+  },
+  "sections": [
+    {
+      "id": "reading-the-results",
+      "title": {
+        "zh": "如何读表",
+        "en": "Reading the results"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "图分析智能体的四类实验均使用 GLM-5-turbo 作为基座模型；行名表示 agent harness。原始结果中只写模型名的行对应 OpenClaw。这四张表仅保留 SR（任务成功率），统一换算为百分数并保留两位小数，数值越高越好。",
+            "en": "The four graph-analysis experiments use GLM-5-turbo as the base model; rows identify the agent harness. A model-only row in the source results denotes OpenClaw. These four tables report only SR (task success rate), as a percentage with two decimal places; higher is better."
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "SR 表中每列单独比较：最高分加粗，次高分加下划线；并列成绩使用相同标记。图检索和图论各比较 OpenClaw、iGraph；图机器学习和图开放式问答各比较 Hermes、Claude Code、OpenClaw、iGraph。",
+            "en": "Each SR column is ranked independently: the highest score is bold, the second-highest score is underlined, and ties share the same marking. Retrieval and theory compare OpenClaw and iGraph; machine learning and open-ended question answering compare Hermes, Claude Code, OpenClaw, and iGraph."
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            {
+              "zh": "NAG：数值属性图（Numerical-Attribute Graph）。",
+              "en": "NAG: Numerical-Attribute Graph."
+            },
+            {
+              "zh": "TAG：文本属性图（Text-Attributed Graph）。",
+              "en": "TAG: Text-Attributed Graph."
+            },
+            {
+              "zh": "TPG：文本配对图（Text-Paired Graph）。",
+              "en": "TPG: Text-Paired Graph."
+            }
+          ]
+        },
+        {
+          "type": "links",
+          "items": [
+            {
+              "href": "/experiments#graph-construction",
+              "label": {
+                "zh": "查看构图实验：与 PK/FK 规则构图对比",
+                "en": "Construction experiments: comparison with PK/FK rule-based construction"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-retrieval",
+      "title": {
+        "zh": "图检索问题",
+        "en": "Graph retrieval"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "按节点、边和整图三个层级展示检索任务的 SR。",
+            "en": "Retrieval SR is reported at the node, edge, and graph levels."
+          }
+        },
+        {
+          "type": "experiment-table",
+          "title": {
+            "zh": "图检索问题",
+            "en": "Graph retrieval"
+          },
+          "baseModel": "GLM-5-turbo",
+          "metric": "SR",
+          "unit": "percent",
+          "groups": [
+            {
+              "label": "NAG",
+              "name": {
+                "zh": "数值属性图",
+                "en": "Numerical-Attribute Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TAG",
+              "name": {
+                "zh": "文本属性图",
+                "en": "Text-Attributed Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TPG",
+              "name": {
+                "zh": "文本配对图",
+                "en": "Text-Paired Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            }
+          ],
+          "rows": [
+            {
+              "harness": "OpenClaw",
+              "scores": [
+                8.33,
+                6.25,
+                6.67,
+                72.91,
+                18.18,
+                27.27,
+                60,
+                11.11,
+                42.86
+              ],
+              "source": "figure-1 / GLM-5-turbo / SR"
+            },
+            {
+              "harness": "iGraph",
+              "scores": [
+                31,
+                94.74,
+                18.67,
+                100,
+                100,
+                82.5,
+                100,
+                100,
+                100
+              ],
+              "source": "figure-1 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-theory",
+      "title": {
+        "zh": "图论问题",
+        "en": "Graph theory"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "按节点、边和整图三个层级展示图论任务的 SR。",
+            "en": "Graph-theory SR is reported at the node, edge, and graph levels."
+          }
+        },
+        {
+          "type": "experiment-table",
+          "title": {
+            "zh": "图论问题",
+            "en": "Graph theory"
+          },
+          "baseModel": "GLM-5-turbo",
+          "metric": "SR",
+          "unit": "percent",
+          "groups": [
+            {
+              "label": "NAG",
+              "name": {
+                "zh": "数值属性图",
+                "en": "Numerical-Attribute Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TAG",
+              "name": {
+                "zh": "文本属性图",
+                "en": "Text-Attributed Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TPG",
+              "name": {
+                "zh": "文本配对图",
+                "en": "Text-Paired Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Node",
+                  "name": {
+                    "zh": "节点级任务",
+                    "en": "Node-level tasks"
+                  }
+                },
+                {
+                  "label": "Edge",
+                  "name": {
+                    "zh": "边级任务",
+                    "en": "Edge-level tasks"
+                  }
+                },
+                {
+                  "label": "Graph",
+                  "name": {
+                    "zh": "图级任务",
+                    "en": "Graph-level tasks"
+                  }
+                }
+              ]
+            }
+          ],
+          "rows": [
+            {
+              "harness": "OpenClaw",
+              "scores": [
+                24,
+                26.81,
+                7.4,
+                61.02,
+                9.52,
+                21.66,
+                28,
+                13.33,
+                10.49
+              ],
+              "source": "figure-2 / GLM-5-Turbo / SR"
+            },
+            {
+              "harness": "iGraph",
+              "scores": [
+                37.53,
+                38.14,
+                45,
+                94.44,
+                88.24,
+                88.89,
+                100,
+                100,
+                100
+              ],
+              "source": "figure-2 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-machine-learning",
+      "title": {
+        "zh": "图机器学习",
+        "en": "Graph machine learning"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "NC 表示节点分类，LP 表示链接预测，GC 表示图分类。这里比较的是智能体完成相应任务的成功率（SR）。",
+            "en": "NC denotes node classification, LP link prediction, and GC graph classification. Scores measure the agent’s success rate (SR) on the corresponding tasks."
+          }
+        },
+        {
+          "type": "experiment-table",
+          "title": {
+            "zh": "图机器学习",
+            "en": "Graph machine learning"
+          },
+          "baseModel": "GLM-5-turbo",
+          "metric": "SR",
+          "unit": "percent",
+          "groups": [
+            {
+              "label": "NAG",
+              "name": {
+                "zh": "数值属性图",
+                "en": "Numerical-Attribute Graph"
+              },
+              "tasks": [
+                {
+                  "label": "NC",
+                  "name": {
+                    "zh": "节点分类",
+                    "en": "Node classification"
+                  }
+                },
+                {
+                  "label": "LP",
+                  "name": {
+                    "zh": "链接预测",
+                    "en": "Link prediction"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TAG",
+              "name": {
+                "zh": "文本属性图",
+                "en": "Text-Attributed Graph"
+              },
+              "tasks": [
+                {
+                  "label": "NC",
+                  "name": {
+                    "zh": "节点分类",
+                    "en": "Node classification"
+                  }
+                },
+                {
+                  "label": "LP",
+                  "name": {
+                    "zh": "链接预测",
+                    "en": "Link prediction"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TPG",
+              "name": {
+                "zh": "文本配对图",
+                "en": "Text-Paired Graph"
+              },
+              "tasks": [
+                {
+                  "label": "GC",
+                  "name": {
+                    "zh": "图分类",
+                    "en": "Graph classification"
+                  }
+                }
+              ]
+            }
+          ],
+          "rows": [
+            {
+              "harness": "Hermes",
+              "scores": [
+                61.54,
+                90.9,
+                54.35,
+                87.18,
+                7.14
+              ],
+              "source": "figure-5 / Hermes"
+            },
+            {
+              "harness": "Claude Code",
+              "scores": [
+                95.23,
+                78.57,
+                86.79,
+                89.53,
+                88.89
+              ],
+              "source": "figure-5 / Claude Code"
+            },
+            {
+              "harness": "OpenClaw",
+              "scores": [
+                26.66,
+                65.18,
+                19.36,
+                36.77,
+                26.74
+              ],
+              "source": "figure-5 / OpenClaw"
+            },
+            {
+              "harness": "iGraph",
+              "scores": [
+                90,
+                100,
+                95,
+                100,
+                85
+              ],
+              "source": "figure-4 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "open-ended-qa",
+      "title": {
+        "zh": "图开放式问答",
+        "en": "Open-ended graph question answering"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "Insight 表示洞察分析类问题，Prediction 表示预测分析类问题；两类任务均以 SR 比较。",
+            "en": "Insight and Prediction identify the two open-ended task categories. Both are compared using SR."
+          }
+        },
+        {
+          "type": "experiment-table",
+          "title": {
+            "zh": "图开放式问答",
+            "en": "Open-ended graph question answering"
+          },
+          "baseModel": "GLM-5-turbo",
+          "metric": "SR",
+          "unit": "percent",
+          "groups": [
+            {
+              "label": "NAG",
+              "name": {
+                "zh": "数值属性图",
+                "en": "Numerical-Attribute Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Insight",
+                  "name": {
+                    "zh": "洞察分析",
+                    "en": "Insight"
+                  }
+                },
+                {
+                  "label": "Prediction",
+                  "name": {
+                    "zh": "预测分析",
+                    "en": "Prediction"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TAG",
+              "name": {
+                "zh": "文本属性图",
+                "en": "Text-Attributed Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Insight",
+                  "name": {
+                    "zh": "洞察分析",
+                    "en": "Insight"
+                  }
+                },
+                {
+                  "label": "Prediction",
+                  "name": {
+                    "zh": "预测分析",
+                    "en": "Prediction"
+                  }
+                }
+              ]
+            },
+            {
+              "label": "TPG",
+              "name": {
+                "zh": "文本配对图",
+                "en": "Text-Paired Graph"
+              },
+              "tasks": [
+                {
+                  "label": "Insight",
+                  "name": {
+                    "zh": "洞察分析",
+                    "en": "Insight"
+                  }
+                },
+                {
+                  "label": "Prediction",
+                  "name": {
+                    "zh": "预测分析",
+                    "en": "Prediction"
+                  }
+                }
+              ]
+            }
+          ],
+          "rows": [
+            {
+              "harness": "Hermes",
+              "scores": [
+                0,
+                8.22,
+                1.28,
+                15.12,
+                16.28,
+                8.11
+              ],
+              "source": "figure-7 / Hermes"
+            },
+            {
+              "harness": "Claude Code",
+              "scores": [
+                7.63,
+                3.7,
+                18.59,
+                20,
+                29.63,
+                20.69
+              ],
+              "source": "figure-7 / Claude Code"
+            },
+            {
+              "harness": "OpenClaw",
+              "scores": [
+                7.65,
+                3.22,
+                13.56,
+                10.47,
+                14.29,
+                12.5
+              ],
+              "source": "figure-7 / OpenClaw"
+            },
+            {
+              "harness": "iGraph",
+              "scores": [
+                25,
+                8.6,
+                55,
+                42.5,
+                35,
+                21
+              ],
+              "source": "figure-6 / iGraph / SR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-construction",
+      "title": {
+        "zh": "构图智能体实验",
+        "en": "Graph construction agent"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "以主键、外键（PK/FK）规则构图为基线，比较构图智能体优化图表示后，查询成本的下降幅度。优化查询集用于搜索和评估候选图表示，留出查询集用于检验这些改进在另一组查询上的表现。",
+            "en": "The baseline graph is built using primary-key and foreign-key (PK/FK) rules. Results compare query cost after the construction agent optimizes the graph representation. Optimization queries guide the search and evaluation of candidate representations; held-out queries assess improvements on a separate query set."
+          }
+        },
+        {
+          "type": "construction-results",
+          "title": {
+            "zh": "构图智能体与 PK/FK 规则构图对比",
+            "en": "Construction agent versus PK/FK rule-based construction"
+          },
+          "baseline": "PK/FK",
+          "unit": "percent",
+          "selection": "per-dataset-dominant-result",
+          "sources": [
+            {
+              "id": "construction-table-1",
+              "file": "92fa631ce10c72fa29f270bd586df627.png",
+              "optimizationLabel": {
+                "zh": "搜索成本改善",
+                "en": "Search cost improvement"
+              },
+              "holdoutLabel": {
+                "zh": "留出成本改善",
+                "en": "Held-out cost improvement"
+              }
+            },
+            {
+              "id": "construction-table-2",
+              "file": "5b23269770d1c1857da18f6093db1693.png",
+              "optimizationLabel": {
+                "zh": "优化查询成本下降",
+                "en": "Optimization query cost reduction"
+              },
+              "holdoutLabel": {
+                "zh": "留出查询成本下降",
+                "en": "Held-out query cost reduction"
+              }
+            }
+          ],
+          "datasets": [
+            {
+              "name": "Amazon",
+              "realRecords": 15001,
+              "selectedSource": "construction-table-1",
+              "results": [
+                {
+                  "source": "construction-table-1",
+                  "optimizationCostReduction": 27.33,
+                  "holdoutCostReduction": 53.2,
+                  "virtualRecords": 0,
+                  "retainedColumns": 11,
+                  "totalColumns": 16,
+                  "acceptedCandidates": 2
+                },
+                {
+                  "source": "construction-table-2",
+                  "optimizationCostReduction": 21.74,
+                  "holdoutCostReduction": 44.02,
+                  "queryCount": 100,
+                  "beforeMilliseconds": 1792.06,
+                  "afterMilliseconds": 1399.22
+                }
+              ]
+            },
+            {
+              "name": "AVS",
+              "realRecords": 15037,
+              "selectedSource": "construction-table-1",
+              "results": [
+                {
+                  "source": "construction-table-1",
+                  "optimizationCostReduction": 14.8,
+                  "holdoutCostReduction": 20.71,
+                  "virtualRecords": 9996,
+                  "retainedColumns": 18,
+                  "totalColumns": 27,
+                  "acceptedCandidates": 2
+                },
+                {
+                  "source": "construction-table-2",
+                  "optimizationCostReduction": 7.22,
+                  "holdoutCostReduction": 17.97,
+                  "queryCount": 100,
+                  "beforeMilliseconds": 925,
+                  "afterMilliseconds": 852.88
+                }
+              ]
+            },
+            {
+              "name": "MAG",
+              "realRecords": 15254,
+              "selectedSource": "construction-table-2",
+              "results": [
+                {
+                  "source": "construction-table-1",
+                  "optimizationCostReduction": 9.8,
+                  "holdoutCostReduction": 17.07,
+                  "virtualRecords": 3825,
+                  "retainedColumns": 10,
+                  "totalColumns": 15,
+                  "acceptedCandidates": 1
+                },
+                {
+                  "source": "construction-table-2",
+                  "optimizationCostReduction": 11.79,
+                  "holdoutCostReduction": 19.91,
+                  "queryCount": 100,
+                  "beforeMilliseconds": 653.05,
+                  "afterMilliseconds": 573.06
+                }
+              ]
+            },
+            {
+              "name": "StackExchange",
+              "realRecords": 14961,
+              "selectedSource": "construction-table-2",
+              "results": [
+                {
+                  "source": "construction-table-1",
+                  "optimizationCostReduction": -1.61,
+                  "holdoutCostReduction": -2.92,
+                  "virtualRecords": 0,
+                  "retainedColumns": 50,
+                  "totalColumns": 76,
+                  "acceptedCandidates": 0
+                },
+                {
+                  "source": "construction-table-2",
+                  "optimizationCostReduction": 8.4,
+                  "holdoutCostReduction": 6.74,
+                  "queryCount": 100,
+                  "beforeMilliseconds": 376.77,
+                  "afterMilliseconds": 342.32
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "对每个数据集，从提供的两组实验中选取优化成本和留出成本均更低的一组：Amazon、AVS 采用第一组，MAG、StackExchange 采用第二组。同一行的两项下降率均来自同一组实验，保留原表报告值；这里展示的是各数据集的最优结果汇总。",
+            "en": "For each dataset, select the supplied result with lower costs on both optimization and held-out queries: the first result set for Amazon and AVS, and the second for MAG and StackExchange. Both reductions in a row come from the same result set and retain the reported values. This is a per-dataset best-result summary."
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": {
+            "zh": "这里的百分数表示相对 PK/FK 规则构图的成本下降幅度，数值越大，改善越明显。各行对应不同数据集，不作跨数据集的名次比较。",
+            "en": "Percentages indicate cost reduction relative to PK/FK rule-based construction; larger reductions are better. Rows represent different datasets and are not ranked against one another."
+          }
+        },
+        {
+          "type": "links",
+          "items": [
+            {
+              "href": "/construction",
+              "label": {
+                "zh": "了解构图智能体的优化与验收流程",
+                "en": "How the construction agent optimizes and validates graph representations"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

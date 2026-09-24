@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { loadPages, toolsIn } from './content.mjs';
 import { diagramNames, renderDiagram } from './diagrams.mjs';
+import { scoreRank } from './experiment-tables.mjs';
+import { selectedConstructionResults } from './construction-results.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const out=resolve(root,'dist');
@@ -28,6 +30,19 @@ for(const page of pages) {
     if(block.type==='code' && block.language==='json') assert.doesNotThrow(()=>JSON.parse(block.code),`Invalid JSON example: ${page.slug}#${section.id}`);
     if(block.type==='cards') for(const item of block.items) assert.ok(pages.some(page=>page.slug===item.slug),`Missing card target ${item.slug}`);
     if(block.type==='table') for(const row of block.rows) assert.equal(row.length,block.headers.length,'Invalid table row');
+    if(block.type==='experiment-table') {
+      assert.equal(block.baseModel,'GLM-5-turbo','Unexpected experiment base model');
+      assert.equal(block.metric,'SR','Only SR belongs in the experiment tables');
+      assert.equal(block.unit,'percent');
+      const columns=block.groups.reduce((count,group)=>count+group.tasks.length,0);
+      assert.equal(new Set(block.rows.map(row=>row.harness)).size,block.rows.length,'Duplicate harness');
+      for(const row of block.rows) {
+        assert.ok(['Hermes','Claude Code','OpenClaw','iGraph'].includes(row.harness),'Unexpected harness');
+        assert.equal(row.scores.length,columns,'Invalid experiment row');
+        assert.ok(row.source,'Missing result provenance');
+        for(const score of row.scores) assert.ok(Number.isFinite(score) && score>=0 && score<=100,'SR must be a percentage');
+      }
+    }
     if(block.type==='tools') for(const tool of block.items) {
       assert.match(tool.name,/^[a-z0-9_]+$/);
       assert.equal(new Set(tool.parameters.map(param=>param.name)).size,tool.parameters.length,'Duplicate tool parameter');
@@ -80,6 +95,70 @@ for(const locale of ['zh','en']) for(const page of pages) {
   assert.ok((await readFile(resolve(out,'markdown',locale,page.slug+'.md'),'utf8')).startsWith('# '+page.title[locale]));
 }
 const search=JSON.parse(await readFile(resolve(out,'search-index.json'),'utf8'));
+const experiments=pages.find(page=>page.slug==='experiments');
+const experimentTables=experiments.sections.flatMap(section=>section.blocks.filter(block=>block.type==='experiment-table'));
+assert.equal(experimentTables.length,4,'Expected four experiment tables');
+assert.deepEqual(experimentTables.map(table=>table.rows.length),[2,2,4,4],'Unexpected harness coverage');
+const constructionTables=experiments.sections.flatMap(section=>section.blocks.filter(block=>block.type==='construction-results'));
+assert.equal(constructionTables.length,1,'Expected a construction comparison');
+const constructionTable=constructionTables[0];
+assert.equal(constructionTable.baseline,'PK/FK');
+assert.equal(constructionTable.unit,'percent');
+assert.equal(constructionTable.datasets.length,4);
+const selectedConstruction=selectedConstructionResults(constructionTable);
+for(const dataset of constructionTable.datasets) {
+  assert.ok(Number.isInteger(dataset.realRecords) && dataset.realRecords>0);
+  assert.equal(dataset.results.length,2,'Retain both supplied results for provenance');
+  assert.equal(new Set(dataset.results.map(result=>result.source)).size,2);
+  const selected=selectedConstruction.find(result=>result.name===dataset.name);
+  for(const result of dataset.results) {
+    assert.ok(constructionTable.sources.some(source=>source.id===result.source),'Unknown result source');
+    for(const metric of ['optimizationCostReduction','holdoutCostReduction']) {
+      assert.ok(Number.isFinite(result[metric]) && result[metric]<=100,'Invalid cost reduction');
+      assert.ok(selected[metric]>=result[metric],`Selected result must dominate both metrics: ${dataset.name}`);
+    }
+  }
+}
+// Covers ties and columns where iGraph is second rather than first.
+const tiedScores=[{scores:[95]},{scores:[95]},{scores:[90]},{scores:[80]}];
+assert.deepEqual(tiedScores.map(row=>scoreRank(tiedScores,0,row.scores[0])),[1,1,2,3]);
+for(const locale of ['zh','en']) {
+  const html=await readFile(resolve(out,locale,'experiments/index.html'),'utf8');
+  const markdown=await readFile(resolve(out,'markdown',locale,'experiments.md'),'utf8');
+  const tables=[...html.matchAll(/<table class="experiment-table">([\s\S]*?)<\/table>/g)];
+  assert.equal(tables.length,4,'Missing rendered experiment table');
+  assert.ok(!/TSA|Qwen|DeepSeek|GPT-5-mini|Gemini|GLM-4\.5/.test(html),'Unexpected metric or base model');
+  const constructionHtml=html.match(/<table class="construction-results-table">([\s\S]*?)<\/table>/)?.[1];
+  assert.ok(constructionHtml,'Missing construction comparison');
+  for(const result of selectedConstruction) {
+    const expected=[result.name,result.optimizationCostReduction.toFixed(2),result.holdoutCostReduction.toFixed(2)];
+    assert.ok(constructionHtml.includes(`<th scope="row">${result.name}</th>`));
+    for(const value of expected) {
+      assert.ok(constructionHtml.includes(value),`Missing construction value in HTML: ${value}`);
+      assert.ok(markdown.includes(value),`Missing construction value in Markdown: ${value}`);
+    }
+  }
+  for(const [index,match] of tables.entries()) {
+    const table=experimentTables[index];
+    const renderedRows=[...match[1].matchAll(/<tr[^>]*><th scope="row">([^<]+)<\/th>([\s\S]*?)<\/tr>/g)];
+    assert.equal(renderedRows.length,table.rows.length);
+    for(const [rowIndex,row] of table.rows.entries()) {
+      assert.equal(renderedRows[rowIndex][1],row.harness);
+      const cells=[...renderedRows[rowIndex][2].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)].map(cell=>cell[1]);
+      assert.equal(cells.length,row.scores.length);
+      row.scores.forEach((value,column)=>{
+        assert.equal(cells[column].replace(/<[^>]+>/g,''),value.toFixed(2),'Rendered SR differs from source');
+        const higher=[...new Set(table.rows.map(other=>other.scores[column]))].filter(score=>score>value).length;
+        assert.equal(cells[column].startsWith('<strong'),higher===0,'Incorrect highest-score marking');
+        assert.equal(cells[column].startsWith('<u '),higher===1,'Incorrect second-highest-score marking');
+      });
+    }
+  }
+  for(const score of ['95.23','88.89']) assert.ok(tables[2][1].includes(`>${score}</strong>`),'Claude Code best score missing');
+  for(const score of ['90.00','85.00']) assert.ok(tables[2][1].includes(`>${score}</u>`),'iGraph second-best score missing');
+  assert.equal((markdown.match(/<strong /g)||[]).length,29,'Markdown must preserve highest scores');
+  assert.equal((markdown.match(/<u /g)||[]).length,29,'Markdown must preserve second-highest scores');
+}
 for(const [file,locale] of [['index.html','en'],['zh/index.html','zh'],['en/index.html','en']]) {
   const cover=await readFile(resolve(out,file),'utf8');
   assert.ok(cover.includes('class="cover-page"'),`Missing cover at ${file}`);

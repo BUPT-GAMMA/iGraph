@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { diagramNames, diagramTitle, renderDiagram } from './diagrams.mjs';
 import { loadPages, toolsIn } from './content.mjs';
 import { renderCover, renderCloudFallback } from './cover.mjs';
+import { experimentTableHtml, experimentTableMarkdown } from './experiment-tables.mjs';
+import { constructionResultsHtml, constructionResultsMarkdown } from './construction-results.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const out = join(root, 'dist');
@@ -11,7 +13,7 @@ const out = join(root, 'dist');
 if (relative(resolve(root), resolve(out)) !== 'dist') throw new Error('Unsafe output directory');
 await rm(out, { recursive: true, force: true });
 const pages = await loadPages(root);
-const updated = '2026-09-20';
+const updated = '2026-09-21';
 const origin = process.env.SITE_URL?.replace(/\/$/, '') || '';
 if (origin) {
   const url = new URL(origin);
@@ -57,6 +59,8 @@ function toolHtml(tool, locale) {
 }
 function blockHtml(block, locale, index) {
   switch (block.type) {
+    case 'experiment-table': return experimentTableHtml(block, locale, index);
+    case 'construction-results': return constructionResultsHtml(block, locale);
     case 'paragraph': return `<p>${esc(block.text[locale])}</p>`;
     case 'note': return `<aside class="callout"><span class="callout-symbol">i</span><div><strong>${esc(block.title[locale])}</strong><p>${esc(block.text[locale])}</p></div></aside>`;
     case 'list': return `<ul class="prose-list">${block.items.map(item => `<li>${esc(item[locale])}</li>`).join('')}</ul>`;
@@ -72,6 +76,8 @@ function blockHtml(block, locale, index) {
   }
 }
 function markdownBlock(block, locale) {
+  if (block.type === 'experiment-table') return experimentTableMarkdown(block, locale);
+  if (block.type === 'construction-results') return constructionResultsMarkdown(block, locale);
   if (block.type === 'diagram' || block.type === 'architecture') { const name=block.name || 'architecture'; return `![${diagramTitle(name,locale)}](${origin}/diagrams/${name}-${locale}.svg)`; }
   if (block.type === 'tools') return block.items.map(tool=>`### ${tool.displayName?.[locale] || tool.name} · ${tool.name}\n\n${tool.description[locale]}\n\n`+tool.parameters.map(param=>`- \`${param.name}\` (${param.type}${param.required?text(locale,', 必填',', required'):''}): ${param.description[locale]}${param.enum?.length?text(locale,' 可选值：',' Options: ')+param.enum.join(', '):''}${param.default!==undefined?text(locale,' 默认：',' Default: ')+JSON.stringify(param.default):''}`).join('\n')+`\n\n${text(locale,'返回：','Returns: ')}${tool.result[locale]}\n\n`+(tool.notes||[]).map(note=>'- '+note[locale]).join('\n')).join('\n\n');
   if (block.type === 'paragraph') return block.text[locale];
@@ -101,7 +107,7 @@ function html(page, locale, index) {
   return `<!doctype html>
 <html lang="${locale === 'zh' ? 'zh-CN' : 'en'}" data-locale="${locale}">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><meta name="description" content="${esc(page.description[locale])}"><meta name="theme-color" content="#ffffff"><meta name="color-scheme" content="light dark">${is404 ? '<meta name="robots" content="noindex">' : ''}<link id="site-favicon" rel="icon" href="/assets/igraph-logo-light.jpg" type="image/jpeg"><link rel="stylesheet" href="/assets/site.css"><script src="/assets/theme.js"></script><script defer src="/assets/site.js"></script>${!is404 && origin ? `<link rel="canonical" href="${origin}${pagePath}"><link rel="alternate" hreflang="zh-CN" href="${origin}${path('zh',page.slug)}"><link rel="alternate" hreflang="en" href="${origin}${path('en',page.slug)}">` : ''}<meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(page.description[locale])}"><meta property="og:type" content="article"></head>
-<body><a class="skip-link" href="#content">${text(locale, '跳转到正文', 'Skip to content')}</a>
+<body${page.layout === 'wide' ? ' class="wide-document"' : ''}><a class="skip-link" href="#content">${text(locale, '跳转到正文', 'Skip to content')}</a>
 <header class="site-header"><div class="header-inner"><a class="brand" href="/${locale}/" aria-label="${text(locale, 'iGraph 首页', 'iGraph home')}"><span class="brand-logo" aria-hidden="true"><img class="brand-logo-light" src="/assets/igraph-logo-light.jpg" width="40" height="40" alt=""><img class="brand-logo-dark" src="/assets/igraph-logo-dark.jpg" width="40" height="40" alt=""></span><span class="brand-name">iGraph</span><span class="brand-divider"></span><span class="brand-docs">docs</span></a><button class="search-trigger" data-open-search>${icon('search')}<span>${text(locale, '搜索文档…', 'Search documentation…')}</span><kbd>Ctrl K</kbd></button><div class="header-actions"><a class="language-switch" href="${path(otherLocale, is404 ? 'overview' : page.slug)}" data-language="${otherLocale}" hreflang="${otherLocale}" aria-label="${text(locale, 'Switch to English', '切换到中文')}">${icon('globe')}<span>${text(locale, 'English', '中文')}</span></a><button class="theme-toggle icon-button" aria-label="${text(locale, '切换主题', 'Toggle theme')}" aria-pressed="false">${icon('sun')}${icon('moon')}</button><a class="header-api" href="/${locale}/api/">${text(locale, 'API 参考', 'API reference')}${icon('arrow')}</a></div></div><div class="subnav"><div><button class="mobile-menu" aria-expanded="false" aria-controls="sidebar">${icon('menu')}<span>${text(locale, '目录', 'Menu')}</span></button><a href="/${locale}/overview/"${['start','build','engine'].includes(page.group) ? ' class="selected"' : ''}>${text(locale, '开发指南', 'Guides')}</a><a href="/${locale}/api/"${page.group === 'reference' ? ' class="selected"' : ''}>${text(locale, '接口与参考', 'Reference')}</a><a href="/${locale}/deployment/"${page.group === 'ship' ? ' class="selected"' : ''}>${text(locale, '部署与更新', 'Deploy & updates')}</a></div></div></header>
 <div class="page-layout"><button class="sidebar-backdrop" aria-label="${text(locale, '关闭目录', 'Close menu')}" hidden></button><aside class="sidebar" id="sidebar"><nav aria-label="${text(locale, '文档目录', 'Documentation navigation')}">${navigation}</nav></aside>
 <main id="content" tabindex="-1"><div class="article-eyebrow"><span>${esc(groupName)}</span></div><div class="title-row"><h1>${esc(page.title[locale])}</h1></div><p class="page-description">${esc(page.description[locale])}</p><div class="article-meta"><span>${text(locale, '更新于', 'Updated')} <time datetime="${updated}">${updated}</time></span>${!is404 ? `<button class="copy-page" data-markdown="/markdown/${locale}/${page.slug}.md">${icon('copy')}<span>${text(locale, '复制页面', 'Copy page')}</span></button><a href="/markdown/${locale}/${page.slug}.md" download>${text(locale, '下载 Markdown', 'Download Markdown')}<span aria-hidden="true">↗</span></a>` : ''}</div>

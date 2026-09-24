@@ -57,7 +57,8 @@ The current `.github/workflows/ci.yml` checks application code; the repository h
 The documentation presents iGraph as a graph-driven data analysis agent, connecting questions, graph representations, computed evidence, and interpretation. Skills organize analysis workflows; self-evolving construction prepares and optimizes representations for analysis.
 
 - `content.json`：16 篇核心双语文档；`workspace.content.json` 为工作台操作指南，`construction-example.content.json` 为电商构图报告，`graph-tools.content.json` 为 72 项业务工具（含可选的报告工具）及 3 个会话管理接口的分类参考。核心章节包括源数据预览、构图流程、图算法、大图处理、图学习、接口与配置、记忆和技能。相同 slug 和 section ID 在语言切换时保持章节位置。
-- `scripts/content.mjs`：组合 19 篇文档；`scripts/build.mjs` 生成 38 个文档页面、中英文封面、根入口、真实 404、Markdown、章节与工具搜索索引、llms.txt / llms-full.txt、可选 sitemap。
+- `experiments.content.json`：GLM-5-turbo 基座下四类图分析实验的 SR，以及构图智能体相对 PK/FK 规则构图的成本改善。`scripts/experiment-tables.mjs` 生成 SR 分组表头并按列标注排名；`scripts/construction-results.mjs` 展示按数据集选择的构图结果。两类表格均导出 Markdown，源文件保留结果来源。
+- `scripts/content.mjs`：组合 20 篇文档；`scripts/build.mjs` 生成 40 个文档页面、中英文封面、根入口、真实 404、Markdown、章节与工具搜索索引、llms.txt / llms-full.txt、可选 sitemap。
 - `scripts/cover.mjs`：中英文封面文案、导航与静态点云后备图。根地址默认进入 `/en/`，仅在用户主动切换语言后记住所选语言；不按浏览器语言自动选择中文。直接访问 `/zh/` 或 `/en/` 保留对应语言，文档页标识链接返回对应语言的封面；关闭 JavaScript 时根页面仍为英文。
 - `assets/cover.css`、`assets/cover.js`：封面布局和主题及语言切换。`assets/particles.js` 与 `assets/cloud-geometry.js` 绘制覆盖整页的密集三维星云，支持全页鼠标交互、设备性能适配和减少动态效果偏好；页面不可见时停止动画。
 - `scripts/diagrams.mjs`：生成图驱动分析流程、系统架构、Graph Engine 执行、技能驱动的构图进化四种 SVG，每种提供中英文和深浅主题。
@@ -75,6 +76,20 @@ After editing content, run `npm run build` and `npm run check`, then preview the
 修改内容后，执行 `npm run build` 与 `npm run check`，并预览中英文页面。需要发布时，先核对 Cloudflare 账号和 Worker 名称，再运行 `npm run deploy`。本地构建成功不等于网站已经发布。
 
 ## 内容维护约定 / Editorial conventions
+
+### 实验结果来源
+
+2026-09-21 新增的 `experiments.content.json` 按用户提供的七张截图录入，用户确认所有 harness 的基座模型均为 GLM-5-turbo。图一、图二只取 GLM-5-turbo（对应 OpenClaw）和 iGraph 的 SR；图三作为分组表头参考；图四、图六只取 iGraph 的 SR，分别与图五、图七的 Hermes、Claude Code、OpenClaw 合并。图四、图六的 OpenClaw 数值与 harness 对比表不同，本次采用图五、图七，未混合或平均两组结果。每行的 `source` 保留截图编号与原始行名。原始 0–1 比例乘以 100，图五、图七已有百分数不再次换算。
+
+`scripts/check.mjs` 检查四张表的基座模型、指标、数值范围、分组列数、来源记录，以及 HTML 和 Markdown 的最高分/次高分标记；并列成绩按不同分数排名。截图中的其他基座模型、Avg 和 TSA 均不录入结果页。
+
+实验表格采用两层表头、独立的基座模型与指标栏，以及排名图例。容器宽度不超过 820px 时，通过 NAG／TAG／TPG 分组选项查看对应列；宽屏和打印显示完整对比表。分组切换使用原生单选控件与 CSS，支持键盘操作，无需 JavaScript；Markdown 导出始终包含全部结果。
+
+构图实验由同日另外提供的两张表补充。第一张文件为 `92fa631ce10c72fa29f270bd586df627.png`，第二张为 `5b23269770d1c1857da18f6093db1693.png`。Amazon、AVS 取第一张的 27.33% / 53.20%、14.80% / 20.71%；MAG、StackExchange 取第二张的 11.79% / 19.91%、8.40% / 6.74%。每对数值依次为优化（搜索）查询成本下降、留出查询成本下降，基线均为 PK/FK 规则构图。所选结果在同一数据集的两项指标上均更优，不逐列拼接不同实验，也不跨数据集排序。
+
+构图表的 `datasets[].results` 保留两组原始值及各自附带字段，`selectedSource` 明确选择来源。第一组的虚拟记录、保留列和候选数没有补到第二组；第二组的耗时也没有补到第一组。原表耗时与成本下降率不能简单等同，页面直接使用原表报告的成本下降率，不从耗时反算，也不编造未给出的基线绝对成本、模型配置或运行日期。构建检查验证所选整行确实在两项指标上均占优，HTML 与 Markdown 输出均包含对应结果。
+
+### 文字与术语
 
 - 以代码中的工具目录、路由、配置和前端入口为依据。更新功能说明时同步中英文；历史实验保留日期与原始测量，不改写成当前版本的性能保证。
 - 中文先说操作和用途，再解释实现。构图中的 workload 称为“评测查询集”，SQL oracle 称为“独立 SQL 参考执行器”，artifact 按上下文写成“分析结果”或“结果文件”；引用界面按钮时沿用界面原文。
