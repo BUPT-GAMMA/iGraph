@@ -6,12 +6,13 @@ import {
   deleteModelConfiguration, deleteModelProvider, discoverProviderModels, importProviderModels, getProviderCredentials, listModelProviders, listModels,
   modelErrorMessage, saveModelConfiguration, saveModelProvider, setDefaultModel, setModelEnabled, testModelConfiguration,
   type DiscoveredModels, type ModelCatalog, type ModelConfiguration, type ModelProviderConnection,
-  type ModelWrite, type ProviderPreset, type ProviderWrite,
+  type ModelWrite, type ProviderPreset, type ProviderWrite, type ModelProtocol,
 } from '../api';
 import { useI18n } from '../i18n';
 import { Icon } from './Icon';
 import { ModelProviderIcon } from './ModelProviderIcon';
-import type { ModelProvider } from './modelProviders';
+import { ProviderLogo } from './ProviderLogo';
+import { ProviderSelect } from './ProviderSelect';
 import './ModelSettings.css';
 
 type Props = { onClose: () => void; onChanged: (catalog: ModelCatalog) => void };
@@ -73,7 +74,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const modelDirty = view === 'model' && modelFields.some(field => modelDraft[field] !== modelBaseline[field]);
   const ownModels = catalog.models.filter(m => m.provider_id === selected).sort((a, b) => a.display_name.localeCompare(b.display_name));
   const presetName = (preset: ProviderPreset) => preset.id === 'custom' ? t('Custom provider', '自定义提供商') : preset.id === 'qwen' ? t('Alibaba Cloud', '阿里云百炼') : preset.name;
-  const providerIcon = (id: string) => (presets.find(p => p.id === id)?.icon || 'unknown') as ModelProvider;
+  const providerIcon = (id: string) => (presets.find(p => p.id === id)?.icon || 'unknown');
   const protect = (action: () => void) => {
     if (working.current) return;
     if (dirty || modelDirty) setConfirm({ title: t('Discard changes?', '放弃修改？'), label: t('Discard', '放弃'), action });
@@ -111,6 +112,8 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     dialog.current?.focus();
     const keydown = (event: KeyboardEvent) => {
       if (!presentRef.current) return;
+      // Radix owns keyboard dismissal/focus while a nested picker is open.
+      if (document.querySelector('[data-provider-picker-popup][data-state="open"]')) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeRef.current(); }
       if (event.key !== 'Tab') return;
       const scope = confirmation.current?.dataset.popupState === 'open' ? confirmation.current : dialog.current;
@@ -196,7 +199,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     setDraft(current => {
       const previous = presets.find(p => p.id === current.preset_id);
       const name = !current.name || (previous && current.name === presetName(previous)) ? presetName(preset) : current.name;
-      return { ...current, preset_id: preset.id, name, base_url: preset.base_url };
+      return { ...current, preset_id: preset.id, name, base_url: preset.base_url, protocol: preset.protocol || 'openai-compatible' };
     });
   }
   function saveConnection(event: FormEvent) {
@@ -260,17 +263,26 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const back = () => protect(() => { setView('connection'); setError(''); });
 
   const connectionReady = editable && keyReady && !!provider?.base_url && !dirty;
-  const endpoint = `${draft.base_url.trim().replace(/\/+$/, '')}/chat/completions`;
+  let endpointBase = draft.base_url.trim().replace(/\/+$/, '');
+  if (draft.protocol === 'anthropic' && !endpointBase.endsWith('/v1')) endpointBase += '/v1';
+  if (draft.protocol === 'gemini' && !/\/v1(?:beta|alpha)?$/.test(endpointBase)) endpointBase += '/v1beta';
+  const endpoint = `${endpointBase}${draft.protocol === 'anthropic' ? '/messages' : draft.protocol === 'gemini' ? '/models/{model}:generateContent' : draft.protocol === 'openai-responses' ? '/responses' : '/chat/completions'}`;
+  const protocols = [
+    { value: 'openai-compatible', label: 'OpenAI Compatible', icon: 'openai' },
+    { value: 'openai-responses', label: 'OpenAI Responses', icon: 'openai' },
+    { value: 'anthropic', label: 'Anthropic', icon: 'anthropic' },
+    { value: 'gemini', label: 'Google Gemini', icon: 'google' },
+  ];
   const identityFields = <>
     <label>{t('Provider name', '提供商名称')}
       <input required maxLength={120} value={draft.name} disabled={!!busy} autoFocus={isNew}
         onChange={e => setDraft({ ...draft, name: e.target.value })} />
     </label>
-    <label>{t('Provider type', '提供商类型')}
-      <select value={draft.preset_id} disabled={!!busy} onChange={e => {
-        const preset = presets.find(p => p.id === e.target.value); if (preset) usePreset(preset);
-      }}>{presets.map(p => <option key={p.id} value={p.id}>{presetName(p)}</option>)}</select>
-    </label>
+    <ProviderSelect label={t('Provider', '提供商')} value={draft.preset_id} disabled={!!busy}
+      options={presets.map(p => ({ value: p.id, label: presetName(p), icon: p.icon }))}
+      onChange={id => { const preset = presets.find(p => p.id === id); if (preset) usePreset(preset); }} />
+    <ProviderSelect label={t('API type', '接口类型')} value={draft.protocol} disabled={!!busy} options={protocols}
+      onChange={value => setDraft(current => ({ ...current, protocol: value as ModelProtocol }))} />
   </>;
   function removeProvider() {
     if (!provider) return;
@@ -306,7 +318,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
             {providers.filter(p => p.name.toLowerCase().includes(search.trim().toLowerCase())).map(p =>
               <button key={p.provider_id} className={`pm-provider ${p.provider_id === selected ? 'is-selected' : ''}`}
                 onClick={() => choose(p.provider_id)} disabled={!!busy} aria-pressed={p.provider_id === selected}>
-                <span className={`pm-avatar preset-${p.preset_id}`}>{p.preset_id === 'zhizengzeng' ? <b>Z</b> : <ModelProviderIcon provider={providerIcon(p.preset_id)} size={22} />}</span>
+                <span className={`pm-avatar preset-${p.preset_id}`}><ProviderLogo icon={providerIcon(p.preset_id)} size={22} /></span>
                 <strong title={p.name}>{p.name}</strong>
                 <i className={`pm-status-dot ${p.enabled ? 'is-enabled' : ''}`} aria-label={p.enabled ? t('Enabled', '已启用') : t('Disabled', '已停用')} />
               </button>)}
@@ -362,7 +374,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                     </span>
                   </label>
                   <label className="pm-wide"><span className="pm-field-label">{t('API base URL', 'API 地址')}
-                    <span title={`OpenAI Chat Completions${draft.base_url ? ` · ${endpoint}` : ''}`}><Icon name="info" size={13} /></span>
+                    <span title={`${protocols.find(p => p.value === draft.protocol)?.label}${draft.base_url ? ` · ${endpoint}` : ''}`}><Icon name="info" size={13} /></span>
                   </span><input type="url" aria-label={t('API base URL', 'API 地址')} autoComplete="off" spellCheck={false}
                     value={draft.base_url} disabled={!!busy || !editable} onChange={e => setDraft({ ...draft, base_url: e.target.value })} placeholder="https://api.example.com/v1" /></label>
                 </div>

@@ -31,8 +31,8 @@
 
 - 启用 `IGRAPH_RUN_CANCEL_ENABLED=true`，并让相关服务共享有效的 `IGRAPH_CONTROL_SERVICE_KEY`。模型版本、运行准入和取消状态使用同一套控制机制。
 - 模型目录、版本、会话选择和默认偏好保存在 Agent Runtime 数据库的 `igraph_model_*` 表中。首次访问自动迁移旧自定义配置；删除记录保留无密钥的标记，避免旧文件将其重新导入。
-- API Key 仅在服务端存储及服务间认证接口中使用，浏览器只收到是否已配置密钥。它们仍是数据库中的敏感明文，部署者需要保护数据库及备份；旧版本为运行恢复保留，删除配置时一并移除其版本密钥。
-- 原部署模型迁移到共享提供商，管理员在模型服务界面配置连接、管理与删除模型；普通账户保留原授权、默认选择及个人启停。迁移后配置保存到数据库，不再被环境变量覆盖。自定义模型支持 OpenAI-compatible Chat Completions 接口；供应商名称本身不会将协议自动转换为原生 Anthropic 等接口。
+- 列表接口只返回密钥配置状态；可编辑连接通过带身份和版本校验的 no-store 凭据接口读取真实密钥。它们仍是数据库中的敏感明文，部署者需要保护数据库及备份；旧版本为运行恢复保留，删除配置时一并移除其版本密钥。
+- 原部署模型迁移到共享提供商，管理员在模型服务界面配置连接、管理与删除模型；普通账户保留原授权、默认选择及个人启停。迁移后配置保存到数据库，不再被环境变量覆盖。提供商独立保存接口类型：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 或 Gemini GenerateContent。厂商预设填入默认类型和地址，用户可在“接口类型”中修改；旧记录缺少类型时继续使用 Chat Completions。
 - Docker 内接入宿主机服务时，应填写容器可达地址，例如 macOS 的 `http://host.docker.internal:端口/v1`，不能填写指向容器自身的 `localhost`。
 
 ## 历史与能力检查
@@ -82,3 +82,13 @@ Compose 整链路验收使用 `tests/fixtures/model_verification_server.py` 作�
 验收未调用真实商业模型，没有验证每家供应商的模型质量和协议差异。交付环境已重建受影响的 Compose 服务，访问地址为 `http://localhost:21108/`；配置了健康检查的服务均健康，独立 Worker 进程运行正常。
 
 专用测试账号、合成会话/数据集和模拟模型凭据已清理。浏览器截图及记录保留在被 Git 忽略的 `output/playwright/` 中。
+
+## 原生协议与提供商选择
+
+- 选择器参考 [Cherry Studio Combobox](https://github.com/CherryHQ/cherry-studio/blob/main/packages/ui/src/components/primitives/combobox.tsx)，使用 Radix Popover 与 cmdk，支持厂商图标、搜索、方向键、Enter 和 Escape。图标来自 MIT 许可的 [LobeHub Icons](https://github.com/lobehub/lobe-icons)。
+- 地址按接口类型统一解析。OpenAI 输入包含版本的基础地址；Anthropic 可输入根地址或 `/v1`；Gemini 可输入根地址、`/v1beta` 或 `/v1`。反向代理的路径前缀保留。
+- 发现模型使用对应鉴权和 `/models` 格式；Anthropic、Gemini 支持游标分页。Gemini 过滤不支持 generateContent 的模型。总请求限制 20 秒、4 MiB、50 页，列表最多 5,000 项，重复游标会报错。模型检测发送合成文本及工具定义到实际生成端点，不发送会话内容。
+- Agent 使用 Agno 2.9.0 的原生 OpenAIResponses、Claude、Gemini 适配器，保留既有工具 DAG 和运行取消。Responses 使用 `store=false`，保留工具 call_id 与加密推理；Gemini 保留当前连接的 thought_signature。跨连接历史中的签名不会转发，旧工具结果以历史文本保留。构图文本抽取使用同协议的官方 SDK。
+- 当前支持 API Key 接入；Azure 部署、Vertex AI 服务账户、Ollama 原生接口未列入类型选项。Ollama 通过其 OpenAI 兼容接口接入。
+
+协议契约依据：[OpenAI Responses 迁移指南](https://developers.openai.com/api/docs/guides/migrate-to-responses)、[Anthropic 模型分页接口](https://platform.claude.com/docs/en/api/models/list)、[Gemini Models](https://ai.google.dev/api/models)。`tests/test_native_model_protocols.py` 通过真实 SDK 和模拟 HTTP 验证文本、流式工具往返、取消关闭、构图调用；无需商业 API 密钥。

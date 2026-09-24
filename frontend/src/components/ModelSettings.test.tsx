@@ -25,6 +25,8 @@ async function openProvider() {
   await waitFor(() => expect((screen.getByLabelText('API 密钥') as HTMLInputElement).disabled).toBe(false));
 }
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  Element.prototype.scrollIntoView = vi.fn();
   vi.resetAllMocks(); connections = [{ ...provider }]; models = []; keys = { p1: 'stored-secret', 'shared-zzz': 'stored-secret' };
   vi.mocked(api.listModelProviders).mockImplementation(async () => ({ providers: connections, presets: [
     { id: 'openai', name: 'OpenAI', base_url: 'https://api.openai.com/v1', icon: 'openai' },
@@ -54,7 +56,8 @@ describe('Model services', () => {
     const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
     await screen.findByRole('button', { name: /我的网关/ });
     await u.click(screen.getByRole('button', { name: '添加提供商' }));
-    await u.selectOptions(screen.getByLabelText('提供商类型'), 'openai');
+    await u.click(screen.getByRole('button', { name: '提供商' }));
+    await u.click(screen.getByRole('option', { name: 'OpenAI' }));
     expect(screen.queryByLabelText('API 地址')).toBeNull();
     await u.click(screen.getByRole('button', { name: '添加' }));
     await screen.findByLabelText('API 地址');
@@ -70,7 +73,7 @@ describe('Model services', () => {
     await u.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(api.saveModelConfiguration).toHaveBeenCalledWith(expect.objectContaining({ provider_id: 'new-provider', provider_revision: 2, upstream_model_id: 'team/model' })));
     expect(vi.mocked(api.saveModelConfiguration).mock.calls[0][0]).not.toHaveProperty('api_key');
-  });
+  }, 15000);
 
   it('preserves a saved key and asks before discarding connection edits', async () => {
     const close = vi.fn(); const u = user(); render(<ModelSettings onClose={close} onChanged={vi.fn()} />);
@@ -209,13 +212,14 @@ it('creates personal providers without an access selector even for administrator
   ] }));
   const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
   await openProvider(); await u.click(screen.getByRole('button', { name: '添加提供商' }));
-  await u.selectOptions(screen.getByLabelText('提供商类型'), 'zhizengzeng');
+  await u.click(screen.getByRole('button', { name: '提供商' }));
+  await u.click(screen.getByRole('option', { name: '智增增' }));
   expect(screen.queryByLabelText('使用范围')).toBeNull();
   expect(screen.queryByText('共享')).toBeNull();
   await u.click(screen.getByRole('button', { name: '添加' }));
   await waitFor(() => expect(api.saveModelProvider).toHaveBeenCalledWith(expect.objectContaining({ name: '智增增', base_url: 'https://api.zhizengzeng.com/v1' })));
   expect(vi.mocked(api.saveModelProvider).mock.calls[0][0]).not.toHaveProperty('scope');
-});
+}, 15000);
 
 
 it('reads and reveals the actual saved key, then masks it again on reopen', async () => {

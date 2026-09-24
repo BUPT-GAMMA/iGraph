@@ -145,7 +145,7 @@ def test_provider_change_racing_model_add_never_mixes_versions(service):
     {'base_url': 'https://example.org:bad/v1'}, {'base_url': 'https://[invalid'},
     {'base_url': 'https://example.org/v1?key=secret'}, {'base_url': 'https://a:b@example.org'},
     {'base_url': 'ftp://example.org'}, {'base_url': 'https://example.org/white space'},
-    {'name': '  '}, {'protocol': 'anthropic'}, {'api_key': 'key\nInjected: header'},
+    {'name': '  '}, {'protocol': 'unsupported-protocol'}, {'api_key': 'key\nInjected: header'},
 ])
 def test_provider_validation_returns_safe_errors(service, patch):
     client, _ = service
@@ -336,3 +336,84 @@ def test_credentials_can_be_loaded_before_configuring_an_address(service):
     p = client.post('/internal/model-providers', json={'name': 'Incomplete', 'api_key': 'saved-key'}).json()['provider']
     response = client.get(f"/internal/model-providers/{p['provider_id']}/credentials?revision=1")
     assert response.status_code == 200 and response.json()['api_key'] == 'saved-key'
+
+
+@pytest.mark.parametrize('protocol,preset', [('openai-compatible', 'custom'), ('openai-responses', 'openai-responses'), ('anthropic', 'anthropic'), ('gemini', 'google')])
+def test_protocol_defaults_persist_through_models_and_frozen_runs(service, protocol, preset):
+    client, catalog = service
+    p = client.post('/internal/model-providers', json=dict(name='Native', preset_id=preset,
+        base_url='https://native.test/v1', api_key='native-key')).json()['provider']
+    assert p['protocol'] == protocol
+    m = add(client, p).json()['model']
+    catalog.set_default('alice', m['config_id'])
+    run, _ = catalog.store.register('alice', 'native-session', 'request', 'fp',
+        capture_model=lambda conn: catalog.freeze(conn, 'alice', 'native-session'))
+    assert catalog.test_configuration('alice', m['config_id'], 1)['protocol'] == protocol
+    assert client.post('/internal/model-providers', json={**p, 'protocol': 'gemini' if protocol != 'gemini' else 'anthropic'}).status_code == 200
+    assert catalog.resolve('alice', run['state']['model_snapshot'])['protocol'] == protocol
+    assert client.post('/internal/model-providers', json=p).status_code == 409
+
+
+@pytest.mark.parametrize('protocol', ['anthropic', 'gemini'])
+def test_native_discovery_pagination_auth_and_model_names(service, monkeypatch, protocol):
+    client, _ = service
+    p = connection(client, protocol=protocol)
+    seen = []
+    def respond(request):
+        seen.append(request)
+        if protocol == 'anthropic':
+            assert request.headers['x-api-key'] == 'private-key'
+            assert request.headers['anthropic-version'] == '2023-06-01'
+            assert request.url.path == '/v1/models'
+            if len(seen) == 1:
+                return httpx.Response(200, json={'data': [{'id': 'claude-one', 'display_name': 'Claude One'}], 'last_id': 'claude-one', 'has_more': True})
+            assert request.url.params['after_id'] == 'claude-one'
+            return httpx.Response(200, json={'data': [{'id': 'claude-two'}], 'has_more': False})
+        assert request.headers['x-goog-api-key'] == 'private-key'
+        assert 'key' not in request.url.params
+        if len(seen) == 1:
+            return httpx.Response(200, json={'models': [{'name': 'models/gemini-one', 'displayName': 'Gemini One', 'supportedGenerationMethods': ['generateContent']},
+                {'name': 'models/embedding', 'supportedGenerationMethods': ['embedContent']}], 'nextPageToken': 'second-page'})
+        assert request.url.params['pageToken'] == 'second-page'
+        return httpx.Response(200, json={'models': [{'name': 'models/gemini-two', 'supportedGenerationMethods': ['generateContent']}]})
+    mock_upstream(monkeypatch, respond)
+    response = client.post('/internal/model-providers/discover', json=p)
+    assert response.status_code == 200 and len(seen) == 2
+    rows = response.json()['models']
+    assert len(rows) == 2 and rows[0]['name'] in {'Claude One', 'Gemini One'}
+    assert 'private-key' not in response.text
+
+
+@pytest.mark.parametrize('protocol', ['openai-responses', 'anthropic', 'gemini'])
+def test_model_probe_uses_native_wire_format(service, monkeypatch, protocol):
+    client, _ = service
+    p = connection(client, protocol=protocol)
+    m = add(client, p, 'native-one').json()['model']
+    seen = []
+    def respond(request):
+        body = json.loads(request.content); seen.append(body)
+        if protocol == 'anthropic':
+            assert request.url.path == '/v1/messages'
+            assert body['messages'] == [{'role': 'user', 'content': 'Reply OK.'}]
+            assert body['tools'][0]['input_schema'] == {'type': 'object', 'properties': {}}
+            return httpx.Response(200, json={'content': [{'type': 'text', 'text': 'OK'}]})
+        if protocol == 'gemini':
+            assert request.url.path == '/v1/models/native-one:generateContent'
+            assert body['contents'][0]['parts'] == [{'text': 'Reply OK.'}]
+            assert body['tools'][0]['functionDeclarations'][0]['name'] == 'connection_test'
+            return httpx.Response(200, json={'candidates': [{'content': {'parts': [{'text': 'OK'}]}}]})
+        assert request.url.path == '/v1/responses'
+        assert body['store'] is False and 'messages' not in body
+        assert body['tools'][0]['name'] == 'connection_test'
+        return httpx.Response(200, json={'output': [{'type': 'message'}], 'status': 'completed'})
+    mock_upstream(monkeypatch, respond)
+    response = client.post('/internal/model-catalog/test', json=m)
+    assert response.status_code == 200 and len(seen) == 1
+
+
+def test_native_discovery_rejects_repeated_pagination_cursor(service, monkeypatch):
+    client, _ = service
+    p = connection(client, protocol='gemini')
+    mock_upstream(monkeypatch, lambda _: httpx.Response(200, json={'models': [], 'nextPageToken': 'same'}))
+    response = client.post('/internal/model-providers/discover', json=p)
+    assert response.json()['detail']['code'] == 'MODEL_INVALID_RESPONSE'

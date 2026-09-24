@@ -19,6 +19,9 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@lobehub/icons-static-svg": "^1.95.1",
+    "@radix-ui/react-popover": "^1.1.23",
+    "cmdk": "^1.1.1",
     "d3": "^7.9.0",
     "eventsource-parser": "4.1.0",
     "motion": "^13.4.2",
