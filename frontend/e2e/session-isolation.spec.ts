@@ -301,11 +301,13 @@ test('mobile navigation and docked drawers keep their exit animation mounted', a
   const mainCenter = await activeDatasetRow.locator('.dataset-row-main').evaluate(element => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; });
   const actionsCenter = await activeDatasetRow.locator('.dataset-row-actions').evaluate(element => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; });
   expect(Math.abs(mainCenter - actionsCenter)).toBeLessThanOrEqual(1);
-  expect(await datasetDialog.evaluate(element => getComputedStyle(element).animationDuration)).not.toBe('0s');
+  await expect(datasetDialog).toHaveAttribute('data-popup-kind', 'drawer');
+  const datasetSurface = page.locator('.dataset-drawer');
   await datasetDialog.getByRole('button', { name: '关闭' }).click();
-  await expect(page.locator('.drawer-overlay')).toHaveClass(/is-closing/);
-  await expect(datasetDialog).toBeVisible({ timeout: 100 });
-  await expect(datasetDialog).toHaveCount(0);
+  await expect(datasetSurface).toHaveAttribute('data-popup-state', 'closed');
+  await expect(datasetSurface).toHaveAttribute('inert', '');
+  await expect(datasetSurface).toBeVisible({ timeout: 100 });
+  await expect(datasetSurface).toHaveCount(0);
 
   await page.getByRole('button', { name: '记忆' }).click();
   const managementDialog = page.getByRole('dialog', { name: '记忆与技能' });
@@ -320,8 +322,36 @@ test('mobile navigation and docked drawers keep their exit animation mounted', a
   await page.waitForTimeout(180);
   expect(await managementIndicator.evaluate(element => getComputedStyle(element).transform)).not.toBe(managementMovingTransform);
   await managementDialog.getByRole('button', { name: '关闭管理面板' }).click();
-  await expect(page.locator('.drawer-overlay')).toHaveClass(/is-closing/);
-  await expect(managementDialog).toHaveCount(0);
+  const managementSurface = page.locator('.drawer.management');
+  await expect(managementSurface).toHaveAttribute('data-popup-state', 'closed');
+  await expect(managementSurface).toHaveAttribute('inert', '');
+  await expect(managementSurface).toHaveCount(0);
+});
+
+test('drawer resizing persists across animated close and still fits mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?session=session-a');
+  await page.getByRole('button', { name: '记忆', exact: true }).click();
+  const drawer = page.locator('.drawer.management');
+  const handle = page.getByRole('separator', { name: '调整记忆与技能栏宽度' });
+  await expect(drawer).toHaveCSS('transform', 'none');
+  const box = await handle.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + 80);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width / 2 - 80, box!.y + 80);
+  await page.mouse.up();
+  await expect(drawer).toHaveCSS('width', '600px');
+  await handle.press('ArrowRight');
+  await expect(drawer).toHaveCSS('width', '584px');
+  await drawer.getByRole('button', { name: '关闭管理面板' }).click();
+  await expect(drawer).toHaveCount(0);
+  await page.getByRole('button', { name: '记忆', exact: true }).click();
+  await expect(drawer).toHaveCSS('width', '584px');
+  await handle.dblclick();
+  await expect(drawer).toHaveCSS('width', '520px');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(drawer).toHaveCSS('width', '390px');
+  await expect(handle).toBeHidden();
 });
 
 test('a background stream cannot pollute the newly selected session', async ({ page }) => {
@@ -409,10 +439,11 @@ test('browser history keeps the URL and selected workspace in sync', async ({ pa
 test('deleting a background session keeps the current session selected', async ({ page }) => {
   await page.goto('/?session=session-b');
   await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session B');
-  page.once('dialog', dialog => dialog.accept());
 
   const backgroundSession = page.locator('.session-row').filter({ hasText: 'Session C Paused' });
   await backgroundSession.getByRole('button', { name: '删除任务' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除', exact: true }).click();
+  await expect(backgroundSession).toHaveCount(0);
 
   await expect(page).toHaveURL(/\?session=session-b$/);
   await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session B');
@@ -435,10 +466,11 @@ test('an invalid deep link returns to an actionable home page', async ({ page })
 test('deleting the active session replaces its stale URL with home', async ({ page }) => {
   await page.goto('/?session=session-a');
   await expect(page.locator('.session-row.selected .recent-session-name')).toHaveText('Session A');
-  page.once('dialog', dialog => dialog.accept());
 
   const recent = page.locator('.session-row').filter({ hasText: 'Session A' });
   await recent.getByRole('button', { name: '删除任务' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除', exact: true }).click();
+  await expect(recent).toHaveCount(0);
 
   await expect(page).toHaveURL('/');
   await expect(page.getByRole('heading', { name: '开始新的图分析', exact: true })).toBeVisible();

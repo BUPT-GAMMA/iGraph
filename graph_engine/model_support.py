@@ -10,6 +10,7 @@ import os
 from typing import Any
 
 from openai import AsyncOpenAI
+from model_protocols import protocol_for, sdk_endpoint
 
 
 SUPPORTED_MODELS = {
@@ -48,11 +49,18 @@ class ProviderGateway:
         self.context_window = int(resolved_config['context_window']) if resolved_config else None
         self.temperature = temperature
         self.logger = logger
-        self.client = AsyncOpenAI(
-            api_key=api_key or 'local-no-auth',
-            base_url=base_url,
-            timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "180")),
-        )
+        self.protocol = protocol_for(resolved_config or {})
+        root, version = sdk_endpoint(base_url, self.protocol)
+        timeout = float(os.getenv('LLM_TIMEOUT_SECONDS', '180'))
+        if self.protocol == 'anthropic':
+            from anthropic import AsyncAnthropic
+            self.client = AsyncAnthropic(api_key=api_key or 'local-no-auth', base_url=root, timeout=timeout)
+        elif self.protocol == 'gemini':
+            from google import genai
+            self.client = genai.Client(api_key=api_key or 'local-no-auth', vertexai=False,
+                http_options={'base_url': root, 'api_version': version, 'timeout': int(timeout * 1000)})
+        else:
+            self.client = AsyncOpenAI(api_key=api_key or 'local-no-auth', base_url=root, timeout=timeout)
 
     async def invoke_text(
         self,
@@ -69,12 +77,24 @@ class ProviderGateway:
             estimated = len(json.dumps(messages, ensure_ascii=False).encode('utf-8')) // 2 + 512
             if estimated + (max_tokens or 0) > self.context_window:
                 raise ValueError('MODEL_CONTEXT_TOO_LARGE')
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature if temperature is None else temperature,
-            max_tokens=max_tokens,
-            stream=False,
-        )
-        content = response.choices[0].message.content if response.choices else ""
-        return str(content or "")
+        sampling = self.temperature if temperature is None else temperature
+        if self.protocol == 'openai-responses':
+            response = await self.client.responses.create(model=self.model, input=messages,
+                max_output_tokens=max_tokens, store=False)
+            return response.output_text or ''
+        if self.protocol == 'anthropic':
+            system = '\n\n'.join(m['content'] for m in messages if m['role'] in {'system', 'developer'})
+            response = await self.client.messages.create(model=self.model,
+                messages=[m for m in messages if m['role'] not in {'system', 'developer'}],
+                **({'system': system} if system else {}), max_tokens=max_tokens or 4096)
+            return ''.join(block.text for block in response.content if block.type == 'text')
+        if self.protocol == 'gemini':
+            system = '\n\n'.join(m['content'] for m in messages if m['role'] in {'system', 'developer'})
+            response = await self.client.aio.models.generate_content(model=self.model.removeprefix('models/'),
+                contents=[{'role': 'model' if m['role'] == 'assistant' else 'user', 'parts': [{'text': m['content']}]} for m in messages if m['role'] not in {'system', 'developer'}],
+                config={'system_instruction': system or None, 'max_output_tokens': max_tokens, 'temperature': sampling})
+            return response.text or ''
+        response = await self.client.chat.completions.create(model=self.model, messages=messages,
+            temperature=sampling, max_tokens=max_tokens, stream=False)
+        content = response.choices[0].message.content if response.choices else ''
+        return str(content or '')

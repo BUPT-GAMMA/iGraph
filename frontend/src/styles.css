@@ -294,7 +294,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 10px 30px rgba(15, 23, 42, .16), 0 2px 8px rgba(15, 23, 42, .08);
-  animation: project-menu-in 120ms var(--motion-ease);
   transform-origin: top right;
 }
 .project-action-popover button { height: 34px; padding: 0 10px; border-radius: 7px; font-size: 12px; }
@@ -310,7 +309,6 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 [data-theme="dark"] .project-action-popover button:focus-visible,
 [data-theme="dark"] .project-action-popover button.danger:focus-visible { background: #22314a; }
 [data-theme="dark"] .project-action-separator { background: #3b4c65; }
-@keyframes project-menu-in { from { opacity: 0; transform: translateY(-3px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
 .project-row-icon {
   width: 20px;
@@ -1107,23 +1105,11 @@ body.is-resizing-columns .app-body { transition: none; }
   }
 }
 
-/* Dataset and management drawers keep their shell mounted until the exit animation completes. */
-.drawer-overlay { animation: drawer-overlay-in var(--motion-drawer) ease both; }
-.drawer-overlay > .drawer { animation: drawer-panel-in var(--motion-drawer) var(--motion-ease) both; }
-.drawer-overlay.is-closing { animation-name: drawer-overlay-out; animation-duration: var(--motion-exit); }
-.drawer-overlay.is-closing > .drawer { animation-name: drawer-panel-out; animation-duration: var(--motion-exit); }
-.drawer-overlay.is-closing > .drawer { pointer-events: none; }
-@keyframes drawer-overlay-in { from { background-color: rgba(30,30,30,0); } to { background-color: rgba(30,30,30,.16); } }
-@keyframes drawer-overlay-out { from { background-color: rgba(30,30,30,.16); } to { background-color: rgba(30,30,30,0); } }
-@keyframes drawer-panel-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes drawer-panel-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(14px); } }
-
 @media (prefers-reduced-motion: reduce) {
   .app-body, .sidebar-content, .workspace-panel-content, .workspace-title, .sliding-tab-indicator, .sliding-tabs button, .sidebar, .mobile-sidebar-backdrop {
     transition-duration: .01ms !important;
     transition-delay: 0s !important;
   }
-  .drawer-overlay, .drawer-overlay > .drawer { animation-duration: .01ms !important; }
 }
 
 @media (max-width: 720px) {

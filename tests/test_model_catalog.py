@@ -100,8 +100,8 @@ def test_invalid_capabilities_and_limits_are_explicit(catalog):
         custom(catalog, context_window=2000)
 
 
-def test_builtin_is_managed_but_not_deletable(catalog):
-    with pytest.raises(ControlError, match='MODEL_DEPLOYMENT_READ_ONLY'):
+def test_shared_model_is_read_only_for_non_admin_and_keeps_personal_visibility(catalog):
+    with pytest.raises(ControlError, match='MODEL_PROVIDER_READ_ONLY'):
         catalog.delete('alice', 'qwen3.6-plus', 1)
     catalog.set_enabled('alice', 'qwen3.6-plus', False, 1)
     catalog.bootstrap('alice', ['qwen3.6-plus'])

@@ -10,3 +10,6 @@ openai==2.44.0
 psycopg[binary]>=3.2,<4
 sqlalchemy>=2.0,<3
 pgvector>=0.4,<1
+
+anthropic==1.8.0
+google-genai==2.25.0

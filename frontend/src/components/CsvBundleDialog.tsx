@@ -1,3 +1,4 @@
+import { Popup, PopupBackdrop } from './PopupMotion';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
 import type { CsvBundleSchema, CsvBundleTableSchema, CsvForeignKey } from '../types';
@@ -156,8 +157,8 @@ export function CsvBundleDialog({ files, onCancel, onSubmit }: Props) {
     onSubmit(files, schema, datasetName.trim());
   }
 
-  return <div className="csv-bundle-backdrop" role="presentation">
-    <section className="csv-bundle-dialog" role="dialog" aria-modal="true" aria-labelledby="csv-bundle-title">
+  return <PopupBackdrop className="csv-bundle-backdrop" role="presentation">
+    <Popup.section className="csv-bundle-dialog" role="dialog" aria-modal="true" aria-labelledby="csv-bundle-title">
       <header><div><span>{t('MULTI-TABLE CSV', '多表 CSV')}</span><h2 id="csv-bundle-title">{t('Configure primary and foreign keys', '配置主键与外键')}</h2></div><button onClick={onCancel} aria-label={t('Close', '关闭')}><Icon name="close" size={18} /></button></header>
       <div className="csv-bundle-body">
         <label className="csv-bundle-name">{t('Dataset name', '数据集名称')}<input value={datasetName} onChange={event => setDatasetName(event.target.value)} /></label>
@@ -185,6 +186,6 @@ export function CsvBundleDialog({ files, onCancel, onSubmit }: Props) {
         {error && <div className="csv-bundle-error" role="alert">{error}</div>}
       </div>
       <footer><button className="secondary-command" onClick={onCancel}>{t('Cancel', '取消')}</button><button className="primary-command" onClick={submit} disabled={loading || !tables.length}>{t(`Upload ${files.length} table${files.length === 1 ? '' : 's'}`, `上传 ${files.length} 张表`)}</button></footer>
-    </section>
-  </div>;
+    </Popup.section>
+  </PopupBackdrop>;
 }

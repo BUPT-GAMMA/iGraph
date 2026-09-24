@@ -174,7 +174,6 @@ describe('actual App recovery', () => {
   });
 
   it.each(['streaming', 'before response'])('removes an accepted deletion during %s and ignores late output', async phase => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     vi.mocked(activateSession).mockResolvedValue(phase === 'streaming' ? active() : { ...complete(), messages: [] });
     const { container } = render(<App />);
     if (phase === 'before response') {
@@ -185,6 +184,7 @@ describe('actual App recovery', () => {
     } else await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
     const call = phase === 'streaming' ? vi.mocked(resumeRun).mock.calls[0] : vi.mocked(streamChat).mock.calls[0];
     fireEvent.click(screen.getAllByRole('button', { name: '删除任务' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
     await waitFor(() => expect(deleteSession).toHaveBeenCalledWith('A'));
     await waitFor(() => expect(call[4].aborted).toBe(true));
     expect(screen.getAllByRole('button', { name: '删除任务' })).toHaveLength(1);
@@ -193,10 +193,8 @@ describe('actual App recovery', () => {
       events: [{ type: 'token', content: '迟到的旧会话输出' }] }));
     expect(container.textContent).not.toContain('迟到的旧会话输出');
     expect(container.textContent).not.toContain('请求失败');
-    confirm.mockRestore();
   });
   it('deduplicates deletion and preserves a session selected while acknowledgement was pending', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     let accepted!: (value: { success: boolean; delete_status: 'requested' }) => void;
     vi.mocked(deleteSession).mockImplementation(async () => new Promise(resolve => { accepted = resolve; }));
     vi.mocked(activateSession).mockImplementation(async id => id === 'A' ? active() : { ...complete(), messages: [] });
@@ -204,13 +202,15 @@ describe('actual App recovery', () => {
     await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
     const remove = screen.getAllByRole('button', { name: '删除任务' })[0];
     fireEvent.click(remove); fireEvent.click(remove);
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+    await waitFor(() => expect(deleteSession).toHaveBeenCalledOnce());
+    fireEvent.click(remove);
     expect(deleteSession).toHaveBeenCalledOnce();
     navigate('B');
     await waitFor(() => expect(container.querySelector('.session-row.selected .recent-session-name')?.textContent).toBe('Session B'));
     await act(async () => accepted({ success: true, delete_status: 'requested' }));
     expect(window.location.search).toContain('session=B');
     expect(container.querySelector('.session-row.selected .recent-session-name')?.textContent).toBe('Session B');
-    confirm.mockRestore();
   });
   it.each([false, true])('accepts the next question while completed content and graph requests remain pending (existing graph: %s)', async hasGraph => {
     vi.mocked(activateSession).mockResolvedValue({ ...complete(), messages: [], has_graph: hasGraph });
