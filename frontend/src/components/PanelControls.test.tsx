@@ -1,3 +1,4 @@
+import { PopupPresence } from './PopupMotion';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DatasetPanel } from './DatasetPanel';
@@ -329,17 +330,19 @@ describe('docked panel controls', () => {
     expect(Number(container.querySelector('.graph-node.is-selected .graph-selection-ring')?.getAttribute('r'))).toBeGreaterThan(0);
   });
 
-  it('keeps a drawer mounted until its exit animation completes', () => {
+  it('keeps an exiting drawer mounted but inaccessible until motion completes', async () => {
     const onClose = vi.fn();
-    render(<DrawerShell ariaLabel="测试抽屉" onClose={onClose}>{requestClose => <button onClick={requestClose}>关闭测试抽屉</button>}</DrawerShell>);
-
-    const overlay = screen.getByRole('dialog', { name: '测试抽屉' }).parentElement!;
+    const drawer = <DrawerShell ariaLabel="测试抽屉" onClose={onClose}>{requestClose => <button onClick={requestClose}>关闭测试抽屉</button>}</DrawerShell>;
+    const { rerender } = render(<PopupPresence>{drawer}</PopupPresence>);
+    const panel = screen.getByRole('dialog', { name: '测试抽屉' });
     fireEvent.click(screen.getByRole('button', { name: '关闭测试抽屉' }));
-    expect(overlay.classList.contains('is-closing')).toBe(true);
-    expect(onClose).not.toHaveBeenCalled();
-
-    fireEvent.animationEnd(overlay);
     expect(onClose).toHaveBeenCalledOnce();
+    rerender(<PopupPresence>{null}</PopupPresence>);
+    expect(panel.isConnected).toBe(true);
+    expect(panel.getAttribute('data-popup-state')).toBe('closed');
+    expect(panel.hasAttribute('inert')).toBe(true);
+    expect(screen.queryByRole('dialog', { name: '测试抽屉' })).toBeNull();
+    await waitFor(() => expect(panel.isConnected).toBe(false));
   });
 
   it('renders datasets as compact rows without the internal implementation note', () => {

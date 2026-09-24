@@ -1,3 +1,4 @@
+import { Popup, PopupPresence } from './PopupMotion';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Project, Session } from '../types';
@@ -290,7 +291,7 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
           <span className="account-copy"><strong>{userId || t('Not signed in', '未登录')}</strong><span>{userId ? t('Personal workspace', '个人工作区') : t('Select avatar to sign in', '点击头像登录')}</span></span>
           <Icon name="chevron" size={14} />
         </button>
-        {accountMenuOpen ? <div ref={accountMenuRef} className="account-popover" role="dialog" aria-label={t('Account', '账户')}>
+        <PopupPresence>{accountMenuOpen ? <Popup.div variant="popover" ref={accountMenuRef} className="account-popover" role="dialog" aria-label={t('Account', '账户')}>
           <div className="account-popover-head"><span>{userId ? t('Current account', '当前账户') : t('Welcome to iGraph', '欢迎使用 iGraph')}</span><strong>{userId || t('Sign in to sync your projects and conversations', '登录后同步你的项目与会话')}</strong></div>
           {accountFormVisible ? <form className="account-login-form" onSubmit={event => { event.preventDefault(); void onLogin(); }}>
             <label htmlFor="sidebar-user-id">{t('User ID', '用户 ID')}</label>
@@ -298,17 +299,17 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
             {loginError ? <span className="account-login-error" role="alert">{loginError}</span> : null}
             <div className="account-login-actions">{userId ? <button type="button" className="account-cancel" onClick={() => setSwitchingAccount(false)}>{t('Cancel', '取消')}</button> : null}<button type="submit" className="account-login-submit" disabled={loginPending || !loginValue.trim()}>{loginPending ? t('Verifying…', '正在验证…') : t('Sign in', '登录')}</button></div>
           </form> : <button className="account-switch" type="button" onClick={() => setSwitchingAccount(true)}><Icon name="move" size={15} /> {t('Sign in as another user', '使用其他用户登录')}</button>}
-        </div> : null}
+        </Popup.div> : null}</PopupPresence>
       </div>
       <button className="sidebar-theme" onClick={toggleLanguage} aria-label={language === 'en' ? 'Switch to Chinese' : '切换到英文'} title={language === 'en' ? 'Switch to Chinese' : '切换到英文'}><span lang={language === 'en' ? 'zh-CN' : 'en'}>{language === 'en' ? '中' : 'EN'}</span></button>
       <button className="sidebar-theme" onClick={onTheme} aria-label={dark ? t('Switch to light theme', '切换到浅色主题') : t('Switch to dark theme', '切换到深色主题')} title={dark ? t('Switch to light theme', '切换到浅色主题') : t('Switch to dark theme', '切换到深色主题')}><Icon name={dark ? 'sun' : 'moon'} size={17} /></button>
     </div>
     </div>
   </aside>
-  {menuProject && menuPosition ? createPortal(<div ref={projectMenuRef} className="project-action-menu project-action-popover" role="menu" aria-label={t(`${menuProject.name} project actions`, `${menuProject.name} 项目操作`)} style={menuPosition}>
+  {createPortal(<PopupPresence>{menuProject && menuPosition ? <Popup.div key={menuProject.project_id} variant="popover" ref={projectMenuRef} className="project-action-menu project-action-popover" role="menu" aria-label={t(`${menuProject.name} project actions`, `${menuProject.name} 项目操作`)} style={menuPosition}>
     <button role="menuitem" onClick={() => { closeProjectMenu(); onEditProject(menuProject); }}><Icon name="edit" size={15} /> {t('Edit project', '编辑项目')}</button>
     <><div className="project-action-separator" role="separator" /><button role="menuitem" className="danger" onClick={() => { closeProjectMenu(); onDeleteProject(menuProject); }}><Icon name="trash" size={15} /> {t('Delete project', '删除项目')}</button></>
-  </div>, document.body) : null}
+  </Popup.div> : null}</PopupPresence>, document.body)}
   <button className={`mobile-sidebar-backdrop ${mobileOpen ? 'is-visible' : ''}`} onClick={onCloseMobile} aria-label={t('Close sidebar', '关闭侧栏')} aria-hidden={!mobileOpen} tabIndex={mobileOpen ? 0 : -1} />
   </>;
 }

@@ -100,6 +100,8 @@ describe('graph construction workflow', () => {
     mocks.state.mockReturnValue(new Promise(() => undefined));
     const close = vi.fn();
     render(<GraphConstructionPanel dataset={dataset} embedded onClose={close} onSaved={vi.fn()} />);
+    expect(document.querySelector('.construction-page')?.hasAttribute('data-popup-kind')).toBe(false);
+    expect(document.querySelector('.construction-panel')?.hasAttribute('data-popup-kind')).toBe(false);
     expect(screen.getByRole('region', { name: '客户关系' })).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '返回构图' }));

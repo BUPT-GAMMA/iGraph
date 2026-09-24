@@ -1,3 +1,4 @@
+import { Popup, PopupBackdrop } from './PopupMotion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, buildDatasetGraph, commitConstruction, getConstructionGraph, getConstructionSchema, getConstructionState, previewConstruction } from '../api';
 import { useI18n } from '../i18n';
@@ -591,7 +592,9 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       ? t('The Graph Schema service is temporarily unavailable. A local schema overview was generated from the current graph; optimization and saving are unaffected.', 'Graph Schema 接口暂时不可用，已从当前实例图生成本地结构概览；图数据优化与保存不受影响。')
       : '';
 
-  return <div className={embedded ? 'construction-page' : 'construction-backdrop'}><section className={`construction-panel ${embedded ? 'is-embedded' : ''} ${graph ? 'has-graph' : ''}`} role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-labelledby="construction-title" ref={dialog} onKeyDown={event => {
+  const Backdrop = embedded ? 'div' : PopupBackdrop;
+  const Panel = embedded ? 'section' : Popup.section;
+  return <Backdrop className={embedded ? 'construction-page' : 'construction-backdrop'}><Panel className={`construction-panel ${embedded ? 'is-embedded' : ''} ${graph ? 'has-graph' : ''}`} role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-labelledby="construction-title" ref={dialog} onKeyDown={event => {
     if (embedded) return;
     if (event.key === 'Escape') { event.stopPropagation(); requestClose(); }
     if (event.key === 'Tab') {
@@ -654,5 +657,5 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       </main>
     </div>
     <footer className="construction-footer"><div className="construction-save-info">{preview ? <><strong>{t(`${operations.length} ${operations.length === 1 ? 'change' : 'changes'} waiting to be saved`, `${operations.length} 项修改待保存`)}</strong><span>{t(`Nodes ${preview.summary.before.node_count} → ${preview.summary.after.node_count} · Edges ${preview.summary.before.edge_count} → ${preview.summary.after.edge_count}`, `节点 ${preview.summary.before.node_count} → ${preview.summary.after.node_count} · 边 ${preview.summary.before.edge_count} → ${preview.summary.after.edge_count}`)}</span><details><summary>{t('View change list', '查看修改清单')}</summary><ol>{operations.map((operation, index) => <li key={index}>{operationLabel(operation, t)}</li>)}</ol></details></> : <><strong>{graph ? t('Graph construction result saved', '构图结果已保存') : t('Source file saved', '源文件已保存')}</strong><span>{graph ? t('Use this dataset now or continue optimizing the graph.', '可直接使用此数据集，或继续优化图数据。') : isBuilding ? t('Construction continues on the server. You can close this window and check again later.', '构图在服务器继续运行，可关闭窗口后再查看。') : state?.algorithm_available === false ? t('This file type cannot be constructed yet. You do not need to upload it again.', '此文件类型暂不可构图，无需重复上传。') : t('Set the query count and domain information, then start construction.', '设置查询数量和领域信息后即可开始构图。')}</span></>}</div><div className="construction-footer-actions">{operations.length > 0 && <><button className="secondary-command" disabled={editingBusy} onClick={() => void updatePreview(operations.slice(0, -1))}>{t('Undo last step', '撤销上一步')}</button><button className="secondary-command" disabled={editingBusy} onClick={() => void updatePreview([])}>{t('Restore all', '还原全部')}</button></>}{onUse && graph && !operations.length && <button className="secondary-command" disabled={editingBusy} onClick={() => void useDataset()}>{busy === 'use' ? t('Applying…', '正在使用…') : t('Use in current conversation', '在当前会话使用')}</button>}<button className="primary-command" disabled={editingBusy || !operations.length || conflict} onClick={() => void save()}><Icon name="check" size={15} />{busy === 'save' ? t('Saving…', '正在保存…') : t('Save to dataset', '保存到数据集')}</button></div></footer>
-  </section></div>;
+  </Panel></Backdrop>;
 }

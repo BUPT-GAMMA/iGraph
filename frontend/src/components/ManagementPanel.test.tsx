@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ManagementPanel } from './ManagementPanel';
 
@@ -29,7 +29,6 @@ describe('ManagementPanel', () => {
         ],
       }))
       .mockResolvedValueOnce(jsonResponse({ success: true }));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     render(<ManagementPanel onClose={vi.fn()} />);
 
@@ -40,11 +39,11 @@ describe('ManagementPanel', () => {
     expect(screen.queryByText('Beta')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '删除记忆' }));
-    expect(confirm).toHaveBeenCalledOnce();
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '取消' }));
     expect(apiFetchMock).toHaveBeenCalledTimes(1);
 
-    confirm.mockReturnValue(true);
     fireEvent.click(screen.getByRole('button', { name: '删除记忆' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '删除' }));
     await waitFor(() => expect(screen.queryByText('Alpha')).toBeNull());
     expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/memory/memory-1?scope=long_term', { method: 'DELETE' });
     expect(screen.getByText('暂无匹配的记忆')).toBeTruthy();
@@ -54,11 +53,11 @@ describe('ManagementPanel', () => {
     apiFetchMock
       .mockResolvedValueOnce(jsonResponse({ items: [{ memory_id: 'memory/1', key: 'Important', value: 'Keep', scope: 'team scope' }] }))
       .mockResolvedValueOnce(jsonResponse({ detail: 'denied' }, 500));
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     const { unmount } = render(<ManagementPanel onClose={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('Important')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '删除记忆' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '删除' }));
     await waitFor(() => expect(screen.getByText('记忆删除失败')).toBeTruthy());
     expect(apiFetchMock).toHaveBeenLastCalledWith('/api/memory/memory%2F1?scope=team%20scope', { method: 'DELETE' });
 
@@ -92,12 +91,12 @@ describe('ManagementPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /Graph Audit/ }));
     expect(screen.getByText('内置 · 就绪')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '关闭技能详情' }));
-    expect(screen.queryByText('内置 · 就绪')).toBeNull();
+    await waitFor(() => expect(screen.queryByText('内置 · 就绪')).toBeNull());
 
     fireEvent.click(screen.getByRole('button', { name: /Graph Audit/ }));
     fireEvent.click(screen.getByRole('tab', { name: /记忆/ }));
     await waitFor(() => expect(screen.getByText('暂无匹配的记忆')).toBeTruthy());
-    expect(screen.queryByText('内置 · 就绪')).toBeNull();
+    await waitFor(() => expect(screen.queryByText('内置 · 就绪')).toBeNull());
     expect((screen.getByPlaceholderText('搜索记忆内容') as HTMLInputElement).value).toBe('');
   });
 
@@ -117,7 +116,6 @@ describe('ManagementPanel', () => {
       .mockResolvedValueOnce(jsonResponse({ skill: { content: '# Uploaded' } }))
       .mockResolvedValueOnce(jsonResponse({ success: true }))
       .mockResolvedValueOnce(jsonResponse({ skill: { content: '# Bundled' } }));
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     render(<ManagementPanel onClose={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('暂无匹配的记忆')).toBeTruthy());
@@ -132,6 +130,7 @@ describe('ManagementPanel', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '删除技能' })).toBeTruthy());
     expect(screen.getByRole('button', { name: '删除技能' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '删除技能' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '删除' }));
     await waitFor(() => expect(screen.queryByText('uploaded-skill')).toBeNull());
     expect(apiFetchMock).toHaveBeenNthCalledWith(6, '/api/skills/uploaded-skill?source=review_queue', { method: 'DELETE' });
 

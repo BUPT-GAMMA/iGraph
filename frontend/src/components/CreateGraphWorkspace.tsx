@@ -1,3 +1,4 @@
+import { PopupPresence } from './PopupMotion';
 import { useEffect, useRef, useState } from 'react';
 import { getConstructionState } from '../api';
 import { useI18n } from '../i18n';
@@ -131,6 +132,6 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
         </div>}
       </section>
     </div>
-    {csvFiles && <CsvBundleDialog files={csvFiles} onCancel={() => setCsvFiles(null)} onSubmit={(files, schema, name) => { setCsvFiles(null); onUpload(files, schema, name); }} />}
+    <PopupPresence>{csvFiles && <CsvBundleDialog files={csvFiles} onCancel={() => setCsvFiles(null)} onSubmit={(files, schema, name) => { setCsvFiles(null); onUpload(files, schema, name); }} />}</PopupPresence>
   </div>;
 }
