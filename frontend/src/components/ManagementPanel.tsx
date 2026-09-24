@@ -1,3 +1,5 @@
+import { useActionDialog } from './useActionDialog';
+import { PopupPresence } from './PopupMotion';
 import { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../api';
 import { DrawerShell } from './DrawerShell';
@@ -43,6 +45,7 @@ async function readJson(path: string, t: Translate) {
 
 export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: () => void; initialTab?: 'memory' | 'skills' }) {
   const { t } = useI18n();
+  const { askConfirm, actionDialog } = useActionDialog();
   const [tab, setTab] = useState<'memory' | 'skills'>(initialTab);
   const [query, setQuery] = useState('');
   const [memories, setMemories] = useState<MemoryItem[]>([]);
@@ -75,7 +78,7 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
   useEffect(() => { setSkillPage(1); }, [query, tab]);
 
   async function deleteMemory(item: MemoryItem) {
-    if (!item.memory_id || !window.confirm(t(`Delete memory “${item.key || item.memory_id}”?`, `确认删除记忆“${item.key || item.memory_id}”吗？`))) return;
+    if (!item.memory_id || !await askConfirm(t(`Delete memory “${item.key || item.memory_id}”?`, `确认删除记忆“${item.key || item.memory_id}”吗？`))) return;
     try { const response = await apiFetch(`/api/memory/${encodeURIComponent(item.memory_id)}?scope=${encodeURIComponent(item.scope || 'long_term')}`, { method: 'DELETE' }); if (!response.ok) throw new Error(t('Failed to delete memory', '记忆删除失败')); setMemories(current => current.filter(row => row.memory_id !== item.memory_id)); } catch (cause: any) { setError(cause.message || t('Failed to delete memory', '记忆删除失败')); }
   }
 
@@ -115,7 +118,7 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
 
   async function deleteSkill(skill: SkillItem) {
     if (skillBusy || !skill.name || !['user', 'review_queue'].includes(skill.source || '')
-      || !window.confirm(t(`Delete uploaded skill “${skill.name}”?`, `确认删除上传的技能“${skill.name}”吗？`))) return;
+      || !await askConfirm(t(`Delete uploaded skill “${skill.name}”?`, `确认删除上传的技能“${skill.name}”吗？`))) return;
     setSkillBusy(true); setError('');
     try {
       const source = skill.source as 'user' | 'review_queue';
@@ -130,6 +133,7 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
 
   const panelTitle = t('Memory and skills', '记忆与技能');
   return <DrawerShell ariaLabel={panelTitle} className="management" onClose={onClose}>{requestClose => <>
+    {actionDialog}
     <div className="drawer-head">
       <strong>{panelTitle}</strong>
       <button className="plain-icon" onClick={requestClose} aria-label={t('Close management panel', '关闭管理面板')}><Icon name="close" size={17} /></button>
@@ -171,7 +175,7 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
       <span>{currentPage} / {skillPageCount}</span>
       <button type="button" disabled={currentPage >= skillPageCount} onClick={() => setSkillPage(currentPage + 1)}>{t('Next', '下一页')}</button>
     </nav> : null}
-    {selectedSkill ? <SkillDetails
+    <PopupPresence>{selectedSkill ? <SkillDetails
       closeLabel={t('Close skill details', '关闭技能详情')}
       summary={metadataLabel(selectedSkill.source, ['Unknown source', '未知来源'], t) + (selectedSkill.status ? ' · ' + metadataLabel(selectedSkill.status, ['', ''], t) : '')}
       skill={selectedSkill}
@@ -180,6 +184,6 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
       <button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'approve')}>{t('Approve', '批准')}</button>
       <button disabled={skillBusy} onClick={() => void skillAction(selectedSkill.name || '', 'reject')}>{t('Reject', '拒绝')}</button>
     </> : null}{selectedSkill.source === 'user' || selectedSkill.source === 'review_queue' ?
-      <button disabled={skillBusy} onClick={() => void deleteSkill(selectedSkill)}>{t('Delete skill', '删除技能')}</button> : null}</SkillDetails> : null}
+      <button disabled={skillBusy} onClick={() => void deleteSkill(selectedSkill)}>{t('Delete skill', '删除技能')}</button> : null}</SkillDetails> : null}</PopupPresence>
   </>}</DrawerShell>;
 }

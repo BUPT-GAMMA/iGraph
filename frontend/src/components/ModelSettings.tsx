@@ -1,3 +1,5 @@
+import { Popup, PopupBackdrop, PopupPresence } from './PopupMotion';
+import { useIsPresent } from 'motion/react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -23,6 +25,9 @@ function draftFor(provider: ModelProviderConnection, apiKey = ''): ProviderWrite
 
 export function ModelSettings({ onClose, onChanged }: Props) {
   const { t } = useI18n();
+  const present = useIsPresent();
+  const presentRef = useRef(present);
+  presentRef.current = present;
   const [catalog, setCatalog] = useState<ModelCatalog>({ models: [], default_model: '' });
   const [providers, setProviders] = useState<ModelProviderConnection[]>([]);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
@@ -87,9 +92,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     document.body.style.overflow = 'hidden';
     dialog.current?.focus();
     const keydown = (event: KeyboardEvent) => {
+      if (!presentRef.current) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeRef.current(); }
       if (event.key !== 'Tab') return;
-      const scope = confirmation.current || dialog.current;
+      const scope = confirmation.current?.dataset.popupState === 'open' ? confirmation.current : dialog.current;
       const nodes = Array.from(scope?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]') || []).filter(e => e.getClientRects().length);
       const first = nodes[0], last = nodes[nodes.length - 1];
       if (!first) { event.preventDefault(); return; }
@@ -98,7 +104,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     };
     document.addEventListener('keydown', keydown, true);
     void reload().catch(cause => { if (alive.current) setError(cause.message); }).finally(() => { if (alive.current) setLoading(false); });
-    return () => { alive.current = false; document.body.style.overflow = overflow; document.removeEventListener('keydown', keydown, true); previous?.focus(); };
+    return () => { alive.current = false; document.body.style.overflow = overflow; document.removeEventListener('keydown', keydown, true); if (!document.activeElement?.closest('[data-popup-state="open"][aria-modal="true"], dialog[open]')) previous?.focus(); };
   }, []);
 
   useEffect(() => {
@@ -246,10 +252,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     });
   }
 
-  return createPortal(<div className="provider-settings-overlay" onMouseDown={e => {
+  return createPortal(<PopupBackdrop className="provider-settings-overlay" onMouseDown={e => {
     if (e.target === e.currentTarget && !confirm) closeRef.current();
   }}>
-    <div ref={dialog} tabIndex={-1} className="provider-settings" role="dialog" aria-modal={!confirm} aria-labelledby="model-services-title">
+    <Popup.div ref={dialog} tabIndex={-1} className="provider-settings" role="dialog" aria-modal={!confirm} aria-labelledby="model-services-title">
       <header className="pm-header">
         <h2 id="model-services-title">{t('Model services', '模型服务')}</h2>
         <button className="pm-icon-button pm-close" onClick={() => closeRef.current()} disabled={!!busy}
@@ -427,14 +433,14 @@ export function ModelSettings({ onClose, onChanged }: Props) {
           </>}
         </main>
       </div>
-      {confirm && <div className="pm-confirm-overlay" onMouseDown={e => { if (e.target === e.currentTarget) setConfirm(null); }}>
-        <div ref={confirmation} className="pm-confirm" role="alertdialog" aria-modal="true" aria-labelledby="pm-confirm-title" aria-describedby={confirm.detail ? 'pm-confirm-detail' : undefined}>
+      <PopupPresence>{confirm && <PopupBackdrop className="pm-confirm-overlay" onMouseDown={e => { if (e.target === e.currentTarget) setConfirm(null); }}>
+        <Popup.div ref={confirmation} className="pm-confirm" role="alertdialog" aria-modal="true" aria-labelledby="pm-confirm-title" aria-describedby={confirm.detail ? 'pm-confirm-detail' : undefined}>
           <h4 id="pm-confirm-title">{confirm.title}</h4>
           {confirm.detail && <p id="pm-confirm-detail">{confirm.detail}</p>}
           <div className="pm-form-actions"><button className="pm-button" onClick={() => setConfirm(null)}>{t('Cancel', '取消')}</button>
             <button className="pm-button is-danger" onClick={() => { const action = confirm.action; setConfirm(null); action(); }}>{confirm.label}</button></div>
-        </div>
-      </div>}
-    </div>
-  </div>, document.body);
+        </Popup.div>
+      </PopupBackdrop>}</PopupPresence>
+    </Popup.div>
+  </PopupBackdrop>, document.body);
 }

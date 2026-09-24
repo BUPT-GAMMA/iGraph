@@ -1,3 +1,5 @@
+import { useActionDialog } from './useActionDialog';
+import { Popup, PopupBackdrop, PopupPresence } from './PopupMotion';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { modelErrorMessage, type CustomModel } from '../api';
@@ -72,6 +74,7 @@ export type ComposerProps = {
 
 export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const { t } = useI18n();
+  const { askConfirm, actionDialog } = useActionDialog();
   const inputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
   const cannotSend = disabled || uploading || sendBlocked || attachments.some(item => 'status' in item && ['uploading', 'failed', 'needs_reselect'].includes(item.status));
@@ -124,6 +127,8 @@ export function Composer({ value, model, models, customModels = [], activeDatase
     const positionMenu = () => {
       const bounds = composer.getBoundingClientRect();
       if (bounds.width <= 0) return;
+      const previousTranslate = menu.style.translate;
+      menu.style.translate = 'none';
       // Short model names shrink the trigger. Keep its menu inside the composer
       // instead of letting right alignment extend into the clipped sidebar.
       menu.style.maxWidth = `${Math.max(0, bounds.width - 16)}px`;
@@ -138,6 +143,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
       const menuBounds = menu.getBoundingClientRect();
       const left = Math.max(bounds.left + 8, Math.min(menuBounds.left, bounds.right - 8 - menuBounds.width));
       menu.style.transform = `translateX(${left - menuBounds.left}px)`;
+      menu.style.translate = previousTranslate;
     };
     positionMenu();
     const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(positionMenu);
@@ -186,7 +192,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
     finally { setSavingModel(false); }
   }
   async function removeCustom(modelId: string) {
-    if (!onDeleteCustomModel || !window.confirm(t('Delete this custom model configuration?', '确认删除这个自定义模型配置吗？'))) return;
+    if (!onDeleteCustomModel || !await askConfirm(t('Delete this custom model configuration?', '确认删除这个自定义模型配置吗？'))) return;
     setModelError('');
     try { await onDeleteCustomModel(modelId); }
     catch (cause: any) { setModelError(cause.message || t('Could not delete the custom model', '自定义模型删除失败')); }
@@ -229,7 +235,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
             <span className="composer-model-value">{currentCustom ? modelLabel(currentCustom) : model}</span>
             <span className="composer-model-chevron"><Icon name="chevron" size={10} /></span>
           </button>
-          {modelOpen ? <div ref={modelMenuRef} className="composer-model-menu" role="group" aria-label={t('Available models', '可用模型')}>
+          <PopupPresence>{modelOpen ? <Popup.div variant="popover" ref={modelMenuRef} className="composer-model-menu" role="group" aria-label={t('Available models', '可用模型')}>
             {!!builtInOptions.length && <div className="composer-model-section">{t('Models', '模型')}</div>}
             {builtInOptions.map(option => <button type="button" aria-pressed={option === model} className={`composer-model-option ${option === model ? 'is-selected' : ''}`} key={option} onClick={() => chooseModel(option)}><span className="composer-option-mark"><ModelProviderIcon modelId={option} size={15} /></span><span>{option}</span>{option === model ? <Icon name="check" size={14} /> : null}</button>)}
             {Array.from(customGroups, ([name, items]) => <div key={name}><div className="composer-model-section">{name}</div>{items.map(item => <div className={`composer-custom-model-row ${item.model_id === model ? 'is-selected' : ''}`} key={item.model_id}>
@@ -237,7 +243,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
               {!onManageModels && onDeleteCustomModel && <button type="button" className="composer-model-delete" disabled={item.model_id === model} onClick={() => void removeCustom(item.model_id)} aria-label={t(`Delete custom model ${item.model_id}`, `删除自定义模型 ${item.model_id}`)}><Icon name="trash" size={14} /></button>}
             </div>)}</div>)}
             {onManageModels ? <button type="button" className="composer-model-config" onClick={() => { setModelOpen(false); onManageModels(); }}><Icon name="settings" size={15} />{t('Manage model services', '管理模型服务')}</button> : onSaveCustomModel ? <button type="button" className="composer-model-config" onClick={openCustomModelDialog}><Icon name="edit" size={15} /> {t('Configure custom model', '配置自定义模型')}</button> : null}
-          </div> : null}
+          </Popup.div> : null}</PopupPresence>
         </div>
         <div className="composer-spacer" />
         <span className="auto-mode" role="status">{cancellationLabel || t('◉ Auto', '◉ 自动')}</span>
@@ -250,8 +256,9 @@ export function Composer({ value, model, models, customModels = [], activeDatase
         >{runControl ? <span className="stop-square" /> : <Icon name="send" size={18} />}</button>
       </div>
     </div>
-    {configOpen ? <div className="modal-backdrop custom-model-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeCustomModelDialog(); }}>
-      <form className="project-dialog custom-model-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-model-dialog-title" onSubmit={(event: FormEvent) => { event.preventDefault(); void saveCustom(); }}>
+    {actionDialog}
+    <PopupPresence>{configOpen ? <PopupBackdrop className="modal-backdrop custom-model-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeCustomModelDialog(); }}>
+      <Popup.form className="project-dialog custom-model-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-model-dialog-title" onSubmit={(event: FormEvent) => { event.preventDefault(); void saveCustom(); }}>
         <div className="dialog-head"><div><span>{t('Custom model', '自定义模型')}</span><h2 id="custom-model-dialog-title">{t('Configure custom model', '配置自定义模型')}</h2></div><button type="button" className="dialog-close" title={t('Close', '关闭')} aria-label={t('Close custom model settings', '关闭自定义模型配置')} onClick={closeCustomModelDialog} disabled={savingModel}><Icon name="close" size={17} /></button></div>
         <div className="custom-model-fields">
           <label className="custom-model-wide">{t('Model ID', '模型 ID')}<input type="text" autoFocus autoComplete="off" value={customDraft.model_id} onChange={event => setCustomDraft(current => ({ ...current, model_id: event.target.value }))} placeholder={t('For example: deepseek-chat or llama-3.1-8b', '例如：deepseek-chat 或 llama-3.1-8b')} /></label>
@@ -260,7 +267,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
         </div>
         {modelError ? <div className="dialog-error">{modelError}</div> : null}
         <div className="dialog-actions"><button type="button" className="secondary-command" onClick={closeCustomModelDialog} disabled={savingModel}>{t('Cancel', '取消')}</button><button type="submit" className="primary-command" disabled={savingModel || !customDraft.model_id.trim() || !customDraft.base_url.trim() || !customDraft.api_key.trim()}>{savingModel ? t('Saving…', '保存中…') : t('Save model', '保存模型')}</button></div>
-      </form>
-    </div> : null}
+      </Popup.form>
+    </PopupBackdrop> : null}</PopupPresence>
   </div>;
 }

@@ -35,7 +35,6 @@ describe('actual App help destination', () => {
     expect(entry.getAttribute('aria-current')).toBe('page');
     expect(window.location.search).toBe('');
     fireEvent.click(screen.getByRole('button', { name: '关闭帮助' }));
-    fireEvent.animationEnd(screen.getByRole('dialog', { name: '帮助与能力清单' }).parentElement!);
     await waitFor(() => expect(screen.queryByRole('heading', { name: '帮助与能力清单' })).toBeNull());
     expect(window.location.search).toBe('');
     expect(entry.getAttribute('aria-current')).toBeNull();

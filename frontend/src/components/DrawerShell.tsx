@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import { Popup, PopupBackdrop } from './PopupMotion';
 
 type Props = {
   ariaLabel: string;
@@ -8,33 +9,15 @@ type Props = {
 };
 
 export function DrawerShell({ ariaLabel, className = '', children, onClose }: Props) {
-  const [closing, setClosing] = useState(false);
-
-  function requestClose() {
-    setClosing(true);
-  }
-
-  useEffect(() => {
-    if (!closing) return;
-    const fallback = window.setTimeout(onClose, 320);
-    return () => window.clearTimeout(fallback);
-  }, [closing, onClose]);
-
-  return <div
-    className={`overlay drawer-overlay ${closing ? 'is-closing' : ''}`}
-    onClick={requestClose}
-    onAnimationEnd={event => {
-      if (closing && event.target === event.currentTarget) onClose();
-    }}
-  >
-    <section
+  return <PopupBackdrop className="overlay drawer-overlay" onClick={onClose}>
+    <Popup.section
       className={`drawer ${className}`.trim()}
       role="dialog"
       aria-label={ariaLabel}
       aria-modal="true"
       onClick={event => event.stopPropagation()}
     >
-      {children(requestClose)}
-    </section>
-  </div>;
+      {children(onClose)}
+    </Popup.section>
+  </PopupBackdrop>;
 }
