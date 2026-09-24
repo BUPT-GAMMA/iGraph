@@ -1,3 +1,4 @@
+import { Popup, PopupBackdrop } from './PopupMotion';
 import { useEffect, useRef, useState } from 'react';
 import { listConstructedDatasets } from '../api';
 import type { Dataset } from '../types';
@@ -34,7 +35,7 @@ export function ConstructedDatasetPicker({ projectId, projectName, onImport, onC
     finally { if (mounted.current) setPending(''); }
   }
   const matches = datasets.filter(dataset => `${dataset.name} ${dataset.description || ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
-  return <div className="modal-backdrop"><section className="project-dialog constructed-picker" role="dialog" aria-modal="true" aria-labelledby="constructed-picker-title">
+  return <PopupBackdrop className="modal-backdrop"><Popup.section className="project-dialog constructed-picker" role="dialog" aria-modal="true" aria-labelledby="constructed-picker-title">
     <div className="dialog-head"><h2 id="constructed-picker-title">{t('Load a constructed graph', '加载已构好的图')}</h2><button className="dialog-close" disabled={!!pending} onClick={onClose} aria-label={t('Close', '关闭')}><Icon name="close" size={17} /></button></div>
     <p>{t(`Import an independent copy into ${projectName}; the source is unchanged.`, `导入到「${projectName}」的独立副本，原数据不变。`)}</p>
     <input type="text" aria-label={t('Search constructed datasets', '搜索已构图数据集')} placeholder={t('Search name or description', '搜索名称或描述')} value={query} onChange={e => setQuery(e.target.value)} />
@@ -45,5 +46,5 @@ export function ConstructedDatasetPicker({ projectId, projectName, onImport, onC
       <div><strong>{dataset.name}</strong><p>{dataset.description || t('No description', '暂无描述')}</p><small>{t(`${Number(dataset.metadata?.num_nodes || 0)} nodes · ${Number(dataset.metadata?.num_edges || 0)} edges`, `${Number(dataset.metadata?.num_nodes || 0)} 个节点 · ${Number(dataset.metadata?.num_edges || 0)} 条边`)}</small></div>
       <button className="secondary-command" disabled={!!pending} onClick={() => void select(dataset)}>{pending === dataset.dataset_id ? t('Importing…', '导入中…') : t('Load into project', '加载到项目')}</button>
     </article>)}</div>
-  </section></div>;
+  </Popup.section></PopupBackdrop>;
 }

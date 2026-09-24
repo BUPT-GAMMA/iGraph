@@ -1,3 +1,4 @@
+import { Popup } from './PopupMotion';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { apiFetch } from '../api';
@@ -31,11 +32,15 @@ export function SkillDetails({ skill, onClose, children, summary, closeLabel }: 
 
   useEffect(() => {
     const element = dialog.current;
+    const previous = document.activeElement as HTMLElement | null;
     if (element) {
       if (typeof element.showModal === 'function') element.showModal();
       else element.setAttribute('open', '');
     }
-    return () => { if (element && typeof element.close === 'function') element.close(); else element?.removeAttribute('open'); };
+    return () => {
+      if (element && typeof element.close === 'function') element.close(); else element?.removeAttribute('open');
+      if (previous?.isConnected && !previous.closest('[inert]') && !document.activeElement?.closest('dialog[open], [data-popup-state="open"][aria-modal="true"]')) previous.focus();
+    };
   }, []);
 
   useEffect(() => {
@@ -64,7 +69,7 @@ export function SkillDetails({ skill, onClose, children, summary, closeLabel }: 
   const effectiveCloseLabel = closeLabel || t('Close skill details', '关闭 Skill 详情');
 
   return createPortal(
-    <dialog ref={dialog} className="skill-reader" aria-labelledby="skill-reader-title" onCancel={event => { event.preventDefault(); onClose(); }}>
+    <Popup.dialog ref={dialog} className="skill-reader" aria-labelledby="skill-reader-title" onCancel={event => { event.preventDefault(); onClose(); }}>
       <header className="skill-reader-head">
         <div><small>SKILL.md</small><h2 id="skill-reader-title">{skill.name || t('Skill details', 'Skill 详情')}</h2></div>
         <button type="button" className="plain-icon" aria-label={effectiveCloseLabel} title={effectiveCloseLabel} onClick={onClose} autoFocus><Icon name="close" size={20} /></button>
@@ -74,6 +79,6 @@ export function SkillDetails({ skill, onClose, children, summary, closeLabel }: 
         {loading ? <p role="status">{t('Loading skill content…', '正在加载 Skill 内容…')}</p> : error ? <div role="alert"><p>{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>{t('Reload', '重新加载')}</button></div> : <pre>{content || t('This skill has no content.', '此 Skill 暂无正文')}</pre>}
       </div>
       {children ? <footer className="skill-reader-actions">{children}</footer> : null}
-    </dialog>, document.body,
+    </Popup.dialog>, document.body,
   );
 }

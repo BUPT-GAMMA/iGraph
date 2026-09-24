@@ -11,6 +11,10 @@ export type CustomModel = {
   model_id: string;
   display_name: string;
   provider?: string;
+  provider_id?: string;
+  provider_name?: string;
+  upstream_model_id?: string;
+  unavailable_reason?: string | null;
   base_url: string;
   has_api_key?: boolean;
   created_at?: number;
@@ -32,8 +36,49 @@ export type ModelConfiguration = CustomModel & {
 export type ModelCatalog = { models: ModelConfiguration[]; default_model: string };
 export const listModels = () => json<ModelCatalog>('/api/models');
 
+export type ModelProtocol = 'openai-compatible' | 'openai-responses' | 'anthropic' | 'gemini';
+export type ModelProviderConnection = {
+  provider_id: string; revision: number; name: string; preset_id: string;
+  scope?: 'personal' | 'shared'; editable?: boolean;
+  protocol: ModelProtocol; base_url: string; enabled: boolean; has_api_key: boolean; model_count: number;
+};
+export type ProviderPreset = { id: string; name: string; base_url: string; icon: string; protocol?: ModelProtocol };
+export type ProviderWrite = Omit<ModelProviderConnection, 'provider_id' | 'revision' | 'has_api_key' | 'model_count' | 'editable' | 'scope'> & {
+  provider_id?: string; revision?: number; api_key?: string; clear_api_key?: boolean;
+};
+export type ModelWrite = {
+  config_id?: string; revision?: number; provider_id: string; provider_revision: number;
+  upstream_model_id: string; display_name: string; tools: boolean; vision: boolean;
+  context_window: number; max_output_tokens: number;
+};
+export type DiscoveredModels = { models: { id: string; name: string }[]; latency_ms: number; truncated: boolean };
+const modelJson = (method: string, body: unknown) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+export const listModelProviders = () => json<{ providers: ModelProviderConnection[]; presets: ProviderPreset[] }>('/api/model-providers');
+export const getProviderCredentials = (provider: ModelProviderConnection, signal?: AbortSignal) =>
+  json<{ provider_id: string; revision: number; api_key: string }>(`/api/model-providers/${encodeURIComponent(provider.provider_id)}/credentials?revision=${provider.revision}`, { cache: 'no-store', signal });
+export const saveModelProvider = (input: ProviderWrite) => json<{ provider: ModelProviderConnection }>('/api/model-providers', modelJson('POST', input));
+export const deleteModelProvider = (provider: ModelProviderConnection) => json(`/api/model-providers/${encodeURIComponent(provider.provider_id)}?revision=${provider.revision}`, { method: 'DELETE' });
+export const discoverProviderModels = (provider: ModelProviderConnection) => json<DiscoveredModels>('/api/model-providers/discover', modelJson('POST', { provider_id: provider.provider_id, revision: provider.revision }));
+export const importProviderModels = (provider: ModelProviderConnection, models: { id: string; name: string }[]) => json<{ added_count: number }>('/api/model-providers/import', modelJson('POST', { provider_id: provider.provider_id, revision: provider.revision, models }));
+export const saveModelConfiguration = (input: ModelWrite) => json<{ model: ModelConfiguration }>('/api/models', modelJson('POST', input));
+export const setModelEnabled = (model: ModelConfiguration, enabled: boolean) => json('/api/models/state', modelJson('PATCH', { config_id: model.config_id, revision: model.revision, enabled }));
+export const setDefaultModel = (config_id: string) => json<ModelCatalog>('/api/models/default', modelJson('PUT', { config_id }));
+export const testModelConfiguration = (model: ModelConfiguration) => json('/api/models/test', modelJson('POST', { config_id: model.config_id, revision: model.revision }));
+export const deleteModelConfiguration = (model: ModelConfiguration) => json(`/api/models/${encodeURIComponent(model.config_id)}?revision=${model.revision}`, { method: 'DELETE' });
+
 export function modelErrorMessage(code?: string | null) {
   const messages: Record<string, string> = {
+    MODEL_IMPORT_LIMIT: tr('Import up to 200 models per batch.', '每批最多导入 200 个模型'),
+    MODEL_PROVIDER_READ_ONLY: tr('Only administrators can edit this shared provider.', '仅管理员可修改此共享提供商'),
+    MODEL_PROVIDER_REMOVED: tr('Provider no longer exists. Refresh the list.', '提供商已删除，请刷新列表'),
+    MODEL_PROVIDER_CHANGED: tr('Provider changed in another page. Refresh before saving.', '提供商已在其他页面修改，请刷新后重试'),
+    MODEL_PROVIDER_DISABLED: tr('Provider disabled. Enable it in model settings.', '提供商已停用，请在模型服务中启用'),
+    MODEL_PROVIDER_INVALID: tr('Enter a provider name and a valid API key.', '请填写有效的提供商名称和 API 密钥'),
+    MODEL_PROVIDER_IN_USE: tr('This provider is in use. Finish or stop its active tasks before deleting.', '提供商正被任务使用，结束或停止任务后可删除'),
+    MODEL_PROTOCOL_UNSUPPORTED: tr('Unsupported API type.', '不支持的接口类型'),
+    MODEL_DUPLICATE: tr('This model is already added to the provider.', '该模型已添加到此提供商'),
+    MODEL_DISCOVERY_UNSUPPORTED: tr('This provider cannot list models. Add a model ID manually.', '该接口不支持模型发现，请手动添加模型 ID'),
+    MODEL_DISCOVERY_TOO_LARGE: tr('The model list is too large. Add a model ID manually.', '模型列表过大，请手动添加模型 ID'),
     MODEL_REMOVED: tr('Model configuration removed. Select another model.', '模型配置已删除，请选择其他模型'),
     MODEL_DISABLED: tr('Model disabled. Select another model.', '模型已停用，请选择其他模型'),
     MODEL_NOT_CONFIGURED: tr('Endpoint or API key not configured', '尚未配置接口地址或密钥'),

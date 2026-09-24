@@ -276,3 +276,7 @@ Graph Engine 启动时还会将旧的用户图快照从
 Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
 
 详细边界和迁移说明见 [AgentOS 四模块重构](docs/AGENTOS_FOUR_MODULE_REFACTOR.md)。
+
+### 模型提供商管理
+
+在工作台右上角打开「模型服务」，管理提供商连接、发现或添加模型，并为新会话选择默认模型。详情见 [模型服务与提供商管理](docs/MODEL_PROVIDERS.md)。

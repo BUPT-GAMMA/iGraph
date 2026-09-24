@@ -1,11 +1,12 @@
 import { BrandLogo, Icon } from './Icon';
 import { useI18n } from '../i18n';
 
-export function TopBar({ onMenu, onHome }: { onMenu: () => void; onHome: () => void }) {
+export function TopBar({ onMenu, onHome, onModels }: { onMenu: () => void; onHome: () => void; onModels?: () => void }) {
   const { language, setLanguage, t } = useI18n();
   return <header className="topbar">
     <button type="button" className="brand-lockup" onClick={onHome} aria-label={t('Go to home', '返回主界面')} title={t('Go to home', '返回主界面')}><span className="brand-mark"><BrandLogo /></span><strong>iGraph</strong></button>
     <div className="top-actions">
+      {onModels && <button className="model-services-trigger" onClick={onModels} aria-label={t('Model services', '模型服务')}><Icon name="cube" size={16} /><span>{t('Model services', '模型服务')}</span></button>}
       <div className="language-switcher" role="group" aria-label={t('Language', '语言')}>
         <button type="button" lang="en" className={language === 'en' ? 'is-active' : ''} aria-pressed={language === 'en'} onClick={() => setLanguage('en')}>EN</button>
         <button type="button" lang="zh-CN" className={language === 'zh' ? 'is-active' : ''} aria-pressed={language === 'zh'} onClick={() => setLanguage('zh')}>中文</button>

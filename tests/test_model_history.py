@@ -72,3 +72,19 @@ async def test_native_agno_request_uses_upstream_id_and_strips_foreign_fields(mo
     assert captures[0]['model'] == 'upstream-b' and captures[0]['max_tokens'] == 1024
     assert 'DO NOT TRANSMIT' not in json.dumps(captures)
     assert len(captures[0]['messages']) == 3
+
+
+@pytest.mark.parametrize('protocol', ['openai-responses', 'anthropic', 'gemini'])
+def test_native_connection_switch_does_not_forward_foreign_signed_history(protocol):
+    messages = [Message(role='user', content='Measure it'), Message(role='assistant', content='Checking',
+        reasoning_content='foreign reasoning', provider_data={'igraph_history_key': 'other-connection', 'signature': 'foreign-signature'},
+        tool_calls=[{'id': 'foreign-call', 'thought_signature': 'foreign-signature', 'function': {'name': 'measure', 'arguments': '{}'}}]),
+        Message(role='tool', tool_call_id='foreign-call', tool_name='measure', content='Confirmed result: 42'),
+        Message(role='user', content='Continue')]
+    before = copy.deepcopy(messages)
+    prepared = normalize_history(messages, protocol=protocol, history_key='current-connection')
+    assert all(not m.tool_calls and m.role != 'tool' for m in prepared)
+    assert prepared[2].content.endswith('Confirmed result: 42')
+    assert all(m.provider_data is None and m.reasoning_content is None for m in prepared)
+    assert 'foreign-signature' not in str([m.to_dict() for m in prepared])
+    assert messages == before

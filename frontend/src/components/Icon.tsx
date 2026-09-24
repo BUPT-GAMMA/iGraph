@@ -1,4 +1,4 @@
-type IconName = 'schema' | 'arrow-left' | 'info' | 'tool' | 'message' | 'pin' | 'plus' | 'search' | 'project' | 'folder' | 'folder-open' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'graph-create' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
+type IconName = 'refresh' | 'eye' | 'eye-off' | 'list-check' | 'star' | 'pulse' | 'schema' | 'arrow-left' | 'info' | 'tool' | 'message' | 'pin' | 'plus' | 'search' | 'project' | 'folder' | 'folder-open' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'graph-create' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
 
 export function BrandLogo() {
   return <><img className="brand-logo brand-logo-light" src="/figures/igraph_light.png" alt="" aria-hidden="true" /><img className="brand-logo brand-logo-dark" src="/figures/igraph_dark.png" alt="" aria-hidden="true" /></>;
@@ -7,6 +7,12 @@ export function BrandLogo() {
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true };
   const paths: Record<IconName, JSX.Element> = {
+    refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9" /></>,
+    eye: <><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
+    'eye-off': <><path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.4 0 10 7 10 7a18 18 0 0 1-3 3.8M6.2 6.2A21 21 0 0 0 2 12s3.6 7 10 7c1.8 0 3.4-.5 4.8-1.3M10 10a3 3 0 0 0 4 4" /></>,
+    'list-check': <><path d="M10 6h10M10 12h10M10 18h10m-17-6 2 2 3-4M4 6h1M4 18h1" /></>,
+    star: <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z" />,
+    pulse: <path d="M2 12h4l3-8 5 16 3-8h5" />,
     'arrow-left': <><path d="M19 12H5m6-6-6 6 6 6" /></>,
     schema: <><rect x="3" y="3" width="7" height="8" rx="1.5" /><rect x="14" y="13" width="7" height="8" rx="1.5" /><path d="M3 6h7M14 16h7M6.5 11v6H14M10 7h7.5v6" /></>,
     info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6" /><circle cx="12" cy="7.5" r=".8" fill="currentColor" stroke="none" /></>,
@@ -19,7 +25,8 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     'folder-open': <><path d="M3 16.5v-10A1.5 1.5 0 0 1 4.5 5H9l2 2h7.5A1.5 1.5 0 0 1 20 8.5V10" /><path d="M4.3 19h14.4a1.5 1.5 0 0 0 1.44-1.08L22 11.5H7.1a1.5 1.5 0 0 0-1.43 1.05L3 19Z" /></>,
     spark: <><path d="m12 3-1.4 5.6L5 10l5.6 1.4L12 17l1.4-5.6L19 10l-5.6-1.4L12 3Z" /><path d="m19 16-.7 2.3L16 19l2.3.7L19 22l.7-2.3L22 19l-2.3-.7L19 16Z" /></>,
     database: <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" /></>,
-    settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 1.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-2.6V20a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1-1.8-1.8.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H6.2v-2.6H6a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1L9 6.6l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6v-.2h2.6v.2a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.8 1.8-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2V14h-.2a1.7 1.7 0 0 0-1.2 1Z" /></>,
+    // Feather settings (MIT); see /licenses/feather.txt.
+    settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></>,
     moon: <><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5 8.5 8.5 0 1 0 20.5 14.5Z" /></>,
     sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
     send: <><path d="m21 3-7.2 18-3.2-7.6L3 10.2 21 3Z" /><path d="M10.7 13.3 21 3" /></>,

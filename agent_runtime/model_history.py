@@ -1,7 +1,6 @@
 """Request-only history adaptation; persisted messages are never rewritten.
 
-The wire format is OpenAI Chat Completions for every supported connection.
-Old provider-specific reasoning/signatures are excluded by Agno's formatter.
+Signed provider state is reused only by the same connection and model.
 This boundary repairs incomplete tool pairs and budgets complete conversation
 turns, preserving the current turn and explicitly marking compacted history.
 """
@@ -11,6 +10,7 @@ import copy
 import json
 import math
 from agno.models.message import Message
+from contextlib import aclosing
 
 
 def estimate_tokens(value):
@@ -22,9 +22,14 @@ def estimate_tokens(value):
     return math.ceil(ascii_chars / 3 + (len(wire.encode('utf-8')) - ascii_chars) / 2) + 16
 
 
-def normalize_history(messages):
+def normalize_history(messages, *, protocol="openai-compatible", history_key=None):
     result = copy.deepcopy(messages)
     for index, message in enumerate(result):
+        same_connection = bool(history_key and (message.provider_data or {}).get('igraph_history_key') == history_key)
+        if not same_connection:
+            message.provider_data = None
+            message.reasoning_content = None
+            message.redacted_reasoning_content = None
         if not message.tool_calls:
             continue
         following = []
@@ -40,9 +45,16 @@ def normalize_history(messages):
                 args = function.get('arguments', '{}')
                 calls.append({'id': call['id'], 'type': 'function', 'function': {
                     'name': function.get('name', ''), 'arguments': args if isinstance(args, str) else json.dumps(args)}})
+                if same_connection:
+                    for field in ('call_id', 'thought_signature'):
+                        if field in call:
+                            calls[-1][field] = call[field]
         if len(calls) != len(message.tool_calls):
             message.content = (message.content or '') + '\n[An interrupted tool request has no result; do not assume it succeeded.]'
         message.tool_calls = calls or None
+        if protocol != 'openai-compatible' and not same_connection and calls:
+            message.content = (message.content or '') + '\n[Historical tool requests]\n' + json.dumps(calls, ensure_ascii=False)
+            message.tool_calls = None
         # Put valid results immediately after their assistant call. Orphan or
         # duplicate results become quoted prose only after all paired results.
         kept, rest, seen = [], [], set()
@@ -70,8 +82,8 @@ def normalize_history(messages):
     return normalized
 
 
-def prepare_history(messages, *, tools=None, context_window=32768, output_tokens=4096, vision=False):
-    normalized = normalize_history(messages)
+def prepare_history(messages, *, tools=None, context_window=32768, output_tokens=4096, vision=False, protocol="openai-compatible", history_key=None):
+    normalized = normalize_history(messages, protocol=protocol, history_key=history_key)
     for item in normalized:
         if item.audio or item.audio_output or item.videos or item.files:
             raise ValueError('MODEL_MEDIA_UNSUPPORTED')
@@ -117,22 +129,35 @@ class ModelHistoryMixin:
         if not settings:
             return messages
         prepared, compacted = prepare_history(messages, tools=tools,
-            context_window=settings['context_window'], output_tokens=settings['max_output_tokens'], vision=settings['vision'])
+            context_window=settings['context_window'], output_tokens=settings['max_output_tokens'], vision=settings['vision'],
+            protocol=getattr(self, 'igraph_protocol', 'openai-compatible'), history_key=getattr(self, 'igraph_history_key', None))
         if compacted and run_response is not None:
             run_response.metadata = {**(run_response.metadata or {}), 'history_compacted': True}
         return prepared
 
-    async def ainvoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False):
+    async def ainvoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         prepared = self._prepare_history(messages, tools, run_response)
-        return await super().ainvoke(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results)
+        return await super().ainvoke(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
 
-    async def ainvoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False):
+    async def ainvoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         prepared = self._prepare_history(messages, tools, run_response)
-        async for event in super().ainvoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results):
-            yield event
+        async with aclosing(super().ainvoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)) as iterator:
+            async for event in iterator:
+                yield event
 
-    def invoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False):
-        return super().invoke(self._prepare_history(messages, tools, run_response), assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results)
+    def invoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
+        return super().invoke(self._prepare_history(messages, tools, run_response), assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
 
-    def invoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False):
-        yield from super().invoke_stream(self._prepare_history(messages, tools, run_response), assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results)
+    def invoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
+        yield from super().invoke_stream(self._prepare_history(messages, tools, run_response), assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
+
+    def _stamp_provider_state(self, response):
+        item = response[0] if isinstance(response, tuple) else response
+        item.provider_data = {**(item.provider_data or {}), 'igraph_history_key': getattr(self, 'igraph_history_key', '')}
+        return response
+
+    def _parse_provider_response(self, *args, **kwargs):
+        return self._stamp_provider_state(super()._parse_provider_response(*args, **kwargs))
+
+    def _parse_provider_response_delta(self, *args, **kwargs):
+        return self._stamp_provider_state(super()._parse_provider_response_delta(*args, **kwargs))

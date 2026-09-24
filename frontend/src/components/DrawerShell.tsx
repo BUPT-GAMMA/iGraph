@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { motion, useIsPresent, useReducedMotion } from 'motion/react';
 
 type ResizeOptions = {
   defaultWidth: number;
@@ -34,16 +35,16 @@ function initialWidth(options: ResizeOptions | undefined, minimum: number, maxim
 }
 
 export function DrawerShell({ ariaLabel, className = '', children, onClose, resize }: Props) {
-  const [closing, setClosing] = useState(false);
+  const present = useIsPresent();
+  const reduce = useReducedMotion();
+  const availability = { 'aria-hidden': present ? undefined : true, inert: present ? undefined : '' };
+  const enter = { duration: reduce ? 0 : 0.24, ease: [0.2, 0.8, 0.2, 1] as const };
+  const exit = { ...enter, duration: reduce ? 0 : 0.16 };
   const minimumWidth = resize?.minimumWidth ?? 360;
   const maximumWidth = resize?.maximumWidth ?? 1200;
   const resizeEnabled = Boolean(resize);
   const [width, setWidth] = useState(() => initialWidth(resize, minimumWidth, maximumWidth));
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
-
-  function requestClose() {
-    setClosing(true);
-  }
 
   function updateWidth(value: number) {
     setWidth(clampWidth(value, minimumWidth, maximumWidth));
@@ -69,12 +70,6 @@ export function DrawerShell({ ariaLabel, className = '', children, onClose, resi
       updateWidth(maximumWidth);
     }
   }
-
-  useEffect(() => {
-    if (!closing) return;
-    const fallback = window.setTimeout(onClose, 320);
-    return () => window.clearTimeout(fallback);
-  }, [closing, onClose]);
 
   useEffect(() => {
     if (!resizeEnabled) return;
@@ -109,20 +104,26 @@ export function DrawerShell({ ariaLabel, className = '', children, onClose, resi
     try { localStorage.setItem(resize.storageKey, String(Math.round(width))); } catch { /* Width persistence is optional. */ }
   }, [resize?.storageKey, width]);
 
-  return <div
-    className={`overlay drawer-overlay ${closing ? 'is-closing' : ''}`}
-    onClick={requestClose}
-    onAnimationEnd={event => {
-      if (closing && event.target === event.currentTarget) onClose();
-    }}
+  // Side panels slide along the viewport edge; only nested dialogs float upward.
+  return <motion.div className="overlay drawer-overlay" onClick={onClose} style={{ overflow: 'hidden' }}
+    initial={reduce ? false : { backgroundColor: 'rgba(30,30,30,0)' }}
+    animate={{ backgroundColor: 'rgba(30,30,30,.16)', transition: enter }}
+    exit={{ backgroundColor: 'rgba(30,30,30,0)', transition: exit }}
+    {...availability}
   >
-    <section
+    <motion.section
       className={`drawer ${className} ${resizeEnabled ? 'is-resizable' : ''}`.trim()}
+      style={resizeEnabled ? { width } : undefined}
       role="dialog"
       aria-label={ariaLabel}
       aria-modal="true"
+      data-popup-kind="drawer"
+      data-popup-state={present ? 'open' : 'closed'}
+      {...availability}
+      initial={reduce ? false : { x: '100%' }}
+      animate={{ x: 0, transition: enter }}
+      exit={{ x: reduce ? 0 : '100%', transition: exit }}
       onClick={event => event.stopPropagation()}
-      style={resizeEnabled ? { width } : undefined}
     >
       {resize && <div
         className="drawer-resize-handle"
@@ -138,7 +139,7 @@ export function DrawerShell({ ariaLabel, className = '', children, onClose, resi
         onKeyDown={resizeWithKeyboard}
         onDoubleClick={() => updateWidth(resize.defaultWidth)}
       ><span /></div>}
-      {children(requestClose)}
-    </section>
-  </div>;
+      {children(onClose)}
+    </motion.section>
+  </motion.div>;
 }

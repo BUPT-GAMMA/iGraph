@@ -1,3 +1,4 @@
+import { Popup, PopupBackdrop } from './PopupMotion';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import type { Project } from '../types';
@@ -26,15 +27,15 @@ export function ProjectDialog({ project, onClose, onSave }: EditorProps) {
     setSaving(true); setError('');
     try { await onSave(normalizedName, normalizedDescription); } catch (cause: any) { setError(cause.message || t('Failed to save project', '保存项目失败')); setSaving(false); }
   }
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <form className="project-dialog" onSubmit={submit}>
+  return <PopupBackdrop className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <Popup.form className="project-dialog" role="dialog" aria-modal="true" aria-label={project ? t('Edit project', '编辑项目') : t('Create project', '创建项目')} onSubmit={submit}>
       <div className="dialog-head"><div><span>{project ? t('Project settings', '项目设置') : t('New project', '新建项目')}</span><h2>{project ? t('Edit project', '编辑项目') : t('Create project', '创建项目')}</h2></div><button type="button" className="dialog-close" title={t('Close', '关闭')} aria-label={t('Close', '关闭')} onClick={onClose}><Icon name="close" size={17} /></button></div>
       <label>{t('Project name', '项目名称')}<input type="text" autoFocus value={name} maxLength={80} onChange={event => setName(event.target.value)} placeholder={t('For example: Social network analysis', '例如：社交网络分析')} /></label>
       <label>{t('Description', '描述')}<textarea value={description} maxLength={500} onChange={event => setDescription(event.target.value)} placeholder={t('What this project focuses on (optional)', '这个项目关注的工作内容（可选）')} /></label>
       {error && <div className="dialog-error">{error}</div>}
       <div className="dialog-actions"><button type="button" className="secondary-command" onClick={onClose}>{t('Cancel', '取消')}</button><button className="primary-command" disabled={saving || !name.trim()}>{saving ? t('Saving…', '保存中…') : project ? t('Save', '保存') : t('Create', '创建')}</button></div>
-    </form>
-  </div>;
+    </Popup.form>
+  </PopupBackdrop>;
 }
 
 export function DeleteProjectDialog({ project, onClose, onConfirm }: { project: Project; onClose: () => void; onConfirm: () => Promise<void> }) {
@@ -47,8 +48,8 @@ export function DeleteProjectDialog({ project, onClose, onConfirm }: { project: 
   }
   const conversationCount = project.conversation_count || 0;
   const datasetCount = project.dataset_count || 0;
-  return <div className="modal-backdrop" role="presentation">
-    <div className="project-dialog delete-project-dialog">
+  return <PopupBackdrop className="modal-backdrop" role="presentation">
+    <Popup.div className="project-dialog delete-project-dialog" role="alertdialog" aria-modal="true" aria-label={t('Delete project', '删除项目')}>
       <div className="dialog-head"><div><span>{t('Delete project', '删除项目')}</span><h2>{t(`Delete “${project.name}”?`, `删除“${project.name}”？`)}</h2></div><button className="dialog-close" title={t('Close', '关闭')} aria-label={t('Close', '关闭')} onClick={onClose}><Icon name="close" size={17} /></button></div>
       <p className="dialog-description">{t(
         `This project contains ${conversationCount} conversation${conversationCount === 1 ? '' : 's'} and ${datasetCount} dataset${datasetCount === 1 ? '' : 's'}. Related tasks will be stopped, and conversations, datasets, and trained models will be deleted. This action cannot be undone.`,
@@ -56,6 +57,6 @@ export function DeleteProjectDialog({ project, onClose, onConfirm }: { project: 
       )}</p>
       {error && <div className="dialog-error">{error}</div>}
       <div className="dialog-actions"><button className="secondary-command" onClick={onClose}>{t('Cancel', '取消')}</button><button className="primary-command destructive-command" disabled={saving} onClick={confirm}>{saving ? t('Deleting…', '处理中…') : t('Delete project and all contents', '删除项目及全部内容')}</button></div>
-    </div>
-  </div>;
+    </Popup.div>
+  </PopupBackdrop>;
 }
