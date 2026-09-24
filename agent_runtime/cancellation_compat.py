@@ -21,7 +21,7 @@ from agent_runtime.execution_scope import current_scope, operation_id
 from execution_lifecycle import owned_sync
 
 
-class CancellableOpenAILike(OpenAILike):
+class CancellableModelMixin:
     """Keep native formatting/errors while closing each request-owned stream.
 
 The client wrapper tracks the response belonging to this invocation, including
@@ -40,11 +40,8 @@ streams created before their first token. It never closes a shared client.
 
     async def ainvoke_stream(self, *args, **kwargs):
         scope = current_scope.get()
-        if scope is None:
-            async for event in super().ainvoke_stream(*args, **kwargs):
-                yield event
-            return
-        scope.check()
+        if scope:
+            scope.check()
         # Agno keeps the provider stream in a local variable without a finally
         # close. Wrap only this call's SDK create method; concurrent auxiliary
         # invocations use their own ContextVar response list.
@@ -55,7 +52,7 @@ streams created before their first token. It never closes a shared client.
             async with aclosing(iterator):
                 while True:
                     try:
-                        event = await scope.wait(anext(iterator))
+                        event = await scope.wait(anext(iterator)) if scope else await anext(iterator)
                     except StopAsyncIteration:
                         break
                     yield event
@@ -63,25 +60,32 @@ streams created before their first token. It never closes a shared client.
             closing = time.monotonic()
             try:
                 for response in responses:
-                    await response.close()
+                    close = getattr(response, 'aclose', None) or response.close
+                    await close()
             finally:
                 _provider_responses.reset(token)
-                if scope.stopped.is_set():
+                if scope and scope.stopped.is_set():
                     logging.getLogger(__name__).info('model_stream_closed run_id=%s elapsed_ms=%s',
                                                     scope.run_id, int((time.monotonic() - (scope.cancel_requested_at or closing)) * 1000))
 
+def track_stream_method(resource, method, *, always=False):
+    marker = '_igraph_tracked_' + method
+    if not getattr(resource, marker, False):
+        create = getattr(resource, method)
+        async def tracked_create(*args, **kwargs):
+            result = await create(*args, **kwargs)
+            responses = _provider_responses.get()
+            if (always or kwargs.get('stream')) and responses is not None:
+                responses.append(result)
+            return result
+        setattr(resource, method, tracked_create)
+        setattr(resource, marker, True)
+
+
+class CancellableOpenAILike(CancellableModelMixin, OpenAILike):
     def get_async_client(self):
         client = super().get_async_client()
-        if not getattr(client, "_igraph_stream_tracking", False):
-            create = client.chat.completions.create
-            async def tracked_create(*args, **kwargs):
-                result = await create(*args, **kwargs)
-                responses = _provider_responses.get()
-                if kwargs.get("stream") and responses is not None:
-                    responses.append(result)
-                return result
-            client.chat.completions.create = tracked_create
-            client._igraph_stream_tracking = True
+        track_stream_method(client.chat.completions, 'create')
         return client
 
 

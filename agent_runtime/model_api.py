@@ -36,7 +36,7 @@ class ProviderWrite(BaseModel):
     revision: int | None = None
     name: str = Field(min_length=1, max_length=120)
     preset_id: str = 'custom'
-    protocol: str = 'openai-compatible'
+    protocol: str | None = None
     base_url: str = Field(default='', max_length=2048)
     api_key: str = ''
     clear_api_key: bool = False
@@ -153,27 +153,9 @@ def create_model_router(catalog, db):
     @router.post('/internal/model-catalog/test')
     async def test(req: ModelTest, request: Request):
         data = await asyncio.to_thread(catalog.test_configuration, identity(request), req.config_id, req.revision)
-        headers = {'Authorization': 'Bearer ' + data['api_key']} if data.get('api_key') else {}
-        body = {'model': data['model_id'], 'messages': [{'role': 'user', 'content': 'Reply OK.'}],
-                'max_tokens': 16, 'stream': False}
-        if data.get('tools'):
-            body['tools'] = [{'type': 'function', 'function': {'name': 'connection_test',
-                'description': 'A harmless connectivity check; never executed.',
-                'parameters': {'type': 'object', 'properties': {}}}}]
-        try:
-            async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False) as client:
-                response = await client.post(data['base_url'].rstrip('/') + '/chat/completions', headers=headers, json=body)
-            if response.status_code in {401, 403}:
-                raise ControlError('MODEL_AUTH_FAILED', 422)
-            if response.status_code == 429:
-                raise ControlError('MODEL_RATE_LIMITED', 422)
-            if response.status_code >= 300:
-                raise ControlError('MODEL_TEST_FAILED', 422)
-            payload = response.json()
-            if not isinstance(payload, dict) or not payload.get('choices'):
-                raise ControlError('MODEL_INVALID_RESPONSE', 422)
-        except (httpx.HTTPError, ValueError):
-            raise ControlError('MODEL_CONNECTION_FAILED', 422) from None
+        from agent_runtime.provider_probe import probe_model
+        await probe_model(data)
+        await asyncio.to_thread(catalog.test_configuration, identity(request), req.config_id, req.revision)
         return {'success': True, 'config_id': req.config_id, 'revision': req.revision}
 
     @router.delete('/internal/model-catalog/user/all')

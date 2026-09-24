@@ -6,6 +6,7 @@ import uuid
 from urllib.parse import urlsplit
 from sqlalchemy import Column, Integer, JSON, String, Table, select
 from agent_runtime.execution_store import ControlError, metadata
+from model_protocols import PROTOCOLS, protocol_for
 
 providers = Table('igraph_model_providers', metadata,
     Column('user_id', String(256), primary_key=True),
@@ -14,14 +15,18 @@ providers = Table('igraph_model_providers', metadata,
 
 # Presets describe connections, not a rapidly ageing hard-coded model catalogue.
 PROVIDER_PRESETS = [
-    dict(id='zhizengzeng', name='智增增', base_url='https://api.zhizengzeng.com/v1', icon='unknown'),
+    dict(id='zhizengzeng', name='智增增', base_url='https://api.zhizengzeng.com/v1', icon='zhizengzeng'),
     dict(id='openai', name='OpenAI', base_url='https://api.openai.com/v1', icon='openai'),
+    dict(id='openai-responses', name='OpenAI Responses', base_url='https://api.openai.com/v1', icon='openai', protocol='openai-responses'),
+    dict(id='google', name='Google Gemini', base_url='https://generativelanguage.googleapis.com/v1beta', icon='google', protocol='gemini'),
+    dict(id='anthropic', name='Anthropic', base_url='https://api.anthropic.com/v1', icon='anthropic', protocol='anthropic'),
     dict(id='deepseek', name='DeepSeek', base_url='https://api.deepseek.com/v1', icon='deepseek'),
     dict(id='qwen', name='阿里云百炼', base_url='https://dashscope.aliyuncs.com/compatible-mode/v1', icon='qwen'),
-    dict(id='gemini', name='Google Gemini', base_url='https://generativelanguage.googleapis.com/v1beta/openai', icon='google'),
-    dict(id='ollama', name='Ollama', base_url='http://host.docker.internal:11434/v1', icon='unknown'),
-    dict(id='custom', name='自定义提供商', base_url='', icon='unknown'),
+    dict(id='gemini', name='Gemini (OpenAI)', base_url='https://generativelanguage.googleapis.com/v1beta/openai', icon='google'),
+    dict(id='ollama', name='Ollama', base_url='http://host.docker.internal:11434/v1', icon='ollama'),
+    dict(id='custom', name='自定义提供商', base_url='', icon='custom'),
 ]
+PROVIDER_PRESETS = [dict(protocol='openai-compatible', **p) if 'protocol' not in p else p for p in PROVIDER_PRESETS]
 
 
 def validate_base_url(value):
@@ -65,7 +70,7 @@ class ProviderCatalogMixin:
     def _public_provider(self, conn, uid, row):
         data = row['data']
         return dict(provider_id=row['provider_id'], revision=row['revision'], name=data['name'],
-                    preset_id=data['preset_id'], protocol='openai-compatible', base_url=data['base_url'],
+                    preset_id=data['preset_id'], protocol=protocol_for(data), base_url=data['base_url'],
                     enabled=data['enabled'], has_api_key=bool(data['api_key']),
                     model_count=len(self._provider_models(conn, uid, row['provider_id'])),
                     scope=data.get('scope', 'personal'), editable=data.get('scope') != 'shared' or self._is_admin(conn, uid))
@@ -75,13 +80,14 @@ class ProviderCatalogMixin:
         return dict(provider_id=row['provider_id'], provider_name=data['name'], provider_enabled=data['enabled'],
                     requires_api_key=data['preset_id'] not in {'custom', 'ollama'},
                     provider=data['preset_id'] if data['preset_id'] != 'custom' else 'openai-compatible',
-                    protocol='openai-compatible', base_url=data['base_url'], api_key=data['api_key'])
+                    protocol=protocol_for(data), base_url=data['base_url'], api_key=data['api_key'])
 
     def _legacy_provider(self, conn, uid, data):
         """Group old connections once, without changing their IDs or selections."""
         rows = conn.execute(select(providers).where(providers.c.user_id == uid)).mappings().all()
         row = next((r for r in rows if r['data']['base_url'] == data['base_url']
-                    and r['data']['api_key'] == data.get('api_key', '') and r['data']['enabled']), None)
+                    and r['data']['api_key'] == data.get('api_key', '') and r['data']['enabled']
+                    and protocol_for(r['data']) == 'openai-compatible'), None)
         if not row:
             try:
                 name = urlsplit(data['base_url']).hostname or 'Custom provider'
@@ -125,13 +131,14 @@ class ProviderCatalogMixin:
             preset = str(merged.get('preset_id') or 'custom')
             if not name or len(name) > 120 or preset not in {p['id'] for p in PROVIDER_PRESETS}:
                 raise ControlError('MODEL_PROVIDER_INVALID', 422)
-            if merged.get('protocol', 'openai-compatible') != 'openai-compatible':
+            protocol = data.get('protocol') or (protocol_for(old) if existing else next(p['protocol'] for p in PROVIDER_PRESETS if p['id'] == preset))
+            if protocol not in PROTOCOLS:
                 raise ControlError('MODEL_PROTOCOL_UNSUPPORTED', 422)
             secret = '' if data.get('clear_api_key') else str(data.get('api_key') or old.get('api_key', '')).strip()
             if len(secret) > 8192 or any(ord(c) < 32 or ord(c) > 126 for c in secret):
                 raise ControlError('MODEL_PROVIDER_INVALID', 422)
             base = str(merged.get('base_url') or '').strip()
-            stored = dict(name=name, preset_id=preset, base_url=validate_base_url(base) if base else '',
+            stored = dict(name=name, preset_id=preset, protocol=protocol, base_url=validate_base_url(base) if base else '',
                           api_key=secret, enabled=bool(merged.get('enabled', True)))
             if shared:
                 from agent_runtime.shared_provider_catalog import shared_providers

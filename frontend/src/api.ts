@@ -36,12 +36,13 @@ export type ModelConfiguration = CustomModel & {
 export type ModelCatalog = { models: ModelConfiguration[]; default_model: string };
 export const listModels = () => json<ModelCatalog>('/api/models');
 
+export type ModelProtocol = 'openai-compatible' | 'openai-responses' | 'anthropic' | 'gemini';
 export type ModelProviderConnection = {
   provider_id: string; revision: number; name: string; preset_id: string;
   scope?: 'personal' | 'shared'; editable?: boolean;
-  protocol: 'openai-compatible'; base_url: string; enabled: boolean; has_api_key: boolean; model_count: number;
+  protocol: ModelProtocol; base_url: string; enabled: boolean; has_api_key: boolean; model_count: number;
 };
-export type ProviderPreset = { id: string; name: string; base_url: string; icon: string };
+export type ProviderPreset = { id: string; name: string; base_url: string; icon: string; protocol?: ModelProtocol };
 export type ProviderWrite = Omit<ModelProviderConnection, 'provider_id' | 'revision' | 'has_api_key' | 'model_count' | 'editable' | 'scope'> & {
   provider_id?: string; revision?: number; api_key?: string; clear_api_key?: boolean;
 };
@@ -74,7 +75,7 @@ export function modelErrorMessage(code?: string | null) {
     MODEL_PROVIDER_DISABLED: tr('Provider disabled. Enable it in model settings.', '提供商已停用，请在模型服务中启用'),
     MODEL_PROVIDER_INVALID: tr('Enter a provider name and a valid API key.', '请填写有效的提供商名称和 API 密钥'),
     MODEL_PROVIDER_IN_USE: tr('This provider is in use. Finish or stop its active tasks before deleting.', '提供商正被任务使用，结束或停止任务后可删除'),
-    MODEL_PROTOCOL_UNSUPPORTED: tr('Use an OpenAI Chat Completions compatible endpoint.', '请使用兼容 OpenAI Chat Completions 的接口'),
+    MODEL_PROTOCOL_UNSUPPORTED: tr('Unsupported API type.', '不支持的接口类型'),
     MODEL_DUPLICATE: tr('This model is already added to the provider.', '该模型已添加到此提供商'),
     MODEL_DISCOVERY_UNSUPPORTED: tr('This provider cannot list models. Add a model ID manually.', '该接口不支持模型发现，请手动添加模型 ID'),
     MODEL_DISCOVERY_TOO_LARGE: tr('The model list is too large. Add a model ID manually.', '模型列表过大，请手动添加模型 ID'),

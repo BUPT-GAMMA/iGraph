@@ -151,5 +151,3 @@
   .model-services-trigger span { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .provider-settings *, .provider-settings *::before { transition: none !important; } .pm-model-test.is-checking svg { animation: none; } }
-
-.pm-avatar.preset-zhizengzeng { color: #746df5; background: rgba(116, 109, 245, .12); font-size: 22px; }

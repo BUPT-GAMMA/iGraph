@@ -19,7 +19,7 @@ COPY deploy/requirements/agent-runtime.txt /tmp/requirements.txt
 RUN --mount=type=cache,id=igraph-pip,target=/root/.cache/pip,sharing=locked \
     PIP_DEFAULT_TIMEOUT=120 python -m pip install uv -r /tmp/requirements.txt -c /tmp/compute.txt
 COPY agent_runtime /app/agent_runtime
-COPY response_language.py /app/
+COPY response_language.py model_protocols.py /app/
 # Skill and memory paths share Backend's canonical data-root resolver.
 COPY backend/__init__.py backend/data_paths.py /app/backend/
 # Only the graph engine's shared execution policies are needed here.
