@@ -64,6 +64,18 @@
                 }
               },
               {
+                "slug": "experiments",
+                "icon": "graph",
+                "title": {
+                  "zh": "实验结果",
+                  "en": "Experimental results"
+                },
+                "text": {
+                  "zh": "查看图分析任务成功率，以及构图智能体相对 PK/FK 规则构图的成本改善。",
+                  "en": "See graph-analysis success rates and construction-agent cost reductions relative to PK/FK rule-based construction."
+                }
+              },
+              {
                 "slug": "workspace",
                 "icon": "book",
                 "title": {
@@ -2031,6 +2043,18 @@
               "zh": "当前 Agent Runtime 使用 Agno LocalSkills 加载内置技能与用户目录。候选目录不参加加载；批准操作将候选移入当前用户的技能目录。构图子智能体不会获得主会话消息、通用记忆、文件系统工具或其他用户的策略库；它只使用本次保留的数据源、构图专用工具和同用户领域经验。",
               "en": "The current Agent Runtime uses Agno LocalSkills for bundled skills and the user skill directory. Candidate directories are excluded until approval moves the candidate into that user’s active directory. The construction subagent receives no main-session messages, general memory, filesystem tools, or other users’ strategy stores. It operates on this retained source, construction-specific tools, and the same user’s domain experience."
             }
+          },
+          {
+            "type": "links",
+            "items": [
+              {
+                "href": "/experiments#graph-construction",
+                "label": {
+                  "zh": "构图实验：Amazon、AVS、MAG、StackExchange 与 PK/FK 基线对比",
+                  "en": "Construction results: Amazon, AVS, MAG, and StackExchange versus the PK/FK baseline"
+                }
+              }
+            ]
           }
         ]
       },
@@ -10802,6 +10826,32 @@
       "en": "Changes to documentation, tool references, and examples."
     },
     "sections": [
+      {
+        "id": "2026-09-21",
+        "title": {
+          "zh": "2026-09-21",
+          "en": "2026-09-21"
+        },
+        "blocks": [
+          {
+            "type": "list",
+            "items": [
+              {
+                "zh": "新增实验结果页：统一基座模型为 GLM-5-turbo，仅展示 SR，分别整理图检索、图论、图机器学习和图开放式问答四张表。",
+                "en": "Added four experimental-results tables for retrieval, graph theory, graph machine learning, and open-ended graph question answering, reporting only SR with GLM-5-turbo as the shared base model."
+              },
+              {
+                "zh": "按列自动标注最高分与次高分，支持分组表头、中英文页面及 Markdown 导出。",
+                "en": "Added automatic per-column highest and second-highest score marking, grouped headers, bilingual pages, and Markdown export."
+              },
+              {
+                "zh": "新增构图智能体与 PK/FK 规则构图的实验对比，按数据集选取两组结果中两项成本均更低的一组，并保留逐行来源。",
+                "en": "Added construction-agent results versus PK/FK rule-based construction, selecting the supplied result that improves both cost metrics for each dataset and preserving row-level provenance."
+              }
+            ]
+          }
+        ]
+      },
       {
         "id": "2026-09-20",
         "title": {
