@@ -10,6 +10,7 @@ from model_protocols import protocol_for, sdk_endpoint
 from agent_runtime.cancellation_compat import CancellableOpenAILike
 from agent_runtime.tool_dag import DAGModelMixin
 from agent_runtime.model_history import ModelHistoryMixin
+from agent_runtime.openai_stream_compat import RelayToolCallsMixin
 from execution_protocol import controls_enabled
 
 from agent_runtime.config import AgentRuntimeConfig
@@ -19,11 +20,11 @@ import re
 CUSTOM_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 
 
-class DAGOpenAILike(ModelHistoryMixin, DAGModelMixin, OpenAILike):
+class DAGOpenAILike(ModelHistoryMixin, RelayToolCallsMixin, DAGModelMixin, OpenAILike):
     pass
 
 
-class CancellableDAGOpenAILike(ModelHistoryMixin, DAGModelMixin, CancellableOpenAILike):
+class CancellableDAGOpenAILike(ModelHistoryMixin, RelayToolCallsMixin, DAGModelMixin, CancellableOpenAILike):
     pass
 
 

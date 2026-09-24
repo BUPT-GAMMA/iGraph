@@ -2177,7 +2177,7 @@ function App() {
   </div>;
 }
 
-function ChatPaneWithState(props: any) {
+function ChatPaneWithState({ hasGraph, ...props }: any) {
   const { t } = useI18n();
   const summary = props.cancellation
     ? props.cancellation === 'unconfirmed' ? t('Stop is not confirmed', '停止请求尚未确认') : props.cancellation === 'confirmed' ? t('Task ended', '任务已结束')
@@ -2188,7 +2188,7 @@ function ChatPaneWithState(props: any) {
       ? <><span className="loader" /> {t('Submitting confirmation and checking status', '正在提交确认并核对状态')}</>
       : props.loading
         ? <><span className="loader" /> {t('The assistant is analyzing the graph', '助手正在分析图')}</>
-        : props.hasGraph
+        : hasGraph
           ? <><span className="status-dot" /> {t('Graph analysis ready', '图分析就绪')}</>
           : null;
   const planProgress = props.plan?.steps?.length

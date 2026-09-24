@@ -73,7 +73,7 @@ it('switches only explicit answer versions and copies the selected answer', asyn
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
   const first: Message = { id: 'a1', run_id: 'r1', role: 'assistant', content: 'First', tools: [{ tool: 'first_tool', done: true }] };
   const last: Message = { id: 'a2', run_id: 'r2', regenerate_of: 'r1', role: 'assistant', content: 'Second', tools: [{ tool: 'second_tool', done: true }] };
-  const { container } = render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }} messages={[first, last]} />);
+  const { container } = render(<ChatPane {...composer} onOpenGraph={noop} interaction={{ kind: 'composer' }} messages={[first, last]} />);
   fireEvent.click(screen.getByRole('button', { name: '上一个回答版本' }));
   const card = container.querySelectorAll('.message-row')[1] as HTMLElement;
   expect(card.querySelector('.message-content')?.textContent).toBe('First');
@@ -89,7 +89,7 @@ it('switches only explicit answer versions and copies the selected answer', asyn
 });
 it('keeps attachments above the user bubble and actions outside it', () => {
   const message: Message = { id: 'u', role: 'user', content: 'Question', attachments: [{ file_token: 't', filename: 'data.csv' }] };
-  const { container } = render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }}
+  const { container } = render(<ChatPane {...composer} onOpenGraph={noop} interaction={{ kind: 'composer' }}
     messages={[message]} />);
   expect(screen.queryByRole('button', { name: '编辑并重发' })).toBeNull();
   const bubble = container.querySelector('.message-bubble')!;
@@ -105,7 +105,7 @@ it('keeps attachments above the user bubble and actions outside it', () => {
 it('renders agent deliverables as downloadable chips below the assistant message', () => {
   const message: Message = { id: 'a', role: 'assistant', content: 'Report ready',
     artifacts: [{ path: 'Derived/report.csv', filename: 'report.csv', size: 2048 }] };
-  const { container } = render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }}
+  const { container } = render(<ChatPane {...composer} onOpenGraph={noop} interaction={{ kind: 'composer' }}
     artifactSessionId="S" messages={[message]} />);
   const chip = screen.getByRole('button', { name: '下载 report.csv' });
   expect(chip).toBeTruthy();
@@ -120,7 +120,7 @@ it('shows a temporary copy check only on the copied message', async () => {
   vi.useFakeTimers();
   const copy = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
-  const { container } = render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }} messages={[
+  const { container } = render(<ChatPane {...composer} onOpenGraph={noop} interaction={{ kind: 'composer' }} messages={[
     { id: 'u', role: 'user', content: 'Question' },
     { id: 'a', role: 'assistant', content: '**Answer**\nDetails' },
   ]} />);
@@ -138,7 +138,7 @@ it('shows a temporary copy check only on the copied message', async () => {
 it('shows the assistant copy action only after the answer is complete', () => {
   const user: Message = { id: 'u', role: 'user', content: 'Question' };
   const partial: Message = { id: 'a', role: 'assistant', content: 'Partial answer', streaming: true, run_status: 'streaming' };
-  const props = { ...composer, hasGraph: false, onOpenGraph: noop, interaction: { kind: 'composer' as const } };
+  const props = { ...composer, onOpenGraph: noop, interaction: { kind: 'composer' as const } };
   const { container, rerender } = render(<ChatPane {...props} loading messages={[user, partial]} />);
   let [userRow, assistantRow] = Array.from(container.querySelectorAll<HTMLElement>('.message-row'));
   expect(within(userRow).getByRole('button', { name: '复制' })).toBeTruthy();
@@ -156,7 +156,7 @@ it('shows the assistant copy action only after the answer is complete', () => {
 it('allows retry after a clipboard failure without falsely reporting success', async () => {
   const copy = vi.fn().mockRejectedValueOnce(new Error('Clipboard denied')).mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
-  render(<ChatPane {...composer} hasGraph={false} onOpenGraph={noop} interaction={{ kind: 'composer' }}
+  render(<ChatPane {...composer} onOpenGraph={noop} interaction={{ kind: 'composer' }}
     messages={[{ id: 'a', role: 'assistant', content: 'Answer' }]} />);
   fireEvent.click(screen.getByRole('button', { name: '复制' }));
   expect((await screen.findByRole('alert')).textContent).toContain('复制失败');
@@ -171,7 +171,7 @@ it('ignores a pending copy result after the displayed message changes', async ()
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
     writeText: () => new Promise<void>(resolve => { finishCopy = resolve; }),
   } });
-  const props = { ...composer, hasGraph: false, onOpenGraph: noop, interaction: { kind: 'composer' as const } };
+  const props = { ...composer, onOpenGraph: noop, interaction: { kind: 'composer' as const } };
   const { rerender } = render(<ChatPane {...props} messages={[{ id: 'a', role: 'assistant', content: 'Earlier content' }]} />);
   fireEvent.click(screen.getByRole('button', { name: '复制' }));
   rerender(<ChatPane {...props} messages={[{ id: 'a', role: 'assistant', content: 'Current content' }]} />);

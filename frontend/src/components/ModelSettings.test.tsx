@@ -58,7 +58,7 @@ describe('Model services', () => {
     await u.click(screen.getByRole('button', { name: '添加提供商' }));
     await u.click(screen.getByRole('button', { name: '提供商' }));
     await u.click(screen.getByRole('option', { name: 'OpenAI' }));
-    expect(screen.queryByLabelText('API 地址')).toBeNull();
+    await waitFor(() => expect(screen.queryByLabelText('API 地址')).toBeNull());
     await u.click(screen.getByRole('button', { name: '添加' }));
     await screen.findByLabelText('API 地址');
     expect((screen.getByLabelText('API 地址') as HTMLInputElement).value).toBe('https://api.openai.com/v1');
@@ -298,7 +298,7 @@ describe('unsaved model changes', () => {
     expect(api.saveModelConfiguration).not.toHaveBeenCalled();
     if (action === '关闭模型服务' || action === 'Escape') expect(close).toHaveBeenCalledOnce();
     else if (action === '刷新模型服务') await waitFor(() => expect(api.listModels).toHaveBeenCalledTimes(2));
-    else expect(screen.queryByLabelText('模型 ID')).toBeNull();
+    else await waitFor(() => expect(screen.queryByLabelText('模型 ID')).toBeNull());
   });
 
   it.each([
@@ -307,6 +307,7 @@ describe('unsaved model changes', () => {
   ])('protects changes to %s, but allows returning after restoring its original value', async (label, changed) => {
     models = [model]; const u = user(); render(<ModelSettings onClose={vi.fn()} onChanged={vi.fn()} />);
     await openProvider(); await u.click(screen.getByRole('button', { name: '编辑 团队模型' }));
+    await waitFor(() => expect(document.querySelector('.pm-view[data-popup-state="closed"]')).toBeNull());
     const input = screen.getByLabelText(label!) as HTMLInputElement;
     const initial = input.value;
     if (changed === null) await u.click(input); else fireEvent.change(input, { target: { value: changed } });
@@ -316,7 +317,7 @@ describe('unsaved model changes', () => {
     if (changed === null) await u.click(input); else fireEvent.change(input, { target: { value: initial } });
     await u.click(screen.getByRole('button', { name: '返回' }));
     expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(screen.queryByLabelText('模型 ID')).toBeNull();
+    await waitFor(() => expect(screen.queryByLabelText('模型 ID')).toBeNull());
     expect(api.saveModelConfiguration).not.toHaveBeenCalled();
   });
 
@@ -330,7 +331,7 @@ describe('unsaved model changes', () => {
     await u.click(screen.getByRole('button', { name: '取消' }));
     expect(screen.getByRole('alertdialog')).toBeTruthy();
     await u.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '放弃' }));
-    expect(screen.queryByLabelText('模型 ID')).toBeNull();
+    await waitFor(() => expect(screen.queryByLabelText('模型 ID')).toBeNull());
     await u.click(screen.getByRole('button', { name: '添加' }));
     expect((screen.getByLabelText('模型 ID') as HTMLInputElement).value).toBe('');
     expect(api.saveModelConfiguration).not.toHaveBeenCalled();

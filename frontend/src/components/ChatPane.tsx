@@ -169,7 +169,6 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   messages: Message[];
   conversationKey?: string;
   emptyProjectName?: string;
-  hasGraph: boolean;
   onOpenGraph: () => void;
   runTools?: ToolCall[];
   plan?: Plan | null;
@@ -185,7 +184,7 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, hasGraph, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
   const { t } = useI18n();
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const latestTurn = editableLatestTurn(messages);
@@ -266,7 +265,6 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
           {isAssistant ? <div className="message-avatar assistant"><Icon name="spark" size={15} /></div> : null}
           <div className="message-body">
             <div className="message-label">{isAssistant ? (message.regenerate_of ? t('iGraph Assistant · Regenerated', 'iGraph 助手 · 重新生成') : t('iGraph Assistant', 'iGraph 助手')) : t('You', '你')}</div>
-            {isAssistant && message.model_snapshot && <div className="message-model-provenance" title={`${message.model_snapshot.model_id} · v${message.model_snapshot.revision}`}>{message.model_snapshot.display_name}</div>}
             {message.history_compacted && <div className="message-model-provenance">{t('Earlier context compacted for this model', '较早上下文已压缩以适应此模型')}</div>}
             {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools, t)) : null}
             {isAssistant ? planCard(visiblePlan, t) : null}
@@ -279,7 +277,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
               setEditingKey(null);
             }} /> : isAssistant ? contents : <div className="message-bubble">{contents}</div>}
             {isAssistant && displayed.artifacts?.length ? <ArtifactList artifacts={displayed.artifacts} sessionId={artifactSessionId} /> : null}
-            {displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}><Icon name="graph" size={16} /> {t('View graph result', '查看图结果')} <span>→</span></button> : null}
+            {displayed.graphs?.length ? <button className="inline-result" onClick={onOpenGraph}>{t('View graph result', '查看图结果')} <span>→</span></button> : null}
             {versions.length > 1 && !message.streaming && !isLiveAssistant ? <nav className="answer-versions" aria-label={t('Answer versions', '回答版本')}>
               <button type="button" aria-label={t('Previous answer version', '上一个回答版本')} disabled={versionIndex <= 0} onClick={() => setVersionSelection(current => ({ ...current, [versionKey]: versions[versionIndex - 1].run_id! }))}>‹</button>
               <span>{t(`Version ${versionIndex + 1} / ${versions.length}`, `版本 ${versionIndex + 1} / ${versions.length}`)}</span>
@@ -291,7 +289,6 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
         </div>;
       })}
       {inputProps.loading && liveAssistantIndex < 0 && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{toolList(runTools, t)}{planCard(plan, t)}</div> : null}
-      {hasGraph && messages.length > 0 ? <button className="graph-context-link" onClick={onOpenGraph}><Icon name="graph" size={15} /> {t('Current graph loaded · View it in the workspace on the right', '当前图已加载 · 在右侧工作台查看')}</button> : null}
     </div>
     {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label={t('Jump to latest message', '滚动到最新消息')} title={t('Jump to latest message', '滚动到最新消息')}><Icon name="chevron" size={18} /></button></div> : null}
     <ConversationInputArea {...inputProps} onSend={() => {
