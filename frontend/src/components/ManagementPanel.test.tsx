@@ -34,6 +34,7 @@ describe('ManagementPanel', () => {
     render(<ManagementPanel onClose={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+    expect(screen.getByRole('separator', { name: '调整记忆与技能栏宽度' })).toBeTruthy();
     expect(apiFetchMock).toHaveBeenNthCalledWith(1, '/api/memory?scope=long_term&limit=200');
     fireEvent.change(screen.getByPlaceholderText('搜索记忆内容'), { target: { value: '图分类' } });
     expect(screen.getByText('Alpha')).toBeTruthy();

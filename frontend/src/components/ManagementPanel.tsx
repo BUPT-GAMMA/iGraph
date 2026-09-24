@@ -129,7 +129,18 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
   }
 
   const panelTitle = t('Memory and skills', '记忆与技能');
-  return <DrawerShell ariaLabel={panelTitle} className="management" onClose={onClose}>{requestClose => <>
+  return <DrawerShell
+    ariaLabel={panelTitle}
+    className="management"
+    onClose={onClose}
+    resize={{
+      defaultWidth: 520,
+      minimumWidth: 360,
+      maximumWidth: 960,
+      storageKey: 'igraph-layout-management-drawer-width',
+      label: t('Resize memory and skills panel', '调整记忆与技能栏宽度'),
+    }}
+  >{requestClose => <>
     <div className="drawer-head">
       <strong>{panelTitle}</strong>
       <button className="plain-icon" onClick={requestClose} aria-label={t('Close management panel', '关闭管理面板')}><Icon name="close" size={17} /></button>

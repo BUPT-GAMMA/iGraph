@@ -6,7 +6,12 @@ import { GraphWorkspace } from './GraphWorkspace';
 import { Sidebar } from './Sidebar';
 
 const noop = () => undefined;
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+  document.body.classList.remove('is-resizing-drawer');
+  vi.unstubAllGlobals();
+});
 
 const sidebarProps = {
   projects: [],
@@ -340,6 +345,32 @@ describe('docked panel controls', () => {
 
     fireEvent.animationEnd(overlay);
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('resizes a drawer from its left edge and supports keyboard controls', async () => {
+    vi.stubGlobal('PointerEvent', MouseEvent);
+    render(<DrawerShell
+      ariaLabel="测试抽屉"
+      onClose={noop}
+      resize={{ defaultWidth: 520, minimumWidth: 360, maximumWidth: 960, storageKey: 'test-drawer-width', label: '调整测试抽屉宽度' }}
+    >{() => <span>抽屉内容</span>}</DrawerShell>);
+
+    const drawer = screen.getByRole('dialog', { name: '测试抽屉' });
+    const handle = screen.getByRole('separator', { name: '调整测试抽屉宽度' });
+    expect(drawer.style.width).toBe('520px');
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 500 });
+    fireEvent.pointerMove(window, { clientX: 420 });
+    expect(drawer.style.width).toBe('600px');
+    expect(document.body.classList.contains('is-resizing-drawer')).toBe(true);
+    fireEvent.pointerUp(window);
+    expect(document.body.classList.contains('is-resizing-drawer')).toBe(false);
+
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(drawer.style.width).toBe('584px');
+    fireEvent.doubleClick(handle);
+    expect(drawer.style.width).toBe('520px');
+    await waitFor(() => expect(localStorage.getItem('test-drawer-width')).toBe('520'));
   });
 
   it('renders datasets as compact rows without the internal implementation note', () => {

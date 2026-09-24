@@ -14,7 +14,18 @@ export function HelpPage({ onClose = () => undefined }: { onClose?: () => void }
   const models = helpModels.filter(item => matchesHelpQuery(query, item.name, item.title, item.description.en, item.description.zh, ...item.tasks.flatMap(task => [helpTasks[task].en, helpTasks[task].zh])));
   const title = t('Help & capabilities', '帮助与能力清单');
 
-  return <DrawerShell ariaLabel={title} className="help-drawer" onClose={onClose}>{requestClose => <>
+  return <DrawerShell
+    ariaLabel={title}
+    className="help-drawer"
+    onClose={onClose}
+    resize={{
+      defaultWidth: 760,
+      minimumWidth: 360,
+      maximumWidth: 1200,
+      storageKey: 'igraph-layout-help-drawer-width',
+      label: t('Resize help panel', '调整帮助栏宽度'),
+    }}
+  >{requestClose => <>
     <header className="drawer-head help-drawer-head">
       <h1 id="help-page-title">{title}</h1>
       <button type="button" className="plain-icon" onClick={requestClose} aria-label={t('Close help', '关闭帮助')}><Icon name="close" size={17} /></button>

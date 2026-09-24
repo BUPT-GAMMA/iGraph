@@ -71,6 +71,7 @@ describe('HelpPage', () => {
     const close = vi.fn();
     render(<I18nProvider initialLanguage="en"><HelpPage onClose={close} /></I18nProvider>);
     expect(screen.getByRole('dialog', { name: 'Help & capabilities' })).toBeTruthy();
+    expect(screen.getByRole('separator', { name: 'Resize help panel' })).toBeTruthy();
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: ' SHORTEST minimum ' } });
     expect(screen.getByText('shortest_path')).toBeTruthy();
     expect(screen.queryByText('train')).toBeNull();
