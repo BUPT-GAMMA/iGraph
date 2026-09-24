@@ -1,4 +1,4 @@
-"""Durable model configurations. Secrets never leave the runtime's private API.
+"""Durable model configurations. Lists omit secrets; provider owners can read credentials through a scoped API.
 
 All mutations and run admission share the user's model lock. Session selection
 additionally uses the execution ledger's session lock (session, then model).

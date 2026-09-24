@@ -1692,6 +1692,15 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         await model_catalog_for(user)
         return await runtime.request('POST', '/internal/model-providers', headers=service_headers(user.user_id), json_body=req)
 
+    @app.get('/api/model-providers/{provider_id}/credentials')
+    async def model_provider_credentials(provider_id: str, revision: int, request: Request):
+        user = current_user(request, users)
+        await model_catalog_for(user)
+        from urllib.parse import quote
+        result = await runtime.request('GET', '/internal/model-providers/' + quote(provider_id, safe='') + '/credentials',
+            headers=service_headers(user.user_id), params={'revision': revision})
+        return JSONResponse(result, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
+
     @app.post('/api/model-providers/discover')
     async def discover_provider_models(req: dict, request: Request):
         user = current_user(request, users)

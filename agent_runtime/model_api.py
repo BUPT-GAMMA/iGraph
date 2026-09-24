@@ -2,6 +2,7 @@
 import asyncio
 import httpx
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from execution_protocol import require_service
 from agent_runtime.execution_store import ControlError, TERMINAL
@@ -101,6 +102,11 @@ def create_model_router(catalog, db):
         row = await asyncio.to_thread(catalog.save_provider, identity(request),
             req.model_dump(exclude={'provider_id', 'revision'}), req.provider_id, req.revision)
         return {'success': True, 'provider': row}
+
+    @router.get('/internal/model-providers/{provider_id}/credentials')
+    async def provider_credentials(provider_id: str, revision: int, request: Request):
+        result = await asyncio.to_thread(catalog.provider_credentials, identity(request), provider_id, revision)
+        return JSONResponse(result, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
 
     @router.post('/internal/model-providers/discover')
     async def provider_discover(req: ProviderTarget, request: Request):
