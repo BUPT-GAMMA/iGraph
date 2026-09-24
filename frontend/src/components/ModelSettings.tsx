@@ -14,11 +14,11 @@ import './ModelSettings.css';
 
 type Props = { onClose: () => void; onChanged: (catalog: ModelCatalog) => void };
 type View = 'connection' | 'discover' | 'model';
-const freshConnection = (): ProviderWrite => ({ name: '', preset_id: 'custom', protocol: 'openai-compatible', base_url: '', enabled: true, api_key: '', clear_api_key: false });
+const freshConnection = (): ProviderWrite => ({ name: '', scope: 'personal', preset_id: 'custom', protocol: 'openai-compatible', base_url: '', enabled: true, api_key: '', clear_api_key: false });
 const freshModel = (): Omit<ModelWrite, 'provider_id' | 'provider_revision'> => ({ upstream_model_id: '', display_name: '', tools: true, vision: false, context_window: 131072, max_output_tokens: 4096 });
 function draftFor(provider: ModelProviderConnection): ProviderWrite {
   return { provider_id: provider.provider_id, revision: provider.revision, name: provider.name, preset_id: provider.preset_id,
-    protocol: provider.protocol, base_url: provider.base_url, enabled: provider.enabled, api_key: '', clear_api_key: false };
+    scope: provider.scope || 'personal', protocol: provider.protocol, base_url: provider.base_url, enabled: provider.enabled, api_key: '', clear_api_key: false };
 }
 
 export function ModelSettings({ onClose, onChanged }: Props) {
@@ -26,7 +26,8 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const [catalog, setCatalog] = useState<ModelCatalog>({ models: [], default_model: '' });
   const [providers, setProviders] = useState<ModelProviderConnection[]>([]);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
-  const [selected, setSelected] = useState('deployment');
+  const [selected, setSelected] = useState('');
+  const [canManageShared, setCanManageShared] = useState(false);
   const [draft, setDraft] = useState<ProviderWrite>(freshConnection);
   const [view, setView] = useState<View>('connection');
   const [modelDraft, setModelDraft] = useState(freshModel);
@@ -49,9 +50,9 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const closeRef = useRef(() => {});
   const provider = providers.find(p => p.provider_id === selected);
   const isNew = selected === 'new';
-  const deployment = selected === 'deployment';
-  const dirty = !deployment && JSON.stringify(draft) !== JSON.stringify(provider ? draftFor(provider) : freshConnection());
-  const ownModels = catalog.models.filter(m => deployment ? m.source === 'deployment' : m.provider_id === selected).sort((a, b) => a.display_name.localeCompare(b.display_name));
+  const editable = provider?.editable !== false;
+  const dirty = editable && JSON.stringify(draft) !== JSON.stringify(provider ? draftFor(provider) : freshConnection());
+  const ownModels = catalog.models.filter(m => m.provider_id === selected).sort((a, b) => a.display_name.localeCompare(b.display_name));
   const presetName = (preset: ProviderPreset) => preset.id === 'custom' ? t('Custom provider', '自定义提供商') : preset.id === 'qwen' ? t('Alibaba Cloud', '阿里云百炼') : preset.name;
   const providerIcon = (id: string) => (presets.find(p => p.id === id)?.icon || 'unknown') as ModelProvider;
   const protect = (action: () => void) => {
@@ -99,12 +100,15 @@ export function ModelSettings({ onClose, onChanged }: Props) {
     const [connections, models] = await Promise.all([listModelProviders(), listModels()]);
     if (!alive.current) return;
     setProviders(connections.providers); setPresets(connections.presets); setCatalog(models); onChanged(models);
-    if (selectId) {
-      const next = connections.providers.find(p => p.provider_id === selectId);
-      setSelected(next ? selectId : 'deployment');
-      setDraft(next ? draftFor(next) : freshConnection());
-    }
+    setCanManageShared(!!connections.can_manage_shared);
+    const target = selectId ?? selected;
+    const defaultProvider = models.models.find(m => m.config_id === models.default_model)?.provider_id;
+    const next = connections.providers.find(p => p.provider_id === target)
+      || (target !== 'new' ? connections.providers.find(p => p.provider_id === defaultProvider) || connections.providers[0] : undefined);
+    setSelected(next?.provider_id || 'new');
+    if (selectId !== undefined || !dirty) setDraft(next ? draftFor(next) : freshConnection());
   }
+
   async function run(label: string, operation: () => Promise<void>) {
     if (working.current) return;
     working.current = true; setBusy(label); setError(''); setNotice('');
@@ -184,10 +188,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   const addedIds = new Set(ownModels.map(m => m.upstream_model_id));
   const remoteModels = discovered?.models.filter(m => searchMatch(m.id, m.name)) || [];
   const importable = remoteModels.filter(m => !addedIds.has(m.id));
-  const heading = deployment ? t('Deployment models', '系统模型') : isNew ? t('Add provider', '添加提供商') : provider?.name || '';
+  const heading = isNew ? t('Add provider', '添加提供商') : provider?.name || '';
   const back = () => protect(() => { setView('connection'); setError(''); });
 
-  const connectionReady = !!provider?.base_url && !dirty;
+  const connectionReady = editable && !!provider?.base_url && !dirty;
   const endpoint = `${draft.base_url.trim().replace(/\/+$/, '')}/chat/completions`;
   const identityFields = <>
     <label>{t('Provider name', '提供商名称')}
@@ -202,10 +206,11 @@ export function ModelSettings({ onClose, onChanged }: Props) {
   </>;
   function removeProvider() {
     if (!provider) return;
-    const next = providers.find(p => p.provider_id !== provider.provider_id)?.provider_id || 'deployment';
+    const next = providers.find(p => p.provider_id !== provider.provider_id)?.provider_id || 'new';
     setConfirm({
       title: t(`Delete “${provider.name}”?`, `删除“${provider.name}”？`),
-      detail: ownModels.length ? t(`Also removes ${ownModels.length} models.`, `同时删除 ${ownModels.length} 个模型。`) : undefined,
+      detail: provider.scope === 'shared' ? t('Removes this provider and its models for all users.', '所有账户将无法使用此提供商及其模型。')
+        : ownModels.length ? t(`Also removes ${ownModels.length} models.`, `同时删除 ${ownModels.length} 个模型。`) : undefined,
       label: t('Delete', '删除'),
       action: () => void run('delete', async () => {
         await deleteModelProvider(provider);
@@ -230,14 +235,10 @@ export function ModelSettings({ onClose, onChanged }: Props) {
           <label className="pm-search"><Icon name="search" size={16} /><input value={search} onChange={e => setSearch(e.target.value)}
             placeholder={t('Search providers', '搜索提供商')} aria-label={t('Search providers', '搜索提供商')} /></label>
           <nav aria-label={t('Model providers', '模型提供商')}>
-            <button className={`pm-provider ${deployment ? 'is-selected' : ''}`} onClick={() => choose('deployment')} disabled={!!busy}>
-              <span className="pm-avatar is-system"><Icon name="cube" size={20} /></span>
-              <strong>{t('Deployment models', '系统模型')}</strong>
-            </button>
             {providers.filter(p => p.name.toLowerCase().includes(search.trim().toLowerCase())).map(p =>
               <button key={p.provider_id} className={`pm-provider ${p.provider_id === selected ? 'is-selected' : ''}`}
                 onClick={() => choose(p.provider_id)} disabled={!!busy} aria-pressed={p.provider_id === selected}>
-                <span className={`pm-avatar preset-${p.preset_id}`}><ModelProviderIcon provider={providerIcon(p.preset_id)} size={22} /></span>
+                <span className={`pm-avatar preset-${p.preset_id}`}>{p.preset_id === 'zhizengzeng' ? <b>Z</b> : <ModelProviderIcon provider={providerIcon(p.preset_id)} size={22} />}</span>
                 <strong title={p.name}>{p.name}</strong>
                 <i className={`pm-status-dot ${p.enabled ? 'is-enabled' : ''}`} aria-label={p.enabled ? t('Enabled', '已启用') : t('Disabled', '已停用')} />
               </button>)}
@@ -248,13 +249,13 @@ export function ModelSettings({ onClose, onChanged }: Props) {
         </aside>
         <main className="pm-main" aria-busy={loading || !!busy}>
           <div className="pm-title-row">
-            <h3>{heading}</h3>
+            <h3>{heading}{provider?.scope === 'shared' && <span className="pm-scope" title={t('Managed by administrators', '由管理员维护')}>{t('Shared', '共享')}</span>}</h3>
             <div className="pm-title-actions">
-              {provider && view === 'connection' && <button className="pm-icon-button" aria-label={t('Edit provider', '编辑提供商')}
+              {provider && editable && view === 'connection' && <button className="pm-icon-button" aria-label={t('Edit provider', '编辑提供商')}
                 title={t('Edit provider', '编辑提供商')} disabled={!!busy} onClick={() => setEditIdentity(!editIdentity)}><Icon name="edit" size={16} /></button>}
-              {provider && <button className="pm-icon-button pm-delete" aria-label={t('Delete provider', '删除提供商')}
+              {provider && editable && <button className="pm-icon-button pm-delete" aria-label={t('Delete provider', '删除提供商')}
                 title={t('Delete provider', '删除提供商')} disabled={!!busy} onClick={removeProvider}><Icon name="trash" size={16} /></button>}
-              {provider && <button role="switch" aria-checked={provider.enabled} aria-label={t('Enable provider', '启用提供商')}
+              {provider && editable && <button role="switch" aria-checked={provider.enabled} aria-label={t('Enable provider', '启用提供商')}
                 className={`pm-switch ${provider.enabled ? 'is-on' : ''}`} disabled={!!busy || dirty || view !== 'connection'}
                 onClick={() => void run('provider-state', async () => {
                   const result = await saveModelProvider({ ...draftFor(provider), enabled: !provider.enabled });
@@ -269,7 +270,13 @@ export function ModelSettings({ onClose, onChanged }: Props) {
           {loading ? <div className="pm-empty" role="status"><span className="loader" /><span>{t('Loading…', '加载中…')}</span></div> : <>
             {view === 'connection' && <>
               {isNew && <form className="pm-create" onSubmit={saveConnection}>
-                <div className="pm-form-grid">{identityFields}</div>
+                <div className="pm-form-grid">{identityFields}
+                  {canManageShared && <label className="pm-wide">{t('Access', '使用范围')}
+                    <select value={draft.scope || 'personal'} onChange={e => setDraft({ ...draft, scope: e.target.value as 'personal' | 'shared' })} disabled={!!busy}>
+                      <option value="personal">{t('Only me', '仅自己')}</option><option value="shared">{t('All users', '共享')}</option>
+                    </select>
+                  </label>}
+                </div>
                 <div className="pm-form-actions"><button className="pm-button is-primary" type="submit" disabled={!!busy || !draft.name.trim()}>
                   {busy === 'save' ? t('Adding…', '添加中…') : t('Add', '添加')}
                 </button></div>
@@ -280,31 +287,31 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                   <label className="pm-wide">{t('API key', 'API 密钥')}
                     <span className="pm-key-field">
                       <input aria-label={t('API key', 'API 密钥')} type={reveal ? 'text' : 'password'} autoComplete="new-password"
-                        spellCheck={false} maxLength={8192} value={draft.api_key || ''} disabled={!!busy || draft.clear_api_key}
+                        spellCheck={false} maxLength={8192} value={draft.api_key || ''} disabled={!!busy || !editable || draft.clear_api_key}
                         onChange={e => setDraft({ ...draft, api_key: e.target.value })}
                         title={provider.has_api_key ? t('Leave blank to keep the saved key', '留空保留已保存密钥') : undefined}
                         placeholder={provider.has_api_key ? '••••••••••••••••' : 'API Key'} />
                       <button type="button" aria-label={reveal ? t('Hide API key', '隐藏 API 密钥') : t('Show API key', '显示 API 密钥')}
-                        onClick={() => setReveal(!reveal)} disabled={!!busy}><Icon name={reveal ? 'eye-off' : 'eye'} size={17} /></button>
+                        onClick={() => setReveal(!reveal)} disabled={!!busy || !editable}><Icon name={reveal ? 'eye-off' : 'eye'} size={17} /></button>
                       <button type="button" className="pm-key-check" disabled={!!busy || !connectionReady} onClick={() => discover(false)}>
                         {busy === 'discover' ? t('Checking…', '检测中…') : t('Test', '检测')}
                       </button>
                     </span>
                   </label>
-                  {provider.has_api_key && <label className="pm-check pm-wide"><input type="checkbox" checked={!!draft.clear_api_key} disabled={!!busy}
+                  {editable && provider.has_api_key && <label className="pm-check pm-wide"><input type="checkbox" checked={!!draft.clear_api_key} disabled={!!busy}
                     onChange={e => setDraft({ ...draft, clear_api_key: e.target.checked, api_key: '' })} />{t('Clear key', '清除密钥')}</label>}
                   <label className="pm-wide"><span className="pm-field-label">{t('API base URL', 'API 地址')}
                     <span title={`OpenAI Chat Completions${draft.base_url ? ` · ${endpoint}` : ''}`}><Icon name="info" size={13} /></span>
                   </span><input type="url" aria-label={t('API base URL', 'API 地址')} autoComplete="off" spellCheck={false}
-                    value={draft.base_url} disabled={!!busy} onChange={e => setDraft({ ...draft, base_url: e.target.value })} placeholder="https://api.example.com/v1" /></label>
+                    value={draft.base_url} disabled={!!busy || !editable} onChange={e => setDraft({ ...draft, base_url: e.target.value })} placeholder="https://api.example.com/v1" /></label>
                 </div>
-                <div className="pm-form-actions"><button type="submit" className="pm-button is-primary" disabled={!!busy || !dirty}>
+                {editable && <div className="pm-form-actions"><button type="submit" className="pm-button is-primary" disabled={!!busy || !dirty}>
                   {busy === 'save' ? t('Saving…', '保存中…') : t('Save', '保存')}
-                </button></div>
+                </button></div>}
               </form>}
-              {!isNew && <section className={`pm-model-section ${deployment ? 'is-deployment' : ''}`}>
+              {!isNew && <section className="pm-model-section">
                 <div className="pm-section-head"><h4>{t('Models', '模型')}<span>{ownModels.length}</span></h4>
-                  {!deployment && <div className="pm-actions">
+                  {editable && <div className="pm-actions">
                     <button className="pm-button" disabled={!!busy || !connectionReady} onClick={() => editModel()}><Icon name="plus" size={15} />{t('Add', '添加')}</button>
                     <button className="pm-button is-primary" disabled={!!busy || !connectionReady} onClick={() => discover(true)}><Icon name="list-check" size={15} />{t('Manage', '管理')}</button>
                   </div>}
@@ -339,7 +346,7 @@ export function ModelSettings({ onClose, onChanged }: Props) {
                       aria-label={t(`Test ${m.display_name}`, `检测 ${m.display_name}`)} onClick={() => void run(m.config_id, async () => {
                         await testModelConfiguration(m); if (alive.current) setNotice(t('Test passed', '检测通过'));
                       })}><Icon name="pulse" size={16} /></button>
-                    {!deployment && <>
+                    {editable && <>
                       <button className="pm-icon-button" disabled={!!busy || dirty} title={t('Edit model', '编辑模型')}
                         aria-label={t(`Edit ${m.display_name}`, `编辑 ${m.display_name}`)} onClick={() => editModel(m)}><Icon name="settings" size={16} /></button>
                       <button className="pm-icon-button pm-delete" disabled={!!busy || dirty} title={t('Remove model', '移除模型')}

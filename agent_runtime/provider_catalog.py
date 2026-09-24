@@ -14,6 +14,7 @@ providers = Table('igraph_model_providers', metadata,
 
 # Presets describe connections, not a rapidly ageing hard-coded model catalogue.
 PROVIDER_PRESETS = [
+    dict(id='zhizengzeng', name='智增增', base_url='https://api.zhizengzeng.com/v1', icon='unknown'),
     dict(id='openai', name='OpenAI', base_url='https://api.openai.com/v1', icon='openai'),
     dict(id='deepseek', name='DeepSeek', base_url='https://api.deepseek.com/v1', icon='deepseek'),
     dict(id='qwen', name='阿里云百炼', base_url='https://dashscope.aliyuncs.com/compatible-mode/v1', icon='qwen'),
@@ -40,6 +41,10 @@ def validate_base_url(value):
 
 class ProviderCatalogMixin:
     def _provider_row(self, conn, uid, pid):
+        from agent_runtime.shared_provider_catalog import shared_providers
+        shared = conn.execute(select(shared_providers).where(shared_providers.c.provider_id == pid)).mappings().first()
+        if shared:
+            return dict(shared) if not shared['data'].get('deleted') else None
         row = conn.execute(select(providers).where(providers.c.user_id == uid, providers.c.provider_id == pid)).mappings().first()
         return dict(row) if row else None
 
@@ -62,11 +67,13 @@ class ProviderCatalogMixin:
         return dict(provider_id=row['provider_id'], revision=row['revision'], name=data['name'],
                     preset_id=data['preset_id'], protocol='openai-compatible', base_url=data['base_url'],
                     enabled=data['enabled'], has_api_key=bool(data['api_key']),
-                    model_count=len(self._provider_models(conn, uid, row['provider_id'])))
+                    model_count=len(self._provider_models(conn, uid, row['provider_id'])),
+                    scope=data.get('scope', 'personal'), editable=data.get('scope') != 'shared' or self._is_admin(conn, uid))
 
     def _provider_snapshot(self, row):
         data = row['data']
         return dict(provider_id=row['provider_id'], provider_name=data['name'], provider_enabled=data['enabled'],
+                    requires_api_key=data['preset_id'] not in {'custom', 'ollama'},
                     provider=data['preset_id'] if data['preset_id'] != 'custom' else 'openai-compatible',
                     protocol='openai-compatible', base_url=data['base_url'], api_key=data['api_key'])
 
@@ -94,16 +101,23 @@ class ProviderCatalogMixin:
 
     def list_providers(self, uid):
         with self.store.transaction(uid, '__models__') as conn:
+            self._sync_shared(conn, uid)
             self._migrate_providers(conn, uid)
             rows = conn.execute(select(providers).where(providers.c.user_id == uid)).mappings().all()
-            return dict(providers=[self._public_provider(conn, uid, r) for r in rows], presets=PROVIDER_PRESETS)
+            shared = [row for row in self._shared_rows(conn) if self._is_admin(conn, uid) or self._provider_models(conn, uid, row['provider_id'])]
+            return dict(providers=[self._public_provider(conn, uid, r) for r in [*shared, *rows]],
+                        presets=PROVIDER_PRESETS, can_manage_shared=self._is_admin(conn, uid))
 
     def save_provider(self, uid, data, pid=None, expected_revision=None):
         with self.store.transaction(uid, '__models__') as conn:
+            self._sync_shared(conn, uid)
             existing = self._require_provider(conn, uid, pid) if pid else None
             if existing and existing['revision'] != expected_revision:
                 raise ControlError('MODEL_PROVIDER_CHANGED')
             old = existing['data'] if existing else {}
+            shared = old.get('scope') == 'shared' if existing else data.get('scope') == 'shared'
+            if shared and not self._is_admin(conn, uid):
+                raise ControlError('MODEL_PROVIDER_READ_ONLY', 403)
             merged = {**old, **data}
             name = str(merged.get('name') or '').strip()
             preset = str(merged.get('preset_id') or 'custom')
@@ -117,6 +131,17 @@ class ProviderCatalogMixin:
             base = str(merged.get('base_url') or '').strip()
             stored = dict(name=name, preset_id=preset, base_url=validate_base_url(base) if base else '',
                           api_key=secret, enabled=bool(merged.get('enabled', True)))
+            if shared:
+                from agent_runtime.shared_provider_catalog import shared_providers
+                stored.update(scope='shared', models=old.get('models', {}))
+                row = dict(provider_id=pid or f'shared-{uuid.uuid4()}',
+                           revision=existing['revision'] + 1 if existing else 1, data=stored)
+                if existing:
+                    conn.execute(shared_providers.update().where(shared_providers.c.provider_id == pid).values(**row))
+                else:
+                    conn.execute(shared_providers.insert().values(**row))
+                self._sync_shared(conn, uid)
+                return self._public_provider(conn, uid, row)
             row = dict(user_id=uid, provider_id=pid or f'provider-{uuid.uuid4()}',
                        revision=existing['revision'] + 1 if existing else 1, data=stored)
             if existing:
@@ -133,11 +158,15 @@ class ProviderCatalogMixin:
         if not 1 <= len(items) <= 200:
             raise ControlError('MODEL_IMPORT_LIMIT', 422)
         with self.store.transaction(uid, '__models__') as conn:
+            self._sync_shared(conn, uid)
             provider = self._require_provider(conn, uid, pid, revision)
+            self._assert_provider_editable(conn, uid, provider)
             if not provider['data']['base_url']:
                 raise ControlError('MODEL_NOT_CONFIGURED', 422)
             known = {row['data']['model_id'] for row in self._provider_models(conn, uid, pid)}
             added = 0
+            shared = provider['data'].get('scope') == 'shared'
+            shared_models = dict(provider['data'].get('models', {}))
             for item in items:
                 mid = str(item.get('id') or '').strip()
                 if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}', mid):
@@ -147,21 +176,39 @@ class ProviderCatalogMixin:
                 data = dict(model_id=mid, display_name=str(item.get('name') or mid).strip()[:120],
                     source='custom', enabled=True, tools=True, vision=False,
                     context_window=131072, max_output_tokens=4096, **self._provider_snapshot(provider))
-                self._write(conn, uid, f'custom-{uuid.uuid4()}', data)
+                if shared:
+                    shared_models[f'shared-model-{uuid.uuid4()}'] = dict(model_id=mid, display_name=data['display_name'],
+                        tools=True, vision=False, context_window=131072, max_output_tokens=4096, restricted=False)
+                else:
+                    self._write(conn, uid, f'custom-{uuid.uuid4()}', data)
                 known.add(mid)
                 added += 1
+            if shared:
+                self._update_shared_models(conn, provider, shared_models)
+                self._sync_shared(conn, uid)
             return dict(success=True, added_count=added, skipped_count=len(items) - added)
 
     def provider_configuration(self, uid, pid, revision):
         with self.store.transaction(uid, '__models__') as conn:
-            data = dict(self._require_provider(conn, uid, pid, revision)['data'])
+            self._sync_shared(conn, uid)
+            row = self._require_provider(conn, uid, pid, revision)
+            self._assert_provider_editable(conn, uid, row)
+            data = dict(row['data'])
             if not data['base_url']:
                 raise ControlError('MODEL_NOT_CONFIGURED', 422)
             return data
 
     def delete_provider(self, uid, pid, revision):
         with self.store.transaction(uid, '__models__') as conn:
-            self._require_provider(conn, uid, pid, revision)
+            self._sync_shared(conn, uid)
+            row = self._require_provider(conn, uid, pid, revision)
+            self._assert_provider_editable(conn, uid, row)
+            if row['data'].get('scope') == 'shared':
+                from agent_runtime.shared_provider_catalog import shared_providers
+                self._remove_shared_models(conn, row, list(row['data']['models']), in_use_code='MODEL_PROVIDER_IN_USE')
+                conn.execute(shared_providers.update().where(shared_providers.c.provider_id == pid).values(
+                    revision=row['revision'] + 1, data={**row['data'], 'api_key': '', 'base_url': '', 'models': {}, 'deleted': True}))
+                return
             self._remove_models(conn, uid, self._provider_models(conn, uid, pid),
                                 in_use_code='MODEL_PROVIDER_IN_USE')
             conn.execute(providers.delete().where(providers.c.user_id == uid, providers.c.provider_id == pid))

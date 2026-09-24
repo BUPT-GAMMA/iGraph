@@ -1,6 +1,7 @@
 """Service-authenticated model configuration and selection routes."""
 import asyncio
 import httpx
+from typing import Literal
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from execution_protocol import require_service
@@ -8,6 +9,7 @@ from agent_runtime.execution_store import ControlError, TERMINAL
 
 
 class BootstrapModels(BaseModel):
+    is_admin: bool = False
     allowed: list[str] = Field(default_factory=list)
     legacy: list[dict] = Field(default_factory=list)
 
@@ -30,6 +32,7 @@ class ModelWrite(BaseModel):
 
 
 class ProviderWrite(BaseModel):
+    scope: Literal['personal', 'shared'] = 'personal'
     provider_id: str | None = None
     revision: int | None = None
     name: str = Field(min_length=1, max_length=120)
@@ -123,7 +126,7 @@ def create_model_router(catalog, db):
 
     @router.post('/internal/model-catalog/bootstrap')
     async def bootstrap(req: BootstrapModels, request: Request):
-        return await asyncio.to_thread(catalog.bootstrap, identity(request), req.allowed, req.legacy)
+        return await asyncio.to_thread(catalog.bootstrap, identity(request), req.allowed, req.legacy, req.is_admin)
 
     @router.get('/internal/model-catalog')
     async def listing(request: Request):

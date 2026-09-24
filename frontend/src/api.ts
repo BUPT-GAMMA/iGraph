@@ -38,10 +38,11 @@ export const listModels = () => json<ModelCatalog>('/api/models');
 
 export type ModelProviderConnection = {
   provider_id: string; revision: number; name: string; preset_id: string;
+  scope?: 'personal' | 'shared'; editable?: boolean;
   protocol: 'openai-compatible'; base_url: string; enabled: boolean; has_api_key: boolean; model_count: number;
 };
 export type ProviderPreset = { id: string; name: string; base_url: string; icon: string };
-export type ProviderWrite = Omit<ModelProviderConnection, 'provider_id' | 'revision' | 'has_api_key' | 'model_count'> & {
+export type ProviderWrite = Omit<ModelProviderConnection, 'provider_id' | 'revision' | 'has_api_key' | 'model_count' | 'editable'> & {
   provider_id?: string; revision?: number; api_key?: string; clear_api_key?: boolean;
 };
 export type ModelWrite = {
@@ -51,7 +52,7 @@ export type ModelWrite = {
 };
 export type DiscoveredModels = { models: { id: string; name: string }[]; latency_ms: number; truncated: boolean };
 const modelJson = (method: string, body: unknown) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-export const listModelProviders = () => json<{ providers: ModelProviderConnection[]; presets: ProviderPreset[] }>('/api/model-providers');
+export const listModelProviders = () => json<{ providers: ModelProviderConnection[]; presets: ProviderPreset[]; can_manage_shared?: boolean }>('/api/model-providers');
 export const saveModelProvider = (input: ProviderWrite) => json<{ provider: ModelProviderConnection }>('/api/model-providers', modelJson('POST', input));
 export const deleteModelProvider = (provider: ModelProviderConnection) => json(`/api/model-providers/${encodeURIComponent(provider.provider_id)}?revision=${provider.revision}`, { method: 'DELETE' });
 export const discoverProviderModels = (provider: ModelProviderConnection) => json<DiscoveredModels>('/api/model-providers/discover', modelJson('POST', { provider_id: provider.provider_id, revision: provider.revision }));
@@ -65,6 +66,7 @@ export const deleteModelConfiguration = (model: ModelConfiguration) => json(`/ap
 export function modelErrorMessage(code?: string | null) {
   const messages: Record<string, string> = {
     MODEL_IMPORT_LIMIT: tr('Import up to 200 models per batch.', '每批最多导入 200 个模型'),
+    MODEL_PROVIDER_READ_ONLY: tr('Only administrators can edit this shared provider.', '仅管理员可修改此共享提供商'),
     MODEL_PROVIDER_REMOVED: tr('Provider no longer exists. Refresh the list.', '提供商已删除，请刷新列表'),
     MODEL_PROVIDER_CHANGED: tr('Provider changed in another page. Refresh before saving.', '提供商已在其他页面修改，请刷新后重试'),
     MODEL_PROVIDER_DISABLED: tr('Provider disabled. Enable it in model settings.', '提供商已停用，请在模型服务中启用'),
