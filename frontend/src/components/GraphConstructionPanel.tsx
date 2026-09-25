@@ -247,6 +247,9 @@ function ConstructionAgentStream({ state }: { state: ConstructionState | null })
       {(metrics.chunks_completed !== undefined || metrics.chunks_total !== undefined) && <span>{t('Text chunks', '文本分块')} <b>{metrics.chunks_completed ?? 0}{metrics.chunks_total !== undefined ? ` / ${metrics.chunks_total}` : ''}</b></span>}
       {metrics.extracted_nodes !== undefined && <span>{t('Entities found', '已识别实体')} <b>{metrics.extracted_nodes}</b></span>}
       {metrics.extracted_edges !== undefined && <span>{t('Relationships found', '已识别关系')} <b>{metrics.extracted_edges}</b></span>}
+      {metrics.queries_generated !== undefined && <span>{t('Text queries', '原文查询')} <b>{metrics.queries_generated}</b></span>}
+      {metrics.queries_passed !== undefined && <span>{t('Queries passed', '查询通过')} <b>{metrics.queries_passed}</b></span>}
+      {metrics.queries_repaired !== undefined && <span>{t('Facts repaired', '已修正事实')} <b>{metrics.queries_repaired}</b></span>}
     </div>}
     <small className="construction-agent-disclosure">{t('Only progress and validation results are shown. Agent reasoning is never displayed.', '这里只展示运行进度与验收结果，不展示 Agent 内部推理。')}</small>
   </section>;
@@ -281,6 +284,8 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
   const [constructionMode, setConstructionMode] = useState<'rules' | 'llm'>('rules');
   const [experienceEnabled, setExperienceEnabled] = useState(true);
   const [delimiter, setDelimiter] = useState('');
+  const [entityTypes, setEntityTypes] = useState('');
+  const [textRefineEnabled, setTextRefineEnabled] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [conflict, setConflict] = useState(false);
@@ -418,7 +423,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     buildAttempt.current += 1;
     setState(null); setSavedGraph(null); setSavedSchema(null); setSchemaWarning(''); setMonitoringBuild(false); setNotice(''); setQueryCount('15'); setDomain('');
     setSelected(null); setSchemaSelected(null);
-    setDomainCategory('auto'); setConstructionMode('rules'); setExperienceEnabled(true); setDelimiter('');
+    setDomainCategory('auto'); setConstructionMode('rules'); setExperienceEnabled(true); setDelimiter(''); setEntityTypes(''); setTextRefineEnabled(false);
     const controller = new AbortController();
     const priorFocus = document.activeElement as HTMLElement | null;
     if (!embedded) closeButton.current?.focus();
@@ -455,6 +460,13 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     if (!semanticTextMode && (!Number.isInteger(count) || count < 1 || count > 100)) {
       setError(t('The number of validation queries must be an integer from 1 to 100.', '验证查询数量必须是 1 到 100 之间的整数。')); return;
     }
+    if (semanticTextMode && textRefineEnabled && (!Number.isInteger(count) || count < 1 || count > 100)) {
+      setError(t('The number of validation queries must be an integer from 1 to 100.', '验证查询数量必须是 1 到 100 之间的整数。')); return;
+    }
+    const selectedEntityTypes = [...new Set(entityTypes.split(/[,，、;；\n]+/).map(value => value.trim()).filter(Boolean))];
+    if (semanticTextMode && (selectedEntityTypes.length > 12 || selectedEntityTypes.some(value => value.length > 30 || /[|<>\r]/.test(value)))) {
+      setError(t('Enter up to 12 entity types, each no longer than 30 characters and without |, < or >.', '最多填写 12 种实体类型，每种不超过 30 字，且不能包含 |、< 或 >。')); return;
+    }
     const version = lifecycle.current;
     const attempt = ++buildAttempt.current;
     postPending.current = true; buildResolved.current = false; notifiedRevision.current = null;
@@ -470,7 +482,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       // No AbortSignal: closing this view must not cancel the server-side build.
       const sourceDescription = domain.trim() || dataset.description?.trim() || '';
       const options: ConstructionBuildOptions = semanticTextMode
-        ? { domain: sourceDescription, txt_mode: 'entities', mode: 'llm' }
+        ? { domain: sourceDescription, txt_mode: 'entities', mode: 'llm', entity_types: selectedEntityTypes, text_refine_enabled: textRefineEnabled, ...(textRefineEnabled ? { query_count: count } : {}) }
         : { mode: constructionMode, query_count: count, domain: sourceDescription, domain_category: domainCategory, experience_enabled: experienceEnabled };
       if (!semanticTextMode && sourceType === 'txt' && delimiter === '__lines__') options.txt_mode = 'lines';
       else if (!semanticTextMode && supportsDelimiter && delimiter) options.delimiter = delimiter;
@@ -633,6 +645,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
             {!semanticTextMode && <label>{t('Domain category', '领域类别')}<select value={domainCategory} onChange={event => setDomainCategory(event.target.value as ConstructionDomainCategory)}>{DOMAIN_CATEGORIES.map(category => <option key={category.value} value={category.value}>{t(category.label.en, category.label.zh)}</option>)}</select></label>}
             {supportsDelimiter && <label>{sourceType === 'txt' ? t('TXT processing mode', 'TXT 处理方式') : t('Text delimiter (optional)', '文本分隔符（选填）')}<select aria-label={sourceType === 'txt' ? t('TXT processing mode', 'TXT 处理方式') : t('Text delimiter (optional)', '文本分隔符（选填）')} value={delimiter} onChange={event => setDelimiter(event.target.value)}><option value="">{sourceType === 'txt' ? t('Auto: tabular when tab-separated, otherwise one record per line', '自动：制表符表格，否则逐行记录') : t('Comma (default)', '默认逗号')}</option>{sourceType === 'txt' && <option value="__entities__">{t('Extract entities and relationships with AI (LLM)', '智能抽取实体与关系（LLM）')}</option>}{sourceType === 'txt' && <option value="__lines__">{t('Force one record per line (do not infer relationships)', '强制逐行记录（不推断关系）')}</option>}<option value={'\t'}>{t('Tab', '制表符')}</option><option value=",">{t('Comma', '逗号')}</option><option value="|">{t('Vertical bar', '竖线')}</option><option value=";">{t('Semicolon', '分号')}</option><option value=" ">{t('Space', '空格')}</option></select><small className={semanticTextMode ? 'construction-text-disclosure' : undefined}>{sourceType === 'txt' ? semanticTextMode ? t('The full TXT content is sent to the graph model in chunks. The LLM identifies explicit entities and relationships; review the generated result manually.', 'TXT 全文将分块发送至构图模型；LLM 会识别文本中明确出现的实体和关系，生成结果需人工核对。') : t('Auto mode recognizes tab-separated tables; otherwise it creates one record per line. You can also choose another table delimiter or force line-by-line records.', '自动模式只识别制表符表格，否则按逐行记录构图；也可选择其他表格分隔符或强制逐行记录。') : t('A blank CSV delimiter uses commas. Other delimiters still enforce header and column-count validation.', 'CSV 留空时使用逗号；选择其他分隔符后仍会严格校验表头和列数。')}</small></label>}
             <label>{semanticTextMode ? t('Extraction focus (optional)', '抽取目标（选填）') : t('Domain description (optional)', '领域描述（选填）')}<textarea rows={3} maxLength={16000} value={domain} onChange={event => setDomain(event.target.value)} placeholder={semanticTextMode ? t('For example: focus on people, organizations, locations, and their explicit relationships', '例如：关注人物、组织、地点及其明确关系') : t('For example: e-commerce order fulfillment, focusing on relationships among customers, products, and orders', '例如：电商订单履约，关注客户、商品和订单之间的关系')} /></label>
+            {semanticTextMode && <><label>{t('Entity types to extract (optional)', '提取的实体类型（选填）')}<input value={entityTypes} onChange={event => setEntityTypes(event.target.value)} placeholder={t('People, events, organizations', '人物、事件、组织')} aria-describedby="construction-entity-types-help" /></label><small id="construction-entity-types-help">{t('Separate types with commas. Only entities in these categories will be used as graph nodes. Leave blank to extract all types.', '用逗号或顿号分隔；图中只保留这些类型的实体。留空则不限类型。')}</small><label className="construction-check"><input type="checkbox" role="switch" checked={textRefineEnabled} onChange={event => setTextRefineEnabled(event.target.checked)} aria-describedby="construction-text-refine-help" />{t('Use Agent to refine the TXT graph', '使用 Agent refine TXT 构图')}</label><small id="construction-text-refine-help">{textRefineEnabled ? t('Agent creates questions from the source text, checks their answers on the graph, and repairs missing facts before publishing.', 'Agent 会从原文提出查询，在图上核对答案，并在发布前修正缺失事实。') : t('The graph is saved after extraction without query-based refinement.', '抽取完成后直接保存图，不进行查询与修正。')}</small>{textRefineEnabled && <label>{t('Validation queries', '验证查询数量')}<input type="number" min={1} max={100} step={1} value={queryCount} onChange={event => setQueryCount(event.target.value)} /></label>}</>}
             {!semanticTextMode && <><label className="construction-check"><input type="checkbox" checked={experienceEnabled} onChange={event => setExperienceEnabled(event.target.checked)} aria-describedby="construction-experience-help" />{t('Reuse domain experience', '复用领域经验')}</label>
             <small id="construction-experience-help">{t('Experience is reused only within graph construction for the same user and domain. New graphs still require validation. When disabled, this build neither reads nor writes experience.', '仅在构图模块内复用同一用户、同一领域的经验。新图仍需验收；关闭后，本次构图不读取或写入经验。')}</small></>}
           </fieldset>
