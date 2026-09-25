@@ -261,6 +261,10 @@ export type ConstructionProgress = {
     chunks_total?: number;
     extracted_nodes?: number;
     extracted_edges?: number;
+    queries_generated?: number;
+    queries_passed?: number;
+    queries_repaired?: number;
+    queries_unresolved?: number;
   };
   events: ConstructionProgressEvent[];
 };
@@ -273,6 +277,8 @@ export type ConstructionBuildOptions = {
   experience_enabled?: boolean;
   delimiter?: string;
   txt_mode?: 'auto' | 'lines' | 'entities';
+  entity_types?: string[];
+  text_refine_enabled?: boolean;
 };
 export type ConstructionOperation =
   | { op: 'collapse_node'; node_id: string; edge_type: string }
