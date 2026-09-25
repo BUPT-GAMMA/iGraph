@@ -76,6 +76,26 @@ describe('graph construction workflow', () => {
     expect(screen.getByText('data.phone')).toBeTruthy();
   });
 
+  it('shows constructed row nodes by type and row number while preserving selection ids', async () => {
+    const rowGraph = { directed: true, nodes: [
+      { id: 'row_first', type: 'aisles', properties: { table: 'aisles', row_index: 0, data: { aisle_id: '1' } } },
+      { id: 'row_second', type: 'products', properties: { table: 'products', row_index: 1, data: { product_id: '2' } } },
+    ], edges: [{ id: 'e1', source: 'row_second', target: 'row_first', type: 'belongs_to', properties: {} }] };
+    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph: rowGraph });
+    mocks.schema.mockRejectedValue(new ApiError(503, 'offline'));
+    await openPanel();
+    const nodeOptions = Array.from((screen.getByLabelText('选择节点') as HTMLSelectElement).options, option => option.textContent);
+    expect(nodeOptions).toContain('aisles · 第 1 行');
+    expect(nodeOptions).toContain('products · 第 2 行');
+    expect(nodeOptions.join(' ')).not.toContain('row_');
+    choose('选择节点', 'row_first');
+    expect(screen.getByText('实例节点 aisles · 第 1 行 的属性')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /调整边方向/ }));
+    const edgeOptions = Array.from((screen.getByLabelText('选择边') as HTMLSelectElement).options, option => option.textContent);
+    expect(edgeOptions.join(' ')).toContain('products · 第 2 行 → aisles · 第 1 行');
+    expect(edgeOptions.join(' ')).not.toContain('row_');
+  });
+
   it('renders the saved graph as a Graph Schema with type-level counts', async () => {
     await openPanel();
     expect(screen.getByText('Graph Schema')).toBeTruthy();
@@ -363,7 +383,7 @@ describe('long-running graph construction', () => {
     mocks.state.mockResolvedValueOnce(first).mockResolvedValue(second);
     const onStateChange = vi.fn();
     await show(vi.fn(), vi.fn(), onStateChange);
-    expect(screen.getByRole('region', { name: '构图 Agent 消息流' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: '构图进度' })).toBeTruthy();
     expect(screen.getByText('正在用源数据答案校验初始图，并测量基线。')).toBeTruthy();
     expect(screen.getByText('已运行 12 秒')).toBeTruthy();
     await tick();
@@ -385,7 +405,7 @@ describe('long-running graph construction', () => {
 
     await show();
 
-    const stream = screen.getByRole('region', { name: '构图 Agent 消息流' });
+    const stream = screen.getByRole('region', { name: '构图进度' });
     expect(stream.textContent).toContain('文本分块 3 / 7');
     expect(stream.textContent).toContain('已识别实体 11');
     expect(stream.textContent).toContain('已识别关系 8');
@@ -460,18 +480,31 @@ describe('long-running graph construction', () => {
       ['healthcare', '医疗'], ['social', '社区'], ['general', '通用'],
     ]);
     expect((screen.getByLabelText('复用领域经验') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('switch', { name: '使用 Agent 优化构图' }) as HTMLInputElement).checked).toBe(false);
     if (count !== 15) fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: String(count) } });
     fireEvent.change(screen.getByLabelText('领域描述（选填）'), { target: { value: '  电商订单履约  ' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
+      mode: 'rules', query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
     });
     expect(saved).toHaveBeenCalledTimes(1);
     expect(saved).toHaveBeenCalledWith(sourceDataset, graph, 3);
     await tick(9000);
     expect(saved).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses Agent optimization only when the user enables the switch', async () => {
+    mocks.build.mockResolvedValue(ready);
+    await show();
+    const agentSwitch = screen.getByRole('switch', { name: '使用 Agent 优化构图' }) as HTMLInputElement;
+    expect(agentSwitch.checked).toBe(false);
+    fireEvent.click(agentSwitch);
+    expect(agentSwitch.checked).toBe(true);
+    expect(screen.getByText('Agent 会优化并验证规则化方法构建的图。')).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(sourceDataset, expect.objectContaining({ mode: 'llm' }));
   });
 
   it('offers TXT delimiter selection and forwards the exact character', async () => {
@@ -492,7 +525,7 @@ describe('long-running graph construction', () => {
     fireEvent.change(select, { target: { value: '|' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true, delimiter: '|',
+      mode: 'rules', query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true, delimiter: '|',
     });
   });
 
@@ -508,7 +541,7 @@ describe('long-running graph construction', () => {
     fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__lines__' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true, txt_mode: 'lines',
+      mode: 'rules', query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true, txt_mode: 'lines',
     });
   });
 
@@ -528,6 +561,7 @@ describe('long-running graph construction', () => {
     expect(screen.queryByLabelText('验证查询数量')).toBeNull();
     expect(screen.queryByLabelText('领域类别')).toBeNull();
     expect(screen.queryByLabelText('复用领域经验')).toBeNull();
+    expect(screen.queryByRole('switch', { name: '使用 Agent 优化构图' })).toBeNull();
     expect(screen.getByLabelText('抽取目标（选填）')).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
 
@@ -546,7 +580,7 @@ describe('long-running graph construction', () => {
     expect(screen.getByText(/关闭后，本次构图不读取或写入经验/).textContent).toContain('新图仍需验收');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
+      mode: 'rules', query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
     });
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });
@@ -566,6 +600,7 @@ describe('long-running graph construction', () => {
     fireEvent.change(screen.getByLabelText('领域描述（选填）'), { target: { value: '门诊业务' } });
     fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: '23' } });
     fireEvent.click(screen.getByLabelText('复用领域经验'));
+    fireEvent.click(screen.getByRole('switch', { name: '使用 Agent 优化构图' }));
     const nextDataset = { ...sourceDataset, dataset_id: 'd2', name: '另一份数据' };
     mocks.state.mockResolvedValue({ ...notBuilt, dataset_id: 'd2' });
     mocks.build.mockResolvedValue({ ...ready, dataset_id: 'd2' });
@@ -573,11 +608,12 @@ describe('long-running graph construction', () => {
     await act(async () => { view.rerender(<GraphConstructionPanel dataset={nextDataset} onClose={vi.fn()} onSaved={vi.fn()} />); });
     expect((screen.getByLabelText('领域类别') as HTMLSelectElement).value).toBe('auto');
     expect((screen.getByLabelText('复用领域经验') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('switch', { name: '使用 Agent 优化构图' }) as HTMLInputElement).checked).toBe(false);
     expect((screen.getByLabelText('领域描述（选填）') as HTMLTextAreaElement).value).toBe('');
     expect((screen.getByLabelText('验证查询数量') as HTMLInputElement).value).toBe('15');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(nextDataset, {
-      query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true,
+      mode: 'rules', query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true,
     });
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });
@@ -600,7 +636,7 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(onStateChange.mock.calls[onStateChange.mock.calls.length - 1]?.[1].status).toBe('building');
     expect((screen.getByRole('button', { name: '正在构图…' }) as HTMLButtonElement).disabled).toBe(true);
-    for (const label of ['验证查询数量', '领域类别', '领域描述（选填）', '复用领域经验']) {
+    for (const label of ['验证查询数量', '领域类别', '领域描述（选填）', '复用领域经验', '使用 Agent 优化构图']) {
       expect(screen.getByLabelText(label).matches(':disabled')).toBe(true);
     }
     expect((screen.getByRole('button', { name: '关闭构图工作台' }) as HTMLButtonElement).disabled).toBe(false);
@@ -611,7 +647,7 @@ describe('long-running graph construction', () => {
     await act(async () => { finishBuild(ready); });
     expect(mocks.build).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true,
+      mode: 'rules', query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true,
     });
     expect(mocks.state).toHaveBeenCalledTimes(1);
     expect(mocks.graph).not.toHaveBeenCalled();

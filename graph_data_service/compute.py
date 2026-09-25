@@ -2297,9 +2297,13 @@ class GraphCompute:
             if not attrs.get("text") and nx_attrs.get("text"):
                 text = str(nx_attrs["text"])
                 attrs["text"] = text if include_full_node_text or len(text) <= 300 else text[:300] + "..."
+            # Constructed row ids are stable graph identities, but the node
+            # type is the useful name to show in the canvas and data list.
+            display_label = (str(attrs.get("type") or node)
+                             if gd.graph_metadata.get("construction_dataset_id") else node)
             nodes.append({
                 "id": node,
-                "label": node,
+                "label": display_label,
                 "in_degree": g.in_degree(node) if g.is_directed() else g.degree(node),
                 "out_degree": g.out_degree(node) if g.is_directed() else 0,
                 "total_degree": g.degree(node),

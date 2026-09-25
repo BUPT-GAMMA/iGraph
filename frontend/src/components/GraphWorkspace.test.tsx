@@ -61,6 +61,15 @@ describe('GraphWorkspace visualization layers', () => {
     expect(screen.queryByRole('region', { name: '节点属性' })).toBeNull();
   });
 
+  it('keeps constructed row identities usable without showing hashes in the node inspector', () => {
+    const node = { id: 'row_abc123', label: 'products', attrs: { type: 'products', properties: { product_id: '1' } } };
+    render(<GraphWorkspace data={{ nodes: [node], edges: [] }} tab="Graph" onTab={vi.fn()}
+      selected={node} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+    expect(screen.getAllByText('products').length).toBeGreaterThan(0);
+    expect(screen.queryByText('row_abc123')).toBeNull();
+    expect(screen.getByRole('button', { name: '复制 ID' })).toBeTruthy();
+  });
+
   it('loads the complete selected-node text instead of keeping the visualization preview', async () => {
     const fullText = `完整正文 ${'内容 '.repeat(160)}`;
     visualizeGraphMock.mockResolvedValue({ nodes: [{ id: '566', attrs: { label: 4, text: fullText } }], edges: [] });
