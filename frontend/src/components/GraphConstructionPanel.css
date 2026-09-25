@@ -28,6 +28,11 @@
 .construction-build-options input:focus, .construction-build-options select:focus, .construction-build-options textarea:focus { outline: none; }
 .construction-build-options .construction-check { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; line-height: 1.5; }
 .construction-build-options .construction-check input { margin: 0; }
+.construction-build-options input[role="switch"] { appearance: none; flex: 0 0 auto; width: 34px; height: 20px; border: 1px solid #94a3b8; border-radius: 999px; background: #94a3b8; cursor: pointer; transition: background .18s ease; }
+.construction-build-options input[role="switch"]::before { content: ''; display: block; width: 14px; height: 14px; margin: 2px; border-radius: 50%; background: #fff; transition: transform .18s ease; }
+.construction-build-options input[role="switch"]:checked { border-color: var(--accent, #2563eb); background: var(--accent, #2563eb); }
+.construction-build-options input[role="switch"]:checked::before { transform: translateX(14px); }
+.construction-build-options input[role="switch"]:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 2px; }
 .construction-build-options .construction-text-disclosure { color: #9a6700; }
 .construction-build-options:disabled { opacity: .6; }
 .construction-rule-heading { margin: 25px 0 12px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
