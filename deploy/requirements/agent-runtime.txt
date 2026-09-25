@@ -8,7 +8,7 @@ httpx==0.28.1
 anyio==4.14.1
 openai==2.44.0
 psycopg[binary]>=3.2,<4
-sqlalchemy>=2.0,<3
+sqlalchemy[asyncio]>=2.0,<3
 pgvector>=0.4,<1
 
 anthropic==1.8.0

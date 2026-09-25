@@ -38,3 +38,19 @@ def test_explicit_node_visualization_returns_complete_text():
 
     assert overview["nodes"][0]["attrs"]["text"] == text[:300] + "..."
     assert detail["nodes"][0]["attrs"]["text"] == text
+
+
+def test_constructed_graph_displays_node_types_without_changing_row_ids():
+    names = {0: "row_abc123", 1: "row_def456"}
+    data = GraphData(
+        num_nodes=2,
+        id2node=names,
+        node2id={name: index for index, name in names.items()},
+        node_type=["products", "products"],
+        graph_metadata={"construction_dataset_id": "instacart"},
+    )
+
+    result = GraphCompute().visualize_subgraph(data.to_networkx(), data)
+
+    assert {node["id"] for node in result["nodes"]} == set(names.values())
+    assert {node["label"] for node in result["nodes"]} == {"products"}
