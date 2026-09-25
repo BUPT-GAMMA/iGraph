@@ -294,6 +294,17 @@ ACTION_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "structural_graph_embedding_classification_infer": structural_graph_embedding_classification_infer,
 }
 
+_ARRAY_ARGUMENTS = frozenset(
+    {
+        "node_features",
+        "edge_index",
+        "labels",
+        "query_edge_index",
+        "graph_labels",
+        "batch",
+    }
+)
+
 
 def _load_cli_value(raw_value: str) -> Any:
     if raw_value.endswith(".npy"):
@@ -325,7 +336,10 @@ def _parse_cli_arguments(arguments: list[str]) -> tuple[str, dict[str, Any]]:
         key = option[2:].replace("-", "_")
         if key in kwargs:
             raise ValueError(f"duplicate argument: {option}")
-        kwargs[key] = _load_cli_value(arguments[index + 1])
+        value = _load_cli_value(arguments[index + 1])
+        if key in _ARRAY_ARGUMENTS and isinstance(value, list):
+            value = np.asarray(value)
+        kwargs[key] = value
         index += 2
 
     try:

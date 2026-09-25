@@ -79,6 +79,25 @@ class ZhizengzengLauncherTests(unittest.TestCase):
         )
         return agent_command, judge_command
 
+    def test_igraph_backend_selects_project_agent_adapter(self) -> None:
+        agent_command, judge_command = self._render_commands(
+            "--agent-backend",
+            "igraph",
+            "--igraph-runtime-root",
+            "/srv/igraph-source",
+            "--agent-model",
+            "gpt-5.6-sol",
+            "--judge-model",
+            "deepseek-v4.1-flash",
+        )
+
+        self.assertTrue(agent_command[1].endswith("igraph_agent_adapter.py"))
+        self.assertNotIn("codex_harness_adapter.py", " ".join(agent_command))
+        self.assertEqual(_option_value(agent_command, "--runtime-root"), "/srv/igraph-source")
+        self.assertTrue(_option_value(agent_command, "--skills-dir").endswith("skills"))
+        self.assertEqual(_option_value(agent_command, "--model"), "gpt-5.6-sol")
+        self.assertEqual(_option_value(judge_command, "--model"), "deepseek-v4.1-flash")
+
     def test_role_models_have_independent_defaults(self) -> None:
         agent_command, judge_command = self._render_commands()
 

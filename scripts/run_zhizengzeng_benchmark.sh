@@ -17,6 +17,7 @@ Required options:
   --skills-dir PATH
 
 Common options:
+  --agent-backend NAME          Agent implementation: codex (default) or igraph.
   --evaluate                    Enable TSA and SR evaluation.
   --replay-file PATH            Reuse saved attempts without invoking the agent.
   --recover-cleanup-failures    Recover only strictly validated cleanup-only failures.
@@ -36,6 +37,10 @@ Common options:
   --questions-root PATH         Or set IGRAPH_QUESTIONS_ROOT.
   --dataset-root PATH           Or set IGRAPH_DATASET_ROOT.
   --harness-root PATH           Or set IGRAPH_CODEX_HARNESS_ROOT.
+  --igraph-runtime-root PATH    Required for --agent-backend igraph; source
+                                checkout containing agent_runtime/agent/igraph.py.
+  --igraph-reasoning-mode NAME  direct (default) or staged.
+  --igraph-planning-mode NAME   auto (default), never, or always.
   --provider-profile PATH       Or set IGRAPH_PROVIDER_PROFILE.
 EOF
 }
@@ -47,7 +52,11 @@ SKILLS_DIR=""
 QUESTIONS_ROOT="${IGRAPH_QUESTIONS_ROOT:-}"
 DATASET_ROOT="${IGRAPH_DATASET_ROOT:-}"
 HARNESS_ROOT="${IGRAPH_CODEX_HARNESS_ROOT:-}"
+IGRAPH_RUNTIME_ROOT="${IGRAPH_AGENT_RUNTIME_ROOT:-}"
 PROVIDER_PROFILE="${IGRAPH_PROVIDER_PROFILE:-}"
+AGENT_BACKEND="codex"
+IGRAPH_REASONING_MODE="direct"
+IGRAPH_PLANNING_MODE="auto"
 MODEL=""
 AGENT_MODEL=""
 JUDGE_MODEL=""
@@ -72,6 +81,7 @@ REUSE_SUCCESSFUL_JUDGE_RESULTS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --agent-backend) AGENT_BACKEND="${2:?missing value for --agent-backend}"; shift 2 ;;
     --output-dir) OUTPUT_DIR="${2:?missing value for --output-dir}"; shift 2 ;;
     --cpuset-cpus) CPUSET_CPUS="${2:?missing value for --cpuset-cpus}"; shift 2 ;;
     --questions-per-type) QUESTIONS_PER_TYPE="${2:?missing value for --questions-per-type}"; shift 2 ;;
@@ -79,6 +89,9 @@ while [[ $# -gt 0 ]]; do
     --questions-root) QUESTIONS_ROOT="${2:?missing value for --questions-root}"; shift 2 ;;
     --dataset-root) DATASET_ROOT="${2:?missing value for --dataset-root}"; shift 2 ;;
     --harness-root) HARNESS_ROOT="${2:?missing value for --harness-root}"; shift 2 ;;
+    --igraph-runtime-root) IGRAPH_RUNTIME_ROOT="${2:?missing value for --igraph-runtime-root}"; shift 2 ;;
+    --igraph-reasoning-mode) IGRAPH_REASONING_MODE="${2:?missing value for --igraph-reasoning-mode}"; shift 2 ;;
+    --igraph-planning-mode) IGRAPH_PLANNING_MODE="${2:?missing value for --igraph-planning-mode}"; shift 2 ;;
     --provider-profile) PROVIDER_PROFILE="${2:?missing value for --provider-profile}"; shift 2 ;;
     --model) MODEL="${2:?missing value for --model}"; shift 2 ;;
     --agent-model) AGENT_MODEL="${2:?missing value for --agent-model}"; shift 2 ;;
@@ -140,11 +153,31 @@ if [[ -n "$ROOTLESS_NETNS_PID" && "${IGRAPH_ROOTLESS_NETNS_ENTERED:-}" != "1" ]]
     "$BASH_COMMAND_PATH" "$0" "${ORIGINAL_ARGUMENTS[@]}"
 fi
 
-if [[ -z "$OUTPUT_DIR" || -z "$CPUSET_CPUS" || -z "$QUESTIONS_PER_TYPE" || -z "$SKILLS_DIR" || -z "$QUESTIONS_ROOT" || -z "$DATASET_ROOT" || -z "$HARNESS_ROOT" || -z "$PROVIDER_PROFILE" ]]; then
+if [[ -z "$OUTPUT_DIR" || -z "$CPUSET_CPUS" || -z "$QUESTIONS_PER_TYPE" || -z "$QUESTIONS_ROOT" || -z "$DATASET_ROOT" || -z "$PROVIDER_PROFILE" ]]; then
   echo "benchmark launch error: required option is missing" >&2
   usage >&2
   exit 2
 fi
+case "$AGENT_BACKEND" in
+  codex)
+    if [[ -z "$SKILLS_DIR" || -z "$HARNESS_ROOT" ]]; then
+      echo "benchmark launch error: codex backend requires --skills-dir and --harness-root" >&2
+      exit 2
+    fi
+    ;;
+  igraph)
+    if [[ -z "$IGRAPH_RUNTIME_ROOT" || -z "$SKILLS_DIR" ]]; then
+      echo "benchmark launch error: igraph backend requires --igraph-runtime-root and --skills-dir" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo "benchmark launch error: --agent-backend must be codex or igraph" >&2
+    exit 2
+    ;;
+esac
+case "$IGRAPH_REASONING_MODE" in direct|staged) ;; *) echo "benchmark launch error: invalid igraph reasoning mode" >&2; exit 2 ;; esac
+case "$IGRAPH_PLANNING_MODE" in never|auto|always) ;; *) echo "benchmark launch error: invalid igraph planning mode" >&2; exit 2 ;; esac
 if [[ ${#DATASETS[@]} -eq 0 ]]; then
   echo "benchmark launch error: at least one dataset is required after --" >&2
   exit 2
@@ -208,19 +241,32 @@ json_argv() {
   "$PYTHON_COMMAND" -c 'import json,sys; print(json.dumps(sys.argv[1:], separators=(",", ":")))' "$@"
 }
 
-AGENT_COMMAND=(
-  "$PYTHON_COMMAND" "$SCRIPT_DIR/codex_harness_adapter.py"
-  --harness-root "$HARNESS_ROOT"
-  --skills-dir "$SKILLS_DIR"
-  --provider-profile "$PROVIDER_PROFILE"
-  --model "$AGENT_MODEL"
-  --image "$IMAGE"
-  --timeout-seconds "$AGENT_TIMEOUT"
-  --container-cpuset-cpus "$CPUSET_CPUS"
-  --container-memory "$CONTAINER_MEMORY"
-)
-if [[ -n "$CONTAINER_CPUS" ]]; then
-  AGENT_COMMAND+=(--container-cpus "$CONTAINER_CPUS")
+if [[ "$AGENT_BACKEND" == "codex" ]]; then
+  AGENT_COMMAND=(
+    "$PYTHON_COMMAND" "$SCRIPT_DIR/codex_harness_adapter.py"
+    --harness-root "$HARNESS_ROOT"
+    --skills-dir "$SKILLS_DIR"
+    --provider-profile "$PROVIDER_PROFILE"
+    --model "$AGENT_MODEL"
+    --image "$IMAGE"
+    --timeout-seconds "$AGENT_TIMEOUT"
+    --container-cpuset-cpus "$CPUSET_CPUS"
+    --container-memory "$CONTAINER_MEMORY"
+  )
+  if [[ -n "$CONTAINER_CPUS" ]]; then
+    AGENT_COMMAND+=(--container-cpus "$CONTAINER_CPUS")
+  fi
+else
+  AGENT_COMMAND=(
+    "$PYTHON_COMMAND" "$SCRIPT_DIR/igraph_agent_adapter.py"
+    --runtime-root "$IGRAPH_RUNTIME_ROOT"
+    --skills-dir "$SKILLS_DIR"
+    --provider-profile "$PROVIDER_PROFILE"
+    --model "$AGENT_MODEL"
+    --reasoning-mode "$IGRAPH_REASONING_MODE"
+    --planning-mode "$IGRAPH_PLANNING_MODE"
+    --tool-timeout-seconds "$AGENT_TIMEOUT"
+  )
 fi
 JUDGE_COMMAND=(
   "$PYTHON_COMMAND" "$SCRIPT_DIR/zhizengzeng_judge_adapter.py"
@@ -269,11 +315,10 @@ fi
 if (( REUSE_SUCCESSFUL_JUDGE_RESULTS == 1 )); then
   RUN_ARGUMENTS+=(--reuse-successful-judge-results)
 fi
-if [[ -z "$REPLAY_FILE" && -n "${DOCKER_HOST:-}" ]]; then
+if [[ -z "$REPLAY_FILE" && "$AGENT_BACKEND" == "codex" && -n "${DOCKER_HOST:-}" ]]; then
   # The benchmark runner starts agents with an explicit environment allowlist.
   # Forward only the variable name; its socket URI never appears in argv/logs.
   RUN_ARGUMENTS+=(--agent-env DOCKER_HOST)
 fi
-
 exec taskset -c "$CPUSET_CPUS" nice -n 10 \
   bash "$RELEASE_ROOT/run_benchmark.sh" "${RUN_ARGUMENTS[@]}"

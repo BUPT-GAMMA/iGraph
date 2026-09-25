@@ -205,6 +205,37 @@ bash scripts/run_zhizengzeng_benchmark.sh \
   --evaluate -- NAG TAG TPG
 ```
 
+包装脚本的默认 backend 仍是 `codex`，以保持已有命令兼容。测试项目自研 iGraph Agent 时必须显式
+选择 `--agent-backend igraph`，否则结果不能标为 iGraph Agent：
+
+```bash
+bash scripts/run_zhizengzeng_benchmark.sh \
+  --agent-backend igraph \
+  --igraph-runtime-root /path/to/official/igraph-main \
+  --skills-dir /path/to/graph_analysis_skills \
+  --output-dir /path/to/output \
+  --cpuset-cpus 0-7,64-71 \
+  --questions-per-type 10 \
+  --agent-model gpt-5.6-sol \
+  --judge-model deepseek-v4.1-flash \
+  --categories insight,prediction \
+  --provider-profile /path/outside/repository/provider-profile.sh \
+  --questions-root /path/to/questions \
+  --dataset-root /path/to/dataset \
+  --evaluate -- cora reddit
+```
+
+该模式直接导入完整源码树中的 `agent_runtime.agent.igraph.IGraph`，不会导入 Codex harness。每个
+attempt 在首次对话前把 Agent 的 MCP client 替换为 attempt-local canonical skill backend；该 backend
+直接执行 `--skills-dir` 中的 `graph_analysis_skills` 脚本，并默认绑定 runner 物化的隔离
+`dataset_path`。六个 structural ML 动作仍通过 runner 的 attempt-scoped broker 执行和记录；
+旧的 label-injection ML 脚本会被 fail closed 拒绝。provider URL/key 只从仓库外 profile 读取，
+不传入工具子进程，adapter stdout 始终只含一条 benchmark JSON。
+
+`gpt-5.6-sol` 需要外部 iGraph runtime 提供对应的模型注册和 Responses API 支持；benchmark
+adapter 不会修改产品 runtime。当前 Responses 路径要求文本工具协议，adapter 会显式设置
+`LLM_TOOL_PROTOCOL=text`。其他模型的传输方式仍由所选 runtime 决定。
+
 ## ML / prediction 数据输入
 
 这两个 category 不直接把 `dataset/<dataset>.pt` 当作题目数据：

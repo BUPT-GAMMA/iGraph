@@ -15,6 +15,7 @@ scripts/benchmark_questions.py
 scripts/benchmark_graph_classification.py
 scripts/build_benchmark_bundle.py
 scripts/codex_harness_adapter.py
+scripts/igraph_agent_adapter.py
 scripts/run_zhizengzeng_benchmark.sh
 scripts/zhizengzeng_config.py
 scripts/zhizengzeng_judge_adapter.py

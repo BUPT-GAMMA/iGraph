@@ -143,6 +143,15 @@ adapter 成功时应在 stdout 输出一个 JSON 对象：
 }
 ```
 
+仓库提供两种显式 adapter backend：`codex_harness_adapter.py` 运行外部 Codex Agent，
+`igraph_agent_adapter.py` 则从 `--igraph-runtime-root` 指定的完整源码树导入项目自身
+`agent_runtime.agent.igraph.IGraph`。独立 benchmark 发布包仍不包含完整产品 runtime；正式运行应
+使用 iGraph main 的源码 checkout。adapter 会在首次 `chat_stream` 之前注入
+`--skills-dir` 中的 attempt-local canonical skill backend，所有模型选择的工具都执行真实
+`graph_analysis_skills` action；不使用产品 Graph Data/MCP 工具冒充 benchmark 路径。backend
+默认为工具绑定 envelope 中的 `dataset_path`，且不向工具子进程传递 provider 凭据。
+只有 Agent 事件流中真实出现的工具请求才写入 `tool_calls`，缺少持久化结果的请求不会被伪造成成功。
+
 也可以直接输出 OpenAI/Codex 风格 JSONL transcript；runner 会完整读取而不是只取最后一行，并按
 `call_id` 配对 `function_call`/`function_call_output`。非零退出、超时、空输出和非法 JSON 都会形成结构化
 失败记录，不会中止其他题目。最终答案必须是严格 JSON，不接受 Markdown fence 或 `NaN/Infinity`。
@@ -388,7 +397,10 @@ python -m unittest \
   tests.test_question_cli \
   tests.test_dataset_routing \
   tests.test_evaluation_modes \
-  tests.test_judge_and_masked_dataset
+  tests.test_judge_and_masked_dataset \
+  tests.test_igraph_agent_adapter \
+  tests.test_igraph_skill_backend \
+  tests.test_zhizengzeng_launcher
 bash run_benchmark.sh questions \
   --questions-root "$IGRAPH_QUESTIONS_ROOT" \
   --dataset-root "$IGRAPH_DATASET_ROOT" \
