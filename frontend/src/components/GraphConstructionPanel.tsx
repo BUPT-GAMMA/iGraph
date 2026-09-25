@@ -48,7 +48,7 @@ function instanceNodeName(node: Record<string, unknown>, t: Translate) {
   const rowIndex = rawProperties(node).row_index;
   return Number.isInteger(rowIndex) && Number(rowIndex) >= 0
     ? t(`${type} · row ${Number(rowIndex) + 1}`, `${type} · 第 ${Number(rowIndex) + 1} 行`)
-    : type;
+    : id;
 }
 function failure(cause: unknown, t: Translate) { return cause instanceof Error ? cause.message : t('The operation failed. Please try again.', '操作失败，请重试'); }
 function operationLabel(operation: ConstructionOperation, t: Translate) {
@@ -337,10 +337,10 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
   const nodes = useMemo(() => graph?.nodes || [], [graph]);
   const edges = useMemo(() => graph?.edges || [], [graph]);
   const nodeById = useMemo(() => new Map(nodes.map(node => [String(node.id), node])), [nodes]);
-  const endpointName = (id: unknown) => {
+  const endpointName = useCallback((id: unknown) => {
     const node = nodeById.get(String(id));
     return node ? instanceNodeName(node, t) : String(id);
-  };
+  }, [nodeById, t]);
   const selectedNode = nodeById.get(nodeIds[0]);
   const activeRule = RULES.find(item => item.id === rule)!;
   const availableProperties = useMemo(() => {
@@ -585,9 +585,9 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
   [rule, edges, nodeIds]);
   const searchText = search.trim().toLowerCase();
   const filteredNodes = useMemo(() => !searchText ? nodes : nodes.filter(node =>
-    `${node.id} ${node.type} ${display(properties(node))}`.toLowerCase().includes(searchText)), [nodes, searchText]);
+    `${node.id} ${node.type} ${instanceNodeName(node, t)} ${display(properties(node))}`.toLowerCase().includes(searchText)), [nodes, searchText, t]);
   const filteredEdges = useMemo(() => !searchText ? selectableEdges : selectableEdges.filter(edge =>
-    `${edge.id} ${edge.source} ${edge.target} ${edge.type}`.toLowerCase().includes(searchText)), [selectableEdges, searchText]);
+    `${edge.id} ${edge.source} ${edge.target} ${edge.type} ${endpointName(edge.source)} ${endpointName(edge.target)}`.toLowerCase().includes(searchText)), [selectableEdges, searchText, endpointName]);
   const inspectedEdges = useMemo(() => {
     if (!edgeIds.length) return [];
     const selectedIds = new Set(edgeIds);

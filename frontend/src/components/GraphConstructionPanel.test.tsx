@@ -88,12 +88,18 @@ describe('graph construction workflow', () => {
     expect(nodeOptions).toContain('aisles · 第 1 行');
     expect(nodeOptions).toContain('products · 第 2 行');
     expect(nodeOptions.join(' ')).not.toContain('row_');
+    choose('查找对象', 'products · 第 2 行');
+    expect(Array.from((screen.getByLabelText('选择节点') as HTMLSelectElement).options, option => option.value)).toEqual(['', 'row_second']);
+    choose('查找对象', '');
     choose('选择节点', 'row_first');
     expect(screen.getByText('实例节点 aisles · 第 1 行 的属性')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /调整边方向/ }));
     const edgeOptions = Array.from((screen.getByLabelText('选择边') as HTMLSelectElement).options, option => option.textContent);
     expect(edgeOptions.join(' ')).toContain('products · 第 2 行 → aisles · 第 1 行');
     expect(edgeOptions.join(' ')).not.toContain('row_');
+    choose('查找对象', 'products · 第 2 行');
+    expect(Array.from((screen.getByLabelText('选择边') as HTMLSelectElement).options, option => option.value)).toEqual(['e1']);
+
   });
 
   it('renders the saved graph as a Graph Schema with type-level counts', async () => {
