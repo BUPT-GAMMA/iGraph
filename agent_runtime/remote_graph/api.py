@@ -88,7 +88,12 @@ def create_remote_graph_router(catalog, controller, executor) -> APIRouter:
         uid = identity(request)
         await controller.owned_session(uid, sid)
         body = await parse(request, SelectionWrite)
-        binding = await controller.call(catalog.select, uid, sid, body.connection_id)
+        revision = None
+        if body.connection_id is not None:
+            form = await controller.call(catalog.selection_form, uid, body.connection_id)
+            await test(uid, form)
+            revision = form.revision
+        binding = await controller.call(catalog.select, uid, sid, body.connection_id, revision=revision)
         return {'remote_graph': binding.model_dump() if binding else None}
 
     return router

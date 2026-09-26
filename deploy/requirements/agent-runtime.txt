@@ -14,3 +14,4 @@ pgvector>=0.4,<1
 anthropic==1.8.0
 google-genai==2.25.0
 cryptography==50.0.1
+neo4j==6.3.0
