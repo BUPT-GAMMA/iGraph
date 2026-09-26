@@ -28,6 +28,16 @@ def _sample_value(value: object, depth: int = 0) -> object:
     return value
 
 
+def _sample_element(element: dict) -> dict:
+    sample = _sample_value(element)
+    # IDs/endpoints and type names are operation arguments, not display text.
+    # Preserve them exactly so a sample can still drive subsequent graph edits.
+    for key in ("id", "source", "target", "type"):
+        if key in element:
+            sample[key] = element[key]
+    return sample
+
+
 def bounded_construction_result(tool_name: str, payload: dict) -> dict:
     """Return a labelled, byte-bounded inspection view without mutating input."""
     if tool_name not in {"get_constructed_graph", "preview_graph_optimization", "commit_graph_optimization"}:
@@ -42,8 +52,8 @@ def bounded_construction_result(tool_name: str, payload: dict) -> dict:
                     if edge.get("source") in sample_ids and edge.get("target") in sample_ids][:40]
     result = {key: _sample_value(value) for key, value in payload.items() if key != "graph"}
     result["graph"] = {"directed": graph.get("directed", True),
-                       "nodes": [_sample_value(node) for node in sample_nodes],
-                       "edges": [_sample_value(edge) for edge in sample_edges]}
+                       "nodes": [_sample_element(node) for node in sample_nodes],
+                       "edges": [_sample_element(edge) for edge in sample_edges]}
     result["inspection"] = {
         "truncated": True, "complete_graph": False, "properties_may_be_truncated": True,
         "node_count": len(nodes), "edge_count": len(edges),

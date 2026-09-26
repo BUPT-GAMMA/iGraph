@@ -447,3 +447,26 @@ def test_requested_upstream_evidence_does_not_mix_in_boundary_root_paths():
     boundary = run(g, "economic_interest", target_id="T")
     assert boundary["evidence"]["path_scope"] == "boundary_roots"
     assert boundary["evidence"]["paths"][0]["nodes"][0] == "U"
+
+
+def test_typed_control_ids_remain_unambiguous_across_the_group_workflow():
+    g = graph([("X", "T", 60)])
+    person = deepcopy(next(node for node in g["nodes"] if node["type"] == "individual_info"))
+    person["id"] = "person-X"
+    person["properties"]["data"].update(IDV_ID="X", IDV_NM="Person X")
+    g["nodes"].append(person)
+    fact = deepcopy(next(node for node in g["nodes"] if node["type"] == "institution_shareholder_relationship"))
+    fact["id"] = "person-owns-company-X"
+    fact["properties"]["data"].update(UUID="X", REL_SHRHLR_CUST_ID="X", REL_SHRHLR_TP_CODE="1")
+    g["nodes"].append(fact)
+    control = run(g, "control_chain", target_id="T")
+    assert control["result"]["ultimate_controller_entity_ids"] == ["P:X"]
+    root = control["result"]["equity_controller_entity_id"]
+    assert root == "P:X"
+    group = run(g, "group_tree", root_id=root)
+    assert group["status"] == "IDENTIFIED_CONTROL_FACTION"
+    pairs = {(edge["source_entity_id"], edge["target_entity_id"]) for edge in group["result"]["tree_edges"]}
+    assert pairs == {("P:X", "I:X"), ("I:X", "I:T")}
+    assert all(a != b for a, b in pairs)
+    assert {(step["controller_entity_id"], step["controlled_entity_id"])
+            for step in control["evidence"]["proof_dag"]} == {("P:X", "I:X"), ("P:X", "I:T")}

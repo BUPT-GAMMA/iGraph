@@ -63,6 +63,8 @@ metadata:
 {"tool":"finance_economic_interest","arguments":{"target_id":"已解析的目标entity_id","root_id":"用户指定或控制工具返回的上游主体ID","display_limit":100,"evidence_top_k":5}}
 ```
 
+控制链衔接集团树或经济权益时，优先传 `equity_controller_entity_id` 或 `ultimate_controller_entity_ids` 中带 `I:`/`P:` 的主体标识。集团树边按 `source_entity_id` 和 `target_entity_id` 对齐成员，控制证明按 `controller_entity_id` 和 `controlled_entity_id` 对齐；不将机构与个人中相同的原始业务 ID 合并，也不据此误画自环。原始业务 ID 仍用于展示。
+
 分别解释三种数值：`requested_interest` 是指定主体对目标的完整累计经济权益；展示路径的 `product` 是该条路径的乘积；最终经济根 ranking 是按输入图边界根累计后的排名。控制链的单链乘积或有限 Top-K 路径之和都不能代替 `requested_interest`，控制根也不必出现在最终经济根排名中。
 
 解释指定主体的路径贡献前，核对 `evidence.path_scope="requested_upstream"`、`requested_root_entity_id` 及路径起终点均对应本次 `root_id → target_id`；未指定主体的 `boundary_roots` 是另一范围。范围缺失或不一致时只报告工具返回的总值，明确该路径不能支持其分解。`root_interests` 及其他经济根的路径不能混入该主体贡献、相加或与 `requested_interest` 求差。展示路径只是有界证据，不自行用总值减 Top-K 合计推算“其余路径贡献”；有 SCC 时，简单路径展示尤其不能与包含循环游走的累计总值求剩余。工具若直接提供同一范围、同一计算口径的贡献分解，才可引用该分解。
