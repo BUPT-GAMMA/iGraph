@@ -150,6 +150,51 @@ Bob | works at | OpenAI
         self.assertEqual(first.graph, second.graph)
         self.assertEqual(first.report["final_graph_sha256"], second.report["final_graph_sha256"])
 
+    def test_selected_entity_types_become_node_types_without_refinement_calls(self):
+        response = "<triples>\nAlice | 人物 | works at | OpenAI | 组织\n</triples>"
+        result, llm, _ = self.build([response], entity_types=["人物", "组织"],
+                                    text_refine_enabled=False)
+        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual({node["type"] for node in result.graph["nodes"]}, {"人物", "组织"})
+        self.assertEqual(result.report["text_refinement"], {"enabled": False})
+        self.assertIn("主体类型", llm.calls[0]["messages"][1]["content"])
+
+    def test_refinement_queries_source_and_repairs_a_missing_fact(self):
+        extraction = "<triples>\nAlice | 人物 | works at | OpenAI | 组织\n</triples>"
+        queries = "<queries>Bob 在哪里工作？ | Bob | 人物 | works at | OpenAI | 组织</queries>"
+        repair = "<triples>\nBob | 人物 | works at | OpenAI | 组织\n</triples>"
+        result, llm, progress = self.build([extraction, queries, repair],
+                                           entity_types=["人物", "组织"],
+                                           text_refine_enabled=True, query_count=1)
+        self.assertEqual(len(llm.calls), 3)
+        self.assertEqual(len(result.graph["edges"]), 2)
+        self.assertEqual(result.report["text_refinement"]["queries_repaired"], 1)
+        self.assertEqual(result.report["query_backend"], "semantic_triple_lookup")
+        self.assertEqual(progress["metrics"]["queries_repaired"], 1)
+        self.assertNotIn("Bob 在哪里工作", json.dumps(result.report, ensure_ascii=False))
+
+    def test_refinement_does_not_publish_an_unresolved_query(self):
+        extraction = "<triples>\nAlice | 人物 | works at | OpenAI | 组织\n</triples>"
+        queries = "<queries>Bob 在哪里工作？ | Bob | 人物 | works at | OpenAI | 组织</queries>"
+        llm = SemanticTextLLM([extraction, queries, "<triples>无实体</triples>"])
+        with self.assertRaises(ConstructionFailed) as caught:
+            TabularConstructionSubAgent(llm_factory=lambda _: llm).run(
+                self.path, self.options(entity_types=["人物", "组织"],
+                                        text_refine_enabled=True, query_count=1))
+        self.assertEqual(caught.exception.code, "text_refine_unresolved")
+        self.assertNotIn("final_graph_sha256", caught.exception.report)
+
+    def test_refinement_retries_an_ungrounded_query_before_publishing(self):
+        extraction = "<triples>\nAlice | 人物 | works at | OpenAI | 组织\n</triples>"
+        invalid = "<queries>谁在 OpenAI 工作？ | Invented | 人物 | works at | OpenAI | 组织</queries>"
+        valid = "<queries>Alice 在哪里工作？ | Alice | 人物 | works at | OpenAI | 组织</queries>"
+        result, llm, _ = self.build([extraction, invalid, valid],
+                                    entity_types=["人物", "组织"], text_refine_enabled=True,
+                                    query_count=1)
+        self.assertEqual(len(llm.calls), 3)
+        self.assertEqual(result.report["text_refinement"]["queries_discarded"], 1)
+        self.assertEqual(result.report["text_refinement"]["queries_passed"], 1)
+
     def test_rules_mode_rejects_entity_extraction_before_creating_an_llm(self):
         factory_calls = []
 
