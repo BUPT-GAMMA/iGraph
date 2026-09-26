@@ -285,6 +285,8 @@ Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
 
 会话可同时保留本地图和远程 Neo4j 连接。输入区或数据集面板中的“远程数据库”用于新建、测试、保存和选择连接；密码不会回显，编辑时留空保留原凭据。远程工具只读，查询卡片显示来源版本、已读取行数和两种截断状态。远程报告通过聊天或工作区交付，不复用会补入本地图统计的报告工具。
 
+远程查询依赖既有运行控制来保存可信连接快照：本地部署需在各服务共享 `.env` 设置 `IGRAPH_RUN_CANCEL_ENABLED=true`，按 `docs/RUN_CANCELLATION.md` 迁移后重启相关服务，并核实 `/api/capabilities` 的 `run_cancel_v1` 为 true。
+
 Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置独立的 Fernet 凭据密钥和明确允许的目标主机/CIDR；默认拒绝网络目标。密钥缺失不影响普通聊天，不能保存或解析远程凭据。密钥更换后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；数据库必须提供可核验的只读身份，Community 可写账号不满足要求。现有 `X-User-ID` 登录边界尚待认证加固或可信网关证明，见[交接记录](docs/testing/intelligent-graph-qa-handoff.md)。
 
 离线回归：
