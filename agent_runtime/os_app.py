@@ -51,6 +51,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         set_cancellation_manager(manager)
         controller = ExecutionController(db, store, manager)
         controller.model_catalog = catalog
+        controller.remote_graph_catalog = remote_catalog
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -101,7 +102,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         id="igraph-agent-os",
         name="iGraph Agent Runtime",
         description="AgentOS runtime for iGraph sessions, memory, learning and skills",
-        agents=[create_igraph_factory(settings, db, controller)],
+        agents=[create_igraph_factory(settings, db, controller, remote_executor=remote_executor)],
         db=db,
         base_app=base_app,
         on_route_conflict="preserve_agentos",
@@ -181,6 +182,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
                     if row['state']['cancel_status'] != 'none':
                         raise ControlError('RUN_CANCELLED')
                     snapshot = row['state'].get('model_snapshot')
+                    request.state.igraph_remote_graph_binding = row['state'].get('remote_graph_binding')
                     if snapshot:
                         request.state.igraph_model_snapshot = snapshot
                         request.state.igraph_model_config = await asyncio.to_thread(catalog.resolve, uid, snapshot)
