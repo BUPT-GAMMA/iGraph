@@ -1,0 +1,53 @@
+import { readFileSync } from 'node:fs';
+import { test, expect } from '@playwright/test';
+
+function required(name: string) {
+  const value = process.env[name];
+  if (!value) throw new Error(`Live acceptance requires ${name}`);
+  return value;
+}
+
+test('real connection form, refreshed selection, model query evidence and disconnect', async ({ page, request }, testInfo) => {
+  const uid = required('IGRAPH_E2E_USER_ID');
+  expect(uid.startsWith('remote-graph-test-')).toBeTruthy();
+  const manifest = JSON.parse(readFileSync(required('IGRAPH_TEST_CORA_MANIFEST'), 'utf8'));
+  const headers: Record<string, string> = { 'X-User-ID': uid };
+  if (process.env.IGRAPH_E2E_AUTHORIZATION) headers.Authorization = process.env.IGRAPH_E2E_AUTHORIZATION;
+  await page.setExtraHTTPHeaders(headers);
+  await page.addInitScript(id => { localStorage.setItem('igraph_user_id', id); localStorage.setItem('igraph-language', 'en'); }, uid);
+  const created = await request.post('/api/sessions', { headers, data: { model: required('IGRAPH_TEST_MODEL_ID'), initial_message_preview: 'Remote graph browser acceptance' } });
+  expect(created.ok()).toBeTruthy();
+  const session = await created.json();
+  const name = `Cora browser ${Date.now()}`;
+  await page.goto(`/?session=${encodeURIComponent(session.session_id)}`);
+  await page.getByRole('button', { name: 'Remote databases', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill(name);
+  await page.getByLabel('URI', { exact: true }).fill(required('IGRAPH_TEST_NEO4J_URI'));
+  await page.getByLabel('Database', { exact: true }).fill(required('IGRAPH_TEST_NEO4J_DATABASE'));
+  await page.getByLabel('Username', { exact: true }).fill(required('IGRAPH_TEST_NEO4J_READER_USER'));
+  await page.getByLabel('Password', { exact: true }).fill(required('IGRAPH_TEST_NEO4J_READER_PASSWORD'));
+  await page.getByRole('button', { name: 'Test connection', exact: true }).click();
+  await expect(page.getByText('Read-only connection verified. Not saved.')).toBeVisible({ timeout: 40_000 });
+  const beforeSave = await request.get('/api/remote-graphs', { headers });
+  expect((await beforeSave.json()).connections.some((c: { name: string }) => c.name === name)).toBeFalsy();
+  await page.getByRole('button', { name: 'Save connection', exact: true }).click();
+  await page.getByRole('button', { name: `Use ${name}`, exact: true }).click({ timeout: 40_000 });
+  await expect(page.getByText('Selected', { exact: true })).toBeVisible({ timeout: 40_000 });
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.reload();
+  await expect(page.getByText(`Remote: ${name} · ${required('IGRAPH_TEST_NEO4J_DATABASE')}`, { exact: true })).toBeVisible();
+  await page.locator('textarea').fill('请实际查询选中的远程数据库总节点数，并报告结果和来源。');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  const evidence = page.getByRole('region', { name: 'Remote query evidence' });
+  await expect(evidence.first()).toBeVisible({ timeout: 180_000 });
+  await expect(evidence.filter({ hasText: String(manifest.node_count) }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remote databases', exact: true })).toBeEnabled({ timeout: 180_000 });
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'Remote query evidence' }).filter({ hasText: String(manifest.node_count) }).first()).toBeVisible();
+  await testInfo.attach('session', { body: JSON.stringify({ session_id: session.session_id, connection_name: name, expected_node_count: manifest.node_count }), contentType: 'application/json' });
+  await page.getByRole('button', { name: 'Remote databases', exact: true }).click();
+  await page.getByRole('button', { name: 'Disconnect from conversation', exact: true }).click();
+  await expect(page.getByText('Selected', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: `Delete ${name}`, exact: true }).click();
+  await expect(page.getByRole('button', { name: `Use ${name}`, exact: true })).toHaveCount(0);
+});
