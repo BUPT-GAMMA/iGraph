@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import an explicitly trusted Cora file into a dedicated Neo4j database.
+"""Import a restricted-load Cora file into a dedicated Neo4j database.
 
 Never called by the upload API. Credentials are accepted only through environment.
 """
@@ -92,21 +92,36 @@ def import_graph(driver, database, nodes, edges, source_hash, batch_size=500):
             tx.commit()
 
 
+def load_cora(path):
+    """Restricted PyTorch loader; never fall back to arbitrary pickle execution.
+
+    Only the reviewed data containers used by Cora are allowed. Unknown globals
+    fail closed. PyG Data/Storage __setstate__ only restore their data mappings.
+    """
+    import numpy as np
+    import torch
+    from numpy.core.multiarray import _reconstruct
+    from torch_geometric.data.data import Data, DataEdgeAttr, DataTensorAttr
+    from torch_geometric.data.storage import GlobalStorage
+    allowed = [Data, DataEdgeAttr, DataTensorAttr, GlobalStorage, np.ndarray, np.dtype,
+               _reconstruct, (_reconstruct, 'numpy.core.multiarray._reconstruct')]
+    allowed.extend(type(np.dtype(dtype)) for dtype in ('int64', 'float64', 'float32', 'O', 'str'))
+    with torch.serialization.safe_globals(allowed):
+        return torch.load(path, map_location='cpu', weights_only=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', required=True, type=Path)
     parser.add_argument('--manifest', required=True, type=Path)
-    parser.add_argument('--trusted-input', action='store_true', help='Confirm the file provenance permits pickle deserialization')
+    parser.add_argument('--trusted-input', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if not args.trusted_input:
-        parser.error('Confirm input provenance and explicitly pass --trusted-input')
     required = ['URI', 'DATABASE', 'USER', 'PASSWORD']
     if any(not os.environ.get('IGRAPH_TEST_NEO4J_' + name) for name in required):
         parser.error('Set IGRAPH_TEST_NEO4J_URI/DATABASE/USER/PASSWORD in the environment')
-    import torch
     from neo4j import GraphDatabase
     source_hash = hashlib.sha256(args.input.read_bytes()).hexdigest()
-    graph = torch.load(args.input, map_location='cpu', weights_only=False)
+    graph = load_cora(args.input)
     nodes, edges, manifest = convert_cora(graph)
     manifest['source_sha256'] = source_hash
     with GraphDatabase.driver(os.environ['IGRAPH_TEST_NEO4J_URI'], auth=(os.environ['IGRAPH_TEST_NEO4J_USER'], os.environ['IGRAPH_TEST_NEO4J_PASSWORD'])) as driver:

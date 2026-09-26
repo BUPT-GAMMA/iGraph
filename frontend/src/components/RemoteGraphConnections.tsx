@@ -50,7 +50,11 @@ export function RemoteGraphConnections({ connections, selectedId, onSelect, onCl
       ] as const).map(([field, label]) => <label key={field}>{label}<input required={field !== 'password' || !form.connection_id} disabled={disabled} type={field === 'password' ? 'password' : 'text'} autoComplete={field === 'password' ? 'new-password' : 'off'} value={form[field] || ''} onChange={event => { setForm(current => ({ ...current, [field]: event.target.value })); setNotice(''); }} /></label>)}
       {form.connection_id && <small>{t('Leave the password blank to keep the saved credential.', '密码留空表示保留已存凭据。')}</small>}
       <div className="remote-actions">
-        <button type="button" disabled={disabled} onClick={() => void perform(async () => { const result = await testRemoteGraph(form); if (!result.success) throw new Error('test failed'); setNotice(t('Read-only connection verified. Not saved.', '只读连接验证成功，尚未保存。')); })}>{t('Test connection', '测试连接')}</button>
+        <button type="button" disabled={disabled} onClick={() => void perform(async () => { const result = await testRemoteGraph(form); if (!result.success) throw new Error('test failed'); setNotice(result.database_read_only === 'verified_read_only'
+          ? t('Connection usable. Database read-only permissions verified. Not saved.', '连接可用；已通过权限元数据核验数据库只读权限。尚未保存。')
+          : result.database_read_only === 'not_read_only'
+            ? t('Connection usable. This account has write or administrative permissions; queries remain restricted by the application. Not saved.', '连接可用；账号具有写入或管理权限，应用仍限制为查询。尚未保存。')
+            : t('Connection usable. Database read-only permissions are unknown; queries remain restricted by the application. Not saved.', '连接可用；数据库只读权限未验证，应用仍限制为查询。尚未保存。')); })}>{t('Test connection', '测试连接')}</button>
         <button type="submit" disabled={disabled}>{t('Save connection', '保存连接')}</button>
         {form.connection_id && <button type="button" disabled={disabled} onClick={() => setForm(blank())}>{t('New connection', '新建连接')}</button>}
       </div>

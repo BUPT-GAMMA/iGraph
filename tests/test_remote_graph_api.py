@@ -43,7 +43,7 @@ def api(tmp_path, monkeypatch):
             # Resolve edited credentials through the production persistence boundary.
             resolved = catalog.resolve_write(uid, body)
             assert resolved.password.get_secret_value() == 'fixture-password'
-            return dict(success=True, readable=True, read_only=True, database=resolved.public.database)
+            return dict(success=True, connection_usable=True, database_read_only='unknown', database=resolved.public.database)
     executor = Executor()
     app = FastAPI()
     @app.exception_handler(ControlError)
@@ -74,18 +74,18 @@ def test_service_auth_and_owner_isolation(api):
         json={'connection_id': item['connection_id']}).status_code == 404
 
 
-def test_test_does_not_save_and_save_requires_verified_readonly(api):
+def test_test_does_not_save_and_save_requires_usable_connection(api):
     result = api.client.post('/internal/remote-graphs/test', json=FORM)
-    assert result.json() == dict(success=True, readable=True, read_only=True, database='neo4j')
+    assert result.json() == dict(success=True, connection_usable=True, database_read_only='unknown', database='neo4j')
     assert api.catalog.list('alice') == []
-    api.executor.error = 'REMOTE_GRAPH_READ_ONLY_REQUIRED'
+    api.executor.error = 'REMOTE_GRAPH_AUTH_FAILED'
     assert api.client.post('/internal/remote-graphs', json=FORM).status_code == 422
     assert api.catalog.list('alice') == []
 
 
-def test_select_rechecks_readonly_access_before_activating(api):
+def test_select_rechecks_connection_access_before_activating(api):
     item = create(api)
-    api.executor.error = 'REMOTE_GRAPH_READ_ONLY_REQUIRED'
+    api.executor.error = 'REMOTE_GRAPH_AUTH_FAILED'
     response = api.client.put('/internal/sessions/alice-session/remote-graph', json={'connection_id': item['connection_id']})
     assert response.status_code == 422
     assert api.client.get('/internal/sessions/alice-session/remote-graph').json()['remote_graph'] is None

@@ -10,7 +10,7 @@ export function remoteGraphError(cause: unknown): string {
     REMOTE_GRAPH_INVALID_CONFIG: tr('Check the connection fields and allowed server addresses.', '请检查连接配置及服务端允许的地址范围'),
     REMOTE_GRAPH_UNREACHABLE: tr('Could not reach the database.', '无法连接数据库'),
     REMOTE_GRAPH_AUTH_FAILED: tr('Authentication failed. Check the credentials.', '认证失败，请检查凭据'),
-    REMOTE_GRAPH_READ_ONLY_REQUIRED: tr('A database-enforced read-only identity is required.', '需要数据库端确认的只读身份'),
+    REMOTE_GRAPH_ACCESS_DENIED: tr('The database denied access to this operation.', '数据库拒绝访问此操作'),
     REMOTE_GRAPH_QUERY_REJECTED: tr('This query is not permitted.', '该查询不符合执行约束'),
     REMOTE_GRAPH_QUERY_ERROR: tr('Query failed. Check its syntax.', '查询失败，请检查语法'),
     REMOTE_GRAPH_TIMEOUT: tr('Query timed out. Reduce its scope.', '查询超时，请缩小范围'),

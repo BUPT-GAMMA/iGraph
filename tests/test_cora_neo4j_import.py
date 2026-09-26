@@ -53,12 +53,32 @@ def test_preserves_string_labels_and_rejects_nonfinite_features():
         convert_cora(graph)
 
 
-def test_loading_requires_explicit_trusted_file_authorization(tmp_path, monkeypatch):
+def test_loading_rejects_pickle_code_even_with_legacy_trust_flag(tmp_path, monkeypatch):
+    import pickle
     from scripts.import_cora_neo4j import main
-    path = tmp_path / 'untrusted.pt'; path.write_bytes(b'pickle')
-    monkeypatch.setattr(torch, 'load', lambda *a, **k: pytest.fail('must not deserialize'))
-    with pytest.raises(SystemExit):
-        main(['--input', str(path), '--manifest', str(tmp_path / 'manifest.json')])
+    marker = tmp_path / 'executed'
+    class Payload:
+        def __reduce__(self):
+            return eval, (f"__import__('pathlib').Path({str(marker)!r}).write_text('bad')",)
+    path = tmp_path / 'untrusted.pt'
+    torch.save(Payload(), path)
+    for name in ('URI', 'DATABASE', 'USER', 'PASSWORD'):
+        monkeypatch.setenv('IGRAPH_TEST_NEO4J_' + name, 'fixture')
+    with pytest.raises(pickle.UnpicklingError):
+        main(['--input', str(path), '--manifest', str(tmp_path / 'manifest.json'), '--trusted-input'])
+    assert not marker.exists()
+
+
+def test_restricted_loader_accepts_pyg_tensors_and_numpy_arrays(tmp_path):
+    import numpy as np
+    from torch_geometric.data import Data
+    from scripts.import_cora_neo4j import load_cora
+    graph = Data(x=torch.ones(2, 3), edge_index=torch.tensor([[0, 1], [1, 0]]), y=torch.tensor([1, 2]))
+    graph.title = np.array(['first', 'second'], dtype=object)
+    path = tmp_path / 'graph.pt'; torch.save(graph, path)
+    nodes, edges, manifest = __import__('scripts.import_cora_neo4j', fromlist=['convert_cora']).convert_cora(load_cora(path))
+    assert manifest['node_count'] == 2 and manifest['edge_count'] == 1
+    assert nodes[1]['title'] == 'second'
 
 
 def test_import_refuses_existing_incompatible_data_before_any_write():
