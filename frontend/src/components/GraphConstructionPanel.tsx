@@ -464,8 +464,8 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       setError(t('The number of validation queries must be an integer from 1 to 100.', '验证查询数量必须是 1 到 100 之间的整数。')); return;
     }
     const selectedEntityTypes = [...new Set(entityTypes.split(/[,，、;；\n]+/).map(value => value.trim()).filter(Boolean))];
-    if (semanticTextMode && (selectedEntityTypes.length > 12 || selectedEntityTypes.some(value => value.length > 30 || /[|<>\r]/.test(value)))) {
-      setError(t('Enter up to 12 entity types, each no longer than 30 characters and without |, < or >.', '最多填写 12 种实体类型，每种不超过 30 字，且不能包含 |、< 或 >。')); return;
+    if (semanticTextMode && (selectedEntityTypes.length > 12 || selectedEntityTypes.some(value => value.length > 30 || /[|｜<>\r]/.test(value)))) {
+      setError(t('Enter up to 12 entity types, each no longer than 30 characters and without |, ｜, < or >.', '最多填写 12 种实体类型，每种不超过 30 字，且不能包含 |、｜、< 或 >。')); return;
     }
     const version = lifecycle.current;
     const attempt = ++buildAttempt.current;

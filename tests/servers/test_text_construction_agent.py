@@ -159,6 +159,55 @@ Bob | works at | OpenAI
         self.assertEqual(result.report["text_refinement"], {"enabled": False})
         self.assertIn("主体类型", llm.calls[0]["messages"][1]["content"])
 
+    def test_typed_homonyms_keep_distinct_nodes_and_relations(self):
+        self.path.write_text(
+            "Washington, the person, is named after George. "
+            "Washington, the city, is named after George.", encoding="utf-8")
+        response = (
+            "<triples>\nWashington | 人物 | named after | George | 人物\n"
+            "Washington | 地点 | named after | George | 人物\n"
+            "Washington | 人物 | named after | George | 人物\n</triples>")
+        result, _, progress = self.build([response], entity_types=["人物", "地点"])
+        self.assertEqual(result.report["final_size"], {"nodes": 3, "edges": 2})
+        self.assertEqual({node["type"] for node in result.graph["nodes"]
+                          if node["properties"]["data"]["name"] == "Washington"}, {"人物", "地点"})
+        self.assertEqual(sorted(edge["properties"]["mentions"] for edge in result.graph["edges"]), [1, 2])
+        self.assertEqual(progress["metrics"]["extracted_nodes"], 3)
+        self.assertEqual(progress["metrics"]["extracted_edges"], 2)
+        self.assertEqual(result.report["semantic_extraction"]["raw_triple_count"], 3)
+
+    def test_refinement_can_add_a_fact_for_a_different_type_of_the_same_name(self):
+        self.path.write_text(
+            "Washington, the person, is named after George. "
+            "Washington, the city, is named after George.", encoding="utf-8")
+        extraction = "<triples>Washington | 人物 | named after | George | 人物</triples>"
+        query = "<queries>这座城市以谁命名？ | Washington | 地点 | named after | George | 人物</queries>"
+        repair = "<triples>Washington | 地点 | named after | George | 人物</triples>"
+        result, _, _ = self.build([extraction, query, repair], entity_types=["人物", "地点"],
+                                   text_refine_enabled=True, query_count=1)
+        self.assertEqual(result.report["final_size"], {"nodes": 3, "edges": 2})
+        self.assertEqual(result.report["text_refinement"]["queries_repaired"], 1)
+        self.assertEqual(len({edge["id"] for edge in result.graph["edges"]}), 2)
+
+    def test_typed_mixed_empty_declaration_is_retried_without_losing_facts(self):
+        valid = "<triples>\nAlice | 人物 | works at | OpenAI | 组织\n</triples>"
+        for response in (valid.replace("</triples>", "无实体\n</triples>"),
+                         valid.replace("<triples>", "<triples>无实体\n")):
+            with self.subTest(response=response):
+                result, llm, _ = self.build([response, valid], entity_types=["人物", "组织"])
+                self.assertEqual(len(llm.calls), 2)
+                self.assertEqual(result.report["final_size"], {"nodes": 2, "edges": 1})
+
+    def test_refinement_preserves_the_extraction_focus_in_queries_and_repairs(self):
+        focus = "只抽取雇佣关系，忽略人物之间的爱好和亲属关系。"
+        extraction = "<triples>Alice | 人物 | works at | OpenAI | 组织</triples>"
+        query = "<queries>Bob 在哪里工作？ | Bob | 人物 | works at | OpenAI | 组织</queries>"
+        repair = "<triples>Bob | 人物 | works at | OpenAI | 组织</triples>"
+        _, llm, _ = self.build([extraction, query, repair], domain=focus,
+                               entity_types=["人物", "组织"], text_refine_enabled=True, query_count=1)
+        for call in llm.calls:
+            self.assertIn(focus, call["messages"][1]["content"])
+
     def test_refinement_queries_source_and_repairs_a_missing_fact(self):
         extraction = "<triples>\nAlice | 人物 | works at | OpenAI | 组织\n</triples>"
         queries = "<queries>Bob 在哪里工作？ | Bob | 人物 | works at | OpenAI | 组织</queries>"
@@ -194,6 +243,37 @@ Bob | works at | OpenAI
         self.assertEqual(len(llm.calls), 3)
         self.assertEqual(result.report["text_refinement"]["queries_discarded"], 1)
         self.assertEqual(result.report["text_refinement"]["queries_passed"], 1)
+
+    def test_refinement_without_type_filter_uses_the_existing_untyped_protocol(self):
+        extraction = "<triples>Alice | works at | OpenAI</triples>"
+        query = "<queries>Bob 在哪里工作？ | Bob | Entity | works at | OpenAI | Entity</queries>"
+        repair = "<triples>Bob | works at | OpenAI</triples>"
+        result, llm, _ = self.build([extraction, query, repair],
+                                    text_refine_enabled=True, query_count=1)
+        self.assertEqual(result.report["final_size"], {"nodes": 3, "edges": 2})
+        self.assertEqual({node["type"] for node in result.graph["nodes"]}, {"Entity"})
+        self.assertEqual(result.report["text_refinement"]["queries_repaired"], 1)
+        self.assertEqual(len(llm.calls), 3)
+
+    def test_refinement_shares_the_extraction_call_budget_and_does_not_publish_partial_work(self):
+        extraction = "<triples>Alice | works at | OpenAI</triples>"
+        query = "<queries>Bob 在哪里工作？ | Bob | Entity | works at | OpenAI | Entity</queries>"
+        llm = SemanticTextLLM([extraction, query])
+        with self.assertRaises(ConstructionFailed) as caught:
+            TabularConstructionSubAgent(llm_factory=lambda _: llm).run(
+                self.path, self.options(text_refine_enabled=True, query_count=1, text_max_calls=2))
+        self.assertEqual(caught.exception.code, "text_extraction_call_limit_exceeded")
+        self.assertEqual(len(llm.calls), 2)
+        self.assertNotIn("final_graph_sha256", caught.exception.report)
+
+    def test_entity_categories_cannot_contain_protocol_delimiters(self):
+        for category in ("人|物", "人｜物"):
+            with self.subTest(category=category):
+                factory = unittest.mock.Mock()
+                with self.assertRaises(ConstructionFailed):
+                    TabularConstructionSubAgent(llm_factory=factory).run(
+                        self.path, self.options(entity_types=[category]))
+                factory.assert_not_called()
 
     def test_rules_mode_rejects_entity_extraction_before_creating_an_llm(self):
         factory_calls = []
