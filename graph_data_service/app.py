@@ -44,6 +44,7 @@ from graph_data_service.codec import (
 )
 import concurrent.futures
 from graph_data_service.compute import GraphCompute, NX_TOOL_NAMES, run_nx_tool
+from graph_engine.finance_catalog import FINANCE_TOOL_NAMES
 from graph_data_service.embedding import default_provider
 from graph_data_service.graph_data import GraphData
 from graph_data_service.graph_ml import GraphMLModule
@@ -3389,6 +3390,10 @@ class GraphDataService:
 
     def _dispatch_graph_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
         """图数据/图计算工具分发。"""
+        if tool_name in FINANCE_TOOL_NAMES:
+            session = self.get_required(session_id, user_id=user_id)
+            result = self._compute.finance_analysis(session.get_graph(), tool_name, arguments)
+            return {**result, "graph_version": session.graph_version}
         if tool_name == "load_graph":
             edge_text = _required_str(arguments, "edge_text")
             append = _optional_bool(arguments, "append", False)
@@ -4512,6 +4517,10 @@ class GraphDataService:
             if scope_meta and isinstance(result, dict):
                 result.update(scope_meta)
             return result
+        if tool_name in FINANCE_TOOL_NAMES:
+            return await self._run_with_compute_limits(
+                user_id, lambda: run_sync(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id),
+            )
         return await run_sync(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id)
 
 

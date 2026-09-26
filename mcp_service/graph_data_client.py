@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 import httpx
 from execution_protocol import execution_headers, service_headers
 from mcp_service.construction_tools import CONSTRUCTION_TOOL_NAMES, construction_request, construction_source_type
+from mcp_service.bounded_results import bounded_construction_result
 
 
 def _env_float(name: str, default: float) -> float:
@@ -183,8 +184,9 @@ class GraphDataClient:
         try:
             # A commit/load may already have reached the engine when a response
             # fails. Do not blindly replay persistent or session mutations.
-            return await self._request(method, path, body, user_id=user_id, run_id=run_id,
-                                       retry_errors=tool_name not in {"commit_graph_optimization", "load_constructed_graph"})
+            result = await self._request(method, path, body, user_id=user_id, run_id=run_id,
+                                         retry_errors=tool_name not in {"commit_graph_optimization", "load_constructed_graph"})
+            return bounded_construction_result(tool_name, result)
         finally:
             execution_headers.reset(token)
 
