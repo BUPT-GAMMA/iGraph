@@ -1,0 +1,16 @@
+.remote-graph-drawer { padding: 24px; overflow-y: auto; }
+.remote-graph-drawer > p { color: var(--text-secondary, #666); }
+.remote-connection-list { display: grid; gap: 12px; margin: 16px 0; }
+.remote-connection-row { padding: 12px; border: 1px solid var(--border, #ddd); border-radius: 8px; }
+.remote-connection-row small, .remote-query-result small { display: block; overflow-wrap: anywhere; color: var(--text-secondary, #666); }
+.remote-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.remote-graph-drawer button { padding: 6px 10px; cursor: pointer; }
+.remote-graph-drawer button:disabled { opacity: .5; cursor: default; }
+.remote-connection-form { display: grid; gap: 12px; margin-top: 24px; }
+.remote-connection-form label { display: grid; gap: 4px; }
+.remote-connection-form input { padding: 9px; border: 1px solid var(--border, #ccc); border-radius: 6px; width: 100%; }
+.remote-graph-drawer [role=alert], .remote-query-result [role=alert] { color: #a43229; }
+.remote-query-result { border: 1px solid var(--border, #ddd); border-radius: 8px; padding: 12px; margin: 10px 0; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.remote-query-table { overflow-x: auto; max-height: 320px; }
+.remote-query-table th, .remote-query-table td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border, #eee); max-width: 420px; overflow-wrap: anywhere; }
+.remote-source-indicator { font-size: 12px; padding: 6px 14px; color: var(--text-secondary, #666); }

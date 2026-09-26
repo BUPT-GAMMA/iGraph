@@ -22,6 +22,7 @@ type Props = {
   onLoadConstructed?: () => void;
   onDatasetUpdated?: (dataset: Dataset) => void;
   onClose: () => void;
+  onRemoteGraph?: () => void;
 };
 
 function datasetSummary(dataset: Dataset, language: Language, t: Translate) {
@@ -59,7 +60,7 @@ function fileSize(size: number) {
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`;
 }
 
-export function DatasetPanel({ datasets, serverDatasets = [], projectName, activeDatasetId, busy, onSelect, onUpload, onUseServer, onRename, onDelete, onConstruct, onLoadConstructed, onDatasetUpdated, onClose }: Props) {
+export function DatasetPanel({ datasets, serverDatasets = [], projectName, activeDatasetId, busy, onSelect, onUpload, onUseServer, onRename, onDelete, onConstruct, onLoadConstructed, onDatasetUpdated, onClose, onRemoteGraph }: Props) {
   const { language, t } = useI18n();
   const title = projectName ? t('Project datasets', '项目数据集') : t('Personal datasets', '个人数据集');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -68,6 +69,7 @@ export function DatasetPanel({ datasets, serverDatasets = [], projectName, activ
   return <DrawerShell ariaLabel={title} className="dataset-drawer" onClose={onClose}>{requestClose => <>
       <div className="drawer-head"><div><strong>{title}</strong>{projectName && <span>{projectName}</span>}</div><button className="plain-icon" onClick={requestClose} aria-label={t('Close', '关闭')} title={t('Close', '关闭')}><Icon name="close" size={17} /></button></div>
       <div className="dataset-drawer-actions">
+        {onRemoteGraph && <button className="secondary-command" onClick={onRemoteGraph}>{t("Remote databases", "远程数据库")}</button>}
         <input ref={inputRef} type="file" hidden accept=".sql,.txt,.csv,.tsv,.edgelist,.dat,.json,.pt,.npz" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
         <button className="primary-command" onClick={() => inputRef.current?.click()} disabled={busy}><Icon name="upload" size={15} /> {t('Add dataset', '添加数据集')}</button>
         {onLoadConstructed && <button className="secondary-command" disabled={busy} onClick={onLoadConstructed}><Icon name="graph" size={15} />{t('Load constructed graph', '加载已构图数据')}</button>}
