@@ -594,6 +594,19 @@ describe('long-running graph construction', () => {
     });
   });
 
+  it.each(['人物|组织', '人物｜组织'])('rejects protocol delimiters in TXT entity categories: %s', async (value) => {
+    const txtDataset: Dataset = { ...sourceDataset, original_filename: 'story.txt', file_type: 'txt' };
+    mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
+    await act(async () => {
+      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+    });
+    fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__entities__' } });
+    fireEvent.change(screen.getByLabelText('提取的实体类型（选填）'), { target: { value } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(screen.getByText('最多填写 12 种实体类型，每种不超过 30 字，且不能包含 |、｜、< 或 >。')).toBeTruthy();
+    expect(mocks.build).not.toHaveBeenCalled();
+  });
+
   it('submits the selected domain and explicit experience opt-out without losing the business description', async () => {
     mocks.build.mockResolvedValue(ready);
     await show();
