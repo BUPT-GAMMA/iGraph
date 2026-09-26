@@ -2,6 +2,7 @@ import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionSourcePreview, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
 import { currentLanguage, tr } from './i18n';
+import type { RemoteBinding, RemoteConnection, RemoteConnectionWrite } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
@@ -53,6 +54,11 @@ export type ModelWrite = {
 };
 export type DiscoveredModels = { models: { id: string; name: string }[]; latency_ms: number; truncated: boolean };
 const modelJson = (method: string, body: unknown) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+export const listRemoteGraphs = () => json<{ connections: RemoteConnection[] }>('/api/remote-graphs');
+export const saveRemoteGraph = (input: RemoteConnectionWrite) => json<{ connection: RemoteConnection }>('/api/remote-graphs', modelJson('POST', input));
+export const testRemoteGraph = (input: RemoteConnectionWrite) => json<{ success: boolean }>('/api/remote-graphs/test', modelJson('POST', input));
+export const deleteRemoteGraph = (id: string, revision: number) => json(`/api/remote-graphs/${encodeURIComponent(id)}?revision=${revision}`, { method: 'DELETE' });
+export const selectRemoteGraph = (sessionId: string, connectionId: string | null) => json<{ remote_graph: RemoteBinding | null }>(`/api/sessions/${encodeURIComponent(sessionId)}/remote-graph`, modelJson('PUT', { connection_id: connectionId }));
 export const listModelProviders = () => json<{ providers: ModelProviderConnection[]; presets: ProviderPreset[] }>('/api/model-providers');
 export const getProviderCredentials = (provider: ModelProviderConnection, signal?: AbortSignal) =>
   json<{ provider_id: string; revision: number; api_key: string }>(`/api/model-providers/${encodeURIComponent(provider.provider_id)}/credentials?revision=${provider.revision}`, { cache: 'no-store', signal });
@@ -235,6 +241,8 @@ export async function createSession(options: {
 }
 export async function activateSession(id: string, signal?: AbortSignal) {
   return json<{
+    remote_graph?: RemoteBinding | null;
+    remote_graph_unavailable_reason?: string | null;
     control?: RunControl | null;
     messages?: Message[];
     active_run?: ActiveRun | null;
