@@ -72,7 +72,7 @@ class RemoteGraphExecutor:
                 return 'not_read_only'
             check_privileges(rows, database)
             return 'verified_read_only'
-        except (Neo4jError, ControlError, TimeoutError, ServiceUnavailable, OSError):
+        except (Neo4jError, ControlError, TimeoutError, ServiceUnavailable, SessionExpired, OSError):
             return 'unknown'
 
     @staticmethod
