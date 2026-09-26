@@ -21,6 +21,7 @@ from agent_runtime.model_api import create_model_router
 from agent_runtime.remote_graph.api import RemoteGraphSessions, create_remote_graph_router
 from agent_runtime.remote_graph.catalog import RemoteGraphCatalog
 from agent_runtime.remote_graph.secrets import SecretBox
+from agent_runtime.remote_graph.neo4j import RemoteGraphExecutor
 from agent_runtime.execution_control import ExecutionController, create_control_router
 from agent_runtime.execution_store import ExecutionStore, ControlError
 from agent_runtime.execution_store import TERMINAL
@@ -43,6 +44,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     store = ExecutionStore(db.db_engine)
     catalog = ModelCatalog(store, settings)
     remote_catalog = RemoteGraphCatalog(store, SecretBox(settings.remote_graph_secret_key))
+    remote_executor = RemoteGraphExecutor(remote_catalog, settings)
     controller = None
     if controls_enabled():
         manager = RunCancellationManager()
@@ -74,7 +76,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     base_app.include_router(create_memory_router(db))
     base_app.include_router(create_recovery_router(db))
     base_app.include_router(create_model_router(catalog, db))
-    base_app.include_router(create_remote_graph_router(remote_catalog, controller or RemoteGraphSessions(db), None))
+    base_app.include_router(create_remote_graph_router(remote_catalog, controller or RemoteGraphSessions(db), remote_executor))
 
     @base_app.get("/internal/health")
     def internal_health():

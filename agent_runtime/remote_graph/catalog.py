@@ -120,10 +120,19 @@ class RemoteGraphCatalog:
             name=body.name, uri=body.uri, database=body.database, username=body.username,
             has_password=True), password=password)
 
-    def select(self, uid, sid, connection_id) -> RemoteBinding | None:
+    def selection_form(self, uid, connection_id) -> ConnectionWrite:
+        with self.store.transaction(uid, '__remote_graphs__') as conn:
+            public = self._public(self._row(conn, uid, connection_id))
+            return ConnectionWrite(**public.model_dump(exclude={'kind', 'has_password'}))
+
+    def select(self, uid, sid, connection_id, *, revision=None) -> RemoteBinding | None:
         with self.store.transaction(uid, sid) as conn:
-            binding = (RemoteBinding(**self._public(self._row(conn, uid, connection_id)).model_dump())
-                       if connection_id is not None else None)
+            binding = None
+            if connection_id is not None:
+                row = self._row(conn, uid, connection_id)
+                if revision is not None:
+                    self._revision(row, revision)
+                binding = RemoteBinding(**self._public(row).model_dump())
             condition = (selections.c.user_id == uid, selections.c.session_id == sid)
             conn.execute(selections.delete().where(*condition))
             if binding:

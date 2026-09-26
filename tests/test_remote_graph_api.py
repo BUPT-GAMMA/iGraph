@@ -83,6 +83,14 @@ def test_test_does_not_save_and_save_requires_verified_readonly(api):
     assert api.catalog.list('alice') == []
 
 
+def test_select_rechecks_readonly_access_before_activating(api):
+    item = create(api)
+    api.executor.error = 'REMOTE_GRAPH_READ_ONLY_REQUIRED'
+    response = api.client.put('/internal/sessions/alice-session/remote-graph', json={'connection_id': item['connection_id']})
+    assert response.status_code == 422
+    assert api.client.get('/internal/sessions/alice-session/remote-graph').json()['remote_graph'] is None
+
+
 def test_edit_blank_secret_cas_and_ownership(api):
     item = create(api)
     form = {**FORM, 'connection_id': item['connection_id'], 'revision': 1, 'password': None}
