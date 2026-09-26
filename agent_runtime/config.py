@@ -8,7 +8,7 @@ Backend and Graph Engine respectively.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -44,6 +44,7 @@ class AgentRuntimeConfig:
     authorization: bool
     job_poll_interval_seconds: float = 2.0
     job_wait_timeout_seconds: float = 0.0
+    remote_graph_secret_key: str = field(default='', repr=False)
 
     @classmethod
     def from_env(cls) -> "AgentRuntimeConfig":
@@ -77,6 +78,7 @@ class AgentRuntimeConfig:
             telemetry=_env_bool("AGNO_TELEMETRY", False),
             tracing=_env_bool("AGENT_RUNTIME_TRACING", True),
             authorization=_env_bool("AGENT_RUNTIME_AUTHORIZATION", False),
+            remote_graph_secret_key=os.getenv("IGRAPH_REMOTE_GRAPH_SECRET_KEY", "").strip(),
             job_poll_interval_seconds=float(
                 os.getenv("AGENT_RUNTIME_JOB_POLL_INTERVAL_SECONDS", "2")
             ),
