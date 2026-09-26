@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
-from neo4j.exceptions import AuthError, CypherSyntaxError, ClientError
+from neo4j.exceptions import AuthError, CypherSyntaxError, ClientError, SessionExpired
 from sqlalchemy import create_engine
 
 from agent_runtime.execution_store import ControlError, ExecutionStore
@@ -174,12 +174,14 @@ async def test_write_plan_and_untrusted_procedure_never_execute(service):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('mode, expected', [('readonly', 'verified_read_only'), ('write', 'not_read_only'), ('unavailable', 'unknown'), ('empty', 'unknown')])
+@pytest.mark.parametrize('mode, expected', [('readonly', 'verified_read_only'), ('write', 'not_read_only'), ('unavailable', 'unknown'), ('expired', 'unknown'), ('empty', 'unknown')])
 async def test_connection_and_query_allow_writable_or_unknown_permissions(service, mode, expected):
     if mode == 'write':
         service.driver.privileges.append(dict(access='GRANTED', action='write', graph='*'))
     elif mode == 'unavailable':
         service.driver.metadata_error = ClientError('permissions unavailable')
+    elif mode == 'expired':
+        service.driver.metadata_error = SessionExpired('metadata session expired')
     elif mode == 'empty':
         service.driver.privileges = []
     result = await service.executor.test_connection('alice', service.form)
