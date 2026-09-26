@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from graph_engine.finance_catalog import FINANCE_TOOL_NAMES, validate_finance_arguments
 
 
 _SCHEMA_TYPE_MAP: dict[str, Any] = {
@@ -40,6 +41,10 @@ def forwarded_graph_tool_arguments(
 ) -> dict:
     """Normalize provider arguments and inject private async markers."""
     forwarded_arguments = dict(arguments or {})
+    if tool_name in FINANCE_TOOL_NAMES:
+        if "policy" in forwarded_arguments:
+            forwarded_arguments["policy"] = _decode_object_argument(forwarded_arguments["policy"])
+        return validate_finance_arguments(tool_name, forwarded_arguments)
     if tool_name == "visualize_subgraph":
         for field, expected_type in (("node_names", list), ("highlights", dict)):
             value = forwarded_arguments.get(field)

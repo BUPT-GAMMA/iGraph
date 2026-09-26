@@ -5171,6 +5171,26 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             json_body={"arguments": arguments},
         )
 
+    @app.post("/api/sessions/{session_id}/finance/{operation}")
+    async def finance_analysis(session_id: str, operation: str, request: Request):
+        """Use the same owned session, active graph and tools as Agent analysis."""
+        names = {
+            "inspect": "finance_inspect_ownership",
+            "first-holder": "finance_first_holder",
+            "control-chain": "finance_control_chain",
+            "group-tree": "finance_group_tree",
+            "economic-interest": "finance_economic_interest",
+        }
+        if operation not in names:
+            raise HTTPException(404, detail="Unknown finance operation")
+        try:
+            arguments = await request.json()
+        except (ValueError, UnicodeError):
+            raise HTTPException(422, detail="Finance arguments must be a JSON object")
+        if not isinstance(arguments, dict):
+            raise HTTPException(422, detail="Finance arguments must be a JSON object")
+        return await graph_tool(session_id, names[operation], arguments, request)
+
     @app.get(MIGRATION_GUIDE_PATH)
     async def dataset_api_migration(request: Request):
         current_user(request, users)
