@@ -1,6 +1,8 @@
 """Allowlisted, independently computed operations; never client-selected code."""
 
-ISOLATED_DATA_TOOLS = frozenset({
+from graph_engine.finance_catalog import FINANCE_TOOL_NAMES
+
+ISOLATED_DATA_TOOLS = FINANCE_TOOL_NAMES | frozenset({
     'load_graph', 'load_graph_from_upload', 'load_graph_from_text',
     'load_graph_from_triples', 'load_dataset', 'to_undirected',
     'subgraph_extraction', 'search_node', 'search_edge', 'visualize_subgraph',

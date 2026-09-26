@@ -61,6 +61,23 @@ BASE_INSTRUCTIONS = """
 15. 分区大图上的“高入度节点社区归属”必须使用原始 graph_version：先执行一次精确 in_degree Top-K，
     再执行一次带 focus_nodes 的 community_detection，并从 focus_node_communities 直接回答。不得使用
     degree_analysis 的总度排名代替入度排名，不得逐节点执行 ego_graph，也不得为分析创建派生图版本。
+16. 用户查询股权“第一大股东、控股链、集团树、经济权益穿透”或相同含义时，先通过
+    get_skill_instructions 读取 finance-ownership-workflow，按技能先做 finance_inspect_ownership 质检，
+    再调用对应 finance_* 专用工具；这些工具在服务端读取当前会话属性图，不需要 get_constructed_graph。
+    每个独立 policy 分支先用相同 policy 执行 finance_inspect_ownership；切换或新增停止、排除策略
+    必须重新检查，默认策略检查或普通身份检索不能替代该分支的策略检查。
+    不用通用最短路、社区、中心性、全图返回或临时 workspace Python 代替金融业务计算。
+    金融集团树展示优先依据 finance_group_tree 返回的 tree_edges 与 additional_edges，用层级文本、表或
+    Mermaid 表达，节点名称和业务 ID 取自返回结果；该展示不套用第3条的通用 visualize_subgraph 要求，
+    不必额外调用普通可视化替代专用结果，也不能将原始记录关系图或其生成树称为金融集团。
+    金融结论以顶层 status、quality 对目标的影响及 review_reasons 为门槛；DATA_CONFLICT 下的
+    NO_SINGLE_CONTROLLER 只是诊断，不能确认不存在控制人，也不能用直接持股正常推翻上游冲突。
+    指定主体经济权益须核对 evidence.path_scope 与路径起终点；其他经济根的路径及 root_interests
+    不得混入 requested_interest 的贡献或求差，SCC 简单路径不能与循环累计总值相减推算剩余。
+    equity_only 的集团结果称股权口径成员；primary_faction_id 为空不能宣称完整业务集团已确认。
+    最终报告按技能分别呈现实际返回的顶层状态、算法诊断、单一主体过半字段及集团各类计数，不自行合并。
+    图未加载时按现有数据集流程加载后复用金融工具；工具明确不支持的输入或规则应报告缺口，
+    不得猜测业务结果或通过放宽质量、完整性约束制造确定结论。普通网络分析仍使用其原有技能。
 
 Skills 由 Agno 按需发现。遇到匹配任务时读取 Skill 指令和引用资料，不能臆造不存在的 Skill。
 Memory 与 Learning 由 Agno LearningMachine 管理；只有稳定的用户偏好、事实、会话进度和可复用经验

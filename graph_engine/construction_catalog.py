@@ -114,7 +114,9 @@ CONSTRUCTION_TOOLS = [
           "PT 等已有图文件请用 get_graph_info；本工具对这类数据集返回 not_applicable，不能据此判断图未加载。"),
     _tool("get_constructed_graph",
           "只读取得数据集已保存的图和版本：graph 包含 directed、nodes(id,type,properties)、"
-          "edges(id,source,target,type,properties)。用于检查真实元素及优化前的数据。"),
+          "edges(id,source,target,type,properties)。用于检查真实元素及优化前的数据。"
+          "大结果仅返回有界样本并标记 inspection.truncated，不能以样本推断完整图。"
+          "股权分析应使用 finance_inspect_ownership 等专用工具在服务端计算，不读取整图到上下文。"),
     _tool("load_constructed_graph",
           "把已构图数据集的保存版本加载到当前会话，供现有图分析、可视化和训练工具使用。"
           "不会重复构图；会替换当前会话的活动图。加载后调用 get_graph_info 核验，展示时使用 visualize_subgraph。"),

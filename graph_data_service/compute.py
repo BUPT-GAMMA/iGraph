@@ -16,6 +16,7 @@ GraphData 计算层
 from __future__ import annotations
 
 import heapq
+import json
 import math
 import os
 import statistics
@@ -27,6 +28,9 @@ import networkx as nx
 from graph_data_service.graph_data import GraphData
 from graph_data_service.analysis_contract import analysis_contract
 from graph_data_service.smart_overview import SmartOverviewSelection, select_smart_overview
+from graph_engine.finance_catalog import (
+    FINANCE_MAX_RESULT_BYTES, FINANCE_OPERATIONS, validate_finance_arguments,
+)
 
 # ── 全局输出规模上限 ─────────────────────────────────────────────
 _MAX_LIST_ITEMS = 20        # 节点/边列表最大条数
@@ -106,6 +110,44 @@ class GraphCompute:
 
     def invalidate(self, session_id: str) -> None:
         self._cache.pop(session_id, None)
+
+    @staticmethod
+    def finance_analysis(gd: GraphData | None, tool_name: str, arguments: dict) -> dict:
+        """Analyze original records without materializing or returning topology.
+
+        The caller has already resolved the authorized session/version. No
+        source lookup, guessed ownership edge, or graph write occurs here.
+        """
+        operation = FINANCE_OPERATIONS[tool_name]
+
+        def failed(code, message):
+            return {"success": False, "status": code, "code": code,
+                    "operation": operation, "complete": False, "error": message}
+
+        try:
+            normalized = validate_finance_arguments(tool_name, arguments)
+        except ValueError as exc:
+            return failed("INVALID_ARGUMENT", str(exc))
+        metadata = gd.graph_metadata if gd is not None else {}
+        graph = metadata.get("construction_graph") if isinstance(metadata, dict) else None
+        if not isinstance(graph, dict):
+            return failed("FINANCE_SCHEMA_REQUIRED",
+                          "金融分析需要当前会话已加载的原始机构、个人、持股三表构图；普通拓扑边不能推造持股事实。")
+        from graph_data_service.finance import analyze_finance
+        result = analyze_finance(graph, operation, **normalized)
+        # Identity is supplied from the selected GraphData, never tool args.
+        result = {**result, "graph_source": {
+            "dataset_id": metadata.get("construction_dataset_id"),
+            "construction_revision": metadata.get("construction_revision"),
+        }}
+        # Count incrementally rather than allocating a second full response.
+        size = 0
+        for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(result):
+            size += len(chunk.encode("utf-8"))
+            if size > FINANCE_MAX_RESULT_BYTES:
+                return failed("FINANCE_RESULT_TOO_LARGE",
+                              "结果超过有界工具响应上限；降低 display_limit/evidence_top_k 后重试，不得把未返回结果当作完整结论。")
+        return result
 
     def resolve_graph(
         self,
