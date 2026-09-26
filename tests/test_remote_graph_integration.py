@@ -4,7 +4,6 @@ import json
 from uuid import uuid4
 
 import pytest
-from neo4j.exceptions import ClientError
 
 from agent_runtime.remote_graph.contracts import QueryRequest
 from tests.fixtures.remote_graph import remote_live, remote_executor, anyio_backend
@@ -24,29 +23,36 @@ def test_cora_database_matches_original_manifest(remote_live):
     (live.evidence / 'manifest-comparison.json').write_text(json.dumps({'success': True, 'manifest': live.manifest}, indent=2))
 
 
-@pytest.mark.parametrize('operation', ['create', 'set', 'delete', 'schema'])
-def test_reader_writes_are_denied_by_database(remote_live, operation):
-    live = remote_live
+@pytest.mark.anyio
+@pytest.mark.parametrize('operation', ['create', 'set', 'delete', 'schema', 'admin'])
+async def test_application_rejects_writes_with_a_usable_account(remote_live, remote_executor, operation):
+    live, service = remote_live, remote_executor
     marker = 'igraph_probe_' + uuid4().hex
     queries = {
         'create': 'CREATE (:IGraphPermissionProbe {marker: $marker})',
         'set': 'MATCH (n:Paper {cora_id: 0}) SET n._igraph_permission_probe = $marker',
         'delete': 'MATCH (n:Paper {cora_id: 0}) DETACH DELETE n',
         'schema': f'CREATE CONSTRAINT {marker} FOR (n:IGraphPermissionProbe) REQUIRE n.marker IS UNIQUE',
+        'admin': 'SHOW USERS',
     }
-    # This is a raw WRITE transaction: routing hints cannot provide a false pass.
-    with live.reader.session(database=live.database, default_access_mode='WRITE') as session:
-        with session.begin_transaction() as tx:
-            with pytest.raises(ClientError) as denied:
-                tx.run(queries[operation], marker=marker).consume()
-            assert denied.value.code == 'Neo.ClientError.Security.Forbidden'
-    (live.evidence / f'reader-denied-{operation}.json').write_text(json.dumps({'operation': operation, 'code': denied.value.code}))
+    def state():
+        with live.admin.session(database=live.database) as session:
+            return (session.run('MATCH (n) RETURN count(n) AS count').single()['count'],
+                    session.run('MATCH (n:Paper {cora_id: 0}) RETURN properties(n) AS props').single()['props'])
+    before = state()
+    result = await service.executor.query('live-owner', service.binding,
+        QueryRequest(query=queries[operation], parameters={'marker': marker}))
+    assert result.error_code == 'REMOTE_GRAPH_QUERY_REJECTED', result.model_dump()
+    assert state() == before
+    (live.evidence / f'application-denied-{operation}.json').write_text(json.dumps({'operation': operation, 'code': result.error_code, 'data_unchanged': True}))
 
 
 @pytest.mark.anyio
 async def test_live_executor_schema_query_artifact_and_cancellation(remote_live, remote_executor):
     live, service = remote_live, remote_executor
-    assert (await service.executor.test_connection('live-owner', service.form))['success']
+    connectivity = await service.executor.test_connection('live-owner', service.form)
+    assert connectivity['success'] and connectivity['connection_usable']
+    (live.evidence / 'connection-verification.json').write_text(json.dumps(connectivity))
     schema = await service.executor.describe('live-owner', service.binding)
     assert schema['success'], schema
     count = await service.executor.query('live-owner', service.binding, QueryRequest(query='MATCH (n:Paper) RETURN count(n) AS count', save_result=True), service.root)

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => {} }) }));
@@ -23,7 +23,7 @@ beforeEach(() => {
   localStorage.clear(); sessionStorage.clear(); localStorage.setItem(USER_KEY, 'alice');
   window.history.replaceState({}, '', '/?session=s'); vi.clearAllMocks();
   vi.mocked(activateSession).mockResolvedValue({ model: 'model', active_dataset_id: 'local', remote_graph: null, messages: [], active_run: null });
-  vi.mocked(listRemoteGraphs).mockResolvedValue({ connections: [connection] });
+  vi.mocked(listRemoteGraphs).mockReset().mockResolvedValue({ connections: [connection] });
   vi.mocked(selectRemoteGraph).mockResolvedValue({ remote_graph: binding });
 });
 afterEach(cleanup);
@@ -62,4 +62,31 @@ it('reconciles an edited selected connection while preserving historical query s
   await screen.findByText('Remote: New target · other');
   expect(screen.getByText('Cora · neo4j · v2')).toBeTruthy();
   expect(screen.getByRole('button', { name: /Local A/ })).toBeTruthy();
+});
+
+it.each(['loaded', 'pending', 'error'])('clears remote panel state on account switch (%s)', async mode => {
+  let resolveOld!: (value: { connections: typeof connection[] }) => void;
+  if (mode === 'pending') vi.mocked(listRemoteGraphs).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+  if (mode === 'error') vi.mocked(listRemoteGraphs).mockRejectedValueOnce({ code: 'REMOTE_GRAPH_UNREACHABLE' });
+  render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
+  await userEvent.click(await screen.findByRole('button', { name: 'Remote databases' }));
+  if (mode === 'loaded') await screen.findByRole('button', { name: 'Use Cora' });
+  if (mode === 'error') await screen.findByRole('alert');
+  act(() => {
+    localStorage.setItem(USER_KEY, 'bob');
+    window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, newValue: 'bob', storageArea: localStorage }));
+  });
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remote databases' })).toBeNull());
+  await userEvent.click(screen.getAllByRole('button', { name: 'New task' })[0]);
+  // Keep B's own list pending: opening it must not expose any stale list/error from A.
+  let resolveNew!: (value: { connections: typeof connection[] }) => void;
+  vi.mocked(listRemoteGraphs).mockImplementationOnce(() => new Promise(resolve => { resolveNew = resolve; }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Remote databases' }));
+  const dialog = screen.getByRole('dialog', { name: 'Remote databases' });
+  expect(within(dialog).queryByText('Cora')).toBeNull();
+  expect(within(dialog).queryByRole('alert')).toBeNull();
+  if (mode === 'pending') await act(async () => resolveOld({ connections: [connection] }));
+  expect(within(dialog).queryByText('Cora')).toBeNull();
+  await act(async () => resolveNew({ connections: [] }));
+  expect((within(dialog).getByRole('button', { name: 'Test connection' }) as HTMLButtonElement).disabled).toBe(false);
 });

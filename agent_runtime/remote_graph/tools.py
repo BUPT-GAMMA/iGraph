@@ -37,7 +37,10 @@ def create_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
 
     async def describe_remote_graph(run_context: RunContext, labels: list[str] | None = None,
                                     relationship_types: list[str] | None = None) -> dict[str, Any]:
-        """Discover the selected remote database's labels, relationships and property types."""
+        """Discover the selected remote database's labels, relationships and property types.
+
+        First load remote-graph-qa using get_skill_instructions for this task.
+        """
         try:
             uid = identity(run_context)
             return await executor.describe(uid, source, labels, relationship_types)
@@ -46,7 +49,10 @@ def create_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
 
     async def query_remote_graph(query: str, run_context: RunContext, parameters: dict[str, Any] | None = None,
                                  save_result: bool = False) -> dict[str, Any]:
-        """Run parameterized Cypher on the selected remote database; optionally save bounded JSON."""
+        """Run parameterized Cypher on the selected remote database; optionally save bounded JSON.
+
+        First load remote-graph-qa using get_skill_instructions for this task.
+        """
         try:
             uid = identity(run_context)
             request = QueryRequest(query=query, parameters=parameters or {}, save_result=save_result)

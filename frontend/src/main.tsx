@@ -1116,6 +1116,10 @@ function App() {
     if (nextUserId === previousUserId) return;
     accountEpochRef.current += 1;
     setModelsOpen(false);
+    setRemoteOpen(false);
+    setRemoteConnections([]);
+    setRemoteLoadError('');
+    setRemoteLoading(false);
     identityRef.current = nextUserId;
     for (const controller of preparationControllersRef.current.values()) controller.abort();
     preparationControllersRef.current.clear();

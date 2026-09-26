@@ -44,3 +44,16 @@ it('edits without exposing a saved password, preserves blank password and delete
   await userEvent.click(screen.getByRole('button', { name: 'Delete Cora' }));
   expect(deleteRemoteGraph).toHaveBeenCalledWith('c', 2);
 });
+
+it.each([
+  ['unknown', 'Database read-only permissions are unknown'],
+  ['not_read_only', 'This account has write or administrative permissions'],
+  ['verified_read_only', 'Database read-only permissions verified'],
+] as const)('reports connection usability separately from %s permissions', async (status, text) => {
+  mount();
+  vi.mocked(testRemoteGraph).mockResolvedValue({ success: true, connection_usable: true, database_read_only: status, database: 'neo4j' });
+  await userEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+  expect((await screen.findByRole('status')).textContent).toContain('Connection usable.');
+  expect(screen.getByRole('status').textContent).toContain(text);
+  expect(saveRemoteGraph).not.toHaveBeenCalled();
+});

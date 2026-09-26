@@ -56,7 +56,7 @@ export type DiscoveredModels = { models: { id: string; name: string }[]; latency
 const modelJson = (method: string, body: unknown) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 export const listRemoteGraphs = () => json<{ connections: RemoteConnection[] }>('/api/remote-graphs');
 export const saveRemoteGraph = (input: RemoteConnectionWrite) => json<{ connection: RemoteConnection }>('/api/remote-graphs', modelJson('POST', input));
-export const testRemoteGraph = (input: RemoteConnectionWrite) => json<{ success: boolean }>('/api/remote-graphs/test', modelJson('POST', input));
+export const testRemoteGraph = (input: RemoteConnectionWrite) => json<{ success: boolean; connection_usable: boolean; database_read_only: 'verified_read_only' | 'not_read_only' | 'unknown'; database: string }>('/api/remote-graphs/test', modelJson('POST', input));
 export const deleteRemoteGraph = (id: string, revision: number) => json(`/api/remote-graphs/${encodeURIComponent(id)}?revision=${revision}`, { method: 'DELETE' });
 export const selectRemoteGraph = (sessionId: string, connectionId: string | null) => json<{ remote_graph: RemoteBinding | null }>(`/api/sessions/${encodeURIComponent(sessionId)}/remote-graph`, modelJson('PUT', { connection_id: connectionId }));
 export const listModelProviders = () => json<{ providers: ModelProviderConnection[]; presets: ProviderPreset[] }>('/api/model-providers');

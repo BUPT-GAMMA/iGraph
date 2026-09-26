@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
-from neo4j.exceptions import AuthError, CypherSyntaxError
+from neo4j.exceptions import AuthError, CypherSyntaxError, ClientError
 from sqlalchemy import create_engine
 
 from agent_runtime.execution_store import ControlError, ExecutionStore
@@ -64,6 +64,7 @@ class Driver:
         self.rows = [{'n': 1}, {'n': 2}, {'n': 3}]
         self.privileges = [dict(access='GRANTED', action=a, graph='*') for a in ['access', 'match']]
         self.error = None
+        self.metadata_error = None
         self.schema = False
         self.stage = None
         self.entered = asyncio.Event()
@@ -101,6 +102,8 @@ class Transaction:
     async def run(self, query, parameters=None):
         self.driver.calls.append((query, parameters))
         if query.startswith('SHOW USER PRIVILEGES'):
+            if self.driver.metadata_error:
+                raise self.driver.metadata_error
             if isinstance(self.driver.error, AuthError):
                 raise self.driver.error
             return Result(self.driver, self.driver.privileges, ['access', 'action', 'graph'])
@@ -171,10 +174,18 @@ async def test_write_plan_and_untrusted_procedure_never_execute(service):
 
 
 @pytest.mark.anyio
-async def test_test_connection_requires_server_privileges_without_write_probe(service):
-    service.driver.privileges.append(dict(access='GRANTED', action='write', graph='*'))
-    with pytest.raises(ControlError, match='REMOTE_GRAPH_READ_ONLY_REQUIRED'):
-        await service.executor.test_connection('alice', service.form)
+@pytest.mark.parametrize('mode, expected', [('readonly', 'verified_read_only'), ('write', 'not_read_only'), ('unavailable', 'unknown'), ('empty', 'unknown')])
+async def test_connection_and_query_allow_writable_or_unknown_permissions(service, mode, expected):
+    if mode == 'write':
+        service.driver.privileges.append(dict(access='GRANTED', action='write', graph='*'))
+    elif mode == 'unavailable':
+        service.driver.metadata_error = ClientError('permissions unavailable')
+    elif mode == 'empty':
+        service.driver.privileges = []
+    result = await service.executor.test_connection('alice', service.form)
+    assert result == dict(success=True, connection_usable=True, database_read_only=expected, database='neo4j')
+    queried = await service.executor.query('alice', service.binding, QueryRequest(query='RETURN 1'))
+    assert queried.success
     assert not any(q.startswith(('CREATE', 'SET', 'DELETE')) for q, _ in service.driver.calls)
 
 

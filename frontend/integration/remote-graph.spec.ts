@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 
 function required(name: string) {
@@ -22,12 +22,12 @@ test('real connection form, refreshed selection, model query evidence and discon
   await page.goto(`/?session=${encodeURIComponent(session.session_id)}`);
   await page.getByRole('button', { name: 'Remote databases', exact: true }).click();
   await page.getByLabel('Name', { exact: true }).fill(name);
-  await page.getByLabel('URI', { exact: true }).fill(required('IGRAPH_TEST_NEO4J_URI'));
+  await page.getByLabel('URI', { exact: true }).fill(process.env.IGRAPH_TEST_NEO4J_APP_URI || required('IGRAPH_TEST_NEO4J_URI'));
   await page.getByLabel('Database', { exact: true }).fill(required('IGRAPH_TEST_NEO4J_DATABASE'));
   await page.getByLabel('Username', { exact: true }).fill(required('IGRAPH_TEST_NEO4J_READER_USER'));
   await page.getByLabel('Password', { exact: true }).fill(required('IGRAPH_TEST_NEO4J_READER_PASSWORD'));
   await page.getByRole('button', { name: 'Test connection', exact: true }).click();
-  await expect(page.getByText('Read-only connection verified. Not saved.')).toBeVisible({ timeout: 40_000 });
+  await expect(page.getByRole('status').filter({ hasText: 'Connection usable.' })).toBeVisible({ timeout: 40_000 });
   const beforeSave = await request.get('/api/remote-graphs', { headers });
   expect((await beforeSave.json()).connections.some((c: { name: string }) => c.name === name)).toBeFalsy();
   await page.getByRole('button', { name: 'Save connection', exact: true }).click();
@@ -41,9 +41,23 @@ test('real connection form, refreshed selection, model query evidence and discon
   const evidence = page.getByRole('region', { name: 'Remote query evidence' });
   await expect(evidence.first()).toBeVisible({ timeout: 180_000 });
   await expect(evidence.filter({ hasText: String(manifest.node_count) }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Remote databases', exact: true })).toBeEnabled({ timeout: 180_000 });
+  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible({ timeout: 180_000 });
   await page.reload();
   await expect(page.getByRole('region', { name: 'Remote query evidence' }).filter({ hasText: String(manifest.node_count) }).first()).toBeVisible();
+  await page.locator('textarea').fill('继续重新查询远程 Paper 的 label 聚合，并导出查询工具生成的原始 JSON 结果文件；不要手工抄录。然后在工作区读取该文件计算计数之和。请返回 node_count 并说明文件。');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Stop current task', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible({ timeout: 180_000 });
+  const messagesResponse = await request.get(`/api/sessions/${session.session_id}/messages`, { headers });
+  const messages = (await messagesResponse.json()).messages;
+  const answer = messages.filter((m: { role: string }) => m.role === 'assistant').at(-1);
+  expect(answer.content.replace(/,/g, '')).toContain(String(manifest.node_count));
+  expect(answer.tools.some((t: { tool: string }) => t.tool === 'workspace_bash')).toBeTruthy();
+  expect(answer.tools.some((t: { tool: string; result: unknown }) => t.tool === 'query_remote_graph' && JSON.stringify(t.result).includes('artifact_path'))).toBeTruthy();
+  await testInfo.attach('followup-tools', { body: JSON.stringify(answer), contentType: 'application/json' });
+  const record = JSON.stringify({ session_id: session.session_id, connection_name: name, expected_node_count: manifest.node_count, answer });
+  expect(record.includes(required('IGRAPH_TEST_NEO4J_READER_PASSWORD'))).toBeFalsy();
+  writeFileSync(`${required('IGRAPH_TEST_EVIDENCE_DIR')}/browser-session.json`, record);
   await testInfo.attach('session', { body: JSON.stringify({ session_id: session.session_id, connection_name: name, expected_node_count: manifest.node_count }), contentType: 'application/json' });
   await page.getByRole('button', { name: 'Remote databases', exact: true }).click();
   await page.getByRole('button', { name: 'Disconnect from conversation', exact: true }).click();

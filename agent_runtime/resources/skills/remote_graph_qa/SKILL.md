@@ -1,6 +1,6 @@
 ---
 name: remote_graph_qa
-description: 当用户针对会话选中的远程图数据库询问结构、关系、统计、分析、报告或数据修改时使用。
+description: 涉及选中远程图数据库的结构、查询、分析、报告或修改请求时，先调用 get_skill_instructions 读取 remote-graph-qa，再决定如何响应。
 metadata:
   igraph:
     any_tools: [describe_remote_graph, query_remote_graph]
@@ -42,8 +42,9 @@ metadata:
 - `REMOTE_GRAPH_NOT_FOUND`、`REMOTE_GRAPH_CHANGED`：本次运行绑定已失效；说明需重新选择或发起新一轮，不静默改用另一库。
 - `REMOTE_GRAPH_INVALID_CONFIG`：配置或目标地址未被部署允许，请用户检查连接与服务端目标范围。
 - `REMOTE_GRAPH_UNREACHABLE`、`REMOTE_GRAPH_AUTH_FAILED`：提示检查网络或凭据，不索取或显示密码。
-- `REMOTE_GRAPH_READ_ONLY_REQUIRED`：当前身份无法确认数据库端只读权限，请配置合适的 reader 身份。
-- `REMOTE_GRAPH_QUERY_REJECTED`：查询入口不满足执行约束；核对查询，不改用危险过程绕过。
+- `REMOTE_GRAPH_ACCESS_DENIED`：数据库拒绝本次读取，请用户核对访问权限。
+- 连接可用不代表数据库账号只读；权限未知或账号可写也不能改变本 skill 的查询限制。
+- `REMOTE_GRAPH_QUERY_REJECTED`：应用执行端拒绝了查询，不代表数据库账号只有读权限；核对查询，不改用危险过程或高权限身份绕过。
 - `REMOTE_GRAPH_QUERY_ERROR`：依据脱敏错误码和行列位置修正语法，不把失败当空结果。
 - `REMOTE_GRAPH_TIMEOUT`：缩小范围、优化查询或说明执行预算，避免重复提交相同失败查询。
 - `REMOTE_GRAPH_SECRET_UNAVAILABLE`：服务端密钥缺失或不匹配，需要部署维护者处理。

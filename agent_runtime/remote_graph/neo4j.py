@@ -1,4 +1,4 @@
-"""Cancellable Neo4j access with server-authorized, bounded read transactions."""
+"""Cancellable Neo4j access with compiled read-only queries and bounded results."""
 import asyncio
 import os
 import re
@@ -53,19 +53,27 @@ class RemoteGraphExecutor:
         rows = []
         async for record in result:
             if len(rows) >= limit:
-                raise ControlError('REMOTE_GRAPH_READ_ONLY_REQUIRED', 422)
+                raise ControlError('REMOTE_GRAPH_QUERY_REJECTED', 422)
             rows.append(dict(record))
         return rows
 
     async def _permissions(self, driver, database):
+        """Advisory only: unavailable/incomplete metadata is never read-only proof."""
         try:
-            async with self._transaction(driver, 'system') as tx:
-                rows = await self._metadata(tx, 'SHOW USER PRIVILEGES')
-                check_privileges(rows, database)
-        except AuthError:
-            raise
-        except Neo4jError:
-            raise ControlError('REMOTE_GRAPH_READ_ONLY_REQUIRED', 422) from None
+            async with asyncio.timeout(min(3, self.settings.remote_graph_timeout_seconds)):
+                async with self._transaction(driver, 'system') as tx:
+                    rows = await self._metadata(tx, 'SHOW USER PRIVILEGES')
+            if any(row.get('access') == 'GRANTED' and row.get('action') in {
+                'write', 'create_element', 'delete_element', 'set_property', 'set_label',
+                'remove_label', 'admin', 'all', 'all_dbms_privileges', 'database_management',
+                'index_management', 'constraint_management', 'user_management',
+                'role_management', 'privilege_management', 'impersonate',
+            } for row in rows):
+                return 'not_read_only'
+            check_privileges(rows, database)
+            return 'verified_read_only'
+        except (Neo4jError, ControlError, TimeoutError, ServiceUnavailable, OSError):
+            return 'unknown'
 
     @staticmethod
     def _error(exc):
@@ -82,7 +90,7 @@ class RemoteGraphExecutor:
             if 'TimedOut' in code or 'Timeout' in code:
                 return 'REMOTE_GRAPH_TIMEOUT', None
             if 'Security.Forbidden' in code:
-                return 'REMOTE_GRAPH_READ_ONLY_REQUIRED', None
+                return 'REMOTE_GRAPH_ACCESS_DENIED', None
             # Preserve repair coordinates and a known code, never database text.
             position = re.search(r'line \d+, column \d+', str(exc))
             safe_code = code if re.fullmatch(r'Neo\.[A-Za-z.]+', code) else 'Cypher error'
@@ -94,13 +102,14 @@ class RemoteGraphExecutor:
             async with asyncio.timeout(self.settings.remote_graph_timeout_seconds):
                 connection = await owned_sync(self.catalog.resolve_write, uid, body)
                 async with self._driver(connection) as driver:
-                    await self._permissions(driver, connection.public.database)
                     async with self._transaction(driver, connection.public.database) as tx:
                         result = await tx.run('MATCH (n) RETURN n LIMIT 1')
                         await result.consume()
                 # A concurrent edit invalidates an edited form's test result too.
                 await owned_sync(self.catalog.resolve_write, uid, body)
-            return dict(success=True, readable=True, read_only=True, database=connection.public.database)
+            async with self._driver(connection) as driver:
+                permission = await self._permissions(driver, connection.public.database)
+            return dict(success=True, connection_usable=True, database_read_only=permission, database=connection.public.database)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -115,7 +124,6 @@ class RemoteGraphExecutor:
                 connection = await owned_sync(self.catalog.resolve, uid, binding)
                 check_query(request.query)
                 async with self._driver(connection) as driver:
-                    await self._permissions(driver, connection.public.database)
                     async with self._transaction(driver, connection.public.database) as tx:
                         functions = await self._metadata(tx, 'SHOW FUNCTIONS YIELD name, isBuiltIn RETURN name, isBuiltIn')
                         check_query(request.query, {row['name'].lower() for row in functions if row.get('isBuiltIn') is True})
