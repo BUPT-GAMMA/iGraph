@@ -50,3 +50,16 @@ it('creates an empty conversation for remote selection without requiring a local
   await waitFor(() => expect(selectRemoteGraph).toHaveBeenCalledWith('new-s', 'c'));
   expect(createSession).toHaveBeenCalled(); expect(setSessionDataset).not.toHaveBeenCalled();
 });
+
+it('reconciles an edited selected connection while preserving historical query sources', async () => {
+  const historic = { success: true, query_id: 'old-query', source: binding, columns: ['count'], rows: [[7]], returned_rows: 1, truncated: false, preview_truncated: false, elapsed_ms: 1 };
+  vi.mocked(activateSession).mockResolvedValue({ model: 'model', active_dataset_id: 'local', remote_graph: binding,
+    messages: [{ id: 'old-answer', role: 'assistant', content: 'Previous answer', tools: [{ tool: 'query_remote_graph', done: true, result: historic }] }], active_run: null });
+  vi.mocked(listRemoteGraphs).mockResolvedValue({ connections: [{ ...connection, name: 'New target', database: 'other', revision: 3 }] });
+  render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
+  await screen.findByText('Remote: Cora · neo4j');
+  await userEvent.click(screen.getByRole('button', { name: 'Remote databases' }));
+  await screen.findByText('Remote: New target · other');
+  expect(screen.getByText('Cora · neo4j · v2')).toBeTruthy();
+  expect(screen.getByRole('button', { name: /Local A/ })).toBeTruthy();
+});

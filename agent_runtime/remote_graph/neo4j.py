@@ -170,18 +170,25 @@ class RemoteGraphExecutor:
 
     async def _describe(self, uid, binding, labels, relationship_types):
         queries = {
-            'labels': 'CALL db.labels() YIELD label RETURN label',
-            'relationship_types': 'CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType',
+            'labels': 'CALL db.labels() YIELD label WHERE $labels IS NULL OR label IN $labels RETURN label',
+            'relationship_types': 'CALL db.relationshipTypes() YIELD relationshipType '
+                                  'WHERE $types IS NULL OR relationshipType IN $types RETURN relationshipType',
             'nodes': 'CALL db.schema.nodeTypeProperties() YIELD nodeLabels, propertyName, propertyTypes '
                      'WHERE $labels IS NULL OR any(label IN nodeLabels WHERE label IN $labels) '
                      'RETURN nodeLabels, propertyName, propertyTypes',
             'relationships': 'CALL db.schema.relTypeProperties() YIELD relType, propertyName, propertyTypes '
+                             'WHERE $types IS NULL OR relType IN $encoded_types '
                              'RETURN relType, propertyName, propertyTypes',
         }
+        # Neo4j schema metadata uses :`escaped type`; keep filtering server-side,
+        # before query() applies row/byte/preview limits. Also accept plain metadata names.
+        encoded_types = None if relationship_types is None else [
+            encoded for name in relationship_types
+            for encoded in (name, ':' + name, ':`' + name.replace('`', '``') + '`')]
         results = {}
         for key, query in queries.items():
             result = await self.query(uid, binding, QueryRequest(query=query,
-                parameters={'labels': labels, 'types': relationship_types}))
+                parameters={'labels': labels, 'types': relationship_types, 'encoded_types': encoded_types}))
             if not result.success:
                 raise ControlError(result.error_code, 422)
             results[key] = result

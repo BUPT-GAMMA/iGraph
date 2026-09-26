@@ -1431,9 +1431,17 @@ function App() {
       // Deletion keeps the historical source but marks the current selection unavailable.
       for (const view of Object.values(conversationRef.current.viewsBySessionId)) {
         const binding = view.remoteGraph;
-        if (binding && !result.connections.some(item => item.connection_id === binding.connection_id)) {
+        if (!binding) continue;
+        const current = result.connections.find(item => item.connection_id === binding.connection_id);
+        if (!current) {
           dispatchConversation({ type: 'PATCH_VIEW', sessionId: view.sessionId, patch: { remoteGraphUnavailableReason: 'REMOTE_GRAPH_NOT_FOUND' } });
+          continue;
         }
+        const { connection_id, revision, name, kind, database } = current;
+        const remoteGraph = { connection_id, revision, name, kind, database };
+        dispatchConversation({ type: 'PATCH_VIEW', sessionId: view.sessionId, patch: { remoteGraph, remoteGraphUnavailableReason: null } });
+        setSessions(sessions => sessions.map(session => session.session_id === view.sessionId
+          ? { ...session, remote_graph: remoteGraph, remote_graph_unavailable_reason: null } : session));
       }
     } catch (cause) { if (!accountIsStale(identity, epoch)) setRemoteLoadError(remoteGraphError(cause)); }
     finally { if (!accountIsStale(identity, epoch)) setRemoteLoading(false); }
