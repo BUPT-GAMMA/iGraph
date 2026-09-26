@@ -53,6 +53,8 @@ class FakeServiceClient:
         **_kwargs,
     ):
         user_id = headers.get("X-User-ID", "")
+        if self.is_runtime and method == 'GET' and path.startswith('/internal/sessions/') and path.endswith('/remote-graph'):
+            return {'remote_graph': None, 'remote_graph_unavailable_reason': None}
         if not self.is_runtime:
             if method == "POST" and path == "/server-datasets/prepare":
                 request_body = dict(json_body or {})

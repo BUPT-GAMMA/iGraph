@@ -1,7 +1,9 @@
 """Public DTOs are deliberately separate from resolved credentials."""
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 class ConnectionWrite(BaseModel):
@@ -13,6 +15,22 @@ class ConnectionWrite(BaseModel):
     database: str = Field(min_length=1, max_length=256)
     username: str = Field(min_length=1, max_length=256)
     password: SecretStr | None = None
+
+    @field_validator('uri')
+    @classmethod
+    def valid_uri(cls, value):
+        try:
+            uri = urlsplit(value)
+            valid = (uri.scheme in {'bolt', 'bolt+s', 'neo4j', 'neo4j+s'}
+                     and uri.hostname and not uri.username and not uri.password
+                     and '@' not in uri.netloc and not uri.path and not uri.query
+                     and not uri.fragment and uri.port != 0
+                     and not any(c.isspace() or ord(c) < 32 for c in value))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError('Invalid remote graph URI')
+        return value
 
 
 class PublicConnection(BaseModel):
