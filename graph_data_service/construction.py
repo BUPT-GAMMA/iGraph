@@ -30,14 +30,15 @@ from graph_data_service.construction_schema import source_schema_tables
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
               "delete", "reverse_edges", "rename_type")
-PUBLIC_PROGRESS_STAGES = ("starting", "source_profiled", "extracting_entities", "materializing_graph",
+PUBLIC_PROGRESS_STAGES = ("starting", "source_profiled", "extracting_entities", "materializing_graph", "refining_text_graph",
                           "generating_workload", "evaluating_baseline", "evolving",
                           "validating_final", "ready", "failed")
 PUBLIC_PROGRESS_KINDS = ("stage", "candidate", "terminal")
 PUBLIC_PROGRESS_OUTCOMES = ("accepted", "rejected", "ready", "failed")
 PUBLIC_PROGRESS_METRICS = ("query_count", "max_iterations", "iterations", "tool_calls",
                            "evaluated_candidates", "accepted_candidates", "initial_nodes", "initial_edges",
-                           "chunks_completed", "chunks_total", "extracted_nodes", "extracted_edges")
+                           "chunks_completed", "chunks_total", "extracted_nodes", "extracted_edges",
+                           "queries_generated", "queries_passed", "queries_repaired", "queries_unresolved")
 SCHEMA_PROPERTY_TYPES = ("null", "boolean", "integer", "number", "string", "object", "array")
 _TEXT_EXTRACTION_FAILURE_MESSAGES = {
     "text_extraction_requires_llm": "TXT 实体关系抽取需要智能构图模式；源文件已保留，请选择 LLM 抽取后重试。",
@@ -47,6 +48,8 @@ _TEXT_EXTRACTION_FAILURE_MESSAGES = {
     "text_extraction_chunk_limit_exceeded": "TXT 超过本次语义抽取的分块上限；源文件已保留，请拆分文件后重试。",
     "text_extraction_call_limit_exceeded": "TXT 抽取达到模型调用上限且尚未完整处理；未发布半成品图，请拆分文件后重试。",
     "text_extraction_graph_too_large": "抽取到的实体关系超过图规模上限；源文件已保留，请拆分文件后重试。",
+    "text_refine_unresolved": "TXT 查询未能从原文核实并修正；未发布图，请检查抽取目标后重试。",
+    "text_refine_no_queries": "Agent 未能从 TXT 原文提出可验证查询；未发布图，请调整实体类型或抽取目标后重试。",
 }
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()

@@ -572,7 +572,25 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
 
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
+      domain: '', txt_mode: 'entities', mode: 'llm', entity_types: [], text_refine_enabled: false,
+    });
+  });
+
+  it('sends selected TXT entity categories and enables query refinement only when requested', async () => {
+    const txtDataset: Dataset = { ...sourceDataset, original_filename: 'story.txt', file_type: 'txt' };
+    mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
+    mocks.build.mockResolvedValue(ready);
+    await act(async () => {
+      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+    });
+    fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__entities__' } });
+    fireEvent.change(screen.getByLabelText('提取的实体类型（选填）'), { target: { value: '人物、事件、组织' } });
+    fireEvent.click(screen.getByRole('switch', { name: '使用 Agent refine TXT 构图' }));
+    fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: '4' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
       domain: '', txt_mode: 'entities', mode: 'llm',
+      entity_types: ['人物', '事件', '组织'], text_refine_enabled: true, query_count: 4,
     });
   });
 
