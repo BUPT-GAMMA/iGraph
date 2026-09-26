@@ -22,8 +22,8 @@ COPY agent_runtime /app/agent_runtime
 COPY response_language.py model_protocols.py /app/
 # Skill and memory paths share Backend's canonical data-root resolver.
 COPY backend/__init__.py backend/data_paths.py /app/backend/
-# Only the graph engine's shared execution policies are needed here.
-COPY graph_engine/__init__.py graph_engine/tool_execution.py /app/graph_engine/
+# Shared execution policies also import the finance tool contract.
+COPY graph_engine/__init__.py graph_engine/tool_execution.py graph_engine/finance_catalog.py /app/graph_engine/
 COPY execution_protocol.py construction_access.py /app/
 COPY execution_lifecycle.py workspace_storage.py runtime_observability.py /app/
 
