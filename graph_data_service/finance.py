@@ -75,6 +75,7 @@ class Projection:
     invalid_snapshot: bool = False
     digest: str = ""
     semantic_digest: str = ""
+    source_edge_ids: set[str] = field(default_factory=set)
 
     def issue(self, code: str, entity: str | None = None, source_id: str | None = None,
               detail: str = "", blocking: bool = False) -> None:
@@ -147,18 +148,27 @@ def _decimal(value: Decimal) -> str:
     return format(value, "E" if abs(value.as_tuple().exponent) > 100 else "f")
 
 
+def _source_evidence(p: Projection, source_ids: list[str]) -> dict:
+    shown = source_ids[:8]
+    result = {"source_node_ids": [key for key in shown if key not in p.source_edge_ids],
+              "source_count": len(source_ids)}
+    if any(key in p.source_edge_ids for key in shown):
+        result["source_edge_ids"] = [key for key in shown if key in p.source_edge_ids]
+    return result
+
+
 def _entity(p: Projection, key: str) -> dict:
     e = p.entities[key]
     return {"entity_id": key, "business_id": e.business_id, "entity_type": e.kind,
             "name": e.name, "operating_status": e.status,
-            "source_node_ids": e.source_ids[:8], "source_count": len(e.source_ids)}
+            **_source_evidence(p, e.source_ids)}
 
 
 def _fact(p: Projection, f: Fact) -> dict:
     return {"fact_id": f.key, "holder_id": p.entities[f.holder].business_id,
             "holder_entity_id": f.holder, "target_id": p.entities[f.target].business_id,
             "target_entity_id": f.target, "ratio": _decimal(f.ratio),
-            "source_node_ids": f.source_ids[:8], "source_count": len(f.source_ids)}
+            **_source_evidence(p, f.source_ids)}
 
 
 def _resolve(p: Projection, value: Any) -> str:
@@ -179,6 +189,39 @@ def _resolve(p: Projection, value: Any) -> str:
     return matches[0]
 
 
+def _current_records(graph: dict, budget: Budget) -> list[dict]:
+    """Resolve live source cells after lossless construction edits.
+
+    Legacy row documents lack table/row_index metadata. Keep those nodes, but
+    never reconstruct rows from historical collapse snapshots or shortcut edges.
+    """
+    from graph_engine.construction.budget import ConstructionBudgetExceeded, deadline_scope
+    from graph_engine.construction.representation import resolve_rows
+
+    legacy, has_current_rows = [], False
+    for is_edge, elements in ((False, graph.get("nodes", [])), (True, graph.get("edges", []))):
+        for index, element in enumerate(elements):
+            if index % 128 == 0:
+                budget.check()
+            if not isinstance(element, dict):
+                raise FinanceInputError("construction graph elements must be objects")
+            props = element.get("properties") or {}
+            if not isinstance(props, dict):
+                raise FinanceInputError("construction element properties must be an object")
+            if "table" in props or "row_index" in props:
+                has_current_rows = True
+            elif not is_edge:
+                legacy.append(element)
+    if not has_current_rows:
+        return legacy
+    try:
+        with deadline_scope(budget.started + budget.max_seconds):
+            current = resolve_rows({"nodes": graph.get("nodes", []), "edges": graph.get("edges", [])})
+    except ConstructionBudgetExceeded as exc:
+        raise BudgetExceeded("source-row resolution exceeded the elapsed-time budget") from exc
+    return [*current, *legacy]
+
+
 def project_ownership(construction_graph: dict, policy: dict, budget: Budget) -> Projection:
     """Keep original table rows, typed identities and deduplicated fact provenance."""
     p = Projection()
@@ -191,7 +234,9 @@ def project_ownership(construction_graph: dict, policy: dict, budget: Budget) ->
     budget.check(len(nodes), len(edges))
     records = []
     hasher = hashlib.sha256()
-    for i, node in enumerate(nodes):
+    current_records = _current_records(graph, budget)
+    p.source_edge_ids = {row["id"] for row in current_records if "source" in row and "target" in row}
+    for i, node in enumerate(current_records):
         if i % 128 == 0:
             budget.check()
         if not isinstance(node, dict):
@@ -199,11 +244,13 @@ def project_ownership(construction_graph: dict, policy: dict, budget: Budget) ->
         props = node.get("properties") or {}
         if not isinstance(props, dict):
             raise FinanceInputError("construction node properties must be an object")
-        table = _s(node.get("type") or props.get("type") or props.get("table"))
+        table = _s(props.get("table") or node.get("type") or props.get("type"))
         data = props.get("data")
         if table not in TABLES or not isinstance(data, dict):
             continue
-        source = _s(node.get("id"))[:256]
+        source = _s(node.get("id"))
+        if not source or len(source) > 1024:
+            raise FinanceInputError("source record IDs must contain 1 to 1024 characters")
         records.append((table, source, data))
         p.counts[table] += 1
         date = _s(data.get("STATC_DT"))
@@ -562,7 +609,7 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
                 "policy_mode": policy.get("mode", "equity_only"), "rule_status": rule_status,
                 "snapshot_id": next(iter(p.dates)) if len(p.dates) == 1 else None,
                 "input_manifest_hash": p.digest, "complete": p.complete,
-                "input_manifest_hash_semantics": "original table data and source node IDs in input order",
+                "input_manifest_hash_semantics": "resolved current table data and record IDs in representation order",
                 "semantic_hash": p.semantic_digest,
                 "numeric_policy": {"decimal_precision": 50, "economic_precision": 50,
                     "control_and_quality_precision": 110, "input_significant_digits_max": 50,
@@ -662,6 +709,7 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
                 requested_root = _resolve(p, root_id)
                 path_roots = {requested_root} if requested_root in scope else set()
                 result["requested_interest"] = {"root": _entity(p, requested_root), "target_id": p.entities[target].business_id,
+                    "target_entity_id": target,
                     "interest": _decimal(values[requested_root]) if requested_root in values else "0" if requested_root not in scope else None,
                     "complete": not economic["failed"], "scope": "requested_upstream"}
             response["completeness"]["display_truncated"] = len(ranked) > limit or len(economic["reports"]) > limit
@@ -720,9 +768,13 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
         response["scc_review_required"] = review
         response["status"] = "SCC_REVIEW" if review else "CONFIRMED_CONTROL" if len(roots) == 1 else "MULTIPLE_CONTROLLERS" if len(roots) > 1 else "NO_SINGLE_CONTROLLER"
         response["result"] = {"target": _entity(p, target), "ultimate_controller_ids": [p.entities[k].business_id for k in roots[:limit]],
+            "ultimate_controller_entity_ids": roots[:limit],
             "controller_count": len(controllers), "controller_ids": [p.entities[k].business_id for k in controllers[:limit]],
+            "controller_entity_ids": controllers[:limit],
             "intermediate_controller_ids": [p.entities[k].business_id for k in controllers if k not in roots][:limit],
+            "intermediate_controller_entity_ids": [k for k in controllers if k not in roots][:limit],
             "equity_controller_id": p.entities[roots[0]].business_id if len(roots) == 1 and not review else None,
+            "equity_controller_entity_id": roots[0] if len(roots) == 1 and not review else None,
             "confirmed_id": p.entities[roots[0]].business_id if len(roots) == 1 and not review and rule_status != "RULE_DATA_MISSING" else None,
             "controllers": [{**_entity(p, k), "controllable_voting_stake": _decimal(votes[k]),
                              "contributing_facts": [_fact(p, f) for f in proofs[k][:top_k]],
@@ -736,6 +788,7 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
                 if len(proof_dag) >= limit:
                     break
                 proof_dag.append({"controller_id": p.entities[root].business_id,
+                    "controller_entity_id": root, "controlled_entity_id": member,
                     "controlled_id": p.entities[member].business_id, "controllable_voting_stake": _decimal(voting[member]),
                     "contributions": [_fact(p, f) for f in contributions[member][:top_k]],
                     "contribution_count": len(contributions[member]), "complete": len(contributions[member]) <= top_k})
@@ -788,6 +841,7 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
             a, b = edge
             voting, contributions = strict_proofs[edge]
             return {"source": p.entities[a].business_id, "target": p.entities[b].business_id,
+                    "source_entity_id": a, "target_entity_id": b,
                     "controllable_voting_stake": _decimal(voting), "contribution_fact_ids": [f.key for f in contributions[:top_k]],
                     "contribution_count": len(contributions), "evidence_complete": len(contributions) <= top_k}
         response["scc_review_required"] = review

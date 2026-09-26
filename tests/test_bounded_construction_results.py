@@ -50,3 +50,16 @@ def test_mcp_construction_adapter_bounds_before_return_and_retains_scope_headers
     assert observed["X-User-ID"] == "owner"
     assert observed["X-Session-ID"] == "session"
     assert execution_headers.get() == {}
+
+
+def test_bounded_samples_preserve_long_element_ids_for_followup_edits():
+    ids = ["same-prefix-" + "x" * 280 + suffix for suffix in ("A", "B")]
+    edge_id = "relation-" + "e" * 300
+    payload = {"revision": 7, "graph": {"directed": True,
+        "nodes": [{"id": identity, "type": "Entity", "properties": {"description": "x" * 100000}} for identity in ids],
+        "edges": [{"id": edge_id, "source": ids[0], "target": ids[1], "type": "Related", "properties": {}}]}}
+    result = bounded_construction_result("get_constructed_graph", payload)
+    assert result["inspection"]["truncated"]
+    assert [node["id"] for node in result["graph"]["nodes"]] == ids
+    assert result["graph"]["edges"][0] == payload["graph"]["edges"][0]
+    assert len(json.dumps(result, ensure_ascii=False).encode()) <= CONSTRUCTION_RESULT_MAX_BYTES
