@@ -237,3 +237,34 @@ async def test_cancel_atomic_write_removes_partial_file(service, monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await service.executor.query('alice', service.binding, QueryRequest(query='RETURN 1', save_result=True), service.root)
     assert not list(service.root.glob('*'))
+
+
+@pytest.mark.anyio
+async def test_schema_filters_are_applied_before_result_budgets(service):
+    service.driver.schema = True
+    await service.executor.describe('alice', service.binding, labels=['Paper'], relationship_types=['LINKS_TO'])
+    queries = [(q, p) for q, p in service.driver.calls if q.startswith('CALL ')]
+    # Database-side predicates must narrow rows before query() applies row and preview budgets.
+    for query, params in queries:
+        assert 'WHERE' in query[:query.index('RETURN')], query
+        assert params['labels'] == ['Paper'] and params['types'] == ['LINKS_TO']
+
+
+@pytest.mark.anyio
+async def test_requested_relationship_beyond_default_preview_can_be_discovered(service, monkeypatch):
+    from agent_runtime.remote_graph.contracts import QueryResult
+    from agent_runtime.remote_graph.results import bounded_rows
+    rows = [[f':`Other{i}`', 'weight', ['Long']] for i in range(100)] + [[':`Wanted`', 'weight', ['Long']]]
+    async def schema_query(uid, binding, request):
+        if request.query.startswith('CALL db.schema.relTypeProperties'):
+            selected = rows
+            if 'WHERE' in request.query.split('RETURN')[0]:
+                selected = [row for row in rows if row[0] in request.parameters['encoded_types']]
+            preview = bounded_rows(selected, max_rows=100, max_bytes=65536)
+            return QueryResult(success=True, source=binding, query_id='q', rows=preview.rows,
+                columns=['relType', 'propertyName', 'propertyTypes'], returned_rows=len(selected), preview_truncated=preview.truncated)
+        return QueryResult(success=True, source=binding, query_id='q')
+    monkeypatch.setattr(service.executor, 'query', schema_query)
+    result = await service.executor.describe('alice', service.binding, relationship_types=['Wanted'])
+    assert result['properties'] == [{'relationship_type': 'Wanted', 'name': 'weight', 'types': ['Long']}]
+    assert not result['coverage']['truncated']
