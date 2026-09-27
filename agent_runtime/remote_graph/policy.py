@@ -3,22 +3,16 @@ import asyncio
 import ipaddress
 import re
 import socket
-
-from neo4j import Address
+from dataclasses import dataclass
 
 from agent_runtime.execution_store import ControlError
 
 
-class _PinnedAddress(Address):
-    """Pin checked IPs while retaining hostname verification in Neo4j 6.3."""
-    def __new__(cls, address, hostname):
-        instance = tuple.__new__(cls, address)
-        instance.hostname = hostname
-        return instance
-
-    @property
-    def _host_name(self):
-        return self.hostname
+@dataclass(frozen=True)
+class VerifiedAddress:
+    host: str
+    port: int
+    tls_hostname: str
 
 
 class NetworkPolicy:
@@ -50,7 +44,7 @@ class NetworkPolicy:
             if not (any(ip in net for net in self.networks)
                     or (ip.is_global and hostname in self.hosts)):
                 raise ControlError('REMOTE_GRAPH_INVALID_CONFIG', 422)
-        return [_PinnedAddress(item, hostname) for item in addresses]
+        return [VerifiedAddress(str(item[0]), int(item[1]), hostname) for item in addresses]
 
 
 ALLOWED_PROCEDURES = {'db.labels', 'db.relationshiptypes', 'db.schema.nodetypeproperties',

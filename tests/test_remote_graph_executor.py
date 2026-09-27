@@ -21,7 +21,7 @@ def anyio_backend():
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
-    from agent_runtime.remote_graph.neo4j import RemoteGraphExecutor
+    from agent_runtime.remote_graph.executor import RemoteGraphExecutor
     store = ExecutionStore(create_engine(f'sqlite:///{tmp_path}/connections.db'))
     store.migrate()
     catalog = RemoteGraphCatalog(store, SecretBox(Fernet.generate_key().decode()))
@@ -142,6 +142,7 @@ async def test_query_passes_parameters_and_distinguishes_preview_from_saved_limi
     artifact = service.root / result.artifact_path.split('/')[-1]
     payload = json.loads(artifact.read_text())
     assert payload['rows'] == [[1], [2]] and payload['truncated']
+    assert payload['parameters'] == {'value': 1}
     assert payload['source']['revision'] == 1 and payload['query_time']
     assert 'fixture-password' not in artifact.read_text() + result.model_dump_json()
 
@@ -218,6 +219,15 @@ async def test_timeout_cancels_inflight_work(service):
 
 
 @pytest.mark.anyio
+async def test_describe_timeout_keeps_http_408(service):
+    service.executor.settings.remote_graph_timeout_seconds = .02
+    service.driver.stage = 'connect'
+    with pytest.raises(ControlError) as error:
+        await service.executor.describe('alice', service.binding)
+    assert error.value.code == 'REMOTE_GRAPH_TIMEOUT' and error.value.status == 408
+
+
+@pytest.mark.anyio
 async def test_user_defined_function_cannot_bypass_procedure_allowlist(service):
     result = await service.executor.query('alice', service.binding, QueryRequest(query='RETURN evil()'))
     assert result.error_code == 'REMOTE_GRAPH_QUERY_REJECTED'
@@ -246,7 +256,7 @@ async def test_auth_errors_do_not_leak_credentials(service):
 async def test_cancel_atomic_write_removes_partial_file(service, monkeypatch):
     async def stop(_):
         raise asyncio.CancelledError
-    monkeypatch.setattr('agent_runtime.remote_graph.neo4j.asyncio.sleep', stop)
+    monkeypatch.setattr('agent_runtime.remote_graph.executor.asyncio.sleep', stop)
     with pytest.raises(asyncio.CancelledError):
         await service.executor.query('alice', service.binding, QueryRequest(query='RETURN 1', save_result=True), service.root)
     assert not list(service.root.glob('*'))
@@ -265,19 +275,23 @@ async def test_schema_filters_are_applied_before_result_budgets(service):
 
 @pytest.mark.anyio
 async def test_requested_relationship_beyond_default_preview_can_be_discovered(service, monkeypatch):
-    from agent_runtime.remote_graph.contracts import QueryResult
+    from agent_runtime.remote_graph.adapters import AdapterRows
+    from agent_runtime.remote_graph.neo4j import Neo4jAdapter
     from agent_runtime.remote_graph.results import bounded_rows
     rows = [[f':`Other{i}`', 'weight', ['Long']] for i in range(100)] + [[':`Wanted`', 'weight', ['Long']]]
-    async def schema_query(uid, binding, request):
+    async def schema_query(self, ctx, tx, request):
         if request.query.startswith('CALL db.schema.relTypeProperties'):
             selected = rows
             if 'WHERE' in request.query.split('RETURN')[0]:
                 selected = [row for row in rows if row[0] in request.parameters['encoded_types']]
-            preview = bounded_rows(selected, max_rows=100, max_bytes=65536)
-            return QueryResult(success=True, source=binding, query_id='q', rows=preview.rows,
-                columns=['relType', 'propertyName', 'propertyTypes'], returned_rows=len(selected), preview_truncated=preview.truncated)
-        return QueryResult(success=True, source=binding, query_id='q')
-    monkeypatch.setattr(service.executor, 'query', schema_query)
+            bounded = bounded_rows(selected, max_rows=ctx.max_rows, max_bytes=ctx.max_bytes)
+            return AdapterRows(['relType', 'propertyName', 'propertyTypes'], bounded.rows,
+                               bounded.returned_rows, bounded.truncated)
+        return AdapterRows([], [], 0, False)
+    monkeypatch.setattr(Neo4jAdapter, '_execute_tx', schema_query)
+    async def fail_public_query(*args, **kwargs):
+        pytest.fail('describe must not call the public identity query executor')
+    monkeypatch.setattr(service.executor, 'query', fail_public_query)
     result = await service.executor.describe('alice', service.binding, relationship_types=['Wanted'])
     assert result['properties'] == [{'relationship_type': 'Wanted', 'name': 'weight', 'types': ['Long']}]
     assert not result['coverage']['truncated']
