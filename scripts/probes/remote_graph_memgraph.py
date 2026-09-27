@@ -127,6 +127,37 @@ class Probe:
             }
         return {"rejected": False, "plan": plan, "execution": self.query(query, params)}
 
+    @staticmethod
+    def state(snapshot):
+        # Query timing is not database state.
+        return {
+            query: {key: value for key, value in result.items() if key != "elapsed_ms"}
+            for query, result in snapshot.items()
+        }
+
+    @classmethod
+    def same_state(cls, before, after):
+        if (
+            not before
+            or before.keys() != after.keys()
+            or not all(
+                result.get("ok") is True and "rows" in result
+                for snapshot in (before, after)
+                for result in snapshot.values()
+            )
+        ):
+            return None
+        return cls.state(before) == cls.state(after)
+
+    @staticmethod
+    def controls_status(events):
+        statuses = [event["status"] for event in events if event["direct"]["ok"]]
+        if "fail" in statuses:
+            return "fail"
+        if not statuses or "unverified" in statuses:
+            return "unverified"
+        return "pass"
+
     def negative(self, name, query, cleanup=None, params=None):
         self.fixture()
         if cleanup:
@@ -140,22 +171,25 @@ class Probe:
         candidate_before = self.snapshot()
         candidate = self.candidate(query, params)
         candidate_after = self.snapshot()
-        # Strip query timing; state equality must compare values, not elapsed time.
-        state = lambda x: {
-            k: {a: b for a, b in v.items() if a != "elapsed_ms"} for k, v in x.items()
-        }
-        unchanged = state(candidate_before) == state(candidate_after)
-        status = (
-            "pass"
-            if direct["ok"] and candidate["rejected"] and unchanged
-            else "fail" if direct["ok"] else "unverified"
+        positive_unchanged = self.same_state(before, after_positive)
+        positive_changed = (
+            None if positive_unchanged is None else not positive_unchanged
         )
+        unchanged = self.same_state(candidate_before, candidate_after)
+        if not direct["ok"] or positive_changed is None or unchanged is None:
+            status = "unverified"
+        elif positive_changed and candidate["rejected"] and unchanged:
+            status = "pass"
+        else:
+            status = "fail"
         self.events.append(
             {
                 "case": name,
                 "query": query,
                 "direct": direct,
-                "positive_changed_state": state(before) != state(after_positive),
+                "positive_before": before,
+                "positive_after": after_positive,
+                "positive_changed_state": positive_changed,
                 "candidate": candidate,
                 "before": candidate_before,
                 "after": candidate_after,
@@ -166,6 +200,19 @@ class Probe:
         if cleanup:
             self.query(cleanup)
         self.fixture()
+
+    @staticmethod
+    def deadline_status(timeout, server_stopped):
+        return (
+            "pass"
+            if not timeout["ok"]
+            and "time" in timeout.get("error", "").lower()
+            and timeout["elapsed_ms"] < 5000
+            and server_stopped.get("ok") is True
+            and "rows" in server_stopped
+            and not any(SLOW in str(row) for row in server_stopped["rows"])
+            else "unverified"
+        )
 
     def run(self, password):
         version = self.must("SHOW VERSION")
@@ -234,11 +281,7 @@ class Probe:
             self.negative(
                 name, q, cleanup, {"password": password} if name == "admin" else None
             )
-        self.gates["reject_all_controls"] = (
-            "pass"
-            if all(e["status"] == "pass" for e in self.events if e["direct"]["ok"])
-            else "fail"
-        )
+        self.gates["reject_all_controls"] = self.controls_status(self.events)
         self.gates["usable_pre_execution_safety"] = "fail"
         route_only = self.query(
             "CREATE (:__IgraphTask7 {id:'read-route'})", access=READ_ACCESS
@@ -256,14 +299,7 @@ class Probe:
         self.gates["concurrency"] = "pass"
         timeout = self.query(SLOW)
         server_stopped = self.query("SHOW TRANSACTIONS")
-        self.gates["server_deadline"] = (
-            "pass"
-            if not timeout["ok"]
-            and "time" in timeout.get("error", "").lower()
-            and timeout["elapsed_ms"] < 5000
-            and not any(SLOW in str(r) for r in server_stopped.get("rows", []))
-            else "unverified"
-        )
+        self.gates["server_deadline"] = self.deadline_status(timeout, server_stopped)
         short_deadline = self.query(Query(SLOW, timeout=0.1))
         cancel = self.cancel_probe()
         disconnect = asyncio.run(self.disconnect_probe(password))

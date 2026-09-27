@@ -22,7 +22,7 @@
 | Task 4 `8750275`、`560a0c3` | 原始 120 项、修复后 103 项相关回归与最终 10 个 FalkorDB live 通过；独立审查发现省略投影的列表推导仍可进入，修复后复审通过。真实 TLS、连接/读取取消隔离、有界帧解析及 Cora manifest 验证见历史记录。 |
 | Task 5 `47d4786` | 576 个前端测试、50 个 Python 测试通过，1 个已知 PG 主机跳过，TypeScript/Vite 通过；独立规格/质量审查无问题。 |
 | Task 6 `023aadd`、`3e8d6e3` | 可信方言引用、参数 schema、真实模型/浏览器及参数实际影响过滤验收；完整独立审查无 Critical/Important，Minor 已修复，控制器确认最终审查通过。下列回答证据质量仍未完全通过。 |
-| Task 7 本文件此次更新所属提交 | Memgraph/NebulaGraph 隔离实例与可重复探针，分项结论见专门报告；实现者自查完成，仍待控制器安排独立审查。未改变第一批 A 的 verified 状态。 |
+| Task 7 `b530c33` 及本次探针修复 | Memgraph/NebulaGraph 隔离实例与可重复探针，分项结论见专门报告；首次独立审查通过并提出 3 项 Minor；已补快照/期限判断与认证清理及 37 项聚焦回归，修复提交待控制器范围复审。未改变第一批 A 的 verified 状态。 |
 
 私密凭据位置：`.env.neo4j-test`、`.env.falkordb-test` 均为 Git 忽略、0600；FalkorDB 密码文件 `output/multi-database-phase1/private/falkordb-password` 为 0600，父目录 0700。迁移前备份 `output/multi-database-phase1/private/pre-migration-remote-graphs.dump` 和指纹仅供本机维护，不公开内容。
 

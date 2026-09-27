@@ -74,7 +74,7 @@ INSERT、UPDATE、DELETE、CREATE TAG、DROP TAG、CREATE USER、SUBMIT JOB STAT
 
 取消探针提前创建 worker 与 observer session 并分别 USE 固定 space，启动事件同步后并发执行有界 1000×1000 行计数与 `SHOW LOCAL QUERIES`。最终轮工作查询约 122 毫秒返回 1000000；观察列表仅见 observer 自己，没有捕获 worker 的 SessionID/ExecutionPlanID，因此**没有发出 KILL QUERY，主动取消仍未验证**。独立新 observer 的后快照成功，任务自然结束。原先 200000 行的短轮次及 `nebula-final.json` 中错误的 released-session 后观察保留作诊断，均不当取消通过；后者明确由 `nebula-final2.json` 的成功独立后观察替代。没有继续放大负载。官方存在 KILL 语法，不因本轮观察窗口失败声称该能力不存在。
 
-客户端 4 秒 socket timeout 与 storage RPC timeout 都不构成通用服务器 wall-clock deadline；本轮未找到并验证该约束。服务器主动取消、客户端断开后的结束保证、查询级内存覆盖，以及有界 Thrift 响应解码仍需验证。`SHOW HOSTS` 中广告地址为内部 `graphd:9669` / `storaged:9779`，本轮 ConnectionPool 仅配置固定回环入口并禁用 session 重连；未测试服务器 IP 更换、TLS、其他驱动发现/重连路径。客户端在错误密码负控后关闭 pool 会记录 `Closing a connection that is in use` 警告，日志如实保留；不称日志完全无警告。
+客户端 4 秒 socket timeout 与 storage RPC timeout 都不构成通用服务器 wall-clock deadline；本轮未找到并验证该约束。服务器主动取消、客户端断开后的结束保证、查询级内存覆盖，以及有界 Thrift 响应解码仍需验证。`SHOW HOSTS` 中广告地址为内部 `graphd:9669` / `storaged:9779`，本轮 ConnectionPool 仅配置固定回环入口并禁用 session 重连；未测试服务器 IP 更换、TLS、其他驱动发现/重连路径。初次验收客户端在错误密码负控后关闭 pool 曾记录 `Closing a connection that is in use` 警告，原日志如实保留；后续审查修复采用独占 SDK Connection 并显式关闭，认证专用实测已无该警告，见下文。
 
 ## 复现与结果约定
 
@@ -110,3 +110,16 @@ docker compose -f deploy/nebula-probe.compose.yaml up -d --build
 最终执行两个专用 Compose 的 `up -d --build`，各数据库与入口健康；又分别重启 Memgraph 与 graphd，重复相同探针，`memgraph-repeat.json` / `nebula-repeat.json` 的准入矩阵与前轮一致，凭据与持久数据保留。未扩大负载。本机地址为 `bolt://127.0.0.1:21189`、Nebula `127.0.0.1:21190`。它们是开发探针环境，当前产品 UI 不提供这两个类型。静态编译、Compose 校验、重复 live 采集、私密值扫描及五个既有脏文件哈希核对均通过，命令和断言见 [validation-final.json](../../output/multi-database-phase1/task7/validation-final.json)。产品没有代码变化，未无故重建现有 `igraph` 或 A 产品数据库。
 
 依据：[Task 7 原计划](../superpowers/plans/2026-09-27-multi-database-graph-qa-phase1.md)、[调研输入与官方源码链接](../research/2026-09-27-memgraph-nebula-probe-inputs.md)、[Memgraph EXPLAIN 官方说明](https://memgraph.com/docs/querying/clauses/explain)、[Nebula EXPLAIN/PROFILE 官方说明](https://docs.nebula-graph.io/3.8.0/3.ngql-guide/17.query-tuning-statements/1.explain-and-profile/)、[Nebula KILL QUERY 官方说明](https://docs.nebula-graph.io/3.8.0/3.ngql-guide/17.query-tuning-statements/6.kill-query/)。官方语法是候选依据，本报告的通过/失败以固定版本实测为准。
+
+
+## 审查后的探针健壮性修复（2026-09-28）
+
+首次独立审查通过，并提出三项 Minor。本次只修改探针、聚焦测试和文档，不增加工作负载、不重跑写入矩阵、不调用模型，也未修改 Compose/服务镜像或重建产品服务。
+
+- 两个脚本要求正控和负控的观察均成功、非空且具有相同查询集合。观察失败/缺少结果时为 `unverified`，不把失败响应比较相等当作数据库状态不变；成功但未实际改变状态的正控为 `fail`。只有确认正控改变状态、候选拒绝、负控前后不变才为 `pass`，汇总保留失败/未验证状态，零个有效正控不能通过。以后输出同时保留 `positive_before` / `positive_after` 原始快照。
+- Memgraph 服务器期限判定必须有成功的 `SHOW TRANSACTIONS` 结果并确认目标已消失；观察错误或缺少 rows 不能当作空列表和已终止。
+- Nebula 3.8.3 的 `ConnectionPool.get_session` 在认证失败后留下池连接占用标记。认证负控及 bootstrap 认证检查改为独占 SDK `Connection`，认证成功时 signout，所有路径最终 close；没有过滤日志或修改 SDK。实际只执行一次正确/一次错误认证，错误返回 `AuthFailedException`，无清理警告，未执行查询或修改图。
+
+`.venv/bin/python -m pytest tests/test_remote_graph_probe_evidence.py -q`：RED **30 失败 / 7 通过**，修复后 **37 通过**。覆盖失败/缺失/空快照、无变化正控、未拒绝/仍修改状态、汇总失败传播、服务器观察失败及认证关闭/异常保留。[RED 日志](../../output/multi-database-phase1/task7-review-fix/red.log)、[最终 GREEN](../../output/multi-database-phase1/task7-review-fix/green-final.log)、[认证实测](../../output/multi-database-phase1/task7-review-fix/auth-only.json)、[认证日志](../../output/multi-database-phase1/task7-review-fix/auth-only.log)。
+
+只读回放命令：`PYTHONPATH=. .venv/bin/python output/multi-database-phase1/task7-review-fix/replay.py`。四份 final/repeat 报告、40 个已有控制状态及准入矩阵保持一致，两个产品仍不准入；[回放结果及源文件 SHA256](../../output/multi-database-phase1/task7-review-fix/replay.json)。**回放限制：旧 JSON 只有 `positive_changed_state`，没有原始正控前后快照；本次依赖其记录的变化标记，不伪称重新验证了缺失的观察。** 候选前后快照及 Memgraph 期限观察则确有原始成功结果可复核。原报告/日志未被改写。

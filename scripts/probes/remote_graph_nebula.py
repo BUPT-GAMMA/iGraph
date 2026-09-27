@@ -16,6 +16,7 @@ import threading
 
 from nebula3.Config import Config
 from nebula3.gclient.net import ConnectionPool
+from nebula3.gclient.net.Connection import Connection
 
 SPACE = "qa_task7"
 SLOW = "UNWIND range(1,1000) AS x UNWIND range(1,1000) AS y RETURN count(*) AS n"
@@ -163,6 +164,29 @@ class Probe:
             "plan": plan,
         }
 
+    @classmethod
+    def same_state(cls, before, after):
+        if (
+            not before
+            or before.keys() != after.keys()
+            or not all(
+                result.get("ok") is True and "rows" in result
+                for snapshot in (before, after)
+                for result in snapshot.values()
+            )
+        ):
+            return None
+        return cls.state(before) == cls.state(after)
+
+    @staticmethod
+    def controls_status(events):
+        statuses = [event["status"] for event in events if event["direct"]["ok"]]
+        if "fail" in statuses:
+            return "fail"
+        if not statuses or "unverified" in statuses:
+            return "unverified"
+        return "pass"
+
     def negative(self, name, q, cleanup=None):
         self.fixture()
         if cleanup:
@@ -176,23 +200,30 @@ class Probe:
         candidate_before = self.snapshot()
         candidate = self.candidate(q)
         candidate_after = self.snapshot()
-        unchanged = self.state(candidate_before) == self.state(candidate_after)
+        positive_unchanged = self.same_state(before, positive_after)
+        positive_changed = (
+            None if positive_unchanged is None else not positive_unchanged
+        )
+        unchanged = self.same_state(candidate_before, candidate_after)
+        if not direct["ok"] or positive_changed is None or unchanged is None:
+            status = "unverified"
+        elif positive_changed and candidate["rejected"] and unchanged:
+            status = "pass"
+        else:
+            status = "fail"
         self.events.append(
             {
                 "case": name,
                 "query": q,
                 "direct": direct,
-                "positive_changed_state": self.state(before)
-                != self.state(positive_after),
+                "positive_before": before,
+                "positive_after": positive_after,
+                "positive_changed_state": positive_changed,
                 "candidate": candidate,
                 "before": candidate_before,
                 "after": candidate_after,
                 "state_unchanged": unchanged,
-                "status": (
-                    "pass"
-                    if direct["ok"] and unchanged
-                    else "fail" if direct["ok"] else "unverified"
-                ),
+                "status": status,
             }
         )
         if cleanup:
@@ -357,9 +388,7 @@ class Probe:
             "native_read_params_types": "pass",
             "schema": "pass",
             "candidate_read": "fail",
-            "reject_all_controls": (
-                "pass" if all(e["state_unchanged"] for e in self.events) else "fail"
-            ),
+            "reject_all_controls": self.controls_status(self.events),
             "usable_pre_execution_safety": "fail",
             "concurrency": "pass",
             "active_cancel": cancel["status"],
@@ -388,6 +417,20 @@ class Probe:
             "gates": gates,
             "admitted": False,
         }
+
+
+def authentication_probe(password):
+    """Own the socket: SDK 3.8.3 get_session leaks the lease on auth failure."""
+    connection = Connection()
+    try:
+        connection.open("127.0.0.1", 21190, 4000)
+        auth = connection.authenticate("root", password)
+        connection.signout(auth.get_session_id())
+        return {"ok": True}
+    except Exception as error:
+        return {"ok": False, "error_type": type(error).__name__, "error": str(error)}
+    finally:
+        connection.close()
 
 
 def main():
@@ -421,7 +464,7 @@ def main():
     password = json.loads(args.credentials.read_text())["nebula"]
     assert len(password) == 24 and all(c in "0123456789abcdef" for c in password)
     probe = Probe(password)
-    if args.bootstrap and not probe.query("RETURN 1", space=False)["ok"]:
+    if args.bootstrap and not authentication_probe(password)["ok"]:
         session = probe.pool.get_session("root", "nebula", retry_connect=False)
         result = session.execute(f'CHANGE PASSWORD root FROM "nebula" TO "{password}"')
         session.release()
@@ -429,9 +472,7 @@ def main():
         time.sleep(2)
         probe.pool.close()
         probe = Probe(password)
-    wrong = Probe("intentionally-wrong-password")
-    auth = wrong.query("RETURN 1", space=False)
-    wrong.pool.close()
+    auth = authentication_probe("intentionally-wrong-password")
     assert (
         not auth["ok"] and auth["error_type"] == "AuthFailedException"
     ), "Authentication is not enforced"
