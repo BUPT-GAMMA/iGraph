@@ -151,3 +151,11 @@ FalkorDB Adapter 已通过专用可写账号下的协议、安全、Cora 与边�
 - QA Compose 现有专用服务新增独立 `igraph-falkordb-qa_falkordb-qa-data` 持久卷和 AOF/RDB；没有删除任何已有卷。私有环境 `.env.falkordb-test` 与密码文件 `output/multi-database-phase1/private/falkordb-password` 均为 0600；复现时先 `set -a; source .env.falkordb-test; set +a`，不要打印变量。证据目录为 `output/multi-database-phase1/task4-falkordb/`，Task 1 原始证据保持。
 
 运行：`.venv/bin/python -m pytest tests/test_falkordb_adapter.py tests/test_import_cora_falkordb.py -q`，以及加载私有测试环境后 `.venv/bin/python -m pytest tests/test_falkordb_integration.py --require-live -q`。管理导入入口为 `.venv/bin/python -m scripts.import_cora_falkordb --input cora.pt --manifest output/multi-database-phase1/task4-falkordb/cora-manifest.json --expected-sha256 <既有可信manifest的source_sha256>`。
+
+## 2026-09-28 最终审查修复：隐式表达式与观察证据
+
+最终审查发现 FalkorDB 4.20.7 的普通列表构造和重载 `+` 能在 RESP 读取之前复制堆值；以 16,384 次引用、128 KiB 参数组成的请求能通过旧策略，名义复制量为 2 GiB。此复现只在离线策略测试运行，未发送到数据库，也不声称实测 OOM。新表达式边界在连接前拒绝动态列表、全部 map 构造/投影、数组切片和未证明数字类型的 `+`。列表仅接受纯字面量，整条查询累计最多 128 个标量/嵌套列表项、4 层和 4096 UTF-8 字节字面量源码；括号/方括号嵌套最多 32 层。`+` 接受数字字面量、数字括号算式或显式 toFloat/toInteger 操作数。固定 MATCH 关系、单值索引、WHERE 参数过滤、普通 collect、既有元数据读取保留；collect 内外的构造同样受限。不能从属性名或常量别名推断类型；原来的动态常量别名列表也明确收窄。方言参考已同步，Agent loop、默认模型及按需加载机制不变。该边界不是通用 Cypher 解析器，也不声称所有 vendor 原生执行路径均已证明安全。
+
+Memgraph disconnect_probe 现在保留首次观察和取消后的每次观察原文、成功状态及错误。仅成功且 rows/query 结构有效的观察能证明目标缺席；观察失败返回 status=unverified、server_stopped=false，running=null。这修复证据生成逻辑，不反推旧服务器未停止；Memgraph/Nebula 仍未准入。
+
+本轮相关后端 **253 通过、1 个隔离 PG 环境跳过**；双库及协议 `--require-live` **26 通过、0 跳过**。慢查询只把原有四个数字属性改为显式 toFloat 后相加，数据规模、期限与取消断言保留；微型列表/索引及数字结果均实际验证。离线复核历史成功 Falkor 模型查询 **10 次调用、4 种文本，0 条新增拒绝**，未改历史证据，未重新运行模型/浏览器/前端全套。当前 igraph agent-runtime 已按现有双 Compose 文件 --no-deps 重建启动并 healthy；21108 与 21109/health 均 200，五份原始用户改动文件哈希保持。详细根因、来源、RED/GREEN、命令、部署记录、最终 SHA 及限制见 `output/multi-database-phase1/final-fix/report.md`；既有回答质量与全仓测试限制仍然有效。

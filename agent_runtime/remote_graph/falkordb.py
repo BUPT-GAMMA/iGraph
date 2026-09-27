@@ -6,6 +6,7 @@ from agent_runtime.execution_store import ControlError
 from .adapters import AdapterRows
 from .contracts import QueryRequest
 from .falkor_protocol import open_connection, reject, remaining
+from .falkor_expressions import check_expressions
 from .falkor_values import decode_rows, has_entities, parameter_prefix
 from .policy import _TOKENS
 from .results import RowBudget
@@ -19,6 +20,7 @@ SYNTAX = {'match','optional','where','with','return','in','and','or','xor','not'
 
 
 def check_query(query):
+    check_expressions(query)
     tokens=[]
     quoted_identifiers=set()
     for match in _TOKENS.finditer(query):
