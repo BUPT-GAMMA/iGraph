@@ -31,11 +31,11 @@ async def test_unknown_kind_query_never_uses_catalog(monkeypatch):
     assert not result.success and result.error_code == 'REMOTE_GRAPH_INVALID_CONFIG'
 
 
-def test_disabled_kind_is_not_executable_or_selectable():
+def test_admitted_products_are_executable_and_selectable():
     from agent_runtime.remote_graph.registry import get_adapter, list_database_types
 
     available = list_database_types()
-    assert {entry['kind'] for entry in available} == {'neo4j'}
+    assert {entry['kind'] for entry in available} == {'neo4j', 'falkordb'}
     assert available[0]['display_name'] == 'Neo4j'
     assert available[0]['query_language'] == 'cypher'
     assert available[0]['target_label'] == 'Database'
@@ -43,8 +43,10 @@ def test_disabled_kind_is_not_executable_or_selectable():
     assert available[0]['support_status'] == 'verified'
     assert available[0]['verified_versions'] == '5.26.31 community'
     assert available[0]['uri_example'].startswith('bolt+s://')
-    with pytest.raises(ControlError, match='REMOTE_GRAPH_INVALID_CONFIG'):
-        get_adapter('falkordb')
+    from agent_runtime.remote_graph.falkordb import FalkorDBAdapter
+    assert isinstance(get_adapter('falkordb'), FalkorDBAdapter)
+    assert available[1]['support_status'] == 'experimental'
+    assert available[1]['cancellation'] is False
 
 
 def test_disabled_registered_adapter_cannot_execute(monkeypatch):
@@ -54,7 +56,7 @@ def test_disabled_registered_adapter_cannot_execute(monkeypatch):
     monkeypatch.setitem(registry._REGISTRY, 'neo4j', {**registered, 'enabled': False})
     with pytest.raises(ControlError, match='REMOTE_GRAPH_INVALID_CONFIG'):
         registry.get_adapter('neo4j')
-    assert registry.list_database_types() == []
+    assert 'neo4j' not in {entry['kind'] for entry in registry.list_database_types()}
 
 
 @pytest.mark.anyio

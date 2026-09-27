@@ -3,6 +3,7 @@ from agent_runtime.execution_store import ControlError
 
 from .adapters import GraphAdapter
 from .neo4j import Neo4jAdapter
+from .falkordb import FalkorDBAdapter
 
 
 _REGISTRY: dict[str, dict] = {
@@ -16,12 +17,12 @@ _REGISTRY: dict[str, dict] = {
         'cancellation': True,
     },
     'falkordb': {
-        'adapter': None, 'enabled': False,
+        'adapter': FalkorDBAdapter(), 'enabled': True,
         'display_name': 'FalkorDB', 'query_language': 'cypher',
         'uri_example': 'rediss://db.example.com:6379', 'target_label': 'Graph',
-        'username_required': False, 'support_status': 'pending',
-        'verified_versions': '', 'parameters': False,
-        'schema_coverage': '', 'server_timeout': False,
+        'username_required': False, 'support_status': 'experimental',
+        'verified_versions': '4.20.7 (module 42007)', 'parameters': True,
+        'schema_coverage': 'bounded metadata and sampled properties', 'server_timeout': True,
         'cancellation': False,
     },
 }
