@@ -204,3 +204,23 @@ def test_admin_import_foreign_target_refused_and_exact_batch_resumes(live):
         assert admin.execute_command('GRAPH.RO_QUERY',dedicated,'MATCH ()-[r]->() RETURN count(r)')[1]==[[1]]
         with pytest.raises(ValueError): import_graph(admin,dedicated,nodes,edges,'different-hash')
     finally: admin.execute_command('GRAPH.DELETE',dedicated)
+
+
+@pytest.mark.anyio
+async def test_list_comprehension_policy_preserves_literal_and_index_queries(live):
+    _,_,ctx=live
+    adapter=FalkorDBAdapter()
+    rejected=[
+        'RETURN [x IN [1,2,3] WHERE x > 1]',
+        'RETURN [x IN [1,2,3]]',
+        'RETURN [x /* binding */ IN /* source */ [1,2,3]]',
+        'RETURN [`item value` IN [1,2,3] WHERE `item value` > 1]',
+    ]
+    for query in rejected:
+        with pytest.raises(ControlError,match='REMOTE_GRAPH_QUERY_REJECTED'):
+            await adapter.execute(ctx(),QueryRequest(query=query))
+    literal=await adapter.execute(ctx(),QueryRequest(
+        query='WITH 2 AS `in` RETURN [1, /* x IN [1,2,3] */ `in`,3][1], ["x IN [1,2,3]"]'))
+    assert literal.rows==[[2,['x IN [1,2,3]']]]
+    capture('list_comprehension_policy',{'rejected_queries':rejected,'literal_and_index_rows':literal.rows,
+                                        'finding':'resource-policy mismatch, not proven OOM'})

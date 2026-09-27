@@ -32,6 +32,15 @@ def check_query(query):
         reject()
     brackets = 0
     for i,token in enumerate(tokens):
+        # A list comprehension starts with a variable binding, even when its
+        # WHERE predicate and projection pipe are both omitted. Comments have
+        # already been removed; quoted identifiers remain distinct from IN.
+        if (token == '[' and i not in quoted_identifiers
+                and i + 2 < len(tokens)
+                and (i + 1 in quoted_identifiers
+                     or re.fullmatch(r'[^\W\d]\w*', tokens[i + 1]))
+                and tokens[i + 2] == 'in' and i + 2 not in quoted_identifiers):
+            reject()
         brackets += (token == '[') - (token == ']')
         if brackets > 0 and token in {'*', '|'}:
             reject()
