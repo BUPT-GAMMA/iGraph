@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from functools import lru_cache
@@ -11,6 +12,19 @@ from agno.skills import LocalSkills, Skills
 
 import backend.data_paths as _dp
 from agent_runtime.config import AgentRuntimeConfig
+
+
+class ReadableSkills(Skills):
+    """Keep Unicode instructions readable in the model's tool message.
+
+    Agno returns a JSON string which model adapters pass through verbatim.
+    Decoding only at the UI boundary leaves the model reading escape sequences.
+    Preserve the upstream payload while serializing its text without ASCII escapes.
+    """
+
+    def _get_skill_instructions(self, skill_name: str) -> str:
+        result = super()._get_skill_instructions(skill_name)
+        return json.dumps(json.loads(result), ensure_ascii=False)
 
 
 def bundled_skills_source_path() -> Path:
@@ -66,7 +80,7 @@ def build_skills(config: AgentRuntimeConfig, user_id: str) -> Skills:
     active_user_dir = user_skills_path(config, user_id)
     candidate_skills_path(config, user_id).mkdir(parents=True, exist_ok=True)
     active_user_dir.mkdir(parents=True, exist_ok=True)
-    return Skills(
+    return ReadableSkills(
         loaders=[
             LocalSkills(str(bundled_skills_path(config))),
             # Candidate Skills are deliberately excluded until approval.
