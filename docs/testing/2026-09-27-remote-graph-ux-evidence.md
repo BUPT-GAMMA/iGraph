@@ -58,7 +58,7 @@
 
 - `failed-facts-9/`：两组原问题均通过，主会话第三轮将导入器说明误列为当前库已确认来源；明确区分导入器文档和连接来源证明后重跑。`passed-confirmation-9/` 的四轮核心数据库事实独立审查通过，但仍有显式未确认的公开数据集类比，记录为表达偏差。
 
-## 当前版本真实模型验收：未通过
+## 转义修复前的真实模型验收：未通过
 
 实际模型：qwen3.6-plus。两次四轮链路测试均完成，实际加载的 skill 正文与当前文件一致；这只说明采集与执行链路成功。
 
@@ -79,6 +79,26 @@
 - 持久化消息不是上游 HTTP 请求抓包；历史消息可能在保存时被省略。因此不能据此断言后续请求遗漏技能正文，也不能断言模型服务实际收到的完整上下文与持久化记录完全相同。
 
 诊断结论仍为：规则已在首轮执行链路加载，回答却出现超出证据的表述；当前证据不足以定位更底层原因。单纯继续增加规则没有得到稳定改善，本次保留失败证据交由独立验收，不扩大为模型替换或 Agent 架构改造。
+
+## 技能传输修复与当前版本验收
+
+随后检查 Agno 实现，发现 `get_skill_instructions` 使用默认 `json.dumps`，把中文编码为字面量 `\uXXXX`；OpenAI-compatible 适配器将该 JSON 字符串原样作为模型消息内容。应用界面后来解码出的正常中文不能证明模型收到的也是可读中文。
+
+`ReadableSkills` 保留 Agno 生成的完整 JSON 数据，只使用 `ensure_ascii=False` 重新序列化技能正文工具结果。它不改变技能内容、权限规则、全局提示词、工具选择或 Agent 循环。真实运行的持久化工具消息从 13,663 字符、2,078 个 Unicode 转义，减少为 3,273 字符、零 Unicode 转义，解码后的同一版正文均为 2,992 字符，见 [actual-transport.json](../../output/remote-graph-test/ux-evidence/serialization-probe/actual-transport.json)。新回归经过真实适配器格式化，先失败后通过；它验证传输行为，不代表回答质量通过。
+
+使用保存的真实首轮查询结果做了四组、每组五次模型回放：原转义中文、可读中文、英文候选和未添加证据规则的旧技能。回放不执行 Agent 工具循环，不替代真实验收。原转义中文五次均增加“特征向量”等释义；可读中文减少此类扩写，但仍存在其他偏差；英文候选没有改善，未采用。完整回答保留在 [serialization-probe/results.json](../../output/remote-graph-test/ux-evidence/serialization-probe/results.json)。这支持传输修复和进一步验证，不足以把转义认定为全部事实错误的根因。
+
+仅修复传输后的两个真实会话保留在 `unicode-live/`、`unicode-confirmation/`，仍未通过逐事实审查。随后在远程技能中增加三个通用例子，说明全库与标签计数、非空范围与总体覆盖、未查询定义与数据库内不存在定义的区别。工具顺序、次数仍由 Agent 决定。
+
+**最终两组真实四轮验收仍未通过**，证据为 [scoped-live/fact-evidence.json](../../output/remote-graph-test/ux-evidence/scoped-live/fact-evidence.json) 与 [scoped-confirmation/fact-evidence.json](../../output/remote-graph-test/ux-evidence/scoped-confirmation/fact-evidence.json)。独立审查确认：
+
+- 主会话第一轮仅查全库数量，却断言所有节点都有 Paper 标签；第三轮在没有读取定义内容的情况下断言库内无映射/元数据，还从属性名解释 `_igraph_import` 的含义。
+- 确认会话第四轮建议把写入被拒绝作为只读权限证明。单次写入失败不能证明全部权限，该建议也违反技能对写入验证的限制；实际没有执行写入探针。
+- 两组第二轮均实际查询了非空覆盖，数组长度及覆盖结论已有证据；这是具体改善，不抵消其他轮次的失败。
+
+追加验证：相关远程模块、技能 API 和真实 Neo4j 共 **119 项通过**（`serialization-probe/backend-regression.log`）；最终技能/接口 **28 项通过**（`serialization-probe/final-skill-tests.log`）；最终版本的原有八轮 Agent 回归 **通过，135.19 秒**（`unicode-existing-agent/live.log`），含工作区报告、写入拒绝与注入验证。两份独立代码审查均无新的重要问题。Runtime 已重新构建并启动；服务状态、HTTP 200 和凭据扫描记录在 `serialization-probe/verification.json`。
+
+当前交付仍含上述回答质量未完成项。已向用户提出后续范围选择：评估其他配置模型、设计额外证据核验机制，或按已知限制验收本轮；在用户决定前保持当前默认模型与 Agent 流程。
 
 
 ## 截图
