@@ -14,3 +14,33 @@
 .remote-query-table { overflow-x: auto; max-height: 320px; }
 .remote-query-table th, .remote-query-table td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border, #eee); max-width: 420px; overflow-wrap: anywhere; }
 .remote-source-indicator { font-size: 12px; padding: 6px 14px; color: var(--text-secondary, #666); }
+.remote-graph-drawer { color: var(--text-primary); font-size: 13px; }
+.remote-intro, .remote-graph-drawer small { color: var(--text-secondary); line-height: 1.6; }
+.remote-graph-drawer h3 { font-size: 15px; margin: 0; }
+.remote-list-heading, .remote-connection-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.remote-list-heading { margin-top: 24px; }
+.remote-graph-drawer button { min-height: 34px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text-primary); font: inherit; overflow-wrap: anywhere; }
+.remote-graph-drawer button:hover:not(:disabled) { background: var(--surface-subtle); }
+.remote-graph-drawer button.is-primary { background: var(--accent-solid); color: #fff; border-color: var(--accent-solid); }
+.remote-graph-drawer button.is-danger { color: var(--danger-text); }
+.remote-graph-drawer :is(button,input):focus-visible, .remote-query-result summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.remote-connection-row { border-radius: 10px; padding: 16px; }
+.remote-connection-row.is-selected { border-color: var(--accent-border); background: var(--accent-soft); }
+.remote-connection-title { margin-bottom: 8px; overflow-wrap: anywhere; }
+.remote-badge { width: fit-content; font-size: 11px; color: var(--accent); background: var(--accent-soft); padding: 4px 8px; border-radius: 6px; }
+.remote-empty { text-align: center; color: var(--text-secondary); padding: 40px 16px; margin-top: 16px; border: 1px dashed var(--border); border-radius: 10px; }
+.remote-feedback { padding: 12px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); line-height: 1.6; overflow-wrap: anywhere; }
+.remote-feedback.is-success { background: color-mix(in srgb, var(--success-text) 8%, transparent); color: var(--success-text); }
+.remote-graph-drawer .remote-feedback.is-error, .remote-query-result [role=alert] { background: var(--danger-soft); color: var(--danger-text); }
+.remote-graph-drawer .remote-back { margin-top: 16px; border: 0; padding-left: 0; color: var(--text-secondary); }
+.remote-connection-form { margin-top: 16px; gap: 18px; }
+.remote-connection-form label { gap: 7px; }
+.remote-connection-form input { box-sizing: border-box; min-width: 0; background: var(--surface); color: var(--text-primary); font: inherit; }
+.remote-form-actions { padding-top: 16px; border-top: 1px solid var(--border); justify-content: flex-end; }
+.remote-disconnect { display: grid; gap: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+.remote-disconnect button { justify-self: start; }
+.remote-query-result details { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.remote-query-result summary { cursor: pointer; color: var(--text-secondary); }
+.remote-query-result pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.remote-query-warning { color: var(--text-primary); background: var(--surface-subtle); border-left: 3px solid var(--accent); padding: 8px 10px; }
+@media (max-width: 520px) { .remote-graph-drawer { padding: 18px; width: 100%; max-width: 100%; box-sizing: border-box; } .remote-actions > button { flex: 1 1 auto; } }
