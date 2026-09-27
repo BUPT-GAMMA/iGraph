@@ -3,6 +3,10 @@ import { afterEach, expect, it } from 'vitest';
 import { RemoteGraphQueryResult } from './RemoteGraphQueryResult';
 afterEach(cleanup);
 const result = { success: true, query_id: 'q1', source: { connection_id: 'c', revision: 2, name: 'Cora', database: 'neo4j', kind: 'neo4j' }, columns: ['count'], rows: [[2708]], returned_rows: 50, truncated: false, preview_truncated: true, elapsed_ms: 4, artifact_path: 'Ephemeral/remote_graph/q1.json' };
+it('identifies a FalkorDB historical result by its frozen source', () => {
+  render(<RemoteGraphQueryResult result={{ ...result, source: { ...result.source, kind: 'falkordb', database: 'cora' } }} />);
+  expect(screen.getByText('FalkorDB · Cora · cora')).toBeTruthy();
+});
 it('shows saved source, bounded count and separate preview limitation', () => {
   render(<RemoteGraphQueryResult result={JSON.stringify(result)} />);
   expect(screen.getByText(/Cora/)).toBeTruthy(); expect(screen.getByText('2708')).toBeTruthy();

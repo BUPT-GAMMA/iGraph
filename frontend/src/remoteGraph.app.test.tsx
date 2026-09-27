@@ -11,7 +11,10 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   listServerDatasets: vi.fn().mockResolvedValue({ datasets: [] }),
   getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: false }),
   activateSession: vi.fn(), visualizeGraph: vi.fn().mockRejectedValue(new Error('no graph')),
-  listRemoteGraphs: vi.fn(), selectRemoteGraph: vi.fn(), setSessionDataset: vi.fn(),
+  listRemoteGraphs: vi.fn(), listRemoteGraphTypes: vi.fn().mockResolvedValue({ types: [
+    { kind: 'neo4j', display_name: 'Neo4j', query_language: 'cypher', uri_example: 'bolt+s://db.example.com:7687', target_label: 'Database', username_required: true, support_status: 'verified' },
+    { kind: 'falkordb', display_name: 'FalkorDB', query_language: 'cypher', uri_example: 'rediss://db.example.com:6379', target_label: 'Graph', username_required: false, support_status: 'experimental' },
+  ] }), selectRemoteGraph: vi.fn(), setSessionDataset: vi.fn(),
   createSession: vi.fn().mockResolvedValue({ session_id: 'new-s', model: 'model', active_dataset_id: null }),
 }));
 import App from './main';
@@ -39,7 +42,7 @@ it('selects remote B while retaining local A and restores both after remount', a
   vi.mocked(activateSession).mockResolvedValue({ model: 'model', active_dataset_id: 'local', remote_graph: binding, messages: [], active_run: null });
   render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
   await screen.findByRole('button', { name: /Local A/ });
-  await screen.findByText('Remote: Cora · neo4j');
+  await screen.findByText('Remote: Neo4j · Cora · neo4j');
   expect(setSessionDataset).not.toHaveBeenCalled();
 });
 it('creates an empty conversation for remote selection without requiring a local upload', async () => {
@@ -57,10 +60,16 @@ it('reconciles an edited selected connection while preserving historical query s
     messages: [{ id: 'old-answer', role: 'assistant', content: 'Previous answer', tools: [{ tool: 'query_remote_graph', done: true, result: historic }] }], active_run: null });
   vi.mocked(listRemoteGraphs).mockResolvedValue({ connections: [{ ...connection, name: 'New target', database: 'other', revision: 3 }] });
   render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
-  await screen.findByText('Remote: Cora · neo4j');
+  await screen.findByText('Remote: Neo4j · Cora · neo4j');
   await userEvent.click(screen.getByRole('button', { name: 'Remote databases' }));
-  await screen.findByText('Remote: New target · other');
-  expect(screen.getByText('Cora · neo4j')).toBeTruthy();
+  await screen.findByText('Remote: Neo4j · New target · other');
+  expect(screen.getByText('Neo4j · Cora · neo4j')).toBeTruthy();
+  expect(screen.getByRole('button', { name: /Local A/ })).toBeTruthy();
+});
+it('shows FalkorDB in the current source without changing the local graph', async () => {
+  vi.mocked(activateSession).mockResolvedValue({ model: 'model', active_dataset_id: 'local', remote_graph: { ...binding, kind: 'falkordb', database: 'cora' }, messages: [], active_run: null });
+  render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
+  await screen.findByText('Remote: FalkorDB · Cora · cora');
   expect(screen.getByRole('button', { name: /Local A/ })).toBeTruthy();
 });
 

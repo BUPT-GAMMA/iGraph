@@ -31,6 +31,7 @@ def backend(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('method,path,body,internal', [
     ('GET', '/api/remote-graphs', None, '/internal/remote-graphs'),
+    ('GET', '/api/remote-graph-types', None, '/internal/remote-graph-types'),
     ('POST', '/api/remote-graphs', {'name': 'Cora'}, '/internal/remote-graphs'),
     ('POST', '/api/remote-graphs/test', {'name': 'Cora'}, '/internal/remote-graphs/test'),
     ('DELETE', '/api/remote-graphs/connection-1?revision=3', None, '/internal/remote-graphs/connection-1'),

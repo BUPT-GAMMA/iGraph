@@ -1687,6 +1687,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         return await runtime.request('GET', '/internal/remote-graphs', headers=service_headers(user.user_id))
 
+    @app.get('/api/remote-graph-types')
+    async def remote_graph_types(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('GET', '/internal/remote-graph-types', headers=service_headers(user.user_id))
+
     @app.post('/api/remote-graphs')
     async def save_remote_graph(request: Request):
         user = current_user(request, users)

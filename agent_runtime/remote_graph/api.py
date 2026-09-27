@@ -8,6 +8,11 @@ from execution_lifecycle import owned_sync
 from execution_protocol import require_service
 from agent_runtime.execution_store import ControlError
 from .contracts import ConnectionWrite
+from .registry import list_database_types
+
+
+PUBLIC_TYPE_FIELDS = ('kind', 'display_name', 'query_language', 'uri_example',
+                      'target_label', 'username_required', 'support_status')
 
 
 class SelectionWrite(BaseModel):
@@ -52,6 +57,12 @@ def create_remote_graph_router(catalog, controller, executor) -> APIRouter:
         if executor is None:
             raise ControlError('REMOTE_GRAPH_UNREACHABLE', 503)
         return await executor.test_connection(uid, body)
+
+    @router.get('/internal/remote-graph-types')
+    async def types(request: Request):
+        identity(request)
+        return {'types': [{key: item[key] for key in PUBLIC_TYPE_FIELDS}
+                          for item in list_database_types()]}
 
     @router.get('/internal/remote-graphs')
     async def listing(request: Request):

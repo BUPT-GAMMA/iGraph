@@ -1,9 +1,15 @@
+export type RemoteGraphKind = 'neo4j' | 'falkordb';
+export type RemoteDatabaseType = {
+  kind: RemoteGraphKind; display_name: string; query_language: string; uri_example: string;
+  target_label: string; username_required: boolean; support_status: string;
+};
+export function remoteDatabaseName(kind: RemoteGraphKind): string { return kind === 'falkordb' ? 'FalkorDB' : 'Neo4j'; }
 export type RemoteBinding = {
-  connection_id: string; revision: number; name: string; kind: 'neo4j'; database: string;
+  connection_id: string; revision: number; name: string; kind: RemoteGraphKind; database: string;
 };
 export type RemoteConnection = RemoteBinding & { uri: string; username: string; has_password: boolean };
 export type RemoteConnectionWrite = {
-  connection_id?: string; revision?: number; name: string; uri: string; database: string; username: string; password?: string;
+  connection_id?: string; revision?: number; name: string; kind?: RemoteGraphKind; uri: string; database: string; username: string; password?: string;
 };
 export type RemoteQueryResult = {
   success: boolean; query_id: string; source: RemoteBinding; columns: string[]; rows: unknown[][];
