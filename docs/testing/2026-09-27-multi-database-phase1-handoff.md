@@ -1,6 +1,6 @@
 # 多数据库智能问图第一批交接
 
-日期：2026-09-27。代码基线 `47d4786`；Task 6 最终 SHA 见本文件提交记录。保留现有 Graph Agent loop 和配置的 `qwen3.6-plus`，未更换默认模型、未新增答案核验机制。
+日期：2026-09-27。代码基线 `47d4786`；Task 6 产品提交 `023aadd`，行为参数验收修复 `3e8d6e3`，均已通过控制器独立审查。保留现有 Graph Agent loop 和配置的 `qwen3.6-plus`，未更换默认模型、未新增答案核验机制。
 
 ## 当前分项状态
 
@@ -9,7 +9,8 @@
 | Neo4j 5.26.31 | 原生 Adapter、真实连接、旧 Agent 回归及新增参数/工作区/拒绝/本地图保留验收通过（verified） | 7 个真实数据库测试；旧 Agent 2 通过；旧浏览器 1 通过；下列 Task 6 记录 |
 | FalkorDB 4.20.7 | 有界只读 Adapter、真实结构/计数、参数/工作区/拒绝/本地图保留及双库浏览器通过（verified） | 10 个 Adapter live + 9 个协议测试；参数 schema 实验成功绑定对象；下列 Task 6 记录 |
 | 回答证据质量 | **未完全通过** | 统计口径归属、业务释义、属性普遍性及“未发现定义”等无证据断言见逐事实复核 |
-| Memgraph / NebulaGraph | Task 7 尚未技术验收，未注册产品入口 | 独立后续验证，不据此推断产品不支持 |
+| Memgraph 3.13.1 | Task 7 真实探针完成，当前候选不准入；未注册产品入口 | [分产品报告](2026-09-27-memgraph-nebula-feasibility.md)：EXPLAIN 分类假设失败；期限/主动取消通过；结果字节预算未实现 |
+| NebulaGraph 3.8.0 | Task 7 真实探针完成，当前候选不准入；未注册产品入口 | [分产品报告](2026-09-27-memgraph-nebula-feasibility.md)：完整副作用分类未解决，服务器期限/主动取消未验证；不推断产品本身不支持 |
 
 ## 实施与独立审查证据地图
 
@@ -20,7 +21,8 @@
 | Task 3 `0a78afc`、`e1bf96c` | 81 项回归、7 个 Neo4j live 通过；独立审查要求两个查询确实重叠时只取消一个，补充 7 项聚焦测试后通过。 |
 | Task 4 `8750275`、`560a0c3` | 原始 120 项、修复后 103 项相关回归与最终 10 个 FalkorDB live 通过；独立审查发现省略投影的列表推导仍可进入，修复后复审通过。真实 TLS、连接/读取取消隔离、有界帧解析及 Cora manifest 验证见历史记录。 |
 | Task 5 `47d4786` | 576 个前端测试、50 个 Python 测试通过，1 个已知 PG 主机跳过，TypeScript/Vite 通过；独立规格/质量审查无问题。 |
-| Task 6 本文件所属提交 | 可信方言引用、参数 schema 与真实模型/浏览器验证；本提交仍需控制器独立审查，不能把实现者自查写成独立验收。 |
+| Task 6 `023aadd`、`3e8d6e3` | 可信方言引用、参数 schema、真实模型/浏览器及参数实际影响过滤验收；完整独立审查无 Critical/Important，Minor 已修复，控制器确认最终审查通过。下列回答证据质量仍未完全通过。 |
+| Task 7 本文件此次更新所属提交 | Memgraph/NebulaGraph 隔离实例与可重复探针，分项结论见专门报告；实现者自查完成，仍待控制器安排独立审查。未改变第一批 A 的 verified 状态。 |
 
 私密凭据位置：`.env.neo4j-test`、`.env.falkordb-test` 均为 Git 忽略、0600；FalkorDB 密码文件 `output/multi-database-phase1/private/falkordb-password` 为 0600，父目录 0700。迁移前备份 `output/multi-database-phase1/private/pre-migration-remote-graphs.dump` 和指纹仅供本机维护，不公开内容。
 
