@@ -14,7 +14,7 @@ from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.custom_models import get_custom_model
 from agent_runtime.graph_tools import create_graph_tools
 from agent_runtime.workspace_tools import create_workspace_tools
-from agent_runtime.remote_graph.tools import create_remote_graph_tools, remote_graph_context_hook
+from agent_runtime.remote_graph.tools import register_remote_graph_tools, remote_graph_context_hook
 from agent_runtime.agent_notes import update_agent_notes
 from agent_runtime.loop_guard import loop_guard_tool_hook, loop_guard_post_hook
 from agent_runtime.instructions import instructions_for
@@ -79,8 +79,8 @@ def create_igraph_factory(
             metadata={**({'model_snapshot': snapshot} if snapshot else {}),
                       **({'remote_graph_binding': remote_binding} if remote_binding else {})} or None,
             tools=[create_graph_tools(config, response_language=options.response_language), *create_workspace_tools(), update_agent_notes,
-                   *create_remote_graph_tools(remote_executor, remote_binding)],
-            skills=build_skills(config, user_id),
+                   *register_remote_graph_tools(remote_executor, remote_binding)],
+            skills=build_skills(config, user_id, remote_binding),
             learning=create_learning_machine(config, planning_mode=options.planning_mode),
             instructions=instructions_for(
                 reasoning_mode=options.reasoning_mode,

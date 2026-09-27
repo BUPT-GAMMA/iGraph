@@ -1,6 +1,84 @@
-# FalkorDB 协议实测交接（Task 1）
+# 多数据库智能问图第一批交接
 
-日期：2026-09-27。结论：**有条件的实现候选，尚未准入任意模型查询**。只读命令和部分服务器预算已经实测；单个 Cypher `range(1, 1000000000)` 在配置 8 MiB 查询内存上限、3 秒最大期限及 1 GiB 容器上限时仍使服务进程 OOM 重启。Task 4 必须完成下列限制和有界读取后，才能开放适配器。
+日期：2026-09-27。代码基线 `47d4786`；Task 6 最终 SHA 见本文件提交记录。保留现有 Graph Agent loop 和配置的 `qwen3.6-plus`，未更换默认模型、未新增答案核验机制。
+
+## 当前分项状态
+
+| 交付项 | 结论 | 可复核证据 |
+| --- | --- | --- |
+| Neo4j 5.26.31 | 原生 Adapter、真实连接、旧 Agent 回归及新增参数/工作区/拒绝/本地图保留验收通过（verified） | 7 个真实数据库测试；旧 Agent 2 通过；旧浏览器 1 通过；下列 Task 6 记录 |
+| FalkorDB 4.20.7 | 有界只读 Adapter、真实结构/计数、参数/工作区/拒绝/本地图保留及双库浏览器通过（verified） | 10 个 Adapter live + 9 个协议测试；参数 schema 实验成功绑定对象；下列 Task 6 记录 |
+| 回答证据质量 | **未完全通过** | 统计口径归属、业务释义、属性普遍性及“未发现定义”等无证据断言见逐事实复核 |
+| Memgraph / NebulaGraph | Task 7 尚未技术验收，未注册产品入口 | 独立后续验证，不据此推断产品不支持 |
+
+## 实施与独立审查证据地图
+
+| 任务 / 提交 | 验证与审查结论 |
+| --- | --- |
+| Task 1 `14a754e`、`97ceb2f` | 真实协议 9 项通过；独立审查指出缺少原始 RESP 夹具，补充 base64 字节和 SHA 后通过。原始风险与限制保留在本文历史记录。 |
+| Task 2 `9b5151b` | 85 项回归通过、主机 PostgreSQL pytest 跳过；另在真实 PG 专用 schema 双线程迁移通过。实际 31 条旧连接的 ID、revision、密文 MD5 与迁移前私密指纹逐字节一致。独立规格/质量审查通过。探针及日志：`output/multi-database-phase1/postgres-concurrent-migration-probe.py`、同名 `.log`；备份/指纹位于私密目录。 |
+| Task 3 `0a78afc`、`e1bf96c` | 81 项回归、7 个 Neo4j live 通过；独立审查要求两个查询确实重叠时只取消一个，补充 7 项聚焦测试后通过。 |
+| Task 4 `8750275`、`560a0c3` | 原始 120 项、修复后 103 项相关回归与最终 10 个 FalkorDB live 通过；独立审查发现省略投影的列表推导仍可进入，修复后复审通过。真实 TLS、连接/读取取消隔离、有界帧解析及 Cora manifest 验证见历史记录。 |
+| Task 5 `47d4786` | 576 个前端测试、50 个 Python 测试通过，1 个已知 PG 主机跳过，TypeScript/Vite 通过；独立规格/质量审查无问题。 |
+| Task 6 本文件所属提交 | 可信方言引用、参数 schema 与真实模型/浏览器验证；本提交仍需控制器独立审查，不能把实现者自查写成独立验收。 |
+
+私密凭据位置：`.env.neo4j-test`、`.env.falkordb-test` 均为 Git 忽略、0600；FalkorDB 密码文件 `output/multi-database-phase1/private/falkordb-password` 为 0600，父目录 0700。迁移前备份 `output/multi-database-phase1/private/pre-migration-remote-graphs.dump` 和指纹仅供本机维护，不公开内容。
+
+## Task 6：方言与真实端到端
+
+- 保留 `describe_remote_graph` / `query_remote_graph` 名称与 query/parameters/save_result。工具描述使用当前连接原生查询。
+- Skills 实例只注册当前服务端冻结 kind 的 reference；未绑定时无远程 reference，普通聊天只看到摘要，未把方言正文塞入全局提示。实际 `get_skill_reference` 读取通过，中文 JSON 保持模型可读。
+- 首次真实基线未读取方言，新增单元测试在绑定参数和原生描述处失败；实现后 skill/tools/results 通过。结果参数导出是 Task 4 已有功能，本任务补充原始文件与来源/秘密检查。
+- 真实模型首次参数请求失败：传入字符串化对象/数组，重复校验失败后改为字面量，却声称参数化成功。已保留失败证据，未放宽执行端校验或循环保护。
+- 局部诊断发现 Agno 将 `dict[str, Any]` 参数值广告为空对象。改为 bare dict 修正 JSON 值 schema 后模型仍字符串化。最终 provider schema 的 nullable anyOf 保持未改写；一次受控实验将两个远程工具的可选结构化字段以 object/array 加省略表达，保留 callable 的 None/省略语义与字符串拒绝。两种真实库均随后传递对象 `{"label":0}`、读到 298，并在工作区计算 596。此为已观察到的兼容改进，不宣称所有模型行为已解决。
+- 新浏览器使用真实 21108/21109 服务和配置模型。完成 FalkorDB 新建、测试不保存、保存并使用、失败后仅重试绑定、密码留空编辑、刷新、计数和工作区追问、解除/删除、切回 Neo4j 并重新查询；3 节点/2 边的本地图内容与版本保持。**仅第一次绑定 HTTP PUT 被测试主动 abort**；其余接口、数据库和模型均真实。测试使用既有专用 `remote-graph-test-*` 用户、独立会话；不把同用户会话隔离夸大为新身份认证证明。
+- 密码填写前或字段清空后才显式截图；trace/video/自动失败截图关闭。主机 Chromium 缺 libatk，因此最终在既有 Playwright v1.63.0-noble Docker 内执行，挂载匹配浏览器缓存。首个新测试 UID 没有该用户的模型配置导致创建会话失败，最终使用已配置的专用测试账号。
+
+### 执行记录
+
+所有证据位于 `output/multi-database-phase1/`，Git 忽略；仓库内测试与本文保留复现方法。
+
+| 实际命令 / 环境 | 结果与证据 |
+| --- | --- |
+| `.venv/bin/python -m pytest tests/test_remote_graph_skill.py tests/test_remote_graph_tools.py tests/test_remote_graph_results.py -q` | 初始 2 失败/14 通过 → 16 通过；参数 JSON Schema 新测试再现失败 → 17 通过；后续注册 schema/运行时兼容聚焦 14 通过。日志 `task6-unit/`。 |
+| 过滤出所有 `test_remote_graph_*.py`（排除 agent/integration），另加 `test_falkordb_adapter.py test_import_cora_falkordb.py -q -rs` | 最终 **171 通过、1 个主机 PG 跳过**；`task6-regression/backend-units-final.log`（之前 169 项记录也保留）。 |
+| 加载两份私有环境后，`pytest tests/test_remote_graph_integration.py tests/test_falkordb_integration.py tests/test_falkordb_protocol.py --require-live -q` | **26 通过、无跳过**；`task6-regression/live.log`，分目录 `task6-live-neo4j/`、`task6-live-falkordb/`。未重演危险 OOM 压力查询。 |
+| `cd frontend; node node_modules/vitest/vitest.mjs run`；`npm run build` | **61 文件/576 测试通过**；TypeScript/Vite 通过，仅既有大 chunk 提示；`task6-regression/frontend.log`、`build.log`。 |
+| `pytest tests/test_remote_graph_agent.py --require-live -q` | **2 通过，220.47 秒**；`task6-agent-legacy/results.log`。事实复核不等于 pytest 数值门槛。旧夹具文件名复用导致第一例 SSE 未保留，已从持久消息恢复 `legacy-full-session-recovered.json`；原始报告仍保留。夹具已改为逐测试目录并在失败断言前保存事件，原断言保留。 |
+| `pytest tests/test_multi_database_agent.py --require-live -q` 与聚焦 `-k parameter` | 初始成功结构/计数 2 项，参数失败证据 `task6-agent/`；schema 修复后证据 `task6-agent-schema/`；可选字段实验 `task6-agent-optional-schema/`，实际对象绑定与计算正确但旧测试只接受 Ephemeral 路径而拒绝合法 Derived 原始副本。最终仅重跑参数/工作区/拒绝/保留两项：**2 通过、2 deselected，135.87 秒**，`task6-agent-final/results.log`；未把分阶段证据写成一次四项全绿。最终新增的完整字段/成功来源断言在聚焦运行导入测试后才补齐，另以当前检查器复核四个真实案例/十轮工具记录（`task6-agent-final/postcheck.json`），不冒称已在该次 pytest 执行。两份数据库原始 JSON 与 API 下载的发布副本进行了独立完整相等比对：`task6-agent-final/artifact-comparison.json`；所有 source/query/parameters/rows/完整性/query_id 及其余字段相等。 |
+| Docker 内 `node node_modules/@playwright/test/cli.js test --config playwright.remote-graph.config.ts remote-graph-multidb.spec.ts` | **1 通过，1.2 分钟**；`task6-browser-multidb/results-live.log`、`browser-binding-retry.json`、`browser-session.json`、`neo4j-switch.json`。 |
+| 同上命令选择 `remote-graph.spec.ts` | **旧浏览器 1 通过，1.3 分钟**；`task6-browser-legacy/results.log`，同时保留桌面/窄屏中英文截图。 |
+
+复现新 Agent 时另设置 `IGRAPH_TEST_FALKORDB_MANIFEST=output/multi-database-phase1/task4-falkordb/cora-manifest.json`；`IGRAPH_TEST_EVIDENCE_DIR` 为每轮新目录。浏览器的证据和 manifest 使用仓库绝对路径，Docker 使用 host network、仓库同路径挂载、`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` 与本机浏览器缓存挂载，通过 `-e VARIABLE_NAME` 传递现有环境，勿打印变量值。
+
+截图：[FalkorDB 空密码表单](../../output/multi-database-phase1/task6-browser-multidb/connection-form.png)、[保存后绑定失败](../../output/multi-database-phase1/task6-browser-multidb/saved-not-used.png)、[已选择](../../output/multi-database-phase1/task6-browser-multidb/connection-selected.png)、[查询默认卡片](../../output/multi-database-phase1/task6-browser-multidb/query-collapsed.png)、[展开证据](../../output/multi-database-phase1/task6-browser-multidb/query-expanded.png)、[切回 Neo4j](../../output/multi-database-phase1/task6-browser-multidb/neo4j-switch.png)。
+
+### 最终本地交付
+
+已按当前 `igraph` 项目的 `compose.yaml + compose.dev.yaml` 执行 `docker compose -p igraph -f compose.yaml -f compose.dev.yaml up -d --build --no-deps agent-runtime backend frontend`；日志 `task6-unit/rebuild-final.log`。图数据库、图计算服务和数据卷未重建/删除。最终健康与 HTTP 状态见 `task6-unit/health-final.json`。访问前端 [http://127.0.0.1:21108](http://127.0.0.1:21108)，后端健康 [http://127.0.0.1:21109/health](http://127.0.0.1:21109/health)。
+
+自查修复共享夹具 sidecar 在切到 FalkorDB 后仍记录最初 Neo4j 连接的问题；实际工具 source 与断言一直来自真实冻结绑定。6 份旧 sidecar 已按持久会话绑定校正，保留 `agent-session-original-fixture.json` 和修正说明，未改写查询证据。
+
+一次回归命令因 shell 展开显式文件而意外纳入旧 Agent 用例，发现后中断；该会话 `d1804e31-b15d-4655-acca-28da713c3c4d` 已通过 API 确认 `active_run=null`、`pending_feedback=null`，没有后台模型任务遗留。此中断运行不计入通过数。后续使用显式过滤文件清单完成 171 项单元回归。
+
+### 回答逐事实复核与局限
+
+| 回答 / 事实 | 与实际工具对照 | 结论 |
+| --- | --- | --- |
+| 两产品总数 2708 节点 / 5278 关系 | 实际服务器 count 与两份 Cora manifest 一致 | 数值通过；Cora 导入的对称边去重与方向规则仍以导入器说明为准 |
+| 新参数过滤 label=0 → 298；工作区两倍 → 596 | 参数对象和原始导出匹配；工作区读取原始 JSON 实际计算 | 最终聚焦两项通过；失败轮不得计为参数通过 |
+| FalkorDB 结构摘要 | describe 返回 sampled=true、truncated=true，答复摘要省略覆盖限制 | 回答完整性不足；不能把采样属性清单称全库完整 schema |
+| 旧 Neo4j 第一轮表格将全库数量归于 Paper/LINKS_TO | 当轮只查全库 count，没有对应过滤计数 | **统计口径归属无证据**；独立实际数据数量相符不补足模型当轮推断 |
+| 旧第二轮 x 非空 2708、长度 1433；label 的 0–6 分组 298/418/818/426/217/180/351 | 非空计数、min/max/avg 与分组工具结果支持 | 数值与覆盖通过；附加“特征维度”业务释义未经定义支持 |
+| 旧第三轮每条 LINKS_TO 都有 _igraph_import、库内未发现业务定义 | 没有属性全覆盖统计，也没有业务定义搜索 | **属性普遍性和不存在性断言无证据** |
+| 旧第四轮“应用仅允许查询不能证明账号只读” | 与工具执行边界一致，无写入权限探针 | 通过 |
+| 初始 FalkorDB 失败轮声称参数化 | 实际反复字符串参数校验失败后改为字面量，导出 parameters={} | 明确失败，保留为可靠性/事实偏差证据；后续成功不抹除记录 |
+
+前端卡片证据、Adapter 正确性、真实模型数值和模型解释质量分别结论。未验证云部署、其他厂商版本、任意 Cypher、集群/Sentinel/重定向。FalkorDB 停止仅保证客户端关闭与服务器有界期限，不保证立即终止服务器任务。全站 X-User-ID 防伪与默认模型质量不是本次修改范围。此前全仓 Python 基线在 graph-data `hiv.pt` 200/404 契约处失败（365 通过、6 跳过后停止）；本次未修复或声称全仓绿色。
+
+# 历史记录：FalkorDB 协议实测（Task 1）
+
+日期：2026-09-27。以下为 Task 1 当时的结论，当前交付状态以上表为准：**有条件的实现候选，尚未准入任意模型查询**。只读命令和部分服务器预算已经实测；单个 Cypher `range(1, 1000000000)` 在配置 8 MiB 查询内存上限、3 秒最大期限及 1 GiB 容器上限时仍使服务进程 OOM 重启。Task 4 必须完成下列限制和有界读取后，才能开放适配器。
 
 ## 固定环境与复现
 

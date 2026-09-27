@@ -39,6 +39,8 @@ def create_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
                                     relationship_types: list[str] | None = None) -> dict[str, Any]:
         """Discover the selected remote database's labels, relationships and property types.
 
+        Optional labels and relationship_types are JSON arrays, e.g. labels=["Paper"].
+
         First load remote-graph-qa using get_skill_instructions for this task.
         """
         try:
@@ -47,11 +49,14 @@ def create_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
         except (ControlError, ValidationError, ValueError) as exc:
             return error(exc)
 
-    async def query_remote_graph(query: str, run_context: RunContext, parameters: dict[str, Any] | None = None,
+    # Agno treats Any as an empty object schema; bare dict preserves arbitrary
+    # JSON values in the model schema. QueryRequest still validates at execution.
+    async def query_remote_graph(query: str, run_context: RunContext, parameters: dict | None = None,
                                  save_result: bool = False) -> dict[str, Any]:
-        """Run parameterized Cypher on the selected remote database; optionally save bounded JSON.
+        """Run a parameterized native query on the selected remote database; optionally save bounded JSON.
 
         First load remote-graph-qa using get_skill_instructions for this task.
+        Pass parameters as a JSON object, e.g. {"label": 0}, with query using $label.
         """
         try:
             uid = identity(run_context)
@@ -68,3 +73,20 @@ def create_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
             return error(exc)
 
     return [describe_remote_graph, query_remote_graph]
+
+
+def register_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
+    """Advertise optional structured values by omission for model compatibility.
+
+    Runtime callables retain their nullable arguments and strict shape checks.
+    Keeping this local avoids changing schemas for unrelated Agent tools.
+    """
+    from agno.tools.function import Function
+
+    functions = [Function.from_callable(fn) for fn in create_remote_graph_tools(executor, binding)]
+    for function in functions:
+        properties = function.parameters['properties']
+        for name in ('parameters', 'labels', 'relationship_types'):
+            if name in properties:
+                properties[name] = next(option for option in properties[name]['anyOf'] if option['type'] != 'null')
+    return functions

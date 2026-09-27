@@ -42,7 +42,10 @@ def assert_read_only_behavior(answer, explain):
 
 @pytest.fixture
 def live_agent(request, remote_live):
-    live = remote_live
+    from copy import copy
+    live = copy(remote_live)
+    live.evidence = remote_live.evidence / request.node.name
+    live.evidence.mkdir(parents=True, exist_ok=True)
     env = require_env(request, 'IGRAPH_E2E_BASE_URL', 'IGRAPH_E2E_USER_ID', 'IGRAPH_TEST_MODEL_ID')
     uid = env['IGRAPH_E2E_USER_ID']
     assert uid.startswith('remote-graph-test-'), 'Use a dedicated remote-graph-test-* account'
@@ -75,22 +78,26 @@ def live_agent(request, remote_live):
             'model_revision': state['model_revision'], 'start_request_id': str(uuid4())})
         assert response.is_success, f'Chat HTTP {response.status_code}'
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: {')]
-        assert any(e.get('type') == 'done' for e in events), 'Stream ended without done'
-        assert not any(e.get('type') == 'error' for e in events), 'Stream contains an error'
         messages = api('GET', base + '/messages')['messages']
         assistant = next(m for m in reversed(messages) if m.get('role') == 'assistant')
         records.append({'events': events, 'answer': assistant})
         # Write evidence only after checking that credential text never entered model-visible events.
         encoded = json.dumps(records, ensure_ascii=False)
         assert form['password'] not in encoded
+        if os.environ.get('IGRAPH_TEST_FALKORDB_PASSWORD'):
+            assert os.environ['IGRAPH_TEST_FALKORDB_PASSWORD'] not in encoded
         (live.evidence / 'agent-runs.json').write_text(encoded)
+        assert any(e.get('type') == 'done' for e in events), 'Stream ended without done'
+        assert not any(e.get('type') == 'error' for e in events), 'Stream contains an error'
         return assistant, events
     def tools(answer):
         return answer.get('tools', [])
-    try:
-        yield dict(live=live, api=api, client=client, base=base, chat=chat, tools=tools, dataset=dataset,
+    context = dict(live=live, api=api, client=client, base=base, chat=chat, tools=tools, dataset=dataset,
                    graph_before=graph_before, connection=connection, model=model)
+    try:
+        yield context
     finally:
+        connection = context['connection']
         # Retain artifacts and session for independent acceptance; connection secrets remain encrypted.
         (live.evidence / 'agent-session.json').write_text(json.dumps({'session_id': sid,
             'connection_id': connection['connection_id'], 'connection_name': connection['name'],

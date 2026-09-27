@@ -45,7 +45,7 @@ def test_admitted_products_are_executable_and_selectable():
     assert available[0]['uri_example'].startswith('bolt+s://')
     from agent_runtime.remote_graph.falkordb import FalkorDBAdapter
     assert isinstance(get_adapter('falkordb'), FalkorDBAdapter)
-    assert available[1]['support_status'] == 'experimental'
+    assert available[1]['support_status'] == 'verified'
     assert available[1]['cancellation'] is False
 
 

@@ -62,7 +62,7 @@ test('real connection form, refreshed selection, model query evidence and discon
   await page.screenshot({ path: `${required('IGRAPH_TEST_EVIDENCE_DIR')}/connection-selected.png` });
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   await page.reload();
-  await expect(page.getByText(`Remote: ${name} · ${required('IGRAPH_TEST_NEO4J_DATABASE')}`, { exact: true })).toBeVisible();
+  await expect(page.getByText(`Remote: Neo4j · ${name} · ${required('IGRAPH_TEST_NEO4J_DATABASE')}`, { exact: true })).toBeVisible();
   const collapseWorkspace = page.getByRole('button', { name: 'Collapse right sidebar', exact: true });
   if (await collapseWorkspace.isVisible()) await collapseWorkspace.click();
   await page.locator('textarea').fill('请实际查询选中的远程数据库总节点数，并报告结果和来源。');
