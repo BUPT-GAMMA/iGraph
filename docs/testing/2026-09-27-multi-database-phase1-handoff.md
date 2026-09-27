@@ -46,3 +46,19 @@ export IGRAPH_TEST_FALKORDB_EVIDENCE_DIR=output/multi-database-phase1/private/fa
 5. 模型查询使用 `GRAPH.RO_QUERY ... --compact`，按 ValueType 标签显式解码节点、边、路径、布尔、浮点与大整数；通过只读 schema procedures 获取标签、边类型及属性 key 的 ID 映射。路径的节点顺序与边源/目标同时保留，schema 缓存失配须刷新或拒绝，不能默默降级为无类型字符串。
 
 参考：[官方只读命令](https://docs.falkordb.com/commands/graph.ro-query)、[官方 compact 协议与映射](https://docs.falkordb.com/design/client-spec)、[官方查询与参数](https://docs.falkordb.com/commands/graph.query)、[服务器预算参数](https://docs.falkordb.com/getting-started/configuration)、[官方 server 镜像](https://hub.docker.com/r/falkordb/falkordb-server/tags)、[redis-py 8.1.0](https://pypi.org/project/redis/8.1.0/)、[redis-py 取消行为](https://redis.io/docs/latest/develop/clients/redis-py/async/)。
+
+## Task 4：实现后准入与产品限制（2026-09-27）
+
+FalkorDB Adapter 已通过专用可写账号下的协议、安全、Cora 与边界夹具验收，并以 **experimental** 状态进入注册表。真实 Agent/浏览器验收由 Task 6 完成；这里不宣称整体产品已 verified。Neo4j 既有状态保持。
+
+- 每次调用新建独占 socket；网络规则先解析并验证全部地址，实际连接固定数字 IP，TLS 使用原域名做 SNI/证书检查。无连接池、重试、重定向、Sentinel 或集群发现。TLS 测试使用本地 CA/真实握手，正确主机名成功、错误主机名失败。
+- 异步 Adapter 使用 `asyncio.to_thread` 驱动独占阻塞 socket：自行逐帧、限长读取 RESP2，避免 redis-py 对任意响应预分配。读之前检查 bulk 长度、数组数量、嵌套深度、累计线长/帧字节与行数；所有 recv 不超过 4096 字节。协议超限失败整个查询，不把未完整读取的帧报告为完整结果。
+- 连接时检查实际 `MODULE LIST` 版本为 graph 42007，并检查四个有效服务器配置均为正且不高于 Task 1 已测上限。ACL 账号必须允许这些只读配置/版本查询；无法核实预算就拒绝准入。
+- 只允许专用 `GRAPH.RO_QUERY --compact`。函数采用 token 级白名单；明确禁止 `range`、`split`、未知函数/过程、动态/外部入口、变量长度路径和列表/模式推导的未验证扩展。业务查询可自由组合允许的 Cypher 子集，任意 Cypher 尚未获准。聚合 `collect` 保留服务器内存限制和客户端帧预算两层保护。
+- 实体元数据 ID 映射每次调用独立获取、无跨调用缓存；映射达到服务器行上限或出现未知 ID/类型就明确失败。compact 节点、边、路径、数组和标量保留类型；路径遍历顺序和边真实源/目标分别保留。未知 map/point 等类型尚未支持，绝不字符串化。超过 JavaScript 安全整数范围的普通值统一为 `{"type":"integer","value":"9007199254740993"}`，此契约也适用于 Neo4j；实体 ID 为精确字符串。
+- schema 标签/关系名称来自元数据，属性从最多 32 个节点/关系采样，始终 `coverage.sampled=true`。查询达到服务器 128 行边界时保守 `truncated=true`；小于 128 的自定义服务器上限同理。工作区结果保存 source、原查询与参数、完整有界行；预览预算另计。
+- 取消关闭当前调用 socket 并透传 `CancelledError`。实测客户端取消后服务器仍运行，约 1 秒后结束；不是服务器主动取消。每条查询 TIMEOUT 不大于剩余调用期限和有效 TIMEOUT_MAX，最大 3 秒。
+- Cora 独立管理脚本复用原受限加载器和转换规则，输入 SHA-256 必须与可信 manifest 一致；2708 节点、5278 条去重边、标签分布及样本邻居已实际对照。拒绝非本批非空目标。FalkorDB 导入为独占目标下可重跑批次，不提供跨批原子事务；中断后以相同 hash 恢复。
+- QA Compose 现有专用服务新增独立 `igraph-falkordb-qa_falkordb-qa-data` 持久卷和 AOF/RDB；没有删除任何已有卷。私有环境 `.env.falkordb-test` 与密码文件 `output/multi-database-phase1/private/falkordb-password` 均为 0600；复现时先 `set -a; source .env.falkordb-test; set +a`，不要打印变量。证据目录为 `output/multi-database-phase1/task4-falkordb/`，Task 1 原始证据保持。
+
+运行：`.venv/bin/python -m pytest tests/test_falkordb_adapter.py tests/test_import_cora_falkordb.py -q`，以及加载私有测试环境后 `.venv/bin/python -m pytest tests/test_falkordb_integration.py --require-live -q`。管理导入入口为 `.venv/bin/python -m scripts.import_cora_falkordb --input cora.pt --manifest output/multi-database-phase1/task4-falkordb/cora-manifest.json --expected-sha256 <既有可信manifest的source_sha256>`。

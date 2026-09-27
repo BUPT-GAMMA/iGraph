@@ -1,4 +1,4 @@
-# Disposable authenticated protocol acceptance; secret file stays outside Git.
+# Authenticated QA graph with a dedicated persistent volume; secrets stay outside Git.
 services:
   falkordb:
     image: falkordb/falkordb-server:v4.20.7@sha256:538fe1867a0a5dec55462eff5c1ea5edfc36246a9aa571cf1705b8b3f3d0f32c
@@ -7,10 +7,12 @@ services:
       - >-
         exec redis-server --bind 0.0.0.0 --protected-mode yes
         --requirepass "$$(cat /run/secrets/falkordb_password)"
-        --save "" --appendonly no
+        --dir /data --save 60 1 --appendonly yes
         --loadmodule /var/lib/falkordb/bin/falkordb.so
         THREAD_COUNT 2 TIMEOUT_MAX 3000 TIMEOUT_DEFAULT 1000
         RESULTSET_SIZE 128 QUERY_MEM_CAPACITY 8388608
+    volumes:
+      - falkordb-qa-data:/data
     secrets: [falkordb_password]
     ports:
       - '127.0.0.1:${IGRAPH_TEST_FALKORDB_PORT:-21188}:6379'
@@ -34,3 +36,6 @@ networks:
   app:
     external: true
     name: ${IGRAPH_BACKPLANE_NETWORK:-igraph-backplane}
+
+volumes:
+  falkordb-qa-data:

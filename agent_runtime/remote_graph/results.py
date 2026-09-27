@@ -73,6 +73,8 @@ class _Encoder:
             value = dict(type='bytes', base64=base64.b64encode(value).decode('ascii'))
         elif isinstance(value, float) and not math.isfinite(value):
             value = dict(type='float', value='NaN' if math.isnan(value) else ('Infinity' if value > 0 else '-Infinity'))
+        elif type(value) is int and abs(value) > 9007199254740991:
+            value = dict(type='integer', value=str(value))
         if isinstance(value, Mapping):
             return self.mapping(value.items(), depth)
         if isinstance(value, (list, tuple)):
