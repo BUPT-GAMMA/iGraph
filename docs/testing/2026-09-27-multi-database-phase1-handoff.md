@@ -8,7 +8,7 @@
 - Python 客户端：`redis==8.1.0`（本地 `.venv` 与 agent-runtime requirements 固定）。直接使用 RESP2 `GRAPH.RO_QUERY`，测试的管理员连接只用于构造和核对夹具。
 - 独立 Compose 项目：`igraph-falkordb-qa`；端口 `127.0.0.1:21188`，并接入 `igraph-backplane`，别名 `igraph-falkordb-qa`。密码来自 Compose secret 文件，没有写入仓库、文档或命令输出。
 - 配置：`TIMEOUT_MAX=3000` 毫秒，`TIMEOUT_DEFAULT=1000` 毫秒，`RESULTSET_SIZE=128` 行，`QUERY_MEM_CAPACITY=8388608` 字节，容器内存 1 GiB。
-- 本机原始 RESP 解码夹具：`output/multi-database-phase1/private/falkordb-protocol/*.json`（Git 忽略）；OOM 事件见同目录 `oom-events.txt`。此目录只记录测试值、服务器配置、响应和客户端 ID，不保存密码。
+- 可提交的真实 RESP2 帧：`tests/fixtures/falkordb_compact_path.resp2.json`。其中 Base64 编码的字节和 SHA-256 保留 `$` bulk 长度、`*` 数组数量、CRLF、UTF-8 原始编码，避免 Git 换行转换。专用测试在认证响应消费完毕后才读取 `GRAPH.RO_QUERY --compact` 回复；live 测试解码该文件并与新建测试图的服务器回复比较列和行。它不含密码或认证流量。另有本机 RESP 解码夹具 `output/multi-database-phase1/private/falkordb-protocol/*.json`（Git 忽略）；OOM 事件见同目录 `oom-events.txt`。
 
 复现时自行建立权限为 `0600` 的密码文件，然后设置以下环境变量。密码通过文件读取，不放入 Compose YAML：
 
@@ -22,7 +22,7 @@ export IGRAPH_TEST_FALKORDB_EVIDENCE_DIR=output/multi-database-phase1/private/fa
 .venv/bin/python -m pytest tests/test_falkordb_protocol.py --require-live -q
 ```
 
-不设置三个必需的 `IGRAPH_TEST_FALKORDB_*` 连接变量时，`--require-live` 实际产生明确的四项 setup error；默认测试运行则跳过此专用服务。
+不设置三个必需的 `IGRAPH_TEST_FALKORDB_*` 连接变量时，`--require-live` 实际产生明确的九项 setup error；默认测试运行则跳过此专用服务。
 
 ## 协议结果
 
@@ -32,7 +32,7 @@ export IGRAPH_TEST_FALKORDB_EVIDENCE_DIR=output/multi-database-phase1/private/fa
 | 参数与字符 | `CYPHER target=...` 绑定含中文、单引号、反斜杠的值，往返相等。参数序列化仍需 Task 4 实现和测试；本探针仅固定服务器协议语法。 |
 | 空值、数值、实体 | 默认非 compact 响应中，空结果返回列名和空行集；`42` 为整数，`2.5` 与 `true` 是字符串，`null` 为 null；`9007199254740993` 保留精确整数。节点包含 `id`、labels、properties；边包含 `id`、type、`src_node`、`dest_node`、properties。非 compact 路径是形如 `[(1), [0], (2)]` 的字符串，信息不足。`--compact` 实测返回类型标签：整数 3、浮点 5、布尔 4、null 1、节点 8、边 7、路径 9；路径内含有序节点数组与边数组，边含源/目标 ID。`CALL db.labels()`、`db.relationshipTypes()`、`db.propertyKeys()` 可经 `GRAPH.RO_QUERY --compact` 获取 ID 映射。Task 4 应使用 compact 格式完整解码，不能把非 compact 路径文本作为最终结构。 |
 | 结果行预算 | `UNWIND range(1, 100000) RETURN x` 实际只返回 128 行。一个单元格仍可返回 1,048,576 字节字符串；`collect` 可在一行中返回约 688,895 字节值。`RESULTSET_SIZE` **不是字节上限**。 |
-| 查询内存 | `collect(range(1,300000))` 返回 `Query's mem consumption exceeded capacity`，图仍可读；但 10 亿元素 `range` 曾使 1 GiB 容器产生两次 Docker `oom`/`die`/`start` 事件。`QUERY_MEM_CAPACITY` 对某些聚合有效，**不能视为覆盖所有 Cypher 分配路径**。不得重复该危险压力探针作为常规测试。 |
+| 查询内存 | `UNWIND range(1,300000) AS x RETURN collect(x)` 返回 `Query's mem consumption exceeded capacity`，图仍可读；但 10 亿元素 `range` 曾使 1 GiB 容器产生两次 Docker `oom`/`die`/`start` 事件。`QUERY_MEM_CAPACITY` 对某些聚合有效，**不能视为覆盖所有 Cypher 分配路径**。不得重复该危险压力探针作为常规测试。 |
 | 服务器期限 | 两层 `UNWIND range(1,10000)` 聚合、命令 `TIMEOUT 1` 返回 `Query timed out`，约 2–4 毫秒内回到客户端；图仍在。配置读取证实 `TIMEOUT_MAX=3000`、`TIMEOUT_DEFAULT=1000`。 |
 | 客户端断开 | 异步被测连接取消后，`CLIENT LIST` 中客户端 ID 消失；`GRAPH.INFO` 仍显示 1 个运行中查询，约 1 秒后归零。**断开连接不会立即取消服务器查询**；服务器期限提供有限的结束保证。 |
 | 地址与连接 | 测试 URI 要求数字 IP；普通 `redis.Redis` 单连接模式查询前后 `CLIENT ID` 相同。该实验没有覆盖 TLS、DNS 名称或集群。`redis-py 8.1.0` 的 `Connection._connect()` 每次连接会对 `self.host` 调用 `getaddrinfo`，故 Task 4 应消费已校验的数字 IP，禁用集群/Sentinel/重定向，并单独保留原始域名作为 TLS SNI/证书主机名。其 `SSLConnection` 当前用 `self.host` 作为 `server_hostname`；直接把 host 改成 IP 会破坏域名证书校验。 |

@@ -7,13 +7,81 @@ for candidate model queries; it always sends GRAPH.RO_QUERY.
 import json
 import os
 import asyncio
+import base64
+import hashlib
 import ipaddress
+import io
+import socket
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pytest
+
+
+WIRE_FIXTURE = Path(__file__).parent / "fixtures" / "falkordb_compact_path.resp2.json"
+WIRE_QUERY = ("MATCH p=(a:WireA)-[r:WIRE_R]->(b:WireB) "
+              "RETURN a,r,p,2.5 AS f,true AS b,9007199254740993 AS exact")
+
+
+def _resp_command(*items):
+    args = [str(item).encode("utf-8") for item in items]
+    return (f"*{len(args)}\r\n".encode() +
+            b"".join(f"${len(arg)}\r\n".encode() + arg + b"\r\n" for arg in args))
+
+
+def _read_resp2(reader):
+    """Small fixed-query capture parser; return both actual wire bytes and values."""
+    chunks = []
+
+    def take(length):
+        assert 0 <= length <= 65536
+        data = reader.read(length)
+        assert len(data) == length
+        chunks.append(data)
+        assert sum(map(len, chunks)) <= 65536
+        return data
+
+    def parse(depth):
+        assert depth <= 16
+        line = reader.readline(4096)
+        assert line.endswith(b"\r\n") and len(line) < 4096
+        chunks.append(line)
+        assert sum(map(len, chunks)) <= 65536
+        marker, value = line[:1], line[1:-2]
+        if marker == b"+":
+            return value
+        if marker == b":":
+            return int(value)
+        if marker == b"$":
+            length = int(value)
+            if length == -1:
+                return None
+            data = take(length + 2)
+            assert data.endswith(b"\r\n")
+            return data[:-2]
+        if marker == b"*":
+            count = int(value)
+            if count == -1:
+                return None
+            assert 0 <= count <= 128
+            return [parse(depth + 1) for _ in range(count)]
+        raise AssertionError("Unexpected RESP2 marker in fixed graph reply")
+
+    decoded = parse(0)
+    return b"".join(chunks), decoded
+
+
+def _wire_ro_query(uri, password, graph):
+    with socket.create_connection((uri.hostname, uri.port), timeout=5) as sock:
+        sock.settimeout(5)
+        with sock.makefile("rb") as reader:
+            sock.sendall(_resp_command("AUTH", password))
+            assert reader.readline(1024) == b"+OK\r\n"
+            # Capture begins only after the AUTH response has been consumed.
+            sock.sendall(_resp_command("GRAPH.RO_QUERY", graph, WIRE_QUERY, "--compact"))
+            return _read_resp2(reader)
 
 
 def _capture(name, value):
@@ -132,9 +200,10 @@ def test_server_caps_result_rows_and_memory(live):
     admin, candidate, graph = live
     cap = admin.execute_command("GRAPH.CONFIG", "GET", "RESULTSET_SIZE")
     mem = admin.execute_command("GRAPH.CONFIG", "GET", "QUERY_MEM_CAPACITY")
+    assert cap == [b"RESULTSET_SIZE", 128]
+    assert mem == [b"QUERY_MEM_CAPACITY", 8388608]
     rows = _query(candidate, graph, "UNWIND range(1, 100000) AS x RETURN x")
-    assert len(rows[1]) <= 128
-    assert int(mem[-1]) > 0
+    assert len(rows[1]) == 128
     with pytest.raises(redis.ResponseError, match="mem consumption exceeded capacity") as exc:
         _query(candidate, graph, "UNWIND range(1, 300000) AS x RETURN collect(x)")
     assert _count(admin, graph) >= 1
@@ -191,6 +260,41 @@ def test_compact_response_has_typed_scalars_entities_and_path(live):
                                     ("relationship_types", "CALL db.relationshipTypes()"),
                                     ("property_keys", "CALL db.propertyKeys()"))}
     _capture("compact", {"scalars": scalars, "values": values, "mappings": mappings})
+
+
+def test_tracked_resp2_wire_fixture_matches_live_compact_reply(live):
+    admin, candidate, graph = live
+    wire_graph = graph + "_wire"
+    admin.execute_command("GRAPH.QUERY", wire_graph,
+                          "CREATE (:WireA {name:'甲'})-[:WIRE_R {weight:2.5}]->(:WireB {name:'乙'})")
+    try:
+        uri = urlsplit(os.environ["IGRAPH_TEST_FALKORDB_URI"])
+        password = os.environ["IGRAPH_TEST_FALKORDB_PASSWORD"]
+        live_reply = _query(candidate, wire_graph, WIRE_QUERY, "--compact")
+        wire, decoded = _wire_ro_query(uri, password, wire_graph)
+        assert decoded[:2] == live_reply[:2]
+        assert wire.startswith(b"*3\r\n")
+        assert password.encode() not in wire
+        if os.environ.get("IGRAPH_TEST_FALKORDB_RECORD_WIRE") == "1":
+            WIRE_FIXTURE.write_text(json.dumps({
+                "format": "RESP2 GRAPH.RO_QUERY --compact response after authentication",
+                "encoding": "base64",
+                "sha256": hashlib.sha256(wire).hexdigest(),
+                "response_base64": base64.b64encode(wire).decode("ascii"),
+            }, indent=2) + "\n")
+        saved = json.loads(WIRE_FIXTURE.read_text())
+        assert saved["format"] == "RESP2 GRAPH.RO_QUERY --compact response after authentication"
+        assert saved["encoding"] == "base64"
+        fixture = base64.b64decode(saved["response_base64"], validate=True)
+        assert hashlib.sha256(fixture).hexdigest() == saved["sha256"]
+        assert password.encode() not in fixture
+        assert b"AUTH" not in fixture
+        captured, expected = _read_resp2(io.BytesIO(fixture))
+        assert captured == fixture
+        assert expected[:2] == live_reply[:2]
+        assert expected[1][0][2][0] == 9  # Path is typed in the wire reply.
+    finally:
+        admin.execute_command("GRAPH.DELETE", wire_graph)
 
 
 def test_server_timeout(live):
