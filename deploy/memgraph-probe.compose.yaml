@@ -1,0 +1,49 @@
+name: igraph-memgraph-probe
+services:
+  memgraph:
+    image: memgraph/memgraph:3.13.1@sha256:bd3fe13228f40881365486729c78110dde6e04f3c1f102c84720d31f38b693f8
+    command:
+      - --allow-load-csv=false
+      - --query-execution-timeout-sec=2
+      - --memory-limit=512
+      - --storage-enable-schema-metadata=true
+      - --log-level=WARNING
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256
+    volumes:
+      - memgraph-probe-data:/var/lib/memgraph
+      - memgraph-probe-config:/etc/memgraph
+      - memgraph-probe-log:/var/log/memgraph
+      - ./memgraph-probe-module.py:/usr/lib/memgraph/query_modules/qa_probe.py:ro
+    networks: [probe]
+    healthcheck:
+      test: [CMD, bash, -c, "exec 3<>/dev/tcp/127.0.0.1/7687"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: "no"
+  ingress:
+    image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+    command: [python, /relay.py, memgraph, "7687"]
+    volumes: [./graph-probe-relay.py:/relay.py:ro]
+    ports: ["127.0.0.1:21189:7687"]
+    networks: [ingress, probe]
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+    healthcheck:
+      test: [CMD, python, -c, "import socket; socket.create_connection(('127.0.0.1', 7687), timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      memgraph: {condition: service_healthy}
+networks:
+  ingress:
+  probe:
+    internal: true
+volumes:
+  memgraph-probe-data:
+  memgraph-probe-config:
+  memgraph-probe-log:
