@@ -20,7 +20,7 @@ _REGISTRY: dict[str, dict] = {
         'adapter': FalkorDBAdapter(), 'enabled': True,
         'display_name': 'FalkorDB', 'query_language': 'cypher',
         'uri_example': 'rediss://db.example.com:6379', 'target_label': 'Graph',
-        'username_required': False, 'support_status': 'experimental',
+        'username_required': False, 'support_status': 'verified',
         'verified_versions': '4.20.7 (module 42007)', 'parameters': True,
         'schema_coverage': 'bounded metadata and sampled properties', 'server_timeout': True,
         'cancellation': False,

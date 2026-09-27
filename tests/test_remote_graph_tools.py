@@ -110,8 +110,108 @@ def test_factory_keeps_original_tools_and_appends_remote_tools(service, tmp_path
                                                remote_executor=service.executor)
     agent = factory.factory(RequestContext(user_id='alice', request=SimpleNamespace(
         state=SimpleNamespace(igraph_remote_graph_binding=service.binding.model_dump()))))
-    names = {fn.__name__ for fn in agent.tools}
+    names = {fn.name if isinstance(fn, Function) else fn.__name__ for fn in agent.tools}
     assert {'local_graph', 'workspace_bash', 'workspace_publish', 'update_agent_notes',
             'describe_remote_graph', 'query_remote_graph'} <= names
     assert agent.metadata['remote_graph_binding'] == service.binding.model_dump()
     db.close()
+
+
+def test_query_description_uses_current_native_language(service):
+    query = Function.from_callable(tools(service, service.binding)['query_remote_graph'])
+    assert 'native query' in query.description
+    assert 'Cypher' not in query.description
+
+
+@pytest.mark.anyio
+async def test_export_preserves_parameters_and_source_identity(service, tmp_path, monkeypatch):
+    monkeypatch.setenv('IGRAPH_WORKSPACE_ROOT', str(tmp_path))
+    from agent_runtime.remote_graph.contracts import RemoteBinding
+    context = RunContext(run_id='r1', session_id='s1', user_id='alice')
+    fn = tools(service, service.binding)['query_remote_graph']
+    result = await fn('RETURN $value', parameters={'value': '中文'}, save_result=True, run_context=context)
+    payload = json.loads((tmp_path / 'alice' / 's1' / result['artifact_path']).read_text())
+    assert payload['query'] == 'RETURN $value'
+    assert payload['parameters'] == {'value': '中文'}
+    assert payload['source'] == service.binding.model_dump()
+    assert not {'password', 'uri', 'username'} & payload['source'].keys()
+    assert 'fixture-password' not in json.dumps(payload)
+
+
+def test_registered_query_schema_accepts_native_json_parameter_values(service):
+    from jsonschema import Draft202012Validator
+    query = Function.from_callable(tools(service, service.binding)['query_remote_graph'])
+    schema = query.to_dict()['parameters']
+    validator = Draft202012Validator(schema)
+    for value in ('中文', 0, 2.5, True, None, [1, 'x', None], {'nested': [1, False]}):
+        errors = list(validator.iter_errors({'query': 'RETURN $value', 'parameters': {'value': value}}))
+        assert not errors, f'Native parameter value {value!r} rejected by tool schema: {errors[0].message if errors else ""}'
+    assert list(validator.iter_errors({'query': 'RETURN $value', 'parameters': '{"value": 0}'}))
+
+
+@pytest.mark.anyio
+async def test_identical_entity_ids_keep_each_query_source(service, tmp_path, monkeypatch):
+    from agent_runtime.remote_graph.adapters import AdapterRows
+    from agent_runtime.remote_graph.contracts import ConnectionWrite, RemoteBinding
+    monkeypatch.setenv('IGRAPH_WORKSPACE_ROOT', str(tmp_path))
+    class EntityAdapter:
+        async def execute(self, ctx, request):
+            return AdapterRows(columns=['n'], rows=[[{'type': 'node', 'id': '0', 'labels': ['Paper'], 'properties': {}}]], returned_rows=1, truncated=False)
+    monkeypatch.setattr('agent_runtime.remote_graph.registry.get_adapter', lambda kind: EntityAdapter())
+    other = service.catalog.save('alice', ConnectionWrite(kind='falkordb', name='Other', uri='redis://db.example:6379', database='graph', username='', password='other-secret'))
+    bindings = [service.binding, RemoteBinding(**other.model_dump())]
+    context = RunContext(run_id='r1', session_id='s1', user_id='alice')
+    results = [await tools(service, binding)['query_remote_graph']('MATCH (n) RETURN n LIMIT 1', save_result=True, run_context=context) for binding in bindings]
+    assert all(result['success'] for result in results)
+    assert results[0]['rows'] == results[1]['rows']
+    assert results[0]['source'] == bindings[0].model_dump()
+    assert results[1]['source'] == bindings[1].model_dump()
+    assert results[0]['query_id'] != results[1]['query_id']
+    for binding, result in zip(bindings, results):
+        artifact = json.loads((tmp_path / 'alice' / 's1' / result['artifact_path']).read_text())
+        assert artifact['source'] == binding.model_dump()
+        assert artifact['rows'] == result['rows']
+
+
+def registered_remote_tools(service):
+    from agno.agent import Agent
+    from agno.agent._tools import parse_tools
+    from agent_runtime.model_factory import CancellableDAGOpenAILike
+    from agent_runtime.remote_graph.tools import register_remote_graph_tools
+    model = CancellableDAGOpenAILike(id='fixture', api_key='unused')
+    functions = register_remote_graph_tools(service.executor, service.binding)
+    agent = Agent(model=model, tools=functions)
+    registered = parse_tools(agent, functions, model, async_mode=True)
+    provider = model.get_request_params(tools=model._format_tools(registered))['tools']
+    return {fn.name: fn for fn in registered}, {fn['function']['name']: fn['function']['parameters'] for fn in provider}
+
+
+def test_final_provider_schema_advertises_optional_object_and_arrays(service):
+    from jsonschema import Draft202012Validator
+    _, schemas = registered_remote_tools(service)
+    query = schemas['query_remote_graph']
+    assert query['properties']['parameters'] == {'type': 'object', 'additionalProperties': True}
+    assert query['required'] == ['query']
+    for value in ('中文', 0, 2.5, True, None, [1, 'x', None], {'nested': [1, False]}):
+        Draft202012Validator(query).validate({'query': 'RETURN $value', 'parameters': {'value': value}})
+    for field in ('labels', 'relationship_types'):
+        assert schemas['describe_remote_graph']['properties'][field] == {'type': 'array', 'items': {'type': 'string'}}
+    assert schemas['describe_remote_graph']['required'] == []
+
+
+@pytest.mark.anyio
+async def test_registered_tools_keep_runtime_omission_null_and_reject_strings(service):
+    from pydantic import ValidationError
+    functions, _ = registered_remote_tools(service)
+    query = functions['query_remote_graph'].entrypoint
+    context = RunContext(run_id='r1', session_id='s1', user_id='alice')
+    assert (await query('RETURN 1', run_context=context))['success']
+    assert (await query('RETURN 1', parameters=None, run_context=context))['success']
+    assert (await query('RETURN $value', parameters={'value': 0}, run_context=context))['success']
+    with pytest.raises(ValidationError):
+        await query('RETURN 1', parameters='{}', run_context=context)
+    service.driver.schema = True
+    describe = functions['describe_remote_graph'].entrypoint
+    assert (await describe(run_context=context, labels=None))['success']
+    with pytest.raises(ValidationError):
+        await describe(run_context=context, labels='["Paper"]')
