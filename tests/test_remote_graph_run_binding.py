@@ -4,6 +4,30 @@ from agent_runtime.execution_store import ControlError
 from tests.test_remote_graph_catalog import catalog, body, binding
 
 
+def test_old_binding_loads_as_neo4j():
+    from agent_runtime.remote_graph.contracts import RemoteBinding
+    old = dict(connection_id='old', revision=7, name='Old graph', database='neo4j')
+    assert RemoteBinding.model_validate(old).kind == 'neo4j'
+
+
+def test_old_saved_selection_loads_as_neo4j(catalog):
+    from agent_runtime.remote_graph.catalog import selections
+    item = catalog.save('alice', body())
+    old = dict(connection_id=item.connection_id, revision=1, name='Cora', database='neo4j')
+    with catalog.store.transaction('alice', 's1') as conn:
+        conn.execute(selections.insert().values(user_id='alice', session_id='s1', binding=old))
+    assert catalog.selection('alice', 's1')['remote_graph']['kind'] == 'neo4j'
+
+
+def test_falkordb_run_freezes_kind(catalog):
+    item = catalog.save('alice', body(kind='falkordb', uri='redis://db.example:6379',
+                                      database='cora', username=''))
+    catalog.select('alice', 's1', item.connection_id)
+    run, _ = catalog.store.register('alice', 's1', 'request-1', 'body',
+        capture_remote_graph=lambda conn: catalog.freeze(conn, 'alice', 's1'))
+    assert run['state']['remote_graph_binding']['kind'] == 'falkordb'
+
+
 def test_binding_is_frozen_on_idempotent_registration(catalog):
     item = catalog.save('alice', body())
     catalog.select('alice', 's1', item.connection_id)

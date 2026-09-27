@@ -3,7 +3,10 @@ from typing import Any, Literal
 
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+
+
+RemoteGraphKind = Literal['neo4j', 'falkordb']
 
 
 class ConnectionWrite(BaseModel):
@@ -11,17 +14,20 @@ class ConnectionWrite(BaseModel):
     connection_id: str | None = None
     revision: int | None = Field(default=None, ge=1)
     name: str = Field(min_length=1, max_length=120)
+    kind: RemoteGraphKind = 'neo4j'
     uri: str = Field(min_length=1, max_length=2048)
     database: str = Field(min_length=1, max_length=256)
-    username: str = Field(min_length=1, max_length=256)
+    username: str = Field(default='', max_length=256)
     password: SecretStr | None = None
 
     @field_validator('uri')
     @classmethod
-    def valid_uri(cls, value):
+    def valid_uri(cls, value, info):
         try:
             uri = urlsplit(value)
-            valid = (uri.scheme in {'bolt', 'bolt+s', 'neo4j', 'neo4j+s'}
+            schemes = ({'redis', 'rediss'} if info.data.get('kind') == 'falkordb'
+                       else {'bolt', 'bolt+s', 'neo4j', 'neo4j+s'})
+            valid = (uri.scheme in schemes
                      and uri.hostname and not uri.username and not uri.password
                      and '@' not in uri.netloc and not uri.path and not uri.query
                      and not uri.fragment and uri.port != 0
@@ -32,12 +38,18 @@ class ConnectionWrite(BaseModel):
             raise ValueError('Invalid remote graph URI')
         return value
 
+    @model_validator(mode='after')
+    def valid_username(self):
+        if self.kind == 'neo4j' and not self.username:
+            raise ValueError('Neo4j username is required')
+        return self
+
 
 class PublicConnection(BaseModel):
     connection_id: str
     revision: int
     name: str
-    kind: Literal['neo4j'] = 'neo4j'
+    kind: RemoteGraphKind = 'neo4j'
     uri: str
     database: str
     username: str
@@ -48,7 +60,7 @@ class RemoteBinding(BaseModel):
     connection_id: str
     revision: int
     name: str
-    kind: Literal['neo4j'] = 'neo4j'
+    kind: RemoteGraphKind = 'neo4j'
     database: str
 
 

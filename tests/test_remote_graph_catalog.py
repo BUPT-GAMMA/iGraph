@@ -30,6 +30,78 @@ def binding(item):
     return RemoteBinding(**item.model_dump())
 
 
+def test_missing_kind_is_neo4j(catalog):
+    item = catalog.save('alice', body())
+    assert item.kind == 'neo4j'
+    assert catalog.list('alice')[0].kind == 'neo4j'
+
+
+def test_unknown_kind_rejected():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        body(kind='unknown')
+
+
+def test_kind_cannot_change_on_edit(catalog):
+    item = catalog.save('alice', body())
+    with pytest.raises(ControlError, match='REMOTE_GRAPH_INVALID_CONFIG'):
+        catalog.save('alice', body(connection_id=item.connection_id, revision=1,
+                                   kind='falkordb', uri='redis://db.example:6379',
+                                   database='other'))
+    assert catalog.list('alice')[0].kind == 'neo4j'
+
+
+def test_kind_cannot_change_on_test_form(catalog):
+    item = catalog.save('alice', body())
+    with pytest.raises(ControlError, match='REMOTE_GRAPH_INVALID_CONFIG'):
+        catalog.resolve_write('alice', body(connection_id=item.connection_id, revision=1,
+                                            kind='falkordb', uri='redis://db.example:6379',
+                                            database='other'))
+
+
+def test_binding_kind_must_match_saved_connection(catalog):
+    from agent_runtime.remote_graph.contracts import RemoteBinding
+    item = catalog.save('alice', body(kind='falkordb', uri='redis://db.example:6379',
+                                      database='cora', username=''))
+    forged = RemoteBinding(connection_id=item.connection_id, revision=1, name=item.name,
+                           kind='neo4j', database=item.database)
+    with pytest.raises(ControlError, match='REMOTE_GRAPH_CHANGED'):
+        catalog.resolve('alice', forged)
+
+
+def test_neo4j_still_requires_username():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        body(username='')
+
+
+def test_falkordb_kind_survives_save_select_freeze_and_blank_password_edit(catalog):
+    item = catalog.save('alice', body(kind='falkordb', uri='rediss://db.example:6379',
+                                      database='cora', username=''))
+    assert item.kind == 'falkordb'
+    assert catalog.list('alice')[0].kind == 'falkordb'
+    assert catalog.selection_form('alice', item.connection_id).kind == 'falkordb'
+    assert catalog.select('alice', 'session', item.connection_id).kind == 'falkordb'
+    with catalog.store.transaction('alice', 'session') as conn:
+        assert catalog.freeze(conn, 'alice', 'session').kind == 'falkordb'
+    edited = catalog.save('alice', body(connection_id=item.connection_id, revision=1,
+                                        kind='falkordb', uri='rediss://db.example:6379',
+                                        database='cora', username='', password=''))
+    assert edited.kind == 'falkordb'
+    assert catalog.resolve('alice', binding(edited)).password.get_secret_value() == 'fixture-secret'
+
+
+@pytest.mark.parametrize('uri', [
+    'redis://user:secret@db.example:6379', 'redis://db.example:6379/0',
+    'redis://db.example:6379?db=1', 'rediss://db.example:6379#other',
+    'bolt://db.example:7687',
+])
+def test_falkordb_rejects_embedded_credentials_and_target_options(uri):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        body(kind='falkordb', uri=uri, database='cora')
+
+
 def test_owner_revision_and_secret(catalog):
     from agent_runtime.remote_graph.catalog import connections
     item = catalog.save('alice', body())

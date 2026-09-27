@@ -1,7 +1,7 @@
 """Owner-scoped connection persistence using execution-store transactions."""
 from uuid import uuid4
 
-from sqlalchemy import Column, Integer, JSON, String, Table, Text, select
+from sqlalchemy import Column, Integer, JSON, String, Table, Text, select, text
 
 from agent_runtime.execution_store import ControlError, metadata
 from .contracts import ConnectionWrite, PublicConnection, RemoteBinding, ResolvedConnection
@@ -13,6 +13,7 @@ connections = Table(
     Column('connection_id', String, primary_key=True),
     Column('revision', Integer, nullable=False),
     Column('name', String, nullable=False),
+    Column('kind', String, nullable=False, server_default=text("'neo4j'")),
     Column('uri', String, nullable=False),
     Column('database', String, nullable=False),
     Column('username', String, nullable=False),
@@ -43,7 +44,7 @@ class RemoteGraphCatalog:
     @staticmethod
     def _public(row) -> PublicConnection:
         return PublicConnection(**{key: row[key] for key in (
-            'connection_id', 'revision', 'name', 'uri', 'database', 'username'
+            'connection_id', 'revision', 'name', 'kind', 'uri', 'database', 'username'
         )}, has_password=bool(row['password_ciphertext']))
 
     @staticmethod
@@ -63,6 +64,8 @@ class RemoteGraphCatalog:
             old = self._row(conn, uid, body.connection_id) if body.connection_id else None
             if old is not None:
                 self._revision(old, body.revision)
+                if old['kind'] != body.kind:
+                    raise ControlError('REMOTE_GRAPH_INVALID_CONFIG', 422)
             password = body.password.get_secret_value() if body.password is not None else ''
             if not password and old is None:
                 raise ControlError('REMOTE_GRAPH_INVALID_CONFIG', 422)
@@ -71,7 +74,7 @@ class RemoteGraphCatalog:
                 password = self.secret_box.decrypt(old['password_ciphertext'])
             row = dict(user_id=uid, connection_id=body.connection_id or str(uuid4()),
                        revision=old['revision'] + 1 if old is not None else 1,
-                       name=body.name, uri=body.uri, database=body.database,
+                       name=body.name, kind=body.kind, uri=body.uri, database=body.database,
                        username=body.username,
                        password_ciphertext=self.secret_box.encrypt(password))
             if old is None:
@@ -101,6 +104,8 @@ class RemoteGraphCatalog:
         with self.store.transaction(uid, '__remote_graphs__') as conn:
             row = self._row(conn, uid, binding.connection_id)
             self._revision(row, binding.revision)
+            if row['kind'] != binding.kind:
+                raise ControlError('REMOTE_GRAPH_CHANGED', 409)
             return ResolvedConnection(public=self._public(row),
                                       password=self.secret_box.decrypt(row['password_ciphertext']))
 
@@ -111,6 +116,8 @@ class RemoteGraphCatalog:
             with self.store.transaction(uid, '__remote_graphs__') as conn:
                 old = self._row(conn, uid, body.connection_id)
                 self._revision(old, body.revision)
+                if old['kind'] != body.kind:
+                    raise ControlError('REMOTE_GRAPH_INVALID_CONFIG', 422)
                 if not password:
                     password = self.secret_box.decrypt(old['password_ciphertext'])
         if not password:
@@ -118,12 +125,12 @@ class RemoteGraphCatalog:
         return ResolvedConnection(public=PublicConnection(
             connection_id=body.connection_id or 'unsaved', revision=body.revision or 1,
             name=body.name, uri=body.uri, database=body.database, username=body.username,
-            has_password=True), password=password)
+            kind=body.kind, has_password=True), password=password)
 
     def selection_form(self, uid, connection_id) -> ConnectionWrite:
         with self.store.transaction(uid, '__remote_graphs__') as conn:
             public = self._public(self._row(conn, uid, connection_id))
-            return ConnectionWrite(**public.model_dump(exclude={'kind', 'has_password'}))
+            return ConnectionWrite(**public.model_dump(exclude={'has_password'}))
 
     def select(self, uid, sid, connection_id, *, revision=None) -> RemoteBinding | None:
         with self.store.transaction(uid, sid) as conn:

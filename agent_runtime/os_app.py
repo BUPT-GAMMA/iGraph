@@ -20,6 +20,7 @@ from agent_runtime.model_catalog import ModelCatalog
 from agent_runtime.model_api import create_model_router
 from agent_runtime.remote_graph.api import RemoteGraphSessions, create_remote_graph_router
 from agent_runtime.remote_graph.catalog import RemoteGraphCatalog
+from agent_runtime.remote_graph.migrations import migrate_remote_graph_connections
 from agent_runtime.remote_graph.secrets import SecretBox
 from agent_runtime.remote_graph.neo4j import RemoteGraphExecutor
 from agent_runtime.execution_control import ExecutionController, create_control_router
@@ -57,6 +58,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     async def lifespan(_app):
         validate_service_configuration()
         await asyncio.to_thread(store.migrate)
+        await asyncio.to_thread(migrate_remote_graph_connections, store.engine)
         if controller:
             await controller.restore()
         try:
