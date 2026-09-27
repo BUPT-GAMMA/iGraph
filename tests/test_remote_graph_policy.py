@@ -1,5 +1,7 @@
 import asyncio
 import socket
+import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,7 +23,7 @@ async def test_network_policy_checks_all_dns_answers_and_routing_targets(monkeyp
     monkeypatch.setattr(asyncio.get_running_loop(), 'getaddrinfo', dns)
     resolved = await policy.resolve(('db.example', 7687))
     assert resolved[0].host == '93.184.216.34'
-    assert resolved[0]._host_name == 'db.example'  # TLS checks the original name.
+    assert resolved[0].tls_hostname == 'db.example'  # TLS checks the original name.
     answers.append('127.0.0.1')
     with pytest.raises(ControlError, match='REMOTE_GRAPH_INVALID_CONFIG'):
         await policy.resolve(('db.example', 7687))
@@ -36,6 +38,33 @@ async def test_loopback_requires_explicit_cidr_and_default_denies():
         await NetworkPolicy().resolve(('127.0.0.1', 7687))
     result = await NetworkPolicy(allowed_cidrs=('127.0.0.1/32',)).resolve(('127.0.0.1', 7687))
     assert result[0].host == '127.0.0.1'
+
+
+@pytest.mark.anyio
+async def test_neo4j_checks_each_secondary_connection_and_keeps_tls_name(monkeypatch):
+    from agent_runtime.remote_graph.adapters import AdapterContext
+    from agent_runtime.remote_graph.neo4j import Neo4jAdapter
+    from agent_runtime.remote_graph.policy import NetworkPolicy
+    from pydantic import SecretStr
+
+    answers = ['93.184.216.34']
+    async def dns(host, port, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, port)) for ip in answers]
+    monkeypatch.setattr(asyncio.get_running_loop(), 'getaddrinfo', dns)
+    captured = {}
+    monkeypatch.setattr('agent_runtime.remote_graph.neo4j.AsyncGraphDatabase.driver',
+                        lambda *args, **kwargs: captured.update(kwargs))
+    ctx = AdapterContext(connection=SimpleNamespace(public=SimpleNamespace(
+        uri='bolt+s://db.example:7687', username='reader'), password=SecretStr('secret')),
+        deadline=time.monotonic() + 5, max_rows=10, max_bytes=1000,
+        network_policy=NetworkPolicy(allowed_hosts=('db.example',)))
+    Neo4jAdapter()._driver(ctx)
+    first = await captured['resolver'](('db.example', 7687))
+    assert first[0].host == '93.184.216.34'
+    assert first[0]._host_name == 'db.example'
+    answers[:] = ['127.0.0.1']
+    with pytest.raises(ControlError, match='REMOTE_GRAPH_INVALID_CONFIG'):
+        await captured['resolver'](('db.example', 7687))
 
 
 @pytest.mark.parametrize('query', [

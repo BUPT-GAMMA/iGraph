@@ -22,7 +22,7 @@ from agent_runtime.remote_graph.api import RemoteGraphSessions, create_remote_gr
 from agent_runtime.remote_graph.catalog import RemoteGraphCatalog
 from agent_runtime.remote_graph.migrations import migrate_remote_graph_connections
 from agent_runtime.remote_graph.secrets import SecretBox
-from agent_runtime.remote_graph.neo4j import RemoteGraphExecutor
+from agent_runtime.remote_graph.executor import RemoteGraphExecutor
 from agent_runtime.execution_control import ExecutionController, create_control_router
 from agent_runtime.execution_store import ExecutionStore, ControlError
 from agent_runtime.execution_store import TERMINAL

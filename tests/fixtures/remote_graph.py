@@ -57,7 +57,7 @@ def remote_executor(remote_live, tmp_path):
     from agent_runtime.remote_graph.catalog import RemoteGraphCatalog
     from agent_runtime.remote_graph.contracts import ConnectionWrite, RemoteBinding
     from agent_runtime.remote_graph.secrets import SecretBox
-    from agent_runtime.remote_graph.neo4j import RemoteGraphExecutor
+    from agent_runtime.remote_graph.executor import RemoteGraphExecutor
     store = ExecutionStore(create_engine(f'sqlite:///{tmp_path}/catalog.db')); store.migrate()
     catalog = RemoteGraphCatalog(store, SecretBox(Fernet.generate_key().decode()))
     form = ConnectionWrite(name='Cora live acceptance', uri=remote_live.uri, database=remote_live.database,
