@@ -74,6 +74,24 @@ def test_service_auth_and_owner_isolation(api):
         json={'connection_id': item['connection_id']}).status_code == 404
 
 
+def test_types_require_service_and_identity_and_expose_only_form_metadata(api):
+    path = '/internal/remote-graph-types'
+    assert api.client.get(path, headers={'X-iGraph-Service-Key': ''}).status_code == 403
+    assert api.client.get(path, headers={'X-User-ID': ''}).status_code == 401
+    response = api.client.get(path)
+    assert response.status_code == 200
+    types = response.json()['types']
+    assert {item['kind'] for item in types} == {'neo4j', 'falkordb'}
+    assert all(set(item) == {'kind', 'display_name', 'query_language', 'uri_example',
+                             'target_label', 'username_required', 'support_status'} for item in types)
+    assert next(item for item in types if item['kind'] == 'falkordb')['target_label'] == 'Graph'
+
+
+def test_legacy_write_defaults_to_neo4j(api):
+    item = create(api)
+    assert item['kind'] == 'neo4j'
+
+
 def test_test_does_not_save_and_save_requires_usable_connection(api):
     result = api.client.post('/internal/remote-graphs/test', json=FORM)
     assert result.json() == dict(success=True, connection_usable=True, database_read_only='unknown', database='neo4j')

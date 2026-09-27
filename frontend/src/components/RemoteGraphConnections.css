@@ -23,7 +23,7 @@
 .remote-graph-drawer button:hover:not(:disabled) { background: var(--surface-subtle); }
 .remote-graph-drawer button.is-primary { background: var(--accent-solid); color: #fff; border-color: var(--accent-solid); }
 .remote-graph-drawer button.is-danger { color: var(--danger-text); }
-.remote-graph-drawer :is(button,input):focus-visible, .remote-query-result summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.remote-graph-drawer :is(button,input,select):focus-visible, .remote-query-result summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .remote-connection-row { border-radius: 10px; padding: 16px; }
 .remote-connection-row.is-selected { border-color: var(--accent-border); background: var(--accent-soft); }
 .remote-connection-title { margin-bottom: 8px; overflow-wrap: anywhere; }
@@ -35,7 +35,7 @@
 .remote-graph-drawer .remote-back { margin-top: 16px; border: 0; padding-left: 0; color: var(--text-secondary); }
 .remote-connection-form { margin-top: 16px; gap: 18px; }
 .remote-connection-form label { gap: 7px; }
-.remote-connection-form input { box-sizing: border-box; min-width: 0; background: var(--surface); color: var(--text-primary); font: inherit; }
+.remote-connection-form :is(input,select) { box-sizing: border-box; min-width: 0; width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-primary); font: inherit; }
 .remote-form-actions { padding-top: 16px; border-top: 1px solid var(--border); justify-content: flex-end; }
 .remote-disconnect { display: grid; gap: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
 .remote-disconnect button { justify-self: start; }

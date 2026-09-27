@@ -2,7 +2,7 @@ import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionSourcePreview, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
 import { currentLanguage, tr } from './i18n';
-import type { RemoteBinding, RemoteConnection, RemoteConnectionWrite } from './types';
+import type { RemoteBinding, RemoteConnection, RemoteConnectionWrite, RemoteDatabaseType } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
@@ -55,6 +55,7 @@ export type ModelWrite = {
 export type DiscoveredModels = { models: { id: string; name: string }[]; latency_ms: number; truncated: boolean };
 const modelJson = (method: string, body: unknown) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 export const listRemoteGraphs = () => json<{ connections: RemoteConnection[] }>('/api/remote-graphs');
+export const listRemoteGraphTypes = () => json<{ types: RemoteDatabaseType[] }>('/api/remote-graph-types');
 export const saveRemoteGraph = (input: RemoteConnectionWrite) => json<{ connection: RemoteConnection }>('/api/remote-graphs', modelJson('POST', input));
 export const testRemoteGraph = (input: RemoteConnectionWrite) => json<{ success: boolean; connection_usable: boolean; database_read_only: 'verified_read_only' | 'not_read_only' | 'unknown'; database: string }>('/api/remote-graphs/test', modelJson('POST', input));
 export const deleteRemoteGraph = (id: string, revision: number) => json(`/api/remote-graphs/${encodeURIComponent(id)}?revision=${revision}`, { method: 'DELETE' });

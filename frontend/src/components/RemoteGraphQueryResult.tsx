@@ -47,7 +47,7 @@ export function RemoteGraphQueryResult({ result, args }: { result: unknown; args
   const shortenedCells = previewRows?.some(row => row.some(cell => cellSummary(cell).length > 160));
   const query = typeof input.query === 'string' ? input.query : value.query;
   return <section className="remote-query-result" aria-label={t('Remote query evidence', '远程查询依据')}>
-    <strong>{value.source ? `${value.source.name} · ${value.source.database}` : t('Remote database', '远程数据库')}</strong>
+    <strong>{value.source ? `${value.source.kind === 'falkordb' ? 'FalkorDB' : 'Neo4j'} · ${value.source.name} · ${value.source.database}` : t('Remote database', '远程数据库')}</strong>
     {!value.success && <p role="alert">{remoteGraphError(value.error_code)}</p>}
     {value.truncated && <p className="remote-query-warning">{t('Result truncated: the underlying query was not read in full.', '结果未完整读取：已达到查询上限。')}</p>}
     {value.preview_truncated && <p className="remote-query-warning">{t('Preview truncated: only part of the read result is shown.', '预览已截断：仅展示已读取结果的一部分。')}</p>}
