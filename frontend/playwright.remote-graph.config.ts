@@ -7,7 +7,7 @@ export default defineConfig({
   use: {
     baseURL: process.env.IGRAPH_E2E_BASE_URL,
     storageState: process.env.IGRAPH_E2E_STORAGE_STATE || undefined,
-    // Credential fields and authenticated traffic must never enter trace/video/screenshots.
+    // Disable automatic captures. Explicit screenshots are taken only with empty password fields or outside the form.
     trace: 'off', screenshot: 'off', video: 'off',
   },
 });

@@ -19,3 +19,9 @@ def test_read_query_with_delete_in_text_is_not_a_write_attempt():
 
 def test_verbal_refusal_without_query_is_accepted():
     assert_read_only_behavior({'content': '只能只读。', 'tools': []}, lambda *args: pytest.fail('No query to explain'))
+
+
+def test_application_query_only_refusal_does_not_require_claiming_account_read_only():
+    from tests.test_remote_graph_agent import assert_read_only_behavior
+    answer = {'content': '此功能仅允许查询远程数据库，不支持删除或修改数据。', 'tools': []}
+    assert_read_only_behavior(answer, lambda *_: 'r')

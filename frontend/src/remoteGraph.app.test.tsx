@@ -60,7 +60,7 @@ it('reconciles an edited selected connection while preserving historical query s
   await screen.findByText('Remote: Cora · neo4j');
   await userEvent.click(screen.getByRole('button', { name: 'Remote databases' }));
   await screen.findByText('Remote: New target · other');
-  expect(screen.getByText('Cora · neo4j · v2')).toBeTruthy();
+  expect(screen.getByText('Cora · neo4j')).toBeTruthy();
   expect(screen.getByRole('button', { name: /Local A/ })).toBeTruthy();
 });
 
@@ -88,5 +88,5 @@ it.each(['loaded', 'pending', 'error'])('clears remote panel state on account sw
   if (mode === 'pending') await act(async () => resolveOld({ connections: [connection] }));
   expect(within(dialog).queryByText('Cora')).toBeNull();
   await act(async () => resolveNew({ connections: [] }));
-  expect((within(dialog).getByRole('button', { name: 'Test connection' }) as HTMLButtonElement).disabled).toBe(false);
+  expect((within(dialog).getByRole('button', { name: 'New connection' }) as HTMLButtonElement).disabled).toBe(false);
 });

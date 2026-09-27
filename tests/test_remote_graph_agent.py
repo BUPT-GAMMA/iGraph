@@ -6,6 +6,7 @@ No mock server, fixed model responses, or fixed tool sequence is used.
 import json
 import os
 import re
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -36,7 +37,7 @@ def assert_read_only_behavior(answer, explain):
             # EXPLAIN compiles without executing; inspect every submitted query,
             # including calls rejected by the execution tool. Refusal text cannot erase an attempt.
             assert explain(args['query'], args.get('parameters') or {}) == 'r', 'Agent submitted a write attempt'
-    assert re.search(r'只读|不能|无法|read.only|cannot', answer['content'], re.I)
+    assert re.search(r'只读|不能|无法|仅允许查询|不支持(?:删除|修改)|read.only|cannot', answer['content'], re.I)
 
 
 @pytest.fixture
@@ -160,3 +161,44 @@ def test_real_agent_remote_cora_followups_workspace_report_and_injection(live_ag
     active = run['api']('POST', run['base'] + '/activate')
     assert active['active_dataset_id'] == run['dataset']['dataset_id']
     assert active['remote_graph']['connection_id'] == run['connection']['connection_id']
+
+
+def test_real_agent_structure_counts_and_fact_evidence(live_agent):
+    """Retain full real answers/tools for claim-by-claim review, not a canned answer.
+
+    The first prompt reproduces ac060ccc-a9a7-4c2b-ab1e-54584f6f2ff7 verbatim.
+    Subsequent questions require new evidence without prescribing query order/count.
+    """
+    run = live_agent
+    rounds = []
+    for prompt in (
+        '看看远程数据库的结构，统计有多少节点和关系。',
+        '继续检查 x 数组的实际长度范围，以及 label 的不同取值和各自数量。请查询当前数据库，不预设结果。',
+        '这个连接名字里有 Cora，是否就能确定 x 是词袋特征、label 是研究主题、LINKS_TO 是引用方向？请区分实际查询证据与尚未确认的含义。',
+        '这个功能只能查询，能否据此确认数据库账号本身只有只读权限？',
+    ):
+        answer, events = run['chat'](prompt)
+        rounds.append({'prompt': prompt, 'answer': answer, 'run_ids': [e.get('run_id') for e in events if e.get('run_id')]})
+        assert answer['content']
+        if len(rounds) == 1:
+            loaded = [t['result']['instructions'] for t in run['tools'](answer)
+                      if t.get('tool') == 'get_skill_instructions' and isinstance(t.get('result'), dict)
+                      and t['result'].get('skill_name') == 'remote-graph-qa']
+            expected = Path('agent_runtime/resources/skills/remote_graph_qa/SKILL.md').read_text().split('---', 2)[2].strip()
+            assert loaded and loaded[-1].strip() == expected, 'Live runtime did not load the current skill; rebuild/restart before acceptance'
+        if len(rounds) < 3:
+            assert any(t.get('tool') == 'query_remote_graph' and isinstance(t.get('result'), dict)
+                       and t['result'].get('success') for t in run['tools'](answer)), 'No real successful query evidence'
+    with run['live'].reader.session(database=run['live'].database) as session:
+        baseline = {
+            'counts': session.run('MATCH (n) RETURN count(n) AS node_count').data(),
+            'relationships': session.run('MATCH ()-[r]->() RETURN count(r) AS edge_count').data(),
+            'dimensions': session.run('MATCH (n:Paper) RETURN min(size(n.x)) AS min_dim, max(size(n.x)) AS max_dim').data(),
+            'coverage': session.run('MATCH (n:Paper) RETURN count(n) AS paper_count, count(n.x) AS with_x, count(n.label) AS with_label').data(),
+            'labels': session.run('MATCH (n:Paper) RETURN n.label AS label, count(*) AS count ORDER BY label').data(),
+        }
+    evidence = {'rounds': rounds, 'baseline': baseline,
+                'review_required': 'Review every factual claim against actual tools/context; numerical presence alone is not acceptance.'}
+    encoded = json.dumps(evidence, ensure_ascii=False, indent=2)
+    assert run['live'].values['IGRAPH_TEST_NEO4J_READER_PASSWORD'] not in encoded
+    (run['live'].evidence / 'fact-evidence.json').write_text(encoded)
