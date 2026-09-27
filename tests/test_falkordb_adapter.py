@@ -357,10 +357,59 @@ def test_list_comprehension_without_projection_is_rejected(query):
     'RETURN [1,2,3]',
     'RETURN [1,2,3][1]',
     'RETURN [[1,2],[3,4]][0][1]',
-    'MATCH (n) RETURN [n.in,n.`IN`]',
     'RETURN ["x IN [1,2,3]", "|", "*"]',
     'RETURN [1, /* x IN [1,2,3] */ 2]',
-    'WITH 1 AS `x IN` RETURN [`x IN`]',
 ])
 def test_comprehension_guard_preserves_ordinary_list_expressions(query):
+    module().check_query(query)
+
+
+@pytest.mark.parametrize('query', [
+    'WITH $x AS x RETURN [' + ','.join(['x'] * 16384) + ']',
+    'RETURN [$x,$x]', 'MATCH (n) RETURN [n.payload,n.payload]',
+    'MATCH (n) RETURN [n.in,n.`IN`]', 'WITH 1 AS `x IN` RETURN [`x IN`]',
+    'WITH $x AS x WITH [x,x] AS y RETURN [y,y]',
+    'WITH $x AS x RETURN x+x+x+x', 'RETURN $x+$x',
+    'MATCH (n) RETURN n.payload+n.payload',
+    'MATCH (n) WITH collect(n.payload) AS x RETURN [x,x]',
+    'MATCH (n) RETURN collect([n.payload,n.payload])',
+    'MATCH (n) RETURN [collect(n.payload)]',
+    'RETURN {x:$x,y:$x}', 'RETURN [{x:$x}]',
+    'MATCH (n) RETURN n{.*, copy:n.payload}',
+    'RETURN [1]+[2]', 'RETURN "a"+"b"',
+    'RETURN (1)+($x)', 'RETURN toFloat($x)+$x',
+    'RETURN $x[0..2]',
+    'RETURN [' + ','.join(['1'] * 129) + ']',
+    'RETURN ["' + 'x' * 4097 + '"]',
+    'RETURN [[[[[1]]]]]',
+    'RETURN (1)-[x]-(1)',
+    'MATCH (n) WHERE (1)-[n.payload]-(1) RETURN n',
+])
+@pytest.mark.anyio
+async def test_implicit_heap_amplification_rejected_before_connection(query, monkeypatch):
+    mod=module()
+    def forbidden_connect(ctx):
+        pytest.fail('rejected heap construction reached connection')
+    monkeypatch.setattr(mod, 'connect', forbidden_connect)
+    request=QueryRequest(query=query, parameters={'x':'a' * 131072})
+    # The reported 2 GiB shape fits both request and encoded-parameter limits.
+    assert len(module('falkor_values').parameter_prefix(request.parameters).encode()) < 262144
+    with pytest.raises(ControlError, match='REMOTE_GRAPH_QUERY_REJECTED'):
+        await mod.FalkorDBAdapter().execute(context(), request)
+
+
+@pytest.mark.parametrize('query', [
+    'RETURN [], [1,-2,3.5,true,false,null,"雪"], [[1,2],[3,4]][0][1]',
+    'RETURN 1+2, (1+2)+3, 1.5+2.5, -1+2, 2*3-4/2',
+    'RETURN toFloat($x)+toInteger($y)',
+    'MATCH (n) RETURN toFloat(n.x)+toFloat(n.y)',
+    'MATCH (n) RETURN n.payload[0], n["payload"]',
+    'RETURN $items[$index]', 'WITH collect(1) AS x RETURN x[0]',
+    'MATCH (n) RETURN collect(n.payload)',
+    'MATCH (n) RETURN collect([1,2])',
+    'MATCH p=(n:`WITH`)<-[r:`RETURN`]-(m) WHERE n.x=$x RETURN p,r',
+    'MATCH ()-[]->() RETURN count(*)',
+    'CALL db.labels()',
+])
+def test_bounded_expression_subset_remains_admitted(query):
     module().check_query(query)

@@ -114,7 +114,7 @@ async def test_result_rows_bytes_and_server_timeout(live):
         await adapter.execute(ctx(max_bytes=8192),QueryRequest(query='MATCH (n:Bulk) RETURN n.value'))
     started=time.monotonic()
     with pytest.raises((ControlError,TimeoutError)):
-        await adapter.execute(ctx(timeout=.1),QueryRequest(query='MATCH (a:Budget),(b:Budget),(c:Budget),(d:Budget) RETURN sum(a.number+b.number+c.number+d.number)'))
+        await adapter.execute(ctx(timeout=.1),QueryRequest(query='MATCH (a:Budget),(b:Budget),(c:Budget),(d:Budget) RETURN sum(toFloat(a.number)+toFloat(b.number)+toFloat(c.number)+toFloat(d.number))'))
     assert time.monotonic()-started<2
     capture('budgets',{'server_rows':128,'truncated':result.truncated,'single_bulk_rejected':True,'deadline_seconds':time.monotonic()-started})
 
@@ -143,7 +143,7 @@ async def test_cancel_disconnects_client_and_server_finishes_by_deadline(live):
     admin,graph,ctx=live
     baseline={row['id'] for row in admin.client_list()}
     adapter=FalkorDBAdapter()
-    slow='MATCH (a:Budget),(b:Budget),(c:Budget),(d:Budget) RETURN sum(a.number+b.number+c.number+d.number)'
+    slow='MATCH (a:Budget),(b:Budget),(c:Budget),(d:Budget) RETURN sum(toFloat(a.number)+toFloat(b.number)+toFloat(c.number)+toFloat(d.number))'
     task=asyncio.create_task(adapter.execute(ctx(timeout=1),QueryRequest(query=slow)))
     def running(): return len(admin.execute_command('GRAPH.INFO')[1])
     for _ in range(100):
@@ -220,7 +220,11 @@ async def test_list_comprehension_policy_preserves_literal_and_index_queries(liv
         with pytest.raises(ControlError,match='REMOTE_GRAPH_QUERY_REJECTED'):
             await adapter.execute(ctx(),QueryRequest(query=query))
     literal=await adapter.execute(ctx(),QueryRequest(
-        query='WITH 2 AS `in` RETURN [1, /* x IN [1,2,3] */ `in`,3][1], ["x IN [1,2,3]"]'))
+        query='RETURN [1, /* x IN [1,2,3] */ 2,3][1], ["x IN [1,2,3]"]'))
     assert literal.rows==[[2,['x IN [1,2,3]']]]
+    numeric=await adapter.execute(ctx(),QueryRequest(
+        query='RETURN 1+2, (1+2)+3, toFloat($x)+toInteger($y)',
+        parameters={'x':2.5,'y':3}))
+    assert numeric.rows == [[3,6,5.5]]
     capture('list_comprehension_policy',{'rejected_queries':rejected,'literal_and_index_rows':literal.rows,
                                         'finding':'resource-policy mismatch, not proven OOM'})

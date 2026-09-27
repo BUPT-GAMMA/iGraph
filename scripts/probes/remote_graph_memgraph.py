@@ -354,11 +354,19 @@ class Probe:
 
         task = asyncio.create_task(worker())
         observed = None
+        initial_polls = []
+        def valid_observation(result):
+            return (result.get("ok") is True and isinstance(result.get("rows"), list)
+                    and all(isinstance(row, dict) and isinstance(row.get("query"), list)
+                            and all(isinstance(text, str) for text in row["query"])
+                            for row in result["rows"]))
         for _ in range(30):
-            rows = (await asyncio.to_thread(self.query, "SHOW TRANSACTIONS")).get(
-                "rows", []
-            )
-            observed = next((row for row in rows if query in str(row)), None)
+            observation = await asyncio.to_thread(self.query, "SHOW TRANSACTIONS")
+            valid = valid_observation(observation)
+            initial_polls.append({"observation": observation, "valid": valid})
+            if not valid:
+                break
+            observed = next((row for row in observation["rows"] if query in str(row)), None)
             if observed or task.done():
                 break
             await asyncio.sleep(0.01)
@@ -372,20 +380,26 @@ class Probe:
         polls = []
         while time.monotonic() - start < 3:
             r = await asyncio.to_thread(self.query, "SHOW TRANSACTIONS")
-            running = any(query in str(row) for row in r.get("rows", []))
+            valid = valid_observation(r)
+            running = any(query in str(row) for row in r["rows"]) if valid else None
             polls.append(
                 {
                     "elapsed_ms": round((time.monotonic() - start) * 1000, 2),
                     "running": running,
+                    "observation": r,
+                    "valid": valid,
                 }
             )
-            if not running:
+            if running is not True:
                 break
             await asyncio.sleep(0.05)
+        stopped = bool(observed and polls and polls[-1]["running"] is False)
         return {
             "observed": observed,
+            "initial_polls": initial_polls,
             "polls": polls,
-            "server_stopped": bool(observed and polls and not polls[-1]["running"]),
+            "status": "pass" if stopped else "unverified",
+            "server_stopped": stopped,
         }
 
     def cancel_probe(self):

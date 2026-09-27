@@ -112,3 +112,40 @@ def test_nebula_auth_probe_closes_connection_without_hiding_errors(monkeypatch, 
     else:
         assert not result["ok"] and result["error"] == str(error)
         assert result["error_type"] == "RuntimeError"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('later,expected', [
+    ({'ok':False,'error':'observer disconnected'}, 'unverified'),
+    ({'ok':True}, 'unverified'),
+    ({'ok':True,'rows':None}, 'unverified'),
+    ({'ok':True,'rows':["malformed row"]}, 'unverified'),
+    ({'ok':True,'rows':[{}]}, 'unverified'),
+    ({'ok':True,'rows':[]}, 'pass'),
+])
+async def test_disconnect_requires_valid_observation_after_initial_sighting(monkeypatch, later, expected):
+    import asyncio
+    query=memgraph.SLOW + ' /* owned-client-disconnect */'
+    class Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): pass
+        async def run(self,text):
+            assert text == query
+            await asyncio.Event().wait()
+        def cancel(self): pass
+    class Driver:
+        def session(self): return Session()
+        async def close(self): pass
+    monkeypatch.setattr(memgraph.AsyncGraphDatabase,'driver',lambda *a,**kw:Driver())
+    probe=object.__new__(memgraph.Probe)
+    observations=iter([{'ok':True,'rows':[{'username':'qa_probe','transaction_id':'123','query':[query], 'status':'running', 'metadata':{}, 'start_time':None, 'elapsed_ms':1}]}, later])
+    def observe(text):
+        assert text == 'SHOW TRANSACTIONS'
+        return next(observations)
+    probe.query=observe
+    result=await probe.disconnect_probe('offline-password')
+    assert result['server_stopped'] is (expected == 'pass')
+    assert result['status'] == expected
+    assert result['polls'][-1]['observation'] == later
+    if expected == 'unverified':
+        assert result['polls'][-1]['running'] is None
