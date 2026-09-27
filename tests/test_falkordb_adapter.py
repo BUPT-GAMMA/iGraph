@@ -340,3 +340,27 @@ def test_resp_depth_limit_is_independent_of_byte_budget():
     wire=Wire(b'*1\r\n'*34+b':1\r\n')
     with pytest.raises(ControlError):
         module('falkor_protocol').read_response(wire,max_bytes=65536,deadline=time.monotonic()+1)
+
+
+@pytest.mark.parametrize('query',[
+    'RETURN [x IN [1,2,3] WHERE x > 1]',
+    'RETURN [x IN [1,2,3]]',
+    'RETURN [x /* binding */ IN /* source */ [1,2,3]]',
+    'RETURN [`item value` IN [1,2,3] WHERE `item value` > 1]',
+])
+def test_list_comprehension_without_projection_is_rejected(query):
+    with pytest.raises(ControlError,match='REMOTE_GRAPH_QUERY_REJECTED'):
+        module().check_query(query)
+
+
+@pytest.mark.parametrize('query',[
+    'RETURN [1,2,3]',
+    'RETURN [1,2,3][1]',
+    'RETURN [[1,2],[3,4]][0][1]',
+    'MATCH (n) RETURN [n.in,n.`IN`]',
+    'RETURN ["x IN [1,2,3]", "|", "*"]',
+    'RETURN [1, /* x IN [1,2,3] */ 2]',
+    'WITH 1 AS `x IN` RETURN [`x IN`]',
+])
+def test_comprehension_guard_preserves_ordinary_list_expressions(query):
+    module().check_query(query)
