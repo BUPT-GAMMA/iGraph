@@ -68,6 +68,62 @@ def inspect_calls(run, answer):
                     assert session.run('EXPLAIN ' + args['query'], parameters).consume().query_type == 'r'
 
 
+def assert_bound_filter(args, target, histogram, read):
+    """Prove parameter influence without prescribing a Cypher predicate spelling."""
+    parameters = args.get('parameters')
+    assert isinstance(parameters, dict) and parameters, 'Filtering must actually bind parameters'
+    target_value = int(target)
+    matching = [key for key, value in parameters.items()
+                if type(value) in (int, float) and value == target_value]
+    assert matching, 'Bound parameter must match the requested label'
+    alternate = next((label for label, count in histogram.items()
+                      if label != str(target) and count != histogram[str(target)]), None)
+    assert alternate is not None, 'Manifest needs an alternate label with a distinct count'
+    changed = {**parameters, **{key: int(alternate) for key in matching}}
+    rows = read(args['query'], changed)
+    assert rows == [[histogram[alternate]]], 'Filter did not follow the bound alternate label'
+    return {'query': args['query'], 'original_parameters': parameters,
+            'alternate_parameters': changed, 'alternate_label': alternate,
+            'expected_count': histogram[alternate], 'rows': rows}
+
+
+def read_qa_count(run, query, parameters):
+    """Independent QA read via the bounded production adapter, never a model run."""
+    import asyncio
+    import time
+    from types import SimpleNamespace
+    from urllib.parse import urlsplit
+    from pydantic import SecretStr
+    from agent_runtime.remote_graph.adapters import AdapterContext
+    from agent_runtime.remote_graph.contracts import QueryRequest
+    from agent_runtime.remote_graph.policy import NetworkPolicy
+    from agent_runtime.remote_graph.registry import get_adapter
+
+    if run['kind'] == 'neo4j':
+        assert os.environ['IGRAPH_TEST_NEO4J_DEDICATED'] == '1'
+        uri = os.environ['IGRAPH_TEST_NEO4J_URI']
+        database = os.environ['IGRAPH_TEST_NEO4J_DATABASE']
+        username = os.environ['IGRAPH_TEST_NEO4J_READER_USER']
+        password = os.environ['IGRAPH_TEST_NEO4J_READER_PASSWORD']
+    else:
+        uri = os.environ['IGRAPH_TEST_FALKORDB_URI']
+        database = os.environ['IGRAPH_TEST_FALKORDB_GRAPH']
+        username = ''
+        password = os.environ['IGRAPH_TEST_FALKORDB_PASSWORD']
+    host = urlsplit(uri).hostname
+    assert host in ('127.0.0.1', '::1'), 'Parameter replay requires the dedicated localhost QA endpoint'
+    context = AdapterContext(connection=SimpleNamespace(public=SimpleNamespace(
+        uri=uri, database=database, username=username), password=SecretStr(password)),
+        deadline=time.monotonic() + 8, max_rows=2, max_bytes=8192,
+        network_policy=NetworkPolicy(allowed_cidrs=[host + ('/128' if ':' in host else '/32')]))
+    async def execute():
+        async with asyncio.timeout(8):
+            return await get_adapter(run['kind']).execute(context, QueryRequest(query=query, parameters=parameters))
+    result = asyncio.run(execute())
+    assert not result.truncated, 'Count verification must be complete'
+    return result.rows
+
+
 def test_real_native_dialect_reference_and_application(multi_agent):
     run = multi_agent
     answer, _ = run['chat']('检查当前远程库结构，读取当前连接适用的方言参考，再实际查询总节点数和关系数。以 JSON 返回 node_count、edge_count。保留本地图。')
@@ -92,7 +148,12 @@ def test_real_native_parameter_followup_workspace_and_refusal(multi_agent):
     raw_paths = set()
     for tool in saved:
         args = tool['args']; args = json.loads(args) if isinstance(args, str) else args
-        assert args.get('parameters'), 'Filtering must actually bind parameters'
+        probe = assert_bound_filter(args, target, manifest['label_histogram'],
+                                    lambda query, parameters: read_qa_count(run, query, parameters))
+        probe['source'] = tool['result']['source']
+        probe['evidence_role'] = 'Independent bounded QA read; not an additional model tool call'
+        (run['live'].evidence / f"parameter-probe-{tool['result']['query_id']}.json").write_text(
+            json.dumps(probe, ensure_ascii=False, indent=2))
         path = tool['result']['artifact_path']
         files = run['api']('GET', run['base'] + '/workspace/files')['files']
         published = [f for f in files if f['zone'] == 'Derived']
