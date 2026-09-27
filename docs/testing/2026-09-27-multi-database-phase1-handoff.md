@@ -1,6 +1,6 @@
 # 多数据库智能问图第一批交接
 
-日期：2026-09-27。代码基线 `47d4786`；Task 6 产品提交 `023aadd`，行为参数验收修复 `3e8d6e3`，均已通过控制器独立审查。保留现有 Graph Agent loop 和配置的 `qwen3.6-plus`，未更换默认模型、未新增答案核验机制。
+更新：2026-09-28。最终实现 `284f24b` 已完成全分支审查及修复范围复审；[最终独立验收](2026-09-28-multi-database-phase1-acceptance.md)汇总状态、证据与限制。Task 6 产品提交 `023aadd`，行为参数验收修复 `3e8d6e3`，下列按阶段记录保留。保留现有 Graph Agent loop 和配置的 `qwen3.6-plus`，未更换默认模型、未新增答案核验机制。
 
 ## 当前分项状态
 
@@ -22,7 +22,8 @@
 | Task 4 `8750275`、`560a0c3` | 原始 120 项、修复后 103 项相关回归与最终 10 个 FalkorDB live 通过；独立审查发现省略投影的列表推导仍可进入，修复后复审通过。真实 TLS、连接/读取取消隔离、有界帧解析及 Cora manifest 验证见历史记录。 |
 | Task 5 `47d4786` | 576 个前端测试、50 个 Python 测试通过，1 个已知 PG 主机跳过，TypeScript/Vite 通过；独立规格/质量审查无问题。 |
 | Task 6 `023aadd`、`3e8d6e3` | 可信方言引用、参数 schema、真实模型/浏览器及参数实际影响过滤验收；完整独立审查无 Critical/Important，Minor 已修复，控制器确认最终审查通过。下列回答证据质量仍未完全通过。 |
-| Task 7 `b530c33` 及本次探针修复 | Memgraph/NebulaGraph 隔离实例与可重复探针，分项结论见专门报告；首次独立审查通过并提出 3 项 Minor；已补快照/期限判断与认证清理及 37 项聚焦回归，修复提交待控制器范围复审。未改变第一批 A 的 verified 状态。 |
+| Task 7 `b530c33`、`2d50759` | Memgraph/NebulaGraph 隔离实例与可重复探针，分别未准入；首次独立审查通过，三项探针判定/清理问题修复并通过范围复审，37 项聚焦回归通过。未将未验证能力注册到产品。 |
+| 最终修复 `284f24b` | 全分支审查发现 FalkorDB 隐式堆构造与 Memgraph 断连观察问题，集中修复后两项复审均 ADDRESSED、无新增重要问题；253 项相关后端、26 项真实数据库回归通过，runtime 已重新构建。详情见最终验收记录。 |
 
 私密凭据位置：`.env.neo4j-test`、`.env.falkordb-test` 均为 Git 忽略、0600；FalkorDB 密码文件 `output/multi-database-phase1/private/falkordb-password` 为 0600，父目录 0700。迁移前备份 `output/multi-database-phase1/private/pre-migration-remote-graphs.dump` 和指纹仅供本机维护，不公开内容。
 
@@ -136,7 +137,9 @@ export IGRAPH_TEST_FALKORDB_EVIDENCE_DIR=output/multi-database-phase1/private/fa
 
 参考：[官方只读命令](https://docs.falkordb.com/commands/graph.ro-query)、[官方 compact 协议与映射](https://docs.falkordb.com/design/client-spec)、[官方查询与参数](https://docs.falkordb.com/commands/graph.query)、[服务器预算参数](https://docs.falkordb.com/getting-started/configuration)、[官方 server 镜像](https://hub.docker.com/r/falkordb/falkordb-server/tags)、[redis-py 8.1.0](https://pypi.org/project/redis/8.1.0/)、[redis-py 取消行为](https://redis.io/docs/latest/develop/clients/redis-py/async/)。
 
-## Task 4：实现后准入与产品限制（2026-09-27）
+## 历史记录：Task 4 实现后准入与产品限制（2026-09-27）
+
+以下保留 Task 4 当时状态；当前表达式限制以本文 2026-09-28 最终审查修复及最终验收记录为准。
 
 FalkorDB Adapter 已通过专用可写账号下的协议、安全、Cora 与边界夹具验收，并以 **experimental** 状态进入注册表。真实 Agent/浏览器验收由 Task 6 完成；这里不宣称整体产品已 verified。Neo4j 既有状态保持。
 
