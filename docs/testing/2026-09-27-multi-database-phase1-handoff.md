@@ -53,6 +53,15 @@
 
 截图：[FalkorDB 空密码表单](../../output/multi-database-phase1/task6-browser-multidb/connection-form.png)、[保存后绑定失败](../../output/multi-database-phase1/task6-browser-multidb/saved-not-used.png)、[已选择](../../output/multi-database-phase1/task6-browser-multidb/connection-selected.png)、[查询默认卡片](../../output/multi-database-phase1/task6-browser-multidb/query-collapsed.png)、[展开证据](../../output/multi-database-phase1/task6-browser-multidb/query-expanded.png)、[切回 Neo4j](../../output/multi-database-phase1/task6-browser-multidb/neo4j-switch.png)。
 
+### Task 6 审查补充：参数必须影响实际过滤
+
+独立代码审查无 Critical/Important，提出一项 Minor：原验收只检查参数非空，字面量过滤加未使用参数仍可能通过。已补行为验证：参数值必须匹配请求标签；保持模型生成的 Cypher 原文，仅将匹配的参数值换成 manifest 中计数不同的另一标签，经生产 Adapter 做独立有界只读查询，结果必须随之改变。无需固定参数名、谓词写法或模型调用次数。
+
+- 聚焦回归 `pytest tests/test_remote_graph_behavior_assertions.py tests/test_remote_graph_tools.py -q`：**20 通过**。此前 RED 为 4 失败/4 通过，包含“字面量过滤 + 未使用参数”、只在注释中提及参数、目标值不符及任意参数名的正例。
+- 加载两份私有环境后，`PYTHONPATH=. .venv/bin/python output/multi-database-phase1/task6-review-fix/replay.py`：对已有两组成功模型查询各做一次独立读取，参数由 0 换为 1，Neo4j/FalkorDB 均从原计数 298 对应到 418，与 manifest 一致。原始 artifact SHA 不变，没有重跑模型、修改查询原文或写源数据库。
+- 复核直接使用生产 Adapter，限制 2 行/8 KiB/8 秒总期限并保留数据库自身期限；仅接受专用 localhost QA 端点和精确 loopback CIDR。首次测试仅配置 allowed_hosts，被现有网络策略拒绝，补上测试专用精确 CIDR 后通过；产品策略未变。
+- 证据：`task6-review-fix/red.log`、`green-final.log`、`live.log`、`parameter-replay.json`，保留原 source、query_id、原/替代参数与计数。它是独立验收读取，**不是模型新增工具调用**。此次仅测试/文档变化，沿用 `023aadd` 已重建健康的产品服务。
+
 ### 最终本地交付
 
 已按当前 `igraph` 项目的 `compose.yaml + compose.dev.yaml` 执行 `docker compose -p igraph -f compose.yaml -f compose.dev.yaml up -d --build --no-deps agent-runtime backend frontend`；日志 `task6-unit/rebuild-final.log`。图数据库、图计算服务和数据卷未重建/删除。最终健康与 HTTP 状态见 `task6-unit/health-final.json`。访问前端 [http://127.0.0.1:21108](http://127.0.0.1:21108)，后端健康 [http://127.0.0.1:21109/health](http://127.0.0.1:21109/health)。
