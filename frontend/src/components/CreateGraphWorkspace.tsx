@@ -13,6 +13,7 @@ type Props = {
   busy?: boolean;
   onUpload: (file: File | File[], schema?: CsvBundleSchema, name?: string) => void;
   onConstruct: (dataset: Dataset) => void;
+  onDelete?: (dataset: Dataset) => void;
   onStateChange?: (dataset: Dataset, state: ConstructionState) => void;
 };
 
@@ -46,7 +47,7 @@ function sourceType(dataset: Dataset) {
   return (dataset.file_type || dataset.original_filename.split('.').pop() || 'FILE').replace(/^\./, '').toUpperCase();
 }
 
-export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConstruct, onStateChange }: Props) {
+export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConstruct, onDelete, onStateChange }: Props) {
   const { language, t } = useI18n();
   const formatNumber = (value: number) => value.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -126,7 +127,10 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
         {constructible.length ? <div className="create-graph-source-grid">{constructible.map(dataset => <article className="create-graph-source-card" key={dataset.dataset_id}>
           <div className="create-graph-source-icon"><Icon name="database" size={20} /></div>
           <div className="create-graph-source-copy"><div><strong title={dataset.name}>{dataset.name}</strong><span>{sourceType(dataset)}</span></div><p>{sourceSummary(dataset, t, formatNumber)}</p>{dataset.description && <p title={dataset.description}>{dataset.description}</p>}</div>
-          <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${dataset.name}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>
+          <div className="create-graph-source-actions">
+            <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${dataset.name}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>
+            {onDelete && <button className="plain-icon create-graph-delete" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete dataset', '删除数据集')} aria-label={t(`Delete dataset ${dataset.name}`, `删除数据集 ${dataset.name}`)}><Icon name="trash" size={16} /></button>}
+          </div>
         </article>)}</div> : <div className="create-graph-empty">
           <span><Icon name="graph" size={34} /></span><strong>{t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong><button className="secondary-command" onClick={chooseFile} disabled={busy}>{t('Upload your first source', '上传第一个数据源')}</button>
         </div>}

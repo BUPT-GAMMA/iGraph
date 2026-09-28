@@ -1,0 +1,2651 @@
+{
+  "source": {
+    "description": "13 user-provided ownership cases, FactionEngine 0.5.0 results and independent rational linear-system verification. Embedded to run without the original F: drive.",
+    "cases_sha256": "e738ddaa88addf427f566ab5ed006fd1fab47336bdd7fc96eda53f529d37ab7e",
+    "reference_engine_sha256": "23bd85390584befbd13f03e49716d2764a8224c231bed93f58a7c86bb263cc4f",
+    "numeric_tolerance": "1e-10",
+    "note": "Expected annotations are historical and sometimes disagree with the supplied reference engine. Reference numbers do not waive ownership quality checks."
+  },
+  "cases": [
+    {
+      "case_id": "pyramid",
+      "title": "金字塔控制链",
+      "description": "A 通过 B 控制 C，同时 B 还控制 D；检查最终控制人与中间控制人是否同时保留。",
+      "target": "C",
+      "nodes": [
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        },
+        {
+          "id": "C",
+          "type": "institution"
+        },
+        {
+          "id": "D",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A",
+          "B",
+          "0.6",
+          "0"
+        ],
+        [
+          "B",
+          "C",
+          "0.6",
+          "0"
+        ],
+        [
+          "B",
+          "D",
+          "0.7",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "control": "A",
+        "intermediate": "B",
+        "cycle": "无"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "CONFIRMED_CONTROL",
+        "ultimate": [
+          "A"
+        ],
+        "intermediate": [
+          "B"
+        ],
+        "holder": [
+          "B"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "DIRECT_OVER_50",
+        "cyclic_sccs": [],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "A": "0.36"
+        },
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.36",
+          "B": "0.6",
+          "C": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {}
+      }
+    },
+    {
+      "case_id": "same-ratio",
+      "title": "相同持股比例多路径",
+      "description": "A 到目标存在两条相同权重路径；检查路径是否都保留，而不是只留下其中一条。",
+      "target": "T",
+      "nodes": [
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        },
+        {
+          "id": "T",
+          "type": "institution"
+        },
+        {
+          "id": "C",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A",
+          "B",
+          "0.5",
+          "0"
+        ],
+        [
+          "B",
+          "T",
+          "0.4",
+          "0"
+        ],
+        [
+          "A",
+          "C",
+          "0.5",
+          "0"
+        ],
+        [
+          "C",
+          "T",
+          "0.4",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "first_holder": "A",
+        "minimum_paths": 2,
+        "cycle": "无"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "ultimate": [],
+        "intermediate": [],
+        "holder": [
+          "A"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_CUMULATIVE_ROOT",
+        "cyclic_sccs": [],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "A": "0.4"
+        },
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.4",
+          "B": "0.4",
+          "C": "0.4",
+          "T": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {}
+      }
+    },
+    {
+      "case_id": "cumulative-root",
+      "title": "根累计优于单路径",
+      "description": "D 的单条路径最大，但 A 的多条路径累计权益更大；检查根排序是否先汇总再比较。",
+      "target": "T",
+      "nodes": [
+        {
+          "id": "D",
+          "type": "institution"
+        },
+        {
+          "id": "T",
+          "type": "institution"
+        },
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "X0",
+          "type": "institution"
+        },
+        {
+          "id": "X1",
+          "type": "institution"
+        },
+        {
+          "id": "X2",
+          "type": "institution"
+        },
+        {
+          "id": "X3",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "D",
+          "T",
+          "0.25",
+          "0"
+        ],
+        [
+          "A",
+          "X0",
+          "1.0",
+          "0"
+        ],
+        [
+          "A",
+          "X1",
+          "1.0",
+          "0"
+        ],
+        [
+          "A",
+          "X2",
+          "1.0",
+          "0"
+        ],
+        [
+          "A",
+          "X3",
+          "1.0",
+          "0"
+        ],
+        [
+          "X0",
+          "T",
+          "0.16",
+          "0"
+        ],
+        [
+          "X1",
+          "T",
+          "0.16",
+          "0"
+        ],
+        [
+          "X2",
+          "T",
+          "0.16",
+          "0"
+        ],
+        [
+          "X3",
+          "T",
+          "0.16",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "first_holder": "A",
+        "rule": "MAX_CUMULATIVE_ROOT",
+        "cycle": "无"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "CONFIRMED_CONTROL",
+        "ultimate": [
+          "A"
+        ],
+        "intermediate": [],
+        "holder": [
+          "A"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_CUMULATIVE_ROOT",
+        "cyclic_sccs": [],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "A": "0.64",
+          "D": "0.25"
+        },
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.64",
+          "D": "0.25",
+          "T": "1.0",
+          "X0": "0.16",
+          "X1": "0.16",
+          "X2": "0.16",
+          "X3": "0.16"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {}
+      }
+    },
+    {
+      "case_id": "cross-holding",
+      "title": "交叉持股成环",
+      "description": "A 与 B 互相持股形成 SCC，B 再向外持股 C；检查环路是否终止、缩点是否为 DAG、硬控制是否转人工核验。",
+      "target": "C",
+      "nodes": [
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        },
+        {
+          "id": "C",
+          "type": "institution"
+        },
+        {
+          "id": "D",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A",
+          "B",
+          "0.6",
+          "0"
+        ],
+        [
+          "B",
+          "A",
+          "0.6",
+          "0"
+        ],
+        [
+          "B",
+          "C",
+          "0.7",
+          "0"
+        ],
+        [
+          "C",
+          "D",
+          "0.8",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "control_status": "SCC_REVIEW",
+        "scc_members": [
+          "A",
+          "B"
+        ],
+        "cycle": "CONVERGED"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "SCC_REVIEW",
+        "ultimate": [
+          "B"
+        ],
+        "intermediate": [],
+        "holder": [
+          "B"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "DIRECT_OVER_50",
+        "cyclic_sccs": [
+          [
+            "A",
+            "B"
+          ]
+        ],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "B": "1.09375",
+          "A": "0.65625"
+        },
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.65625",
+          "B": "1.09375",
+          "C": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {}
+      }
+    },
+    {
+      "case_id": "non-convergent-cycle",
+      "title": "不可收敛的满额成环",
+      "description": "A 与 B 以 100% 互持，经济权益方程不收敛；检查系统是否明确标记风险而不是给出确定控制人。",
+      "target": "B",
+      "nodes": [
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A",
+          "B",
+          "1.0",
+          "0"
+        ],
+        [
+          "B",
+          "A",
+          "1.0",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "control_status": "SCC_REVIEW",
+        "cycle": "NON_CONVERGENT"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "SCC_REVIEW",
+        "ultimate": [],
+        "intermediate": [],
+        "holder": [],
+        "holder_status": "NON_CONVERGENT",
+        "rule": "MAX_ECONOMIC_INTEREST_SCC",
+        "cyclic_sccs": [
+          [
+            "A",
+            "B"
+          ]
+        ],
+        "economic_status": "NON_CONVERGENT",
+        "economic_roots": {},
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {},
+        "singular": true,
+        "incoming_ratio_over_one": {}
+      }
+    },
+    {
+      "case_id": "fifty-fifty",
+      "title": "50/50 无单一控制",
+      "description": "A、B 各持有目标 50%；检查相同持股比例不会被任意选成唯一控制人。",
+      "target": "T",
+      "nodes": [
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "T",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A",
+          "T",
+          "0.5",
+          "0"
+        ],
+        [
+          "B",
+          "T",
+          "0.5",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "cycle": "无"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "ultimate": [],
+        "intermediate": [],
+        "holder": [
+          "A",
+          "B"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_CUMULATIVE_ROOT",
+        "cyclic_sccs": [],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "A": "0.5",
+          "B": "0.5"
+        },
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.5",
+          "B": "0.5",
+          "T": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {}
+      }
+    },
+    {
+      "case_id": "multi-scc-chain",
+      "title": "多 SCC 串联与环外分支",
+      "description": "上游 A/B 互持，C/D 互持，两个 SCC 之间还有控制链，并向目标 T 展开多个分支；检查缩点 DAG、环路经济传递和硬控制复核能否同时工作。",
+      "target": "T",
+      "nodes": [
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        },
+        {
+          "id": "C",
+          "type": "institution"
+        },
+        {
+          "id": "D",
+          "type": "institution"
+        },
+        {
+          "id": "E",
+          "type": "institution"
+        },
+        {
+          "id": "T",
+          "type": "institution"
+        },
+        {
+          "id": "F",
+          "type": "institution"
+        },
+        {
+          "id": "G",
+          "type": "institution"
+        },
+        {
+          "id": "H",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A",
+          "B",
+          "0.42",
+          "0"
+        ],
+        [
+          "B",
+          "A",
+          "0.36",
+          "0"
+        ],
+        [
+          "B",
+          "C",
+          "0.58",
+          "0"
+        ],
+        [
+          "C",
+          "D",
+          "0.34",
+          "0"
+        ],
+        [
+          "D",
+          "C",
+          "0.31",
+          "0"
+        ],
+        [
+          "D",
+          "E",
+          "0.55",
+          "0"
+        ],
+        [
+          "E",
+          "T",
+          "0.28",
+          "0"
+        ],
+        [
+          "C",
+          "T",
+          "0.24",
+          "0"
+        ],
+        [
+          "A",
+          "F",
+          "0.22",
+          "0"
+        ],
+        [
+          "F",
+          "T",
+          "0.26",
+          "0"
+        ],
+        [
+          "B",
+          "G",
+          "0.21",
+          "0"
+        ],
+        [
+          "G",
+          "T",
+          "0.23",
+          "0"
+        ],
+        [
+          "D",
+          "H",
+          "0.2",
+          "0"
+        ],
+        [
+          "H",
+          "T",
+          "0.25",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "holder_status": "SCC_REVIEW",
+        "min_cyclic_components": 2,
+        "cyclic_sccs": [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "C",
+            "D"
+          ]
+        ],
+        "min_paths": 4,
+        "cycle": "CONVERGED"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "ultimate": [],
+        "intermediate": [],
+        "holder": [
+          "B"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_ECONOMIC_INTEREST_SCC",
+        "cyclic_sccs": [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "C",
+            "D"
+          ]
+        ],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "B": "0.317460822111",
+          "A": "0.190533545287"
+        },
+        "outdated_annotation_keys": [
+          "holder_status"
+        ]
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.19053354528680091",
+          "B": "0.3174608221114308",
+          "C": "0.34580818242790073",
+          "D": "0.31120053655264923",
+          "E": "0.28",
+          "F": "0.26",
+          "G": "0.23",
+          "H": "0.25",
+          "T": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {
+          "T": "1.26"
+        }
+      }
+    },
+    {
+      "case_id": "scc-expansion",
+      "title": "环外回流扩大 SCC",
+      "description": "看似环外的 D、E 通过回流边重新进入 A/B/C 环，最终五个主体属于同一个 SCC；检查算法不会只压缩局部三节点环。",
+      "target": "F",
+      "nodes": [
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        },
+        {
+          "id": "C",
+          "type": "institution"
+        },
+        {
+          "id": "D",
+          "type": "institution"
+        },
+        {
+          "id": "E",
+          "type": "institution"
+        },
+        {
+          "id": "F",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A",
+          "B",
+          "0.32",
+          "0"
+        ],
+        [
+          "B",
+          "C",
+          "0.34",
+          "0"
+        ],
+        [
+          "C",
+          "A",
+          "0.29",
+          "0"
+        ],
+        [
+          "C",
+          "D",
+          "0.27",
+          "0"
+        ],
+        [
+          "D",
+          "E",
+          "0.25",
+          "0"
+        ],
+        [
+          "E",
+          "B",
+          "0.21",
+          "0"
+        ],
+        [
+          "E",
+          "F",
+          "0.62",
+          "0"
+        ],
+        [
+          "A",
+          "F",
+          "0.18",
+          "0"
+        ],
+        [
+          "D",
+          "F",
+          "0.22",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "control_status": "SCC_REVIEW",
+        "scc_members": [
+          "A",
+          "B",
+          "C",
+          "D",
+          "E"
+        ],
+        "cycle": "CONVERGED"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "SCC_REVIEW",
+        "ultimate": [
+          "E"
+        ],
+        "intermediate": [],
+        "holder": [
+          "E"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "DIRECT_OVER_50",
+        "cyclic_sccs": [
+          [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E"
+          ]
+        ],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "E": "0.631369869198",
+          "D": "0.377842467299",
+          "A": "0.197325514968",
+          "C": "0.159241865511",
+          "B": "0.054142234274"
+        },
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.19732551496764572",
+          "B": "0.0541422342738929",
+          "C": "0.1592418655114497",
+          "D": "0.37784246729937937",
+          "E": "0.6313698691975175",
+          "F": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {
+          "F": "1.02"
+        }
+      }
+    },
+    {
+      "case_id": "dense-cross-network",
+      "title": "密集交叉持股网络",
+      "description": "三组相互交叉的投资平台、多个环内边和四条环外路径共同到达目标；检查大于单环的局部网络是否仍受预算约束并保留路径证据。",
+      "target": "TARGET",
+      "nodes": [
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        },
+        {
+          "id": "C",
+          "type": "institution"
+        },
+        {
+          "id": "D",
+          "type": "institution"
+        },
+        {
+          "id": "E",
+          "type": "institution"
+        },
+        {
+          "id": "F",
+          "type": "institution"
+        },
+        {
+          "id": "G",
+          "type": "institution"
+        },
+        {
+          "id": "H",
+          "type": "institution"
+        },
+        {
+          "id": "TARGET",
+          "type": "institution"
+        },
+        {
+          "id": "I",
+          "type": "institution"
+        },
+        {
+          "id": "J",
+          "type": "institution"
+        },
+        {
+          "id": "K",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A",
+          "B",
+          "0.31",
+          "0"
+        ],
+        [
+          "B",
+          "C",
+          "0.29",
+          "0"
+        ],
+        [
+          "C",
+          "A",
+          "0.27",
+          "0"
+        ],
+        [
+          "C",
+          "D",
+          "0.23",
+          "0"
+        ],
+        [
+          "D",
+          "E",
+          "0.28",
+          "0"
+        ],
+        [
+          "E",
+          "D",
+          "0.22",
+          "0"
+        ],
+        [
+          "E",
+          "F",
+          "0.24",
+          "0"
+        ],
+        [
+          "F",
+          "G",
+          "0.26",
+          "0"
+        ],
+        [
+          "G",
+          "F",
+          "0.19",
+          "0"
+        ],
+        [
+          "A",
+          "H",
+          "0.24",
+          "0"
+        ],
+        [
+          "H",
+          "TARGET",
+          "0.26",
+          "0"
+        ],
+        [
+          "B",
+          "I",
+          "0.22",
+          "0"
+        ],
+        [
+          "I",
+          "TARGET",
+          "0.24",
+          "0"
+        ],
+        [
+          "D",
+          "J",
+          "0.23",
+          "0"
+        ],
+        [
+          "J",
+          "TARGET",
+          "0.25",
+          "0"
+        ],
+        [
+          "F",
+          "K",
+          "0.21",
+          "0"
+        ],
+        [
+          "K",
+          "TARGET",
+          "0.27",
+          "0"
+        ],
+        [
+          "A",
+          "I",
+          "0.18",
+          "0"
+        ],
+        [
+          "E",
+          "J",
+          "0.19",
+          "0"
+        ],
+        [
+          "G",
+          "K",
+          "0.18",
+          "0"
+        ],
+        [
+          "H",
+          "I",
+          "0.2",
+          "0"
+        ],
+        [
+          "I",
+          "J",
+          "0.18",
+          "0"
+        ],
+        [
+          "J",
+          "K",
+          "0.17",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "control_status": "SCC_REVIEW",
+        "min_cyclic_components": 3,
+        "min_nodes": 12,
+        "min_paths": 4,
+        "cycle": "CONVERGED"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "ultimate": [],
+        "intermediate": [],
+        "holder": [
+          "A"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_ECONOMIC_INTEREST_SCC",
+        "cyclic_sccs": [
+          [
+            "A",
+            "B",
+            "C"
+          ],
+          [
+            "D",
+            "E"
+          ],
+          [
+            "F",
+            "G"
+          ]
+        ],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "A": "0.154980498345",
+          "B": "0.082957297887",
+          "C": "0.063585027198"
+        },
+        "outdated_annotation_keys": [
+          "control_status"
+        ]
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.15498049834510666",
+          "B": "0.08295729788744083",
+          "C": "0.06358502719807181",
+          "D": "0.09452301149953482",
+          "E": "0.09452146964119579",
+          "F": "0.07293919629707553",
+          "G": "0.06245844729644435",
+          "H": "0.3186524",
+          "I": "0.293262",
+          "J": "0.2959",
+          "K": "0.27",
+          "TARGET": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {
+          "TARGET": "1.02"
+        }
+      }
+    },
+    {
+      "case_id": "person-aligned-network",
+      "title": "个人一致行动人与平台交叉",
+      "description": "P1、P2 通过多家平台共同投资并形成交叉持股；P1 的多条路径累计更大，但 P2 仍作为并列关联候选保留。",
+      "target": "TARGET",
+      "nodes": [
+        {
+          "id": "P1",
+          "type": "individual"
+        },
+        {
+          "id": "P2",
+          "type": "individual"
+        },
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "B",
+          "type": "institution"
+        },
+        {
+          "id": "C",
+          "type": "institution"
+        },
+        {
+          "id": "D",
+          "type": "institution"
+        },
+        {
+          "id": "E",
+          "type": "institution"
+        },
+        {
+          "id": "X1",
+          "type": "institution"
+        },
+        {
+          "id": "TARGET",
+          "type": "institution"
+        },
+        {
+          "id": "X2",
+          "type": "institution"
+        },
+        {
+          "id": "X3",
+          "type": "institution"
+        },
+        {
+          "id": "Y1",
+          "type": "institution"
+        },
+        {
+          "id": "Y2",
+          "type": "institution"
+        },
+        {
+          "id": "F",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "P1",
+          "A",
+          "0.28",
+          "1"
+        ],
+        [
+          "P1",
+          "B",
+          "0.26",
+          "1"
+        ],
+        [
+          "P1",
+          "C",
+          "0.22",
+          "1"
+        ],
+        [
+          "P2",
+          "A",
+          "0.24",
+          "1"
+        ],
+        [
+          "P2",
+          "D",
+          "0.25",
+          "1"
+        ],
+        [
+          "P2",
+          "E",
+          "0.22",
+          "1"
+        ],
+        [
+          "A",
+          "X1",
+          "0.32",
+          "0"
+        ],
+        [
+          "X1",
+          "TARGET",
+          "0.24",
+          "0"
+        ],
+        [
+          "B",
+          "X2",
+          "0.3",
+          "0"
+        ],
+        [
+          "X2",
+          "TARGET",
+          "0.23",
+          "0"
+        ],
+        [
+          "C",
+          "X3",
+          "0.28",
+          "0"
+        ],
+        [
+          "X3",
+          "TARGET",
+          "0.22",
+          "0"
+        ],
+        [
+          "D",
+          "Y1",
+          "0.31",
+          "0"
+        ],
+        [
+          "Y1",
+          "TARGET",
+          "0.24",
+          "0"
+        ],
+        [
+          "E",
+          "Y2",
+          "0.29",
+          "0"
+        ],
+        [
+          "Y2",
+          "TARGET",
+          "0.23",
+          "0"
+        ],
+        [
+          "A",
+          "D",
+          "0.19",
+          "0"
+        ],
+        [
+          "D",
+          "A",
+          "0.17",
+          "0"
+        ],
+        [
+          "B",
+          "E",
+          "0.18",
+          "0"
+        ],
+        [
+          "E",
+          "B",
+          "0.16",
+          "0"
+        ],
+        [
+          "C",
+          "F",
+          "0.2",
+          "0"
+        ],
+        [
+          "F",
+          "TARGET",
+          "0.21",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "provisional_first_holder": "P1",
+        "holder_status": "SCC_REVIEW",
+        "rule": "MAX_CUMULATIVE_ROOT",
+        "min_paths": 3,
+        "min_nodes": 12,
+        "cycle": "CONVERGED"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "ultimate": [],
+        "intermediate": [],
+        "holder": [
+          "P1"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_ECONOMIC_INTEREST_SCC",
+        "cyclic_sccs": [
+          [
+            "B",
+            "E"
+          ],
+          [
+            "A",
+            "D"
+          ]
+        ],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "P1": "0.070790076448",
+          "P2": "0.062756851416"
+        },
+        "outdated_annotation_keys": [
+          "holder_status",
+          "rule"
+        ]
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "0.09397127208845717",
+          "B": "0.08340815485996705",
+          "C": "0.1036",
+          "D": "0.09037511625503772",
+          "E": "0.08004530477759472",
+          "F": "0.21",
+          "P1": "0.07079007644835944",
+          "P2": "0.06275685141606",
+          "TARGET": "1.0",
+          "X1": "0.24",
+          "X2": "0.23",
+          "X3": "0.22",
+          "Y1": "0.24",
+          "Y2": "0.23"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {
+          "TARGET": "1.37"
+        }
+      }
+    },
+    {
+      "case_id": "parallel-root-contest",
+      "title": "多根密集路径竞争",
+      "description": "A、B、C 三个根通过不同层级平台投向同一目标；A 的累计贡献最高，但单条最大路径属于 B，专门检验根累计排序。",
+      "target": "TARGET",
+      "nodes": [
+        {
+          "id": "B",
+          "type": "institution"
+        },
+        {
+          "id": "TARGET",
+          "type": "institution"
+        },
+        {
+          "id": "C",
+          "type": "institution"
+        },
+        {
+          "id": "A",
+          "type": "institution"
+        },
+        {
+          "id": "A1",
+          "type": "institution"
+        },
+        {
+          "id": "A2",
+          "type": "institution"
+        },
+        {
+          "id": "A3",
+          "type": "institution"
+        },
+        {
+          "id": "A4",
+          "type": "institution"
+        },
+        {
+          "id": "A5",
+          "type": "institution"
+        },
+        {
+          "id": "A6",
+          "type": "institution"
+        },
+        {
+          "id": "A7",
+          "type": "institution"
+        },
+        {
+          "id": "A8",
+          "type": "institution"
+        },
+        {
+          "id": "B1",
+          "type": "institution"
+        },
+        {
+          "id": "B2",
+          "type": "institution"
+        },
+        {
+          "id": "B3",
+          "type": "institution"
+        },
+        {
+          "id": "B4",
+          "type": "institution"
+        },
+        {
+          "id": "C1",
+          "type": "institution"
+        },
+        {
+          "id": "C2",
+          "type": "institution"
+        },
+        {
+          "id": "C3",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "B",
+          "TARGET",
+          "0.31",
+          "0"
+        ],
+        [
+          "C",
+          "TARGET",
+          "0.26",
+          "0"
+        ],
+        [
+          "A",
+          "A1",
+          "0.75",
+          "0"
+        ],
+        [
+          "A",
+          "A2",
+          "0.75",
+          "0"
+        ],
+        [
+          "A",
+          "A3",
+          "0.75",
+          "0"
+        ],
+        [
+          "A",
+          "A4",
+          "0.75",
+          "0"
+        ],
+        [
+          "A",
+          "A5",
+          "0.75",
+          "0"
+        ],
+        [
+          "A",
+          "A6",
+          "0.75",
+          "0"
+        ],
+        [
+          "A",
+          "A7",
+          "0.75",
+          "0"
+        ],
+        [
+          "A",
+          "A8",
+          "0.75",
+          "0"
+        ],
+        [
+          "A1",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "A2",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "A3",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "A4",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "A5",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "A6",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "A7",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "A8",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "B",
+          "B1",
+          "0.7",
+          "0"
+        ],
+        [
+          "B",
+          "B2",
+          "0.7",
+          "0"
+        ],
+        [
+          "B",
+          "B3",
+          "0.7",
+          "0"
+        ],
+        [
+          "B",
+          "B4",
+          "0.7",
+          "0"
+        ],
+        [
+          "B1",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "B2",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "B3",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "B4",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "C",
+          "C1",
+          "0.65",
+          "0"
+        ],
+        [
+          "C",
+          "C2",
+          "0.65",
+          "0"
+        ],
+        [
+          "C",
+          "C3",
+          "0.65",
+          "0"
+        ],
+        [
+          "C1",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "C2",
+          "TARGET",
+          "0.18",
+          "0"
+        ],
+        [
+          "C3",
+          "TARGET",
+          "0.18",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "first_holder": "A",
+        "rule": "MAX_CUMULATIVE_ROOT",
+        "min_paths": 15,
+        "cycle": "无"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "TIED_CANDIDATES",
+        "ultimate": [
+          "A",
+          "B",
+          "C"
+        ],
+        "intermediate": [],
+        "holder": [
+          "A"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_CUMULATIVE_ROOT",
+        "cyclic_sccs": [],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "A": "1.08",
+          "B": "0.87",
+          "C": "0.611"
+        },
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A": "1.08",
+          "A1": "0.18",
+          "A2": "0.18",
+          "A3": "0.18",
+          "A4": "0.18",
+          "A5": "0.18",
+          "A6": "0.18",
+          "A7": "0.18",
+          "A8": "0.18",
+          "B": "0.87",
+          "B1": "0.2",
+          "B2": "0.2",
+          "B3": "0.2",
+          "B4": "0.2",
+          "C": "0.611",
+          "C1": "0.18",
+          "C2": "0.18",
+          "C3": "0.18",
+          "TARGET": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {
+          "TARGET": "3.35"
+        }
+      }
+    },
+    {
+      "case_id": "mega-network",
+      "title": "综合集团网络压力案例",
+      "description": "36 个节点、约 60 条边、4 个独立 SCC、3 个个人根和 18 条平台链；用于观察复杂局部图中的缩点、路径预算、经济权益和个人一致行动人候选。",
+      "target": "TARGET",
+      "nodes": [
+        {
+          "id": "P1",
+          "type": "individual"
+        },
+        {
+          "id": "P2",
+          "type": "individual"
+        },
+        {
+          "id": "P3",
+          "type": "individual"
+        },
+        {
+          "id": "A1",
+          "type": "institution"
+        },
+        {
+          "id": "A2",
+          "type": "institution"
+        },
+        {
+          "id": "A3",
+          "type": "institution"
+        },
+        {
+          "id": "A4",
+          "type": "institution"
+        },
+        {
+          "id": "B1",
+          "type": "institution"
+        },
+        {
+          "id": "B2",
+          "type": "institution"
+        },
+        {
+          "id": "B3",
+          "type": "institution"
+        },
+        {
+          "id": "C1",
+          "type": "institution"
+        },
+        {
+          "id": "C2",
+          "type": "institution"
+        },
+        {
+          "id": "C3",
+          "type": "institution"
+        },
+        {
+          "id": "C4",
+          "type": "institution"
+        },
+        {
+          "id": "D1",
+          "type": "institution"
+        },
+        {
+          "id": "D2",
+          "type": "institution"
+        },
+        {
+          "id": "D3",
+          "type": "institution"
+        },
+        {
+          "id": "TARGET",
+          "type": "institution"
+        },
+        {
+          "id": "U1",
+          "type": "institution"
+        },
+        {
+          "id": "V1",
+          "type": "institution"
+        },
+        {
+          "id": "W1",
+          "type": "institution"
+        },
+        {
+          "id": "U2",
+          "type": "institution"
+        },
+        {
+          "id": "V2",
+          "type": "institution"
+        },
+        {
+          "id": "W2",
+          "type": "institution"
+        },
+        {
+          "id": "U3",
+          "type": "institution"
+        },
+        {
+          "id": "V3",
+          "type": "institution"
+        },
+        {
+          "id": "W3",
+          "type": "institution"
+        },
+        {
+          "id": "U4",
+          "type": "institution"
+        },
+        {
+          "id": "V4",
+          "type": "institution"
+        },
+        {
+          "id": "W4",
+          "type": "institution"
+        },
+        {
+          "id": "U5",
+          "type": "institution"
+        },
+        {
+          "id": "V5",
+          "type": "institution"
+        },
+        {
+          "id": "W5",
+          "type": "institution"
+        },
+        {
+          "id": "U6",
+          "type": "institution"
+        },
+        {
+          "id": "V6",
+          "type": "institution"
+        },
+        {
+          "id": "W6",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A1",
+          "A2",
+          "0.22",
+          "0"
+        ],
+        [
+          "A2",
+          "A3",
+          "0.22",
+          "0"
+        ],
+        [
+          "A3",
+          "A4",
+          "0.22",
+          "0"
+        ],
+        [
+          "A4",
+          "A1",
+          "0.22",
+          "0"
+        ],
+        [
+          "B1",
+          "B2",
+          "0.25",
+          "0"
+        ],
+        [
+          "B2",
+          "B3",
+          "0.25",
+          "0"
+        ],
+        [
+          "B3",
+          "B1",
+          "0.25",
+          "0"
+        ],
+        [
+          "C1",
+          "C2",
+          "0.22",
+          "0"
+        ],
+        [
+          "C2",
+          "C3",
+          "0.22",
+          "0"
+        ],
+        [
+          "C3",
+          "C4",
+          "0.22",
+          "0"
+        ],
+        [
+          "C4",
+          "C1",
+          "0.22",
+          "0"
+        ],
+        [
+          "D1",
+          "D2",
+          "0.24",
+          "0"
+        ],
+        [
+          "D2",
+          "D3",
+          "0.24",
+          "0"
+        ],
+        [
+          "D3",
+          "D1",
+          "0.24",
+          "0"
+        ],
+        [
+          "A1",
+          "B1",
+          "0.34",
+          "0"
+        ],
+        [
+          "A2",
+          "B2",
+          "0.25",
+          "0"
+        ],
+        [
+          "B1",
+          "C1",
+          "0.36",
+          "0"
+        ],
+        [
+          "B2",
+          "C2",
+          "0.27",
+          "0"
+        ],
+        [
+          "C1",
+          "D1",
+          "0.33",
+          "0"
+        ],
+        [
+          "C3",
+          "D2",
+          "0.25",
+          "0"
+        ],
+        [
+          "A4",
+          "TARGET",
+          "0.19",
+          "0"
+        ],
+        [
+          "B3",
+          "TARGET",
+          "0.21",
+          "0"
+        ],
+        [
+          "C2",
+          "TARGET",
+          "0.23",
+          "0"
+        ],
+        [
+          "D1",
+          "TARGET",
+          "0.28",
+          "0"
+        ],
+        [
+          "D2",
+          "TARGET",
+          "0.24",
+          "0"
+        ],
+        [
+          "U1",
+          "V1",
+          "0.3",
+          "0"
+        ],
+        [
+          "V1",
+          "W1",
+          "0.28",
+          "0"
+        ],
+        [
+          "W1",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "U2",
+          "V2",
+          "0.3",
+          "0"
+        ],
+        [
+          "V2",
+          "W2",
+          "0.28",
+          "0"
+        ],
+        [
+          "W2",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "U3",
+          "V3",
+          "0.3",
+          "0"
+        ],
+        [
+          "V3",
+          "W3",
+          "0.28",
+          "0"
+        ],
+        [
+          "W3",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "U4",
+          "V4",
+          "0.3",
+          "0"
+        ],
+        [
+          "V4",
+          "W4",
+          "0.28",
+          "0"
+        ],
+        [
+          "W4",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "U5",
+          "V5",
+          "0.3",
+          "0"
+        ],
+        [
+          "V5",
+          "W5",
+          "0.28",
+          "0"
+        ],
+        [
+          "W5",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "U6",
+          "V6",
+          "0.3",
+          "0"
+        ],
+        [
+          "V6",
+          "W6",
+          "0.28",
+          "0"
+        ],
+        [
+          "W6",
+          "TARGET",
+          "0.2",
+          "0"
+        ],
+        [
+          "A2",
+          "U1",
+          "0.2",
+          "0"
+        ],
+        [
+          "B2",
+          "U2",
+          "0.21",
+          "0"
+        ],
+        [
+          "C3",
+          "U3",
+          "0.22",
+          "0"
+        ],
+        [
+          "D2",
+          "U4",
+          "0.2",
+          "0"
+        ],
+        [
+          "A4",
+          "U5",
+          "0.19",
+          "0"
+        ],
+        [
+          "C4",
+          "U6",
+          "0.18",
+          "0"
+        ],
+        [
+          "P1",
+          "A1",
+          "0.26",
+          "1"
+        ],
+        [
+          "P1",
+          "A2",
+          "0.22",
+          "1"
+        ],
+        [
+          "P1",
+          "U1",
+          "0.2",
+          "1"
+        ],
+        [
+          "P2",
+          "B1",
+          "0.24",
+          "1"
+        ],
+        [
+          "P2",
+          "B2",
+          "0.23",
+          "1"
+        ],
+        [
+          "P2",
+          "U2",
+          "0.2",
+          "1"
+        ],
+        [
+          "P3",
+          "C1",
+          "0.24",
+          "1"
+        ],
+        [
+          "P3",
+          "C3",
+          "0.22",
+          "1"
+        ],
+        [
+          "P3",
+          "U3",
+          "0.2",
+          "1"
+        ]
+      ],
+      "expected_annotations": {
+        "holder_status": "SCC_REVIEW",
+        "min_cyclic_components": 4,
+        "min_nodes": 30,
+        "min_paths": 20,
+        "cycle": "CONVERGED"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "ultimate": [],
+        "intermediate": [],
+        "holder": [
+          "P3"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_ECONOMIC_INTEREST_SCC",
+        "cyclic_sccs": [
+          [
+            "A1",
+            "A2",
+            "A3",
+            "A4"
+          ],
+          [
+            "B1",
+            "B2",
+            "B3"
+          ],
+          [
+            "C1",
+            "C2",
+            "C3",
+            "C4"
+          ],
+          [
+            "D1",
+            "D2",
+            "D3"
+          ]
+        ],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "P3": "0.060806782451",
+          "P2": "0.055124426598",
+          "P1": "0.024090219866"
+        },
+        "outdated_annotation_keys": [
+          "holder_status"
+        ]
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A1": "0.04140880838797676",
+          "A2": "0.04529058947806552",
+          "A3": "0.04450642632597807",
+          "A4": "0.20230193784535488",
+          "B1": "0.09248493736118338",
+          "B2": "0.12855670274540137",
+          "B3": "0.23312123434029586",
+          "C1": "0.1676271157634251",
+          "C2": "0.24721627466787927",
+          "C3": "0.07825579394490577",
+          "C4": "0.03990196546795352",
+          "D1": "0.34315010708027777",
+          "D2": "0.263125446167824",
+          "D3": "0.08235602569926666",
+          "P1": "0.02409021986604837",
+          "P2": "0.05512442659812632",
+          "P3": "0.06080678245110129",
+          "TARGET": "1.0",
+          "U1": "0.0168",
+          "U2": "0.0168",
+          "U3": "0.0168",
+          "U4": "0.0168",
+          "U5": "0.0168",
+          "U6": "0.0168",
+          "V1": "0.056",
+          "V2": "0.056",
+          "V3": "0.056",
+          "V4": "0.056",
+          "V5": "0.056",
+          "V6": "0.056",
+          "W1": "0.2",
+          "W2": "0.2",
+          "W3": "0.2",
+          "W4": "0.2",
+          "W5": "0.2",
+          "W6": "0.2"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {
+          "TARGET": "2.35"
+        }
+      }
+    },
+    {
+      "case_id": "multi-scc-economic-target",
+      "title": "多 SCC 目标导向经济权益",
+      "description": "A/B/C 三组互持 SCC 通过多条边级联到桥接公司和目标；P、Q、R、S 四个外部根分别从不同层级进入，专门验证 (I-A)s=d 的逐组件逆拓扑求解。",
+      "target": "TARGET",
+      "nodes": [
+        {
+          "id": "P",
+          "type": "individual"
+        },
+        {
+          "id": "A1",
+          "type": "institution"
+        },
+        {
+          "id": "A2",
+          "type": "institution"
+        },
+        {
+          "id": "A3",
+          "type": "institution"
+        },
+        {
+          "id": "B1",
+          "type": "institution"
+        },
+        {
+          "id": "B2",
+          "type": "institution"
+        },
+        {
+          "id": "C1",
+          "type": "institution"
+        },
+        {
+          "id": "C2",
+          "type": "institution"
+        },
+        {
+          "id": "C3",
+          "type": "institution"
+        },
+        {
+          "id": "M1",
+          "type": "institution"
+        },
+        {
+          "id": "M2",
+          "type": "institution"
+        },
+        {
+          "id": "TARGET",
+          "type": "institution"
+        },
+        {
+          "id": "Q",
+          "type": "institution"
+        },
+        {
+          "id": "R",
+          "type": "institution"
+        },
+        {
+          "id": "S",
+          "type": "institution"
+        }
+      ],
+      "edges": [
+        [
+          "A1",
+          "A2",
+          "0.26",
+          "0"
+        ],
+        [
+          "A2",
+          "A3",
+          "0.23",
+          "0"
+        ],
+        [
+          "A3",
+          "A1",
+          "0.21",
+          "0"
+        ],
+        [
+          "A1",
+          "A3",
+          "0.08",
+          "0"
+        ],
+        [
+          "B1",
+          "B2",
+          "0.31",
+          "0"
+        ],
+        [
+          "B2",
+          "B1",
+          "0.27",
+          "0"
+        ],
+        [
+          "C1",
+          "C2",
+          "0.22",
+          "0"
+        ],
+        [
+          "C2",
+          "C3",
+          "0.25",
+          "0"
+        ],
+        [
+          "C3",
+          "C1",
+          "0.19",
+          "0"
+        ],
+        [
+          "C2",
+          "C1",
+          "0.06",
+          "0"
+        ],
+        [
+          "A2",
+          "B1",
+          "0.42",
+          "0"
+        ],
+        [
+          "A3",
+          "B2",
+          "0.18",
+          "0"
+        ],
+        [
+          "A1",
+          "C1",
+          "0.11",
+          "0"
+        ],
+        [
+          "B1",
+          "C2",
+          "0.34",
+          "0"
+        ],
+        [
+          "B2",
+          "C3",
+          "0.17",
+          "0"
+        ],
+        [
+          "B2",
+          "M1",
+          "0.29",
+          "0"
+        ],
+        [
+          "C1",
+          "M1",
+          "0.31",
+          "0"
+        ],
+        [
+          "C3",
+          "M2",
+          "0.24",
+          "0"
+        ],
+        [
+          "A3",
+          "M2",
+          "0.12",
+          "0"
+        ],
+        [
+          "M1",
+          "TARGET",
+          "0.37",
+          "0"
+        ],
+        [
+          "M2",
+          "TARGET",
+          "0.29",
+          "0"
+        ],
+        [
+          "C2",
+          "TARGET",
+          "0.16",
+          "0"
+        ],
+        [
+          "C3",
+          "TARGET",
+          "0.13",
+          "0"
+        ],
+        [
+          "B1",
+          "TARGET",
+          "0.09",
+          "0"
+        ],
+        [
+          "A2",
+          "TARGET",
+          "0.08",
+          "0"
+        ],
+        [
+          "P",
+          "A1",
+          "0.47",
+          "1"
+        ],
+        [
+          "P",
+          "A2",
+          "0.16",
+          "1"
+        ],
+        [
+          "Q",
+          "B1",
+          "0.38",
+          "0"
+        ],
+        [
+          "Q",
+          "B2",
+          "0.12",
+          "0"
+        ],
+        [
+          "R",
+          "C3",
+          "0.33",
+          "0"
+        ],
+        [
+          "S",
+          "M1",
+          "0.21",
+          "0"
+        ]
+      ],
+      "expected_annotations": {
+        "target_economic_status": "CONVERGED",
+        "min_cyclic_components": 3,
+        "cyclic_sccs": [
+          [
+            "A1",
+            "A2",
+            "A3"
+          ],
+          [
+            "B1",
+            "B2"
+          ],
+          [
+            "C1",
+            "C2",
+            "C3"
+          ]
+        ],
+        "min_root_candidates": 4,
+        "cycle": "CONVERGED"
+      },
+      "reference": {
+        "algorithm_version": "0.5.0",
+        "control_status": "NO_SINGLE_CONTROLLER",
+        "ultimate": [],
+        "intermediate": [],
+        "holder": [
+          "Q"
+        ],
+        "holder_status": "COMPLETE",
+        "rule": "MAX_ECONOMIC_INTEREST_SCC",
+        "cyclic_sccs": [
+          [
+            "A1",
+            "A2",
+            "A3"
+          ],
+          [
+            "B1",
+            "B2"
+          ],
+          [
+            "C1",
+            "C2",
+            "C3"
+          ]
+        ],
+        "economic_status": "CONVERGED",
+        "economic_roots": {
+          "Q": "0.113370755269",
+          "S": "0.0777",
+          "R": "0.076199387925",
+          "P": "0.06770209562"
+        },
+        "outdated_annotation_keys": []
+      },
+      "independent_oracle": {
+        "method": "rational_global_gaussian_elimination",
+        "node_interest": {
+          "A1": "0.07666994319088433",
+          "A2": "0.19792013950011525",
+          "A3": "0.08856831185251395",
+          "B1": "0.2322605423191358",
+          "B2": "0.20926457656904576",
+          "C1": "0.16477492702412044",
+          "C2": "0.22761330465509294",
+          "C3": "0.2309072361345829",
+          "M1": "0.37",
+          "M2": "0.29",
+          "P": "0.06770209561973407",
+          "Q": "0.11337075526955709",
+          "R": "0.07619938792441235",
+          "S": "0.0777",
+          "TARGET": "1.0"
+        },
+        "singular": false,
+        "incoming_ratio_over_one": {
+          "B1": "1.07",
+          "TARGET": "1.12"
+        }
+      }
+    }
+  ]
+}
