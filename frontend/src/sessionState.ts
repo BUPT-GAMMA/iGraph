@@ -277,6 +277,13 @@ function mergeRefreshedGraph(current: GraphData | null, next: GraphData): GraphD
 }
 
 function analysisGraph(result: GraphData, previous: GraphViewState): GraphViewState {
+  const selection = contextHighlights(result.highlights);
+  const hasSelection = (selection?.nodes || []).some(group => group.ids?.length)
+    || (selection?.paths || []).some(group => group.node_sequence?.length || group.edges?.length)
+    || (selection?.subgraphs || []).some(group => group.nodes?.length || group.edges?.length);
+  // A plain redraw replaces the source graph, including deletions and reloads.
+  // Only an explicit analysis selection needs an overlay on earlier context.
+  if (!hasSelection) return { status: 'ready', data: result };
   const context = previous.status !== 'ready' ? null
     : previous.source === 'analysis' ? previous.context : previous.data;
   return { status: 'ready', source: 'analysis', context, analysis: result, data: mergeGraphContext(context, result) };
@@ -1184,21 +1191,21 @@ export function conversationReducer(state: ConversationState, action: Conversati
       // A full-graph sample supplies context, while the latest analysis owns its
       // nodes, edges and highlights. A delayed explicit reset must not overwrite
       // a newer streamed result.
-        if (view.graph.status === 'ready' && view.graph.source === 'analysis'
-          && (action.refreshMode === 'background' || view.graph.data !== view.graphSnapshot)) {
-          let analysis = view.graph.analysis || view.graph.data;
-          // A refresh can complete old node-only results with missing FK records
-          // and edges. Accept that enrichment only for the exact current result;
-          // a delayed response must never restore an earlier selection.
-          if (action.refreshMode === 'background' && action.graph.status === 'ready'
-            && action.graph.data.highlights && action.requestedHighlights
-            && JSON.stringify(contextHighlights(analysis.highlights)) === JSON.stringify(contextHighlights(action.requestedHighlights))) {
-            analysis = { ...analysis, highlights: action.graph.data.highlights };
-          }
-          view = { ...view, graphSnapshot: null,
-            graph: action.refreshMode === 'background' && action.graph.status === 'ready'
-              ? analysisGraph(analysis, action.graph)
-            : view.graph };
+      if (view.graph.status === 'ready' && view.graph.source === 'analysis'
+        && ((action.refreshMode === 'background' && action.graph.status === 'ready') || view.graph.data !== view.graphSnapshot)) {
+        let analysis = view.graph.analysis || view.graph.data;
+        // A refresh can complete old node-only results with missing FK records
+        // and edges. Accept that enrichment only for the exact current result;
+        // a delayed response must never restore an earlier selection.
+        if (action.refreshMode === 'background' && action.graph.status === 'ready'
+          && action.graph.data.highlights && action.requestedHighlights
+          && JSON.stringify(contextHighlights(analysis.highlights)) === JSON.stringify(contextHighlights(action.requestedHighlights))) {
+          analysis = { ...analysis, highlights: action.graph.data.highlights };
+        }
+        view = { ...view, graphSnapshot: null,
+          graph: action.refreshMode === 'background' && action.graph.status === 'ready'
+            ? analysisGraph(analysis, action.graph)
+          : view.graph };
         break;
       }
       view = {
