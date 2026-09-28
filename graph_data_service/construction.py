@@ -563,6 +563,8 @@ def _read_public_progress(directory: Path, record: dict):
     if stage not in PUBLIC_PROGRESS_STAGES:
         return None
     result = {"version": "construction_progress.v1", "stage": stage}
+    if value.get("mode") in ("rules", "llm"):
+        result["mode"] = value["mode"]
     if value.get("status") in {"running", "ready", "failed"}:
         result["status"] = value["status"]
     for key in ("current_message", "updated_at"):

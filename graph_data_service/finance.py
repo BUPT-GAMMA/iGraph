@@ -16,7 +16,7 @@ import json
 import time
 from typing import Any
 
-VERSION = "finance-1.0"
+VERSION = "finance-1.1"
 TABLES = ("institution_main", "individual_info", "institution_shareholder_relationship")
 ZERO, ONE, HALF = Decimal(0), Decimal(1), Decimal("0.5")
 
@@ -286,7 +286,14 @@ def project_ownership(construction_graph: dict, policy: dict, budget: Budget) ->
         p.invalid_snapshot = True
         p.complete = False
         p.issue("SNAPSHOT_MISMATCH", detail=", ".join(sorted(p.dates))[:250])
-    for table in TABLES:
+    # A purely institutional snapshot legitimately has no individual rows.
+    # Require that source only when ownership records actually reference it;
+    # the typed-reference checks below still reject every missing person.
+    required_tables = [TABLES[0], TABLES[2]]
+    if any(table == TABLES[2] and _s(data.get("REL_SHRHLR_TP_CODE")) == "1"
+           for table, _, data in records):
+        required_tables.append(TABLES[1])
+    for table in required_tables:
         if not p.counts[table]:
             p.complete = False
             p.issue("SOURCE_TABLE_MISSING", detail=table)
@@ -535,6 +542,18 @@ def _paths(p: Projection, target: str, roots: set[str], inc: dict, top_k: int, b
             "semantics": "simple paths for display; SCC economics includes convergent repeated walks"}
 
 
+def _economic_status(economic: dict) -> str:
+    """Distinguish a failed equation from a component we did not compute."""
+    statuses = {report["status"] for report in economic["reports"]}
+    if statuses & {"NON_CONVERGENT", "SINGULAR_OR_ILL_CONDITIONED"}:
+        return "NON_CONVERGENT"
+    if "TOO_LARGE" in statuses:
+        return "TRUNCATED"
+    if economic["failed"]:
+        return "NUMERICAL_REVIEW"
+    return "CONVERGED" if economic["cyclic"] else "ACYCLIC"
+
+
 def _closure(root: str, out: dict, budget: Budget, allowed: set[str] | None = None):
     controlled, votes, contributed, queue = set(), defaultdict(Decimal), defaultdict(list), deque([root])
     processed, traversed = set(), 0
@@ -693,12 +712,32 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
             _, component_of, cyclic = _components(scope, out, inc, budget)
             if len(chosen) == 1 and (component_of[target] in cyclic or component_of[chosen[0]] in cyclic):
                 response["status"] = "SCC_REVIEW"
+                response["scc_review_required"] = True
+            if response.get("scc_review_required"):
+                # The direct-majority shortcut must not conceal a singular
+                # ownership cycle. Keep its direct-fact evidence, independently
+                # of the economic diagnostic and the control review gate.
+                diagnostic = _economic(p, target, out, inc, budget, limit)
+                diagnostic_status = _economic_status(diagnostic)
+                result.update(economic_status=diagnostic_status,
+                              economic_complete=not diagnostic["failed"],
+                              component_solutions=diagnostic["reports"][:limit],
+                              target_interest=_decimal(diagnostic["values"][target]) if target in diagnostic["values"] else None)
+                response["completeness"]["display_truncated"] = len(diagnostic["reports"]) > limit
+                # A failed minority-shareholder component does not invalidate
+                # a solved direct candidate or target component.
+                if any(key not in diagnostic["values"] for key in [target, *chosen]):
+                    chosen = []
+                    response["status"] = diagnostic_status
+                    response["complete"] = False
+                    response["completeness"]["computation"] = False
         else:
             economic = _economic(p, target, out, inc, budget, limit)
             ranked, values = economic["roots"], economic["values"]
             path_roots, requested_root = set(ranked), None
             chosen = [k for k in ranked if values[k] == values[ranked[0]]] if ranked else []
             result.update(rule_applied="CUMULATIVE_ROOT_ECONOMIC_INTEREST",
+                          economic_status=_economic_status(economic),
                           root_interests=[{**_entity(p, k), "interest": _decimal(values[k])} for k in ranked[:limit]],
                           root_interests_scope="boundary_roots",
                           root_count=len(ranked), ranking_complete=not economic["failed"],
@@ -713,7 +752,7 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
                     "interest": _decimal(values[requested_root]) if requested_root in values else "0" if requested_root not in scope else None,
                     "complete": not economic["failed"], "scope": "requested_upstream"}
             response["completeness"]["display_truncated"] = len(ranked) > limit or len(economic["reports"]) > limit
-            response["status"] = "NON_CONVERGENT" if economic["failed"] else "TIED_CANDIDATES" if len(chosen) > 1 else "COMPLETE" if chosen else "NO_EVIDENCE"
+            response["status"] = _economic_status(economic) if economic["failed"] else "TIED_CANDIDATES" if len(chosen) > 1 else "COMPLETE" if chosen else "NO_EVIDENCE"
             if economic["failed"]:
                 chosen = []
                 response["complete"] = False
@@ -747,7 +786,7 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
                     direct_facts = inc.get(target, [])
                     response["evidence"] = {"direct_facts": [_fact(p, f) for f in direct_facts[:limit]],
                         "fact_count": len(direct_facts), "complete": len(direct_facts) <= limit}
-                    response["completeness"]["display_truncated"] = len(chosen) > limit or len(direct_facts) > limit
+                    response["completeness"]["display_truncated"] |= len(chosen) > limit or len(direct_facts) > limit
         result["stopped_at"] = [{"entity_id": k, "reason": v} for k, v in stopped.items() if k in scope][:limit]
     elif operation == "control_chain":
         target = _resolve(p, target_id)
@@ -869,7 +908,7 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
     if operation in {"control_chain", "group_tree"}:
         response["control_status"] = response["status"]
     response["review_reasons"] = [response["status"]] if response["status"] in {
-        "SCC_REVIEW", "NON_CONVERGENT", "NUMERICAL_REVIEW", "RULE_CONFIG_MISSING"} else []
+        "SCC_REVIEW", "NON_CONVERGENT", "NUMERICAL_REVIEW", "TRUNCATED", "RULE_CONFIG_MISSING"} else []
     if response.get("scc_review_required") and "SCC_REVIEW" not in response["review_reasons"]:
         response["review_reasons"].append("SCC_REVIEW")
     response["quality"] = _quality(p, scope, limit)
@@ -970,7 +1009,9 @@ def analyze_finance(construction_graph: dict, operation: str, **kwargs) -> dict:
             projection = project_ownership(construction_graph, policy, budget)
             if projection.issue_counts["SOURCE_TABLE_MISSING"]:
                 return {"success": False, "status": "FINANCE_SCHEMA_REQUIRED", "operation": operation,
-                        "complete": False, "result": {}, "error": "Original records from institution_main, individual_info and institution_shareholder_relationship are required."}
+                        "complete": False, "result": {},
+                        "missing_source_tables": [issue["detail"] for issue in projection.issues if issue["code"] == "SOURCE_TABLE_MISSING"],
+                        "error": "Original institution_main and institution_shareholder_relationship records are required; individual_info is required when ownership records reference individuals."}
             return _analysis(projection, operation, policy, budget, kwargs.get("target_id"), kwargs.get("root_id"), limit, top_k, query)
     except BudgetExceeded as exc:
         return {"success": False, "status": "TRUNCATED", "operation": operation, "algorithm_version": VERSION,

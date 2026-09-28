@@ -14,6 +14,50 @@ function canvasProps(layout: 'circle' | 'force' | 'radial' = 'circle') {
 }
 
 describe('GraphCanvas state restoration', () => {
+  it('keeps stars legible while zooming out without moving nodes or resizing ordinary circles', async () => {
+    const props = canvasProps();
+    const initial = render(<GraphCanvas {...props} />);
+    initial.unmount();
+    props.state.camera = zoomIdentity.scale(.3);
+    const { container } = render(<GraphCanvas {...props} highlights={[{ type: 'node', nodes: ['a'] }]} />);
+    const star = container.querySelector('[data-node-id="a"] path.graph-node-dot')!;
+    const circle = container.querySelector('[data-node-id="b"] circle.graph-node-dot')!;
+    const screenRadius = () => Math.max(...(star.getAttribute('d')!.match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi) || []).map(Number).map(Math.abs)) * props.state.camera.k;
+    expect(screenRadius()).toBeCloseTo(8);
+    const position = star.parentElement!.getAttribute('transform');
+    const ordinaryRadius = circle.getAttribute('r');
+    fireEvent.wheel(container.querySelector('svg')!, { deltaY: 800, clientX: 40, clientY: 80 });
+    await waitFor(() => {
+      expect(props.state.camera.k).toBe(.15);
+      expect(screenRadius()).toBeCloseTo(8);
+      expect(container.querySelector('.graph-viewport')?.getAttribute('transform')).toBe(props.state.camera.toString());
+    });
+    expect(star.parentElement!.getAttribute('transform')).toBe(position);
+    expect(circle.getAttribute('r')).toBe(ordinaryRadius);
+  });
+
+  it('uses colored stars for highlighted nodes and edge-only endpoints while keeping ordinary nodes circular', () => {
+    const props = canvasProps();
+    const { container, rerender } = render(<GraphCanvas {...props} highlights={[{ type: 'node', nodes: ['a'], color: '#f97316' }]} />);
+    const star = container.querySelector('[data-node-id="a"] path.graph-node-dot');
+    expect(star?.getAttribute('data-highlight-shape')).toBe('star');
+    expect(star?.getAttribute('fill')).toBe('#f97316');
+    expect(star?.getAttribute('d')?.match(/L/g)).toHaveLength(9);
+    expect(container.querySelector('[data-node-id="a"] circle.graph-node-dot')).toBeNull();
+    expect(container.querySelector('[data-node-id="b"] circle.graph-node-dot')).toBeTruthy();
+    expect(container.querySelector('.graph-node:last-child')?.getAttribute('data-node-id')).toBe('a');
+    const position = star?.parentElement?.getAttribute('transform');
+    const camera = props.state.camera.toString();
+    rerender(<GraphCanvas {...props} highlightShape="triangle" highlights={[{ type: 'subgraph', edges: [['a', 'b']], color: '#7c3aed' }]} />);
+    expect(container.querySelectorAll('[data-highlight-shape="triangle"]')).toHaveLength(2);
+    expect(container.querySelector('[data-node-id="a"] path.graph-node-dot')?.getAttribute('d')?.match(/L/g)).toHaveLength(2);
+    expect(container.querySelector('[data-node-id="a"]')?.getAttribute('transform')).toBe(position);
+    expect(props.state.camera.toString()).toBe(camera);
+    rerender(<GraphCanvas {...props} />);
+    expect(container.querySelectorAll('circle.graph-node-dot')).toHaveLength(2);
+    expect(container.querySelectorAll('.is-highlighted')).toHaveLength(0);
+  });
+
   it.each(['circle', 'force', 'radial'] as const)('restores exact positions and camera in %s layout', async layout => {
     const props = canvasProps(layout);
     const first = render(<GraphCanvas {...props} />);

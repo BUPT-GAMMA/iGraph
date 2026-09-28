@@ -13,7 +13,8 @@ import { RunRecovery } from './RunRecovery';
 import { RunCancellation } from './RunCancellation';
 import { editableLatestTurn } from './latestTurn';
 import { getCapabilities } from './api';
-import { draftScopeKey, conversationReducer, createSessionView, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
+import { draftScopeKey, conversationReducer, createSessionView, initialConversationState, latestMessageGraph, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
+import { contextHighlights } from './graphContext';
 import { DatasetPanel } from './components/DatasetPanel';
 import { ConstructedDatasetPicker } from './components/ConstructedDatasetPicker';
 import { HelpPage } from './components/HelpPage';
@@ -272,7 +273,7 @@ function App() {
       clearPersistedRun(id);
       const view = conversationRef.current.viewsBySessionId[id];
       if (view && (view.graph.status !== 'empty' || view.activeRun?.toolOrder.length)) {
-        void refreshSessionGraph(id, { include_community: true }, false, undefined, true);
+        void refreshSessionGraph(id, { include_community: true }, false, undefined, true, 'background');
       }
     },
   };
@@ -525,14 +526,19 @@ function App() {
     return version;
   }
 
-  async function refreshSessionGraph(sessionId: string, options: Record<string, unknown> = {}, reportError = false, requestVersion?: number, preserveCurrent = false) {
+  async function refreshSessionGraph(sessionId: string, options: Record<string, unknown> = {}, reportError = false, requestVersion?: number, preserveCurrent = false, refreshMode?: 'background' | 'reset') {
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
     const version = requestVersion ?? nextGraphVersion(sessionId, preserveCurrent);
     try {
-      const nextGraph = await visualizeGraph(sessionId, options);
+      const currentGraph = conversationRef.current.viewsBySessionId[sessionId]?.graph;
+      const highlights = options.highlights ?? (currentGraph?.status === 'ready' ? currentGraph.data.highlights : undefined);
+      const nextGraph = await visualizeGraph(sessionId, refreshMode === 'background'
+        ? { ...options, highlights: contextHighlights(highlights as GraphData['highlights']) }
+        : options);
       if (accountIsStale(identity, accountEpoch)) return null;
-      dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'ready', data: nextGraph } });
+      dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'ready', data: nextGraph }, refreshMode,
+        requestedHighlights: refreshMode === 'background' ? highlights as GraphData['highlights'] : undefined });
       setSessions(current => current.map(session => session.session_id === sessionId ? { ...session, has_graph: true } : session));
       return nextGraph;
     } catch (cause: any) {
@@ -540,13 +546,13 @@ function App() {
       const unsupported = unsupportedGraphViewFromError(cause);
       let retainedCurrentGraph = false;
       if (unsupported) {
-        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: unsupported });
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: unsupported, refreshMode });
       } else {
         const message = cause.message || tr('Could not load the graph', '图谱加载失败');
         const currentGraph = conversationRef.current.viewsBySessionId[sessionId]?.graph;
         retainedCurrentGraph = Boolean(preserveCurrent && currentGraph?.status === 'ready');
         if (!retainedCurrentGraph) {
-          dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'failed', data: null, error: message } });
+          dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: { status: 'failed', data: null, error: message }, refreshMode });
         }
         if (reportError) dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: message } });
       }
@@ -637,7 +643,7 @@ function App() {
         ? previousRun.generation
         : `resume:${effectiveActiveRun?.run_id || crypto.randomUUID()}`;
       const savedComposer = restoreComposer ? readComposerDraft(identity, id) : null;
-      const graphVersion = nextGraphVersion(id);
+      const graphVersion = nextGraphVersion(id, true);
       dispatchConversation({
         type: 'HYDRATE_SUCCESS', sessionId: id, requestVersion, messages: restoredMessages,
         model: selectedModel, modelRevision: response.model_revision, modelUnavailableReason: response.model_unavailable_reason,
@@ -684,7 +690,7 @@ function App() {
       }
 
       if (response.has_graph && response.dataset_view?.visualization.supported !== false) {
-        void refreshSessionGraph(id, { include_community: true }, false, graphVersion);
+        void refreshSessionGraph(id, { include_community: true, highlights: latestMessageGraph(restoredMessages)?.highlights }, false, graphVersion, true, 'background');
       } else {
         dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId: id, requestVersion: graphVersion, graph: unsupportedGraphView(response.dataset_view) || { status: 'empty', data: null } });
       }
@@ -2097,10 +2103,13 @@ function App() {
     }
   }
   async function removeDataset(dataset: Dataset) {
+    if (busy) return;
     const identity = identityRef.current;
     const accountEpoch = accountEpochRef.current;
     if (!await askConfirm(tr(`Delete dataset “${dataset.name}”?`, `确认删除数据集「${dataset.name}」吗？`))) return;
     if (accountIsStale(identity, accountEpoch)) return;
+    setBusy(true);
+    setWorkspaceError('');
     try {
       const response = await deleteProjectDataset(dataset.project_id, dataset.dataset_id);
       if (accountIsStale(identity, accountEpoch)) return;
@@ -2115,6 +2124,8 @@ function App() {
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return;
       setWorkspaceError(cause.message || tr('Could not delete the dataset', '数据集删除失败'));
+    } finally {
+      if (!accountIsStale(identity, accountEpoch)) setBusy(false);
     }
   }
   async function expandNode(node: Record<string, unknown>) {
@@ -2153,7 +2164,7 @@ function App() {
           {workspaceError && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {workspaceError}</div>}
           {constructionDataset
             ? <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} embedded onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} />
-            : <CreateGraphWorkspace datasets={datasets} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onStateChange={constructionStateUpdated} />}
+            : <CreateGraphWorkspace datasets={datasets} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onDelete={removeDataset} onStateChange={constructionStateUpdated} />}
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
           {modelNotice?.sessionId === activeSession?.session_id && modelNotice && <div className="model-switch-notice" role="status">{t(`Next message: ${modelNotice.name}`, `下一条消息将使用：${modelNotice.name}`)}<button className="plain-icon" onClick={() => setModelNotice(null)} aria-label={t('Dismiss model notice', '关闭模型切换提示')}><Icon name="close" size={12} /></button></div>}
@@ -2164,7 +2175,7 @@ function App() {
             : <div className={`workspace-home ${userId ? '' : 'signed-out'}`}><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{userId ? t('Start a new graph analysis', '开始新的图分析') : t('Explore graph data, starting with a question', '探索图数据，从一个问题开始')}</h1>{!userId && <p>{t('Select the avatar in the lower-left corner to sign in.', '点击左下角头像登录。')}</p>}{userId ? <button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> {t('New task', '新建任务')}</button> : null}</div></div>}
         </>}
       </div>
-      {activeSession && !createGraphOpen && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onGraphQuery={prompt => void send(undefined, prompt)} graphQueryPending={!runGate.canStartRun || uploading || busy} onGraphReset={() => void refreshSessionGraph(activeSession.session_id, {}, true, undefined, true)} onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : t('Build graph', '构图')} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} /></>}
+      {activeSession && !createGraphOpen && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onGraphQuery={prompt => void send(undefined, prompt)} graphQueryPending={!runGate.canStartRun || uploading || busy} onGraphReset={() => void refreshSessionGraph(activeSession.session_id, {}, true, undefined, true, 'reset')} onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : t('Build graph', '构图')} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} /></>}
     </div>
     {activeDraft && !activeDraft.projectId && recoveredDrafts.length > 0 && <div className="recovered-draft-notice" role="status"><button className="text-button" onClick={recoverOldDraft}>{t(`Restore pre-upgrade drafts (${recoveredDrafts.length})`, `恢复升级前草稿（${recoveredDrafts.length}）`)}</button></div>}
     <PopupPresence key={`datasetOpen-${userId}`}>{datasetOpen && <DatasetPanel onDatasetUpdated={datasetUpdated} onLoadConstructed={panelProject ? () => { setDatasetOpen(false); setImportProject(panelProject); } : undefined} onConstruct={openConstruction} datasets={panelDatasets} serverDatasets={serverDatasets} projectName={panelProject?.name} activeDatasetId={panelMatchesConversation ? activeDatasetId : null} busy={busy || uploading} onSelect={chooseDataset} onUpload={file => addProjectDataset(file, panelMatchesConversation && Boolean(activeSession), datasetProjectId)} onUseServer={panelProjectId ? dataset => addServerDataset(dataset, panelMatchesConversation && Boolean(activeSession), datasetProjectId) : undefined} onRename={renameDataset} onDelete={removeDataset} onClose={() => setDatasetOpen(false)} />}</PopupPresence>

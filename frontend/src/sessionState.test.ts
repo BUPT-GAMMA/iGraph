@@ -469,6 +469,30 @@ describe('conversationReducer session/run isolation', () => {
     expect(state.viewsBySessionId.A.graph?.data?.highlights).toEqual({ paths: [{ node_sequence: ['a', 'b'], color: '#f59e0b' }] });
   });
 
+  it('accepts completed SCC evidence for the current highlight request but rejects stale enrichment', () => {
+    let state = start(session(initialConversationState, 'A'), 'A', 'gen');
+    const highlights = { nodes: [{ ids: ['a', 'b'], color: '#ef4444' }] };
+    const applyGraph = (index: number, nodes: string[], selection: typeof highlights) => {
+      state = conversationReducer(state, { type: 'APPLY_BATCH', sessionId: 'A', generation: 'gen',
+        batch: batch('A', 'run', index, [{ type: 'graph_visualize', data: { nodes: nodes.map(id => ({ id })), edges: [], highlights: selection } }]) });
+    };
+    applyGraph(0, ['a', 'b'], highlights);
+    const enriched = { nodes: [{ ids: ['a', 'b', 'holding'], color: '#ef4444' }], paths: [{ edges: [['holding', 'a'], ['holding', 'b']], color: '#f97316' }] };
+    const graph = { status: 'ready' as const, data: { nodes: ['a', 'b', 'holding', 'ordinary'].map(id => ({ id })),
+      edges: [{ source: 'holding', target: 'a' }, { source: 'holding', target: 'b' }], highlights: enriched } };
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 1, preserveCurrent: true });
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 1,
+      refreshMode: 'background', requestedHighlights: highlights, graph });
+    expect(state.viewsBySessionId.A.graph.data?.highlights).toEqual(enriched);
+    expect(state.viewsBySessionId.A.graph.data?.nodes.map(node => node.id)).toEqual(['a', 'b', 'holding', 'ordinary']);
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_START', sessionId: 'A', requestVersion: 2, preserveCurrent: true });
+    const latest = { nodes: [{ ids: ['new'], color: '#2563eb' }] };
+    applyGraph(1, ['new'], latest);
+    state = conversationReducer(state, { type: 'GRAPH_REQUEST_SUCCESS', sessionId: 'A', requestVersion: 2,
+      refreshMode: 'background', requestedHighlights: highlights, graph });
+    expect(state.viewsBySessionId.A.graph.data?.highlights).toEqual(latest);
+  });
+
   it('restores the latest graph artifact when hydrating a session', () => {
     let state = session(initialConversationState, 'A');
     state = conversationReducer(state, { type: 'HYDRATE_START', sessionId: 'A', requestVersion: 1 });
