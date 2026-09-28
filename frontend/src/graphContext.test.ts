@@ -43,3 +43,8 @@ describe('analysis over the graph context', () => {
     expect(merged.truncated).toBe(false);
   });
 });
+
+
+it('retains legacy node selections without an explicit type in refresh requests', () => {
+  expect(contextHighlights([{ nodes: ['a'] }])).toMatchObject({ nodes: [{ ids: ['a'] }] });
+});

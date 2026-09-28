@@ -6,7 +6,7 @@ const nodeId = (node: Record<string, unknown>, index: number) => String(node.id 
 export function contextHighlights(highlights: GraphData['highlights']) {
   if (!Array.isArray(highlights)) return highlights;
   return {
-    nodes: highlights.filter(h => h.type === 'node').map(h => ({ ids: h.nodes, color: h.color, label: h.label })),
+    nodes: highlights.filter(h => !h.type || h.type === 'node').map(h => ({ ids: h.nodes, color: h.color, label: h.label })),
     paths: highlights.filter(h => h.type === 'path').map(h => ({ node_sequence: h.nodes, edges: h.edges, color: h.color, label: h.label })),
     subgraphs: highlights.filter(h => h.type === 'subgraph').map(h => ({ nodes: h.nodes, edges: h.edges, color: h.color, label: h.label })),
   };
