@@ -60,8 +60,11 @@ export function previewGraph(index: GraphIndex, highlights: Highlight[], query: 
   }
   const resultIds = highlightNodeIds(highlights);
   const eligible = (id: string) => index.nodes.has(id) && (!resultsOnly || resultIds.has(id)) && (!local || local.has(id)) && (!connectedOnly || index.nodes.get(id)!.degree > 0) && (!filterMatches || !text || matchIds.has(id));
+  // The normal overview budget must not split a supplied analysis component.
+  // Results are already bounded by the server; keep room for ordinary context.
+  const nodeLimit = Math.max(NODE_LIMIT, [...resultIds].filter(eligible).length + (resultsOnly ? 0 : Math.floor(NODE_LIMIT / 3)));
   const chosen = new Set<string>(), queue: string[] = [];
-  const add = (id: string) => { if (chosen.size < NODE_LIMIT && eligible(id) && !chosen.has(id)) { chosen.add(id); queue.push(id); } };
+  const add = (id: string) => { if (chosen.size < nodeLimit && eligible(id) && !chosen.has(id)) { chosen.add(id); queue.push(id); } };
   const important = new Set<string>();
   const importantEdges = new Set<string>();
   highlights.forEach(h => {
@@ -73,6 +76,17 @@ export function previewGraph(index: GraphIndex, highlights: Highlight[], query: 
     });
   });
   add(focusId); important.forEach(add);
+  // Keep highlighted subjects connected to ordinary surrounding nodes before
+  // the general overview consumes the remaining node budget. Share this space
+  // across subjects so a single high-degree node cannot take it all.
+  const contextLimit = Math.min(nodeLimit, chosen.size + Math.floor(NODE_LIMIT / 3));
+  const neighborhoods = [...important].map(id => [...(index.neighbors.get(id) || [])]);
+  for (let offset = 0; chosen.size < contextLimit && neighborhoods.some(nodes => offset < nodes.length); offset++) {
+    for (const neighbors of neighborhoods) {
+      if (chosen.size >= contextLimit) break;
+      if (offset < neighbors.length) add(neighbors[offset]);
+    }
+  }
   // Reserve space for neighbors instead of letting a broad search consume the canvas.
   matches.slice(0, 20).forEach(node => add(node.id));
   // Keep the selected neighborhood useful while retaining representatives of
@@ -86,14 +100,16 @@ export function previewGraph(index: GraphIndex, highlights: Highlight[], query: 
     index.nodes.forEach(node => { if (eligible(node.id) && (!best || node.degree > best.degree)) best = node; });
     if (best) add(best.id);
   }
-  for (let i = 0; i < queue.length && chosen.size < NODE_LIMIT; i++) index.neighbors.get(queue[i])?.forEach(add);
+  for (let i = 0; i < queue.length && chosen.size < nodeLimit; i++) index.neighbors.get(queue[i])?.forEach(add);
   index.nodes.forEach(node => add(node.id));
   const candidateEdges = index.edges.filter(edge => chosen.has(edge.source) && chosen.has(edge.target));
-  const score = (edge: PreviewEdge) => importantEdges.has(JSON.stringify([edge.source, edge.target])) || (!index.directed && importantEdges.has(JSON.stringify([edge.target, edge.source]))) ? 0 : edge.source === focusId || edge.target === focusId ? 1 : index.overviewEdges.has(edge.raw) ? 2 : 3;
+  const score = (edge: PreviewEdge) => importantEdges.has(JSON.stringify([edge.source, edge.target])) || (!index.directed && importantEdges.has(JSON.stringify([edge.target, edge.source]))) ? 0 : edge.source === focusId || edge.target === focusId || important.has(edge.source) || important.has(edge.target) ? 1 : index.overviewEdges.has(edge.raw) ? 2 : 3;
+  const resultEdgeCount = candidateEdges.filter(edge => score(edge) === 0).length;
+  const edgeLimit = Math.max(EDGE_LIMIT, resultEdgeCount + (resultsOnly ? 0 : Math.min(60, candidateEdges.length - resultEdgeCount)));
   // Stable order, with result paths and the focused neighborhood first.
   const edges: PreviewEdge[] = [];
-  for (let priority = 0; priority < 4 && edges.length < EDGE_LIMIT; priority++) {
-    for (const edge of candidateEdges) if (score(edge) === priority && edges.length < EDGE_LIMIT) edges.push(edge);
+  for (let priority = 0; priority < 4 && edges.length < edgeLimit; priority++) {
+    for (const edge of candidateEdges) if (score(edge) === priority && edges.length < edgeLimit) edges.push(edge);
   }
   return { maxDegree: index.maxDegree, nodes: [...index.nodes.values()].filter(node => chosen.has(node.id)), edges, matches: matchIds,
     eligibleCount: [...index.nodes.keys()].filter(eligible).length, candidateEdges: candidateEdges.length,

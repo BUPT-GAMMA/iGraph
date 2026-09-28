@@ -10,6 +10,7 @@ import { highlightNodeIds } from '../graphExploration';
 
 type Props = {
   active: boolean; schema?: boolean; preview: GraphPreview; directed?: boolean; highlights: Highlight[]; communities: Map<string, string>;
+  highlightShape?: 'star' | 'triangle';
   selected: Record<string, unknown> | null; onSelect: (node: Record<string, unknown> | null) => void;
   layout: 'force' | 'radial' | 'circle'; sizeMode: 'degree' | 'uniform';
   labels: 'auto' | 'all' | 'hidden'; edgeWidth: number; fitVersion: number; focusId: string; state?: GraphCanvasState;
@@ -35,7 +36,7 @@ export function GraphCanvas(props: Props) {
   const state = props.state || localState.current;
   const marker = `graph-arrow-${useId().replace(/:/g, '')}`;
   // Compare only the bounded preview. Parent chat updates never restart physics.
-  const signature = JSON.stringify([props.preview.nodes, props.preview.edges, props.directed, props.schema, props.highlights, [...props.communities]]);
+  const signature = JSON.stringify([props.preview.nodes, props.preview.edges, props.directed, props.schema, props.highlights, props.highlightShape, [...props.communities]]);
   // Labels, translations, highlights and colors may rebuild SVG appearance, but
   // only topology and an explicit layout change are allowed to restart physics.
   const topologySignature = JSON.stringify([
@@ -49,7 +50,7 @@ export function GraphCanvas(props: Props) {
     const host = ref.current.parentElement!;
     let width = host.clientWidth || 360, height = host.clientHeight || 420;
     let disposed = false, frame = 0, interacted = false, zooming = false, needsPaint = false;
-    let hovered = '', dragging = false, lastLabels = 0;
+    let hovered = '', dragging = false, lastLabels = 0, renderedScale = state.camera.k;
     const p = latest.current;
     const nodes: Node[] = p.preview.nodes.map(node => ({ ...node, ...state.positions.get(node.id) }));
     const canResume = state.topologySignature === topologySignature
@@ -58,7 +59,7 @@ export function GraphCanvas(props: Props) {
       && nodes.every(node => state.positions.has(node.id));
     const byId = new Map(nodes.map(node => [node.id, node]));
     const maxDegree = p.preview.maxDegree;
-    const radius = (n: Node) => latest.current.sizeMode === 'uniform' ? 8 : degreeRadius(n.degree, maxDegree);
+    const baseRadius = (n: Node) => latest.current.sizeMode === 'uniform' ? 8 : degreeRadius(n.degree, maxDegree);
     const edges = p.preview.edges.map(edge => ({ ...edge, source: edge.source as string | Node, target: edge.target as string | Node, lane: 0, count: 1 }));
     const groups = new Map<string, typeof edges>();
     edges.forEach(edge => { const key = JSON.stringify([String(edge.source), String(edge.target)].sort()); const list = groups.get(key) || []; list.push(edge); groups.set(key, list); });
@@ -73,26 +74,49 @@ export function GraphCanvas(props: Props) {
     const viewport = svg.append('g').attr('class', 'graph-viewport');
     const visibleHighlights = p.highlights;
     const pathPairs = new Map<string, string>(), subPairs = new Map<string, string>(), nodeColors = new Map<string, string>();
+    const nodePriorities = new Map<string, number>();
     visibleHighlights.forEach(h => {
-      highlightNodeIds([h]).forEach(id => nodeColors.set(id, h.color || DEFAULT_HIGHLIGHT_COLORS[h.type || 'node']));
+      const priority = h.type === 'subgraph' ? 1 : h.type === 'path' ? 2 : 3;
+      highlightNodeIds([h]).forEach(id => {
+        if (priority < (nodePriorities.get(id) || 0)) return;
+        nodePriorities.set(id, priority);
+        nodeColors.set(id, h.color || DEFAULT_HIGHLIGHT_COLORS[h.type || 'node']);
+      });
       if (h.type === 'path' || h.type === 'subgraph') highlightEdgePairs(h).forEach(key => (h.type === 'path' ? pathPairs : subPairs).set(key, h.color || DEFAULT_HIGHLIGHT_COLORS[h.type!]));
     });
+    // Keep stars recognizable even when fitting a large graph into a small panel.
+    const radius = (n: Node) => nodeColors.has(n.id) ? Math.max(baseRadius(n) * 1.6, 8 / state.camera.k) : baseRadius(n);
+    const highlightShape = p.highlightShape || 'star';
+    const symbolPath = (n: Node) => {
+      const count = highlightShape === 'star' ? 10 : 3;
+      const points = Array.from({ length: count }, (_, index) => {
+        const angle = -Math.PI / 2 + index * 2 * Math.PI / count;
+        const r = radius(n) * (highlightShape === 'star' && index % 2 ? .45 : 1);
+        return `${Math.cos(angle) * r},${Math.sin(angle) * r}`;
+      });
+      return `M${points.join('L')}Z`;
+    };
     const hulls = visibleHighlights.filter(h => h.type === 'subgraph').map(h => ({ h, path: viewport.append('path').attr('class', 'graph-subgraph-hull').attr('fill', h.color || DEFAULT_HIGHLIGHT_COLORS.subgraph).attr('stroke', h.color || DEFAULT_HIGHLIGHT_COLORS.subgraph) }));
     const link = viewport.append('g').selectAll('path').data(edges).join('path').attr('class', 'graph-link').attr('fill', 'none')
+      .attr('data-source', edge => String(edge.source)).attr('data-target', edge => String(edge.target))
       .classed('graph-schema-link', Boolean(p.schema))
       .attr('aria-label', edge => p.schema ? schemaEdgeLabel(edge.raw, false, t) : null)
       .attr('marker-end', p.directed ? `url(#${marker})` : null)
       .style('stroke', edge => highlightedEdgeColor(pathPairs, edge.source, edge.target, p.directed) || highlightedEdgeColor(subPairs, edge.source, edge.target, p.directed) || null)
       .classed('is-path-highlight', e => Boolean(highlightedEdgeColor(pathPairs, e.source, e.target, p.directed)))
-      .classed('is-subgraph-highlight', e => !highlightedEdgeColor(pathPairs, e.source, e.target, p.directed) && Boolean(highlightedEdgeColor(subPairs, e.source, e.target, p.directed)));
+      .classed('is-subgraph-highlight', e => !highlightedEdgeColor(pathPairs, e.source, e.target, p.directed) && Boolean(highlightedEdgeColor(subPairs, e.source, e.target, p.directed)))
+      .sort((a, b) => Number(Boolean(highlightedEdgeColor(pathPairs, a.source, a.target, p.directed) || highlightedEdgeColor(subPairs, a.source, a.target, p.directed)))
+        - Number(Boolean(highlightedEdgeColor(pathPairs, b.source, b.target, p.directed) || highlightedEdgeColor(subPairs, b.source, b.target, p.directed))));
     const relationshipLabels = p.schema ? viewport.append('g').selectAll('text').data(edges).join('text')
       .attr('class', 'graph-schema-edge-label').text(edge => schemaEdgeLabel(edge.raw, true, t))
       .attr('aria-label', edge => schemaEdgeLabel(edge.raw, false, t)) : null;
     const node = viewport.append('g').selectAll<SVGGElement, Node>('g').data(nodes).join('g').attr('class', 'graph-node').attr('data-node-id', n => n.id)
-      .attr('tabindex', 0).attr('role', 'button').attr('aria-label', n => t(`${n.label ?? n.id}, ${n.degreeLabel} ${n.degree}`, `${n.label ?? n.id}，${n.degreeLabel} ${n.degree}`));
-    const circles = node.append('circle').attr('class', 'graph-node-dot').attr('fill', n => communityColor(p.communities.get(n.id)))
-      .style('stroke', n => nodeColors.get(n.id) || null).classed('is-highlighted', n => nodeColors.has(n.id));
+      .attr('tabindex', 0).attr('role', 'button').attr('aria-label', n => t(`${n.label ?? n.id}, ${n.degreeLabel} ${n.degree}`, `${n.label ?? n.id}，${n.degreeLabel} ${n.degree}`))
+      .sort((a, b) => Number(nodeColors.has(a.id)) - Number(nodeColors.has(b.id)));
     const halos = node.append('circle').attr('class', 'graph-node-halo').attr('fill', n => nodeColors.get(n.id) || DEFAULT_HIGHLIGHT_COLORS.node).attr('opacity', .18);
+    const circles = node.filter(n => !nodeColors.has(n.id)).append('circle').attr('class', 'graph-node-dot').attr('fill', n => communityColor(p.communities.get(n.id)));
+    const symbols = node.filter(n => nodeColors.has(n.id)).append('path').attr('class', 'graph-node-dot is-highlighted')
+      .attr('data-highlight-shape', highlightShape).attr('fill', n => nodeColors.get(n.id)!);
     const rings = node.append('circle').attr('class', 'graph-selection-ring').attr('fill', 'none').attr('pointer-events', 'none');
     const labels = node.append('text').attr('class', 'graph-node-label');
     let budget = 0, visibleLabels = new Set<string>();
@@ -114,7 +138,7 @@ export function GraphCanvas(props: Props) {
         if (mode === 'hidden' && n.id !== focus) continue;
         if (visible.size >= count && n.id !== focus) continue;
         const name = fullName(n), text = n.id === focus ? name : name.length > 18 ? name.slice(0, 17) + '…' : name;
-        const x = (n.x || 0) * k + state.camera.x, y = (n.y || 0) * k + state.camera.y + (radius(n) + 12) * Math.sqrt(k);
+        const x = (n.x || 0) * k + state.camera.x, y = ((n.y || 0) + radius(n)) * k + state.camera.y + 12 * Math.sqrt(k);
         const w = Math.min(text.length * 8, 440), padding = visibleLabels.has(n.id) ? 0 : 3;
         const box = [x - w / 2 - padding, y - 11 - padding, x + w / 2 + padding, y + 4 + padding];
         if (mode !== 'all' && n.id !== focus && boxes.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
@@ -135,7 +159,7 @@ export function GraphCanvas(props: Props) {
       labels.each(function(n) {
         if (!visible.has(n.id)) return;
         if (this.style.fontSize !== fontSize) this.style.fontSize = fontSize;
-        const dy = String((radius(n) + 12) / Math.sqrt(k));
+        const dy = String(radius(n) + 12 / Math.sqrt(k));
         if (this.getAttribute('dy') !== dy) this.setAttribute('dy', dy);
       });
       visibleLabels = visible;
@@ -158,9 +182,10 @@ export function GraphCanvas(props: Props) {
         frame = 0;
         const transform = state.camera.toString();
         if (viewport.attr('transform') !== transform) viewport.attr('transform', transform);
-        if (needsPaint) { needsPaint = false; paint(); }
+        if (renderedScale !== state.camera.k) { needsPaint = false; resizeNodes(); }
+        else if (needsPaint) { needsPaint = false; paint(); }
         // Recompute labels while moving, at most 30 times per second. Camera
-        // movement stays at the display frame rate; zoom never repaints highlights.
+        // movement and highlight geometry update at most once per display frame.
         else if (zooming && performance.now() - lastLabels >= 32) paintLabels();
       });
     }
@@ -186,7 +211,7 @@ export function GraphCanvas(props: Props) {
       .force('link', d3.forceLink<Node, any>(edges).id(n => n.id).distance(p.schema ? 115 : 65))
       .force('charge', d3.forceManyBody().strength(p.schema ? -300 : -115).distanceMax(550))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide<Node>(n => (p.schema ? 35 : Math.max(8, degreeRadius(n.degree, maxDegree)) + 5)));
+      .force('collision', d3.forceCollide<Node>(n => (p.schema ? 35 : Math.max(8, degreeRadius(n.degree, maxDegree)) * 1.6 + 5)));
     if (p.layout === 'radial') simulation.force('radial', d3.forceRadial(Math.min(width, height) * .3, width / 2, height / 2).strength(.45));
     function renderFrame() {
       link.attr('d', e => {
@@ -216,7 +241,8 @@ export function GraphCanvas(props: Props) {
       if (!zooming && performance.now() - lastLabels > 100) paintLabels();
     }
     function resizeNodes() {
-      circles.attr('r', radius); halos.attr('r', n => nodeColors.has(n.id) ? radius(n) + 5 : 0);
+      renderedScale = state.camera.k;
+      circles.attr('r', radius); symbols.attr('d', symbolPath); halos.attr('r', n => nodeColors.has(n.id) ? radius(n) + 5 : 0);
       // Reserve enough space for either size mode without restarting physics.
       renderFrame(); paint();
     }

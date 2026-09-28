@@ -122,7 +122,7 @@ def test_active_status_reads_the_small_public_progress_sidecar(tmp_path):
             directory = store._directory("alice", "progress")
             atomic_json(directory / "construction-progress.json", {
                 "version": "construction_progress.v1", "build_id": attempt.build_id,
-                "status": "running", "stage": "evolving", "current_message": "Agent 正在验收候选。",
+                "status": "running", "mode": "llm", "stage": "evolving", "current_message": "Agent 正在验收候选。",
                 "elapsed_seconds": 8, "metrics": {"iterations": 2, "evaluated_candidates": 1},
                 "events": [{"id": "stage:evolving", "kind": "stage", "stage": "evolving",
                             "message": "Agent 正在尝试候选图结构。"}],
@@ -132,6 +132,7 @@ def test_active_status_reads_the_small_public_progress_sidecar(tmp_path):
             assert status["status"] == "building"
             assert status["message"] == "Agent 正在验收候选。"
             assert status["progress"]["metrics"] == {"iterations": 2, "evaluated_candidates": 1}
+            assert status["progress"]["mode"] == "llm"
             assert "queries" not in status["progress"]
             (directory / "construction-progress.json").write_text("{", encoding="utf-8")
             fallback = await owner.status("alice", "progress")

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from graph_data_service.construction import ConstructionStore, validate_graph
 from graph_engine.construction import register_builtin_algorithms
@@ -69,18 +71,39 @@ class TabularConstructionAgentTest(unittest.TestCase):
             call("optimize_graph", {"operations": [{"op": "rename_type", "target": "node", "old_type": "orders", "new_type": "Order"}]}, 4),
             *extra, call("finish", {"reason": "Preserve the verified graph after rejected candidate."}, 9)])
 
-    def test_default_15_rules_end_to_end_final_graph_contract(self):
+    def test_rules_publish_only_pk_fk_without_optimizer_model_or_experience(self):
         progress_path = self.root / "ready-progress.json"
-        result = TabularConstructionSubAgent().run(self.path, {"mode": "rules", "domain": "Retail fulfillment"},
-                                                   progress_path=progress_path, build_id="ready-build")
-        self.assertEqual((result.report["final"]["correct"], result.report["final"]["total"]), (15, 15))
+        source = self.source()
+        try:
+            expected = initial_graph(source)
+        finally:
+            source.close()
+        unused = Mock(side_effect=AssertionError("Rules mode must not optimize"))
+        memory = Mock()
+        with patch("graph_engine.construction.agent.generate_workload", unused), \
+                patch("graph_engine.construction.agent.transform", unused), \
+                patch("graph_engine.construction.agent.domain_profile", unused):
+            result = TabularConstructionSubAgent(llm_factory=unused, evaluator=unused, experience_store=memory).run(
+                self.path, {"mode": "rules", "domain": "Retail fulfillment", "experience_enabled": True},
+                progress_path=progress_path, build_id="ready-build")
+        unused.assert_not_called()
+        self.assertEqual(memory.mock_calls, [])
+        self.assertEqual(result.graph, expected)
+        self.assertTrue(result.report["final"]["valid"])
+        self.assertTrue(result.report["final"]["source_fidelity"])
         self.assertFalse(result.report["llm_used"])
         self.assertEqual(set(result.graph), {"directed", "nodes", "edges"})
         self.assertEqual(validate_graph(result.graph), result.graph)
-        self.assertTrue(result.report["history"])
+        self.assertEqual(result.report["history"], [])
+        self.assertEqual(result.report["stop_reason"], "pk_fk_complete")
+        self.assertEqual(result.report["initial_size"], result.report["final_size"])
+        self.assertEqual(result.report["experience"]["recorded_observations"], 0)
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        self.assertEqual(progress["mode"], "rules")
+        self.assertNotIn("query_count", progress["metrics"])
+        self.assertFalse(any("Agent" in event["message"] or event["kind"] == "candidate" for event in progress["events"]))
         self.assertEqual((progress["status"], progress["stage"], progress["current_message"]),
-                         ("ready", "ready", "构图完成，结果已通过最终校验。"))
+                         ("ready", "ready", "PK/FK 构图完成，已通过结构与源数据一致性校验。"))
 
     def test_llm_tool_loop_freezes_queries_rejects_loss_and_returns_only_graph(self):
         llm = self.script()
@@ -267,8 +290,28 @@ class TabularConstructionAgentTest(unittest.TestCase):
                 EvolutionConfig.from_options(options)
 
     def test_query_count_is_configurable(self):
-        result = TabularConstructionSubAgent().run(self.path, {"mode": "rules", "query_count": 7})
+        source = self.source()
+        try:
+            queries = generate_workload(source, 7)
+        finally:
+            source.close()
+        llm = self.script()
+        llm.responses[0] = call("set_workload", {"queries": queries})
+        result = TabularConstructionSubAgent(llm_factory=lambda _: llm).run(self.path, {"query_count": 7})
         self.assertEqual(result.report["final"]["total"], 7)
+
+    def test_rules_cli_reports_structural_validation_without_query_benchmarks(self):
+        from graph_engine.construction.__main__ import main
+        output = self.root / "cli-result"
+        stdout = io.StringIO()
+        with patch("sys.argv", ["construction", str(self.path), "--mode", "rules", "--output", str(output)]), redirect_stdout(stdout):
+            self.assertEqual(main(), 0)
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(summary["status"], "ready")
+        self.assertTrue(summary["validation"]["source_fidelity"])
+        self.assertNotIn("correct", summary)
+        self.assertTrue((output / "graph.json").exists())
+        self.assertFalse((self.root / ".construction-experience").exists())
 
     def test_registration_store_publication_failure_and_restart(self):
         store = register_builtin_algorithms(ConstructionStore(self.root))
@@ -279,6 +322,7 @@ class TabularConstructionAgentTest(unittest.TestCase):
         self.assertEqual(ConstructionStore(self.root).graph("u1", "d1"), saved)
         self.assertNotIn("queries", json.dumps(saved))
         self.assertTrue((self.root / "users/u1/datasets/d1/construction/evolution-report.json").exists())
+        self.assertFalse((self.root / "users/u1/construction-experience").exists())
         # Existing ready graph is reused even when options change.
         self.assertTrue(store.build("u1", "d1", options={"query_count": 99})["reused"])
         with patch.dict("os.environ", {}, clear=True):
@@ -314,8 +358,10 @@ class TabularConstructionAgentTest(unittest.TestCase):
         agent = TabularConstructionSubAgent()
         with ThreadPoolExecutor(max_workers=2) as pool:
             a, b = list(pool.map(lambda count: agent.run(self.path, {"mode": "rules", "query_count": count}), (7, 15)))
-        self.assertEqual([a.report["final"]["total"], b.report["final"]["total"]], [7, 15])
-        self.assertNotEqual(a.report["workload_sha256"], b.report["workload_sha256"])
+        self.assertEqual([a.report["config"]["query_count"], b.report["config"]["query_count"]], [7, 15])
+        self.assertEqual(a.graph, b.graph)
+        a.graph["nodes"].clear()
+        self.assertTrue(b.graph["nodes"])
 
     def test_build_does_not_block_status_or_main_agent_dataset_listing(self):
         store = ConstructionStore(self.root)
