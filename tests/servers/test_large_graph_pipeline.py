@@ -58,7 +58,7 @@ def _build_snapshot(tmp_path: Path) -> dict:
 
 
 def _stubborn_process_tree(
-    marker_path: str, ready_path: str, escape_delay: float = 0.7
+    marker_path: str, ready_path: str, escape_delay: float = 0.7, escape_reader=None
 ) -> None:
     """Create a descendant that ignores TERM and writes if it escapes KILL."""
     os.setsid()
@@ -66,6 +66,8 @@ def _stubborn_process_tree(
     if child_pid == 0:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         Path(ready_path).write_text(str(os.getpid()), encoding="utf-8")
+        if escape_reader is not None:
+            escape_reader.recv_bytes()
         time.sleep(float(escape_delay))
         Path(marker_path).write_text("descendant escaped", encoding="utf-8")
         os._exit(0)
@@ -1516,11 +1518,13 @@ def test_stale_recovery_kills_descendants_after_session_leader_exits(
     marker = tmp_path / "stale-descendant-escaped.txt"
     ready = tmp_path / "stale-descendant-ready.txt"
     context = multiprocessing.get_context("fork")
+    escape_reader, escape_writer = context.Pipe(duplex=False)
     process = context.Process(
         target=_stubborn_process_tree,
-        args=(str(marker), str(ready), 3.0),
+        args=(str(marker), str(ready), 0.0, escape_reader),
     )
     process.start()
+    escape_reader.close()
     process_group = int(process.pid or 0)
     runtime_root = tmp_path / "recovery-runtime"
     catalog = LargeGraphCatalog(runtime_root / "catalog.sqlite3")
@@ -1568,9 +1572,16 @@ def test_stale_recovery_kills_descendants_after_session_leader_exits(
         recovered = catalog.get_job(job_id, user_id="alice", session_id="s1")
         assert recovered is not None
         assert recovered["status"] == "queued"
+        # Only a descendant surviving recovery can write the marker. Setup,
+        # join and process-table inspection have no wall-clock deadline here.
+        try:
+            escape_writer.send_bytes(b"recovery complete")
+        except BrokenPipeError:
+            pass  # Recovery closed every descendant's read end.
         time.sleep(0.8)
         assert not marker.exists()
     finally:
+        escape_writer.close()
         if process.is_alive():
             process.kill()
             process.join(timeout=1)

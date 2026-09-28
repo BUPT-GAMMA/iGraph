@@ -9,6 +9,19 @@ from agent_runtime.workspace_tools import workspace_root
 from .contracts import QueryRequest, RemoteBinding
 
 
+def remote_graph_instructions(binding) -> list[str]:
+    """Route coexisting sources only when this request has a frozen selection."""
+    if not binding:
+        return []
+    return [
+        '当前会话同时可用本地图和选中的远程数据库，它们不是同一张图。'
+        '用户按属性/业务 ID 指定实体时，先读取 remote-graph-qa skill。'
+        '如果修改请求未明确来源且当前对话未确定来源，直接询问“你指的是本地图还是远程数据库？”'
+        '先获得来源答复，再决定使用哪类工具；不要把本地图的数字节点 ID 当成同值的远程业务属性。'
+        '明确的本地图任务仍可正常编辑；明确的远程任务按该 skill 响应，保留本地图。'
+    ]
+
+
 def remote_graph_context_hook(binding):
     source = RemoteBinding.model_validate(binding).model_dump() if binding else None
 
@@ -16,6 +29,8 @@ def remote_graph_context_hook(binding):
         if run_context.session_state is None:
             run_context.session_state = {}
         run_context.session_state['remote_graph'] = source
+        # Routing guidance is request-scoped instructions, never persisted data.
+        run_context.session_state.pop('remote_graph_routing', None)
         # Older persisted/client-supplied snapshots never determine tool access.
         run_context.session_state.pop('remote_graph_binding', None)
 
@@ -40,6 +55,9 @@ def create_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
         """Discover the selected remote database's labels, relationships and property types.
 
         Optional labels and relationship_types are JSON arrays, e.g. labels=["Paper"].
+        This is schema evidence, not node/edge counts or business definitions.
+        Property types describe observed properties, not their presence on every entity.
+        Use coverage for sampling limits and query_remote_graph for required statistics.
 
         First load remote-graph-qa using get_skill_instructions for this task.
         """
