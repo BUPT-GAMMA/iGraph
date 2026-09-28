@@ -31,6 +31,7 @@ metadata:
 | 标签列表为 `Item`，全库 count(n) 为 12 | 全库共有 12 个节点；发现的节点标签为 Item。Item 标签的节点数尚未单独统计。 |
 | 非空数组长度的 min/max 都为 4，没有非空数量统计 | 已查询的非空数组长度均为 4；尚未验证每个节点都有该数组。 |
 | 查询只返回属性类型和计数，没有读取定义内容 | 本次结果未提供业务定义，含义尚未确认。是否在库内存有定义尚未检查。 |
+| 两次节点总数、关系总数分别相同 | 两次查询的节点数和关系数相同；属性和具体连边内容是否一致，尚未核验。 |
 
 **结构/计数问题的回答在结果后结束。** 用“结构（原始名称和类型）”和“统计（实际查询口径）”分开呈现；
 不添加业务介绍或重复总结，避免在正确表格之后又补入未经核验的解释。默认只给简洁结果和来源名称，
@@ -69,7 +70,7 @@ metadata:
 - `truncated` 表示底层结果未完整读取；`preview_truncated` 仅表示预览未展示全部已读取结果。
   结构发现的 `coverage.sampled`、`coverage.truncated` 同样限制结论覆盖范围。
 - 全库计数和聚合在数据库完成，例如 `MATCH (n) RETURN count(n) AS node_count`；不要把截断样本当总体。
-- 需要后续计算时设置 `save_result=true`。按返回的相对 `artifact_path` 用 `workspace_bash` 读取 JSON。
+- 需要后续计算时，在 `query_remote_graph` 顶层参数设置 `save_result=true`，与 `query`、`parameters` 并列；`parameters` 只放查询中引用的参数值。按返回的相对 `artifact_path` 用 `workspace_bash` 读取 JSON。
   文件中的结果仍受查询上限约束；节点、关系、路径和特殊属性有带类型的 JSON 表示。
   最终表格、报告等文件可通过 `workspace_publish` 发布。
 
@@ -86,7 +87,7 @@ metadata:
 - `REMOTE_GRAPH_UNREACHABLE`、`REMOTE_GRAPH_AUTH_FAILED`：提示检查网络或凭据，不索取或显示密码。
 - `REMOTE_GRAPH_ACCESS_DENIED`：数据库拒绝本次读取，请用户核对访问权限。
 - 连接可用不代表数据库账号只读；权限未知或账号可写也不能改变本 skill 的查询限制。
-- `REMOTE_GRAPH_QUERY_REJECTED`：应用执行端拒绝了查询，不代表数据库账号只有读权限；核对查询，不改用危险过程或高权限身份绕过。
+- `REMOTE_GRAPH_QUERY_REJECTED`：应用执行端拒绝了查询，不代表数据库账号只有读权限；有 `error_message` 时按其中的具体原因修正，否则对照当前方言参考核对查询，不改用危险过程或高权限身份绕过。
 - `REMOTE_GRAPH_QUERY_ERROR`：依据脱敏错误码和行列位置修正语法，不把失败当空结果。
 - `REMOTE_GRAPH_TIMEOUT`：缩小范围、优化查询或说明执行预算，避免重复提交相同失败查询。
 - `REMOTE_GRAPH_SECRET_UNAVAILABLE`：服务端密钥缺失或不匹配，需要部署维护者处理。

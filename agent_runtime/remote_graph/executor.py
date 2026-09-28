@@ -13,6 +13,7 @@ from .adapters import AdapterContext
 from .contracts import QueryRequest, QueryResult
 from .policy import NetworkPolicy
 from .results import bounded_rows, dumps
+from .query_errors import UnsupportedMapError
 
 
 class RemoteGraphExecutor:
@@ -28,6 +29,8 @@ class RemoteGraphExecutor:
 
     @staticmethod
     def _error(adapter, exc):
+        if isinstance(exc, UnsupportedMapError):
+            return exc.code, UnsupportedMapError.safe_message
         if isinstance(exc, ControlError):
             return exc.code, None
         if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):

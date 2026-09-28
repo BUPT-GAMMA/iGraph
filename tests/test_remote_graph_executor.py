@@ -37,6 +37,43 @@ def service(tmp_path, monkeypatch):
                            binding=RemoteBinding(**item.model_dump()), root=tmp_path / 'Ephemeral' / 'remote_graph')
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize('query', [
+    'MATCH (n:Paper {cora_id: $id}) RETURN n.cora_id',
+    'RETURN {secret_value: "never-echo-this-value"}',
+    'MATCH (n) RETURN n{.cora_id}',
+])
+async def test_falkor_rejection_explains_map_limit_without_echoing_input(service, query):
+    form = ConnectionWrite(name='Falkor', kind='falkordb', uri='redis://db.example:6379',
+                           database='test', username='', password='fixture-password')
+    item = service.catalog.save('alice', form)
+    binding = RemoteBinding(**item.model_dump())
+    result = await service.executor.query('alice', binding, QueryRequest(query=query, parameters={'id': 0}))
+    assert not result.success
+    assert result.error_code == 'REMOTE_GRAPH_QUERY_REJECTED'
+    assert result.error_message and 'WHERE' in result.error_message
+    assert 'map' in result.error_message.lower()
+    assert 'never-echo-this-value' not in result.error_message
+    assert 'fixture-password' not in result.error_message
+    assert result.source == binding
+
+
+def test_arbitrary_control_errors_are_not_exposed_as_query_hints():
+    from agent_runtime.remote_graph.executor import RemoteGraphExecutor
+    error = ControlError('REMOTE_GRAPH_QUERY_REJECTED', 422)
+    error.safe_message = 'unexpected-driver-secret'
+    assert RemoteGraphExecutor._error(None, error) == ('REMOTE_GRAPH_QUERY_REJECTED', None)
+
+
+@pytest.mark.parametrize('query', ['CALL { RETURN 1 }', 'MATCH (n) WHERE EXISTS { MATCH (n)--() } RETURN n'])
+def test_falkor_subquery_rejection_does_not_misdiagnose_a_map(query):
+    from agent_runtime.remote_graph.falkordb import check_query
+    from agent_runtime.remote_graph.executor import RemoteGraphExecutor
+    with pytest.raises(ControlError) as error:
+        check_query(query)
+    assert RemoteGraphExecutor._error(None, error.value) == ('REMOTE_GRAPH_QUERY_REJECTED', None)
+
+
 class Result:
     def __init__(self, driver, records, columns, *, user=False):
         self.driver, self.records, self.columns, self.user = driver, iter(records), columns, user

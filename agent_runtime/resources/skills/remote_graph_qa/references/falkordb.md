@@ -2,6 +2,25 @@
 
 当前连接使用 FalkorDB openCypher，逻辑目标 database 是图名称。执行端负责 GRAPH.RO_QUERY 协议；向 query 传递 Cypher 文本，parameters 传递参数对象，例如 `MATCH (n:Paper) WHERE n.label = $label RETURN count(n) AS count`，`parameters={"label": 0}`。标签和属性以实际结构为准，示例不证明当前图有 Paper。
 
+## 常用查询形状
+
+属性筛选写在 `WHERE` 中；当前适配器不接受模式内的 `{property: value}`。
+以下以已确认存在的 `Paper`、`cora_id`、`label` 为例，实际名称来自当前库结构：
+
+```cypher
+MATCH (n:Paper) WHERE n.cora_id = $id
+RETURN n.cora_id AS cora_id, n.label AS label
+
+MATCH (n:Paper)--(neighbor:Paper) WHERE n.cora_id = $id
+RETURN DISTINCT neighbor.cora_id AS cora_id, neighbor.label AS label
+ORDER BY cora_id
+```
+
+两例的工具参数均可为 `parameters={"id": 0}`。结果为空表示本次条件未匹配，不自动换一个 ID。
+若工具拒绝，先根据 `error_message` 修正对应表达式；属性 map 的拒绝不需要改变边方向。
+
+## 支持范围与预算
+
 已验证 FalkorDB 4.20.7 的受限只读子集。MATCH、WHERE、WITH、RETURN、聚合与固定长度路径可组合；常用函数包括 count/sum/avg/min/max/collect/size/id/labels/type/exists/coalesce、abs/ceil/floor/round/sign、toInteger/toFloat/toBoolean。使用 `id(n)` 获取当前来源内实体 ID，不使用 Neo4j 的 elementId。业务 ID 优先使用实际属性。
 
 结构发现由 describe_remote_graph 完成；属性最多采样 32 个节点/关系，coverage.sampled 限制结论范围。仅支持已核实的 db.labels、db.relationshipTypes、db.propertyKeys 过程。range、split、未知函数/过程、列表/模式推导、变量长度路径及外部/动态执行未获准；根据实际任务改用有界普通匹配或工作区处理已导出的结果。
