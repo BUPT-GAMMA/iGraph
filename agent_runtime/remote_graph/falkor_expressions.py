@@ -8,6 +8,7 @@ import re
 
 from .falkor_protocol import reject
 from .policy import _TOKENS
+from .query_errors import UnsupportedMapError
 
 _NUMBER = r'\d+(?:\.\d+)?(?:[eE][+-]?\d+)?'
 _LEX = re.compile(_NUMBER + '|' + _TOKENS.pattern, re.DOTALL)
@@ -30,6 +31,8 @@ def check_expressions(query):
     pairs = {}
     stack = []
     for i, token in enumerate(tokens):
+        if token == '{' and (i == 0 or tokens[i - 1] not in {'call', 'exists', 'count', 'collect'}):
+            raise UnsupportedMapError()
         if token in {'{', '}'}:
             reject()
         if token in {'(', '['}:
