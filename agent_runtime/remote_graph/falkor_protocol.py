@@ -1,7 +1,8 @@
 """RESP2 over one owned socket; reject lengths before reading/allocating bodies.
 
 Blocking socket operations run off-loop, while cancellation shuts down that same
-socket. There is no pool, discovery, retry, redirect, or unbounded Redis parser.
+socket. Initial transport setup may try other verified addresses; commands are
+never replayed. There is no pool, discovery, redirect, or unbounded Redis parser.
 """
 import asyncio
 import ipaddress
@@ -118,24 +119,46 @@ async def open_connection(ctx):
     remaining(ctx.deadline)
     uri = urlsplit(ctx.connection.public.uri)
     addresses = await ctx.network_policy.resolve((uri.hostname, uri.port or 6379))
-    address = addresses[0]
-    # The socket exists before the first cancellable connect operation.
-    ip = ipaddress.ip_address(address.host)
-    sock = socket.socket(socket.AF_INET6 if ip.version == 6 else socket.AF_INET, socket.SOCK_STREAM)
-    connection = Connection(sock, ctx.deadline)
+    connection = None
     try:
-        sock.settimeout(remaining(ctx.deadline))
-        await asyncio.to_thread(sock.connect, (address.host, address.port))
-        if uri.scheme == 'rediss':
-            # No await between wrap and ownership update: cancellation cannot lose
-            # the SSLSocket after wrap_socket detaches the original descriptor.
-            connection.sock = ssl.create_default_context().wrap_socket(
-                sock, server_hostname=address.tls_hostname, do_handshake_on_connect=False)
-            connection.sock.settimeout(remaining(ctx.deadline))
-            await asyncio.to_thread(connection.sock.do_handshake)
+        for index, address in enumerate(addresses):
+            # Share the remaining setup budget so a blackholed address cannot
+            # consume every later candidate's chance. TCP and TLS share this slice.
+            budget = remaining(ctx.deadline) / (len(addresses) - index)
+            attempt_deadline = min(ctx.deadline, time.monotonic() + budget)
+            try:
+                ip = ipaddress.ip_address(address.host)
+                sock = socket.socket(socket.AF_INET6 if ip.version == 6 else socket.AF_INET,
+                                     socket.SOCK_STREAM)
+                # Own the socket before the first cancellable connect operation.
+                connection = Connection(sock, ctx.deadline)
+                # Queueing for a worker also consumes this attempt's time slice.
+                async with asyncio.timeout(remaining(attempt_deadline)):
+                    sock.settimeout(remaining(attempt_deadline))
+                    await asyncio.to_thread(sock.connect, (address.host, address.port))
+                    if uri.scheme == 'rediss':
+                        # No await between wrap and ownership update: cancellation
+                        # cannot lose the descriptor detached by wrap_socket.
+                        connection.sock = ssl.create_default_context().wrap_socket(
+                            sock, server_hostname=address.tls_hostname, do_handshake_on_connect=False)
+                        connection.sock.settimeout(remaining(attempt_deadline))
+                        await asyncio.to_thread(connection.sock.do_handshake)
+            except OSError:
+                if connection is not None:
+                    connection.close()
+                    connection = None
+                if index == len(addresses) - 1:
+                    raise
+            else:
+                break
+        if connection is None:
+            raise ControlError('REMOTE_GRAPH_UNREACHABLE', 502)
+        # AUTH and the yielded caller's commands are outside the retry boundary:
+        # even a partial send or a lost response must never reconnect/replay.
         password = ctx.connection.password.get_secret_value()
         user = ctx.connection.public.username
         await connection.command('AUTH', *([user, password] if user else [password]))
         yield connection
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
