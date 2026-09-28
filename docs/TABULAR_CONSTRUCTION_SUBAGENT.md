@@ -189,11 +189,11 @@ result = worker.run("/tmp/orders.sql", {
 
 ```sh
 python -m graph_engine.construction /tmp/orders.sql \
-  --query-count 15 --mode rules --no-experience \
+  --mode rules \
   --output /tmp/orders-construction-offline-001
 ```
 
-`rules` 使用确定性的查询生成和适用的路径物化候选，仍执行图／SQL 对比及完整性检查。报告中 `llm_used=false`、`mode=rules`，不属于真实 LLM 验收。规则模式与经验开关相互独立：上例显式关闭经验；若保持启用且有存储，也会检索及记录符合验收条件的策略观测。
+`rules` 仅按主键和外键（PK/FK）生成原始图，校验图结构与源数据一致性后直接保存，不生成查询、不评估候选、不执行自动优化，也不读写领域经验（即使 `experience_enabled=true`）。报告中 `llm_used=false`、`stop_reason=pk_fk_complete`，`history` 为空，`final` 记录结构与源数据一致性校验结果，不包含查询准确率或性能测量。前端默认关闭“使用 Agent 优化构图”；只有打开后才展示验证查询数量、领域类别和经验配置。
 
 ## 可调参数
 

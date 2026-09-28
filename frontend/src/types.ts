@@ -172,7 +172,7 @@ export type DatasetView =
 export type GraphViewState =
   | { status: 'empty'; data: null }
   | { status: 'loading'; data: null }
-  | { status: 'ready'; data: GraphData }
+  | { status: 'ready'; data: GraphData; source?: 'analysis'; context?: GraphData | null; analysis?: GraphData }
   | { status: 'unsupported'; data: null; code: 'NON_SINGLE_GRAPH'; summary: GraphCollectionSummary }
   | { status: 'unsupported'; data: null; code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE'; summary: PartitionedGraphSummary }
   | { status: 'failed'; data: null; error: string };
@@ -243,6 +243,7 @@ export type ConstructionProgressEvent = {
 };
 export type ConstructionProgress = {
   version: 'construction_progress.v1';
+  mode?: 'rules' | 'llm';
   status?: string;
   stage: string;
   current_message?: string;

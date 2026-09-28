@@ -43,6 +43,9 @@ def main():
     if result.report.get("construction_kind") == "text_entities":
         summary.update(nodes=len(result.graph["nodes"]), edges=len(result.graph["edges"]),
                        chunks=result.report["semantic_extraction"]["chunk_count"])
+    elif result.report["config"]["mode"] == "rules":
+        summary.update(nodes=len(result.graph["nodes"]), edges=len(result.graph["edges"]),
+                       validation=result.report["final"])
     else:
         summary.update(correct=result.report["final"]["correct"], total=result.report["final"]["total"])
     print(json.dumps(summary))

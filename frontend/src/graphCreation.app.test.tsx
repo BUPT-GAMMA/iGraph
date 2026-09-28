@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConstructionState, Dataset } from './types';
 
 const mocks = vi.hoisted(() => ({
   listDatasets: vi.fn(),
   uploadDataset: vi.fn(),
+  deleteDataset: vi.fn(),
 }));
 
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => undefined }) }));
@@ -23,6 +24,7 @@ vi.mock('./api', async () => ({
   getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true }),
   listProjectDatasets: mocks.listDatasets,
   uploadProjectDataset: mocks.uploadDataset,
+  deleteProjectDataset: mocks.deleteDataset,
 }));
 
 import App from './main';
@@ -33,10 +35,47 @@ beforeEach(() => {
   localStorage.clear(); sessionStorage.clear(); window.history.replaceState({}, '', '/');
   mocks.listDatasets.mockReset().mockResolvedValue({ datasets: [source], default_dataset_id: null });
   mocks.uploadDataset.mockReset().mockResolvedValue({ dataset: source, default_dataset_id: null });
+  mocks.deleteDataset.mockReset().mockResolvedValue({ success: true });
 });
 afterEach(cleanup);
 
 describe('actual App graph creation destination', () => {
+  it('confirms deletion, sends it once, and removes only the chosen construction source', async () => {
+    const other = { ...source, dataset_id: 'source-2', name: '保留的数据集' };
+    mocks.listDatasets.mockResolvedValue({ datasets: [source, other] });
+    let finish!: (value: unknown) => void;
+    mocks.deleteDataset.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除数据集 订单关系' }));
+    let dialog = screen.getByRole('alertdialog');
+    expect(dialog.textContent).toContain('确认删除数据集「订单关系」吗？');
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(mocks.deleteDataset).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '删除数据集 订单关系' }));
+    dialog = screen.getByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: '删除' }));
+    await waitFor(() => expect(mocks.deleteDataset).toHaveBeenCalledExactlyOnceWith(null, 'source-1'));
+    const remove = screen.getByRole('button', { name: '删除数据集 订单关系' }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(true);
+    fireEvent.click(remove);
+    expect(mocks.deleteDataset).toHaveBeenCalledTimes(1);
+    await act(async () => { finish({ success: true }); });
+    expect(screen.queryByRole('button', { name: '删除数据集 订单关系' })).toBeNull();
+    expect(screen.getByRole('button', { name: '构图 保留的数据集' })).toBeTruthy();
+  });
+
+  it('keeps the source and reports a failed delete so the user can retry', async () => {
+    mocks.deleteDataset.mockRejectedValue(new Error('构图正在运行，请稍后重试'));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除数据集 订单关系' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '删除' }));
+    await screen.findByText('构图正在运行，请稍后重试');
+    expect((screen.getByRole('button', { name: '删除数据集 订单关系' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: '构图 订单关系' })).toBeTruthy();
+  });
+
   it('opens the independent workbench from the permanent sidebar entry', async () => {
     render(<App />);
     const entry = await screen.findByRole('button', { name: '创建你的图' });

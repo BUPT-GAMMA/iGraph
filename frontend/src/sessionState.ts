@@ -5,6 +5,7 @@ import type { RunSnapshot, RunControl } from './api';
 import { modelErrorMessage } from './api';
 import { tr } from './i18n';
 import { pendingActivity, type SavedSessionActivity } from './sessionActivity';
+import { contextHighlights, mergeGraphContext } from './graphContext';
 
 export const PERSONAL_DRAFT_KEY = 'personal';
 export function draftScopeKey(projectId: string | null | undefined) { return projectId || PERSONAL_DRAFT_KEY; }
@@ -136,7 +137,7 @@ export type ConversationAction =
   | { type: 'APPLY_SNAPSHOT'; sessionId: string; generation: string; snapshot: RunSnapshot }
   | { type: 'SET_RUN_STATUS'; sessionId: string; generation: string; status: RunStatus; error?: string }
   | { type: 'GRAPH_REQUEST_START'; sessionId: string; requestVersion: number; preserveCurrent?: boolean }
-  | { type: 'GRAPH_REQUEST_SUCCESS'; sessionId: string; requestVersion: number; graph: GraphViewState }
+  | { type: 'GRAPH_REQUEST_SUCCESS'; sessionId: string; requestVersion: number; graph: GraphViewState; refreshMode?: 'background' | 'reset'; requestedHighlights?: GraphData['highlights'] }
   | { type: 'REMOVE_SESSION'; sessionId: string };
 
 export const SESSION_VIEW_CACHE_LIMIT = 12;
@@ -253,7 +254,7 @@ function normalizeGraph(graph: GraphSnapshot): GraphData | null {
   };
 }
 
-function latestMessageGraph(messages: Message[]): GraphData | null {
+export function latestMessageGraph(messages: Message[]): GraphData | null {
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const graphs = messages[messageIndex].graphs || [];
     for (let graphIndex = graphs.length - 1; graphIndex >= 0; graphIndex -= 1) {
@@ -273,6 +274,12 @@ function mergeRefreshedGraph(current: GraphData | null, next: GraphData): GraphD
     // The full-graph endpoint does not know which analysis result is highlighted.
     highlights: next.highlights ?? current?.highlights,
   };
+}
+
+function analysisGraph(result: GraphData, previous: GraphViewState): GraphViewState {
+  const context = previous.status !== 'ready' ? null
+    : previous.source === 'analysis' ? previous.context : previous.data;
+  return { status: 'ready', source: 'analysis', context, analysis: result, data: mergeGraphContext(context, result) };
 }
 
 export function selectMessages(view?: SessionViewState | null): Message[] {
@@ -498,31 +505,9 @@ function applyStreamEvent(view: SessionViewState, run: SessionRunState, event: S
   if (eventType === 'plan_complete') run = { ...run, plan: { ...(run.plan || {}), completed: true } };
 
   if (eventType === 'graph_visualize' && view.graph.status !== 'unsupported' && isGraphData(event.data)) {
-    const community = event.data.community ?? event.data.communities;
     view = {
       ...view,
-      graph: { status: 'ready', data: {
-        success: true,
-        nodes: event.data.nodes,
-        edges: event.data.edges.map((link: any) => ({
-          ...link,
-          source: link.source ?? link.src,
-          target: link.target ?? link.dst,
-          src: link.src ?? link.source,
-          dst: link.dst ?? link.target,
-        })),
-        directed: event.data.directed,
-        num_nodes: event.data.num_nodes,
-        num_edges: event.data.num_edges,
-        total_nodes: event.data.total_nodes,
-        total_edges: event.data.total_edges,
-        truncated: event.data.truncated,
-        truncated_to: event.data.truncated_to,
-        community,
-        communities: community,
-        highlights: event.data.highlights,
-      },
-      },
+      graph: analysisGraph(normalizeGraph(event.data)!, view.graph),
     };
   }
 
@@ -862,7 +847,7 @@ export function conversationReducer(state: ConversationState, action: Conversati
       const latestGraph = action.preserveMessages || graph.status === 'unsupported'
         ? null
         : latestMessageGraph(action.messages);
-      const hydratedGraph: GraphViewState = latestGraph ? { status: 'ready', data: latestGraph } : graph;
+      const hydratedGraph = latestGraph ? analysisGraph(latestGraph, graph) : graph;
       view = {
         ...view,
         ...indexed,
@@ -1156,8 +1141,9 @@ export function conversationReducer(state: ConversationState, action: Conversati
       const indexed = indexMessages(view.sessionId, snapshot.messages);
       const assistant = indexed.messagesById[`assistant:${active?.run_id || run.runId}`];
       const tools = assistant?.tools || [];
+      const latestGraph = latestMessageGraph(snapshot.messages);
       view = { ...view, ...indexed, error: undefined, hydration: 'ready',
-        graph: latestMessageGraph(snapshot.messages) ? { status: 'ready', data: latestMessageGraph(snapshot.messages)! } : view.graph,
+        graph: latestGraph ? analysisGraph(latestGraph, view.graph) : view.graph,
         activeRun: { ...run, editBackup: snapshot.messages.some(message => message.run_id === run.runId) ? undefined : run.editBackup, runId: active?.run_id || run.runId,
           ...(active && !sameRun ? { serverCanSend: false, cancellation: undefined, cancelRequestId: undefined, controlRevision: 0, startRequestId: undefined } : {}),
           generation: active && !sameRun ? `resume:${active.run_id}` : run.generation,
@@ -1190,15 +1176,36 @@ export function conversationReducer(state: ConversationState, action: Conversati
     case 'GRAPH_REQUEST_START':
       if (action.requestVersion < view.graphRequestVersion) return state;
       view = action.preserveCurrent && view.graph.status === 'ready'
-        ? { ...view, graphRequestVersion: action.requestVersion }
+        ? { ...view, graphRequestVersion: action.requestVersion, graphSnapshot: view.graph.data }
         : { ...view, graphRequestVersion: action.requestVersion, graphSnapshot: view.graph.status === 'ready' ? view.graph.data : null, graph: { status: 'loading', data: null }, selectedNode: null };
       break;
     case 'GRAPH_REQUEST_SUCCESS':
       if (action.requestVersion !== view.graphRequestVersion) return state;
+      // A full-graph sample supplies context, while the latest analysis owns its
+      // nodes, edges and highlights. A delayed explicit reset must not overwrite
+      // a newer streamed result.
+        if (view.graph.status === 'ready' && view.graph.source === 'analysis'
+          && (action.refreshMode === 'background' || view.graph.data !== view.graphSnapshot)) {
+          let analysis = view.graph.analysis || view.graph.data;
+          // A refresh can complete old node-only results with missing FK records
+          // and edges. Accept that enrichment only for the exact current result;
+          // a delayed response must never restore an earlier selection.
+          if (action.refreshMode === 'background' && action.graph.status === 'ready'
+            && action.graph.data.highlights && action.requestedHighlights
+            && JSON.stringify(contextHighlights(analysis.highlights)) === JSON.stringify(contextHighlights(action.requestedHighlights))) {
+            analysis = { ...analysis, highlights: action.graph.data.highlights };
+          }
+          view = { ...view, graphSnapshot: null,
+            graph: action.refreshMode === 'background' && action.graph.status === 'ready'
+              ? analysisGraph(analysis, action.graph)
+            : view.graph };
+        break;
+      }
       view = {
         ...view,
-        graph: action.graph.status === 'ready'
+        graph: action.graph.status === 'ready' && action.refreshMode !== 'reset'
           ? {
+              ...action.graph,
               status: 'ready',
               data: mergeRefreshedGraph(view.graph.status === 'ready' ? view.graph.data : view.graphSnapshot || null, action.graph.data),
             }
