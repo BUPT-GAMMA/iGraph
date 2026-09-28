@@ -124,6 +124,12 @@ class ToolExecutionPolicyTests(unittest.TestCase):
                 self.assertTrue(tools_conflict(execution_policy(name), execution_policy("retrieve_context")))
                 self.assertTrue(tools_conflict(execution_policy(name), execution_policy("get_graph_construction_capabilities")))
 
+    def test_graph_session_lifecycle_declares_graph_effects_in_addition_to_barrier(self):
+        for name in ("register_session", "delete_graph_session"):
+            with self.subTest(tool=name):
+                self.assertIn("graph", execution_policy(name).writes)
+                self.assertTrue(execution_policy(name).barrier)
+
     def test_resource_scopes_and_wildcards_do_not_leak_between_datasets(self):
         self.assertEqual(resource_scope("datasets"), "user")
         self.assertEqual(resource_scope("construction:papers"), "user")

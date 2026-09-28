@@ -19,6 +19,16 @@ ORDER BY cora_id
 两例的工具参数均可为 `parameters={"id": 0}`。结果为空表示本次条件未匹配，不自动换一个 ID。
 若工具拒绝，先根据 `error_message` 修正对应表达式；属性 map 的拒绝不需要改变边方向。
 
+按已确认属性分组并导出时，可直接查询：
+
+```cypher
+MATCH (n:Paper) RETURN n.label AS label, count(*) AS count ORDER BY label
+```
+
+在工具顶层设 `save_result=true`，用工作区读取实际 `artifact_path`，从未截断的完整分组行计算总和、
+百分比并发布 CSV。若分组结果截断，另查总体分母并说明输出不全。这里不支持 SQL 的 `OVER()`
+窗口语法；对已导出的结果做后续计算即可，无需改写成复杂的数据库表达式。
+
 ## 支持范围与预算
 
 已验证 FalkorDB 4.20.7 的受限只读子集。MATCH、WHERE、WITH、RETURN、聚合与固定长度路径可组合；常用函数包括 count/sum/avg/min/max/collect/size/id/labels/type/exists/coalesce、abs/ceil/floor/round/sign、toInteger/toFloat/toBoolean。使用 `id(n)` 获取当前来源内实体 ID，不使用 Neo4j 的 elementId。业务 ID 优先使用实际属性。

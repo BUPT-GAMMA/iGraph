@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,8 +8,11 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-import backend.api_gateway.app as gateway_app
-from backend.api_gateway.app import AttachmentRef, ApiGatewayConfig, create_server
+# Legacy entry modules load deployment .env files at import time. Keep those
+# settings inside this import so collection cannot configure unrelated tests.
+with patch.dict(os.environ):
+    import backend.api_gateway.app as gateway_app
+    from backend.api_gateway.app import AttachmentRef, ApiGatewayConfig, create_server
 
 ADMIN_HEADERS = {"X-User-ID": "admin"}
 ALICE_HEADERS = {"X-User-ID": "alice"}

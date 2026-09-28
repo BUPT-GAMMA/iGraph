@@ -1,5 +1,6 @@
 """Real HTTP races which cannot be proved by reducer/status-only assertions."""
 import asyncio
+import json
 import socket
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -68,20 +69,29 @@ def test_real_learning_machine_model_connection_stops_with_its_run(tmp_path):
     async def scenario():
         async with running_stack(tmp_path, learning=True) as (client, sid, graph, controller, metrics):
             target = {'start_request_id': str(uuid4())}
-            task = asyncio.create_task(client.post(f'/api/sessions/{sid}/chat/stream', json={'message': 'stream-my-name-is-Alice', **target}))
+            # Learning now starts after the main response. Complete the stream
+            # before holding the real auxiliary HTTP connection open.
+            task = asyncio.create_task(client.post(f'/api/sessions/{sid}/chat/stream', json={'message': 'complete-my-name-is-Alice', **target}))
             try:
                 await eventually(lambda: asyncio.sleep(0, result=len(metrics['calls']) >= 2))
-                auxiliary = [key for key in metrics['calls'] if key != 'stream-my-name-is-Alice']
+                auxiliary = [key for key in metrics['calls'] if key != 'complete-my-name-is-Alice']
                 assert auxiliary
                 response = await client.post(f'/api/sessions/{sid}/runs/cancel', json={'target': target, 'cancel_request_id': str(uuid4())})
                 assert response.status_code in {200, 202}
-                await asyncio.wait_for(task, 10)
+                streamed = await asyncio.wait_for(task, 10)
+                events = []
+                for line in streamed.text.splitlines():
+                    if line.startswith('data:'):
+                        batch = json.loads(line[5:])
+                        events.extend(batch.get('events', [batch]))
+                assert any(event.get('type') == 'done' for event in events)
                 await eventually(lambda: asyncio.sleep(0, result=all(metrics['closed'].get(key) for key in auxiliary)))
                 async def confirmed():
                     value = (await client.get(f'/api/sessions/{sid}/runs/control', params=target)).json()
                     return value if value.get('can_send') else None
                 summary = await eventually(confirmed)
                 assert summary['execution_stopped'] and summary['terminal_persisted']
+                assert summary['run_status'] == 'cancelled' and summary['cancel_status'] == 'confirmed'
                 assert all(count == 1 for count in metrics['calls'].values())
             finally:
                 task.cancel(); await asyncio.gather(task, return_exceptions=True)

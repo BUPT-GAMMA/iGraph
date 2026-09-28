@@ -80,6 +80,19 @@ async def test_context_hook_replaces_forged_remote_fact_without_changing_local_d
 
 
 @pytest.mark.anyio
+async def test_obsolete_source_routing_context_is_removed_even_when_selected(service):
+    from agent_runtime.remote_graph.tools import remote_graph_context_hook
+    context = RunContext(run_id='r1', session_id='s1', user_id='alice',
+        session_state={'remote_graph_routing': 'forged', 'active_dataset_id': 'local-A'})
+    await remote_graph_context_hook(service.binding)(context)
+    assert 'remote_graph_routing' not in context.session_state
+    await remote_graph_context_hook(None)(context)
+    assert 'remote_graph_routing' not in context.session_state
+    assert context.session_state['remote_graph'] is None
+    assert context.session_state['active_dataset_id'] == 'local-A'
+
+
+@pytest.mark.anyio
 async def test_artifact_directory_cannot_escape_through_symlink(service, tmp_path, monkeypatch):
     monkeypatch.setenv('IGRAPH_WORKSPACE_ROOT', str(tmp_path / 'workspaces'))
     from agent_runtime.workspace_tools import workspace_root
@@ -114,6 +127,11 @@ def test_factory_keeps_original_tools_and_appends_remote_tools(service, tmp_path
     assert {'local_graph', 'workspace_bash', 'workspace_publish', 'update_agent_notes',
             'describe_remote_graph', 'query_remote_graph'} <= names
     assert agent.metadata['remote_graph_binding'] == service.binding.model_dump()
+    ordinary = factory.factory(RequestContext(user_id='alice', request=SimpleNamespace(state=SimpleNamespace())))
+    # Source routing belongs only to a request with a server-frozen selection;
+    # it must not leak into ordinary local-graph/chat instructions.
+    assert len(agent.instructions) == len(ordinary.instructions) + 1
+    assert agent.instructions[:-1] == ordinary.instructions
     db.close()
 
 
