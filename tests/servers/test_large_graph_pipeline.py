@@ -5,6 +5,8 @@ import multiprocessing
 import os
 import queue
 import signal
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -1512,8 +1514,9 @@ def test_runtime_terminates_the_entire_posix_process_group(tmp_path: Path) -> No
     os.name != "posix" or not Path("/proc").is_dir(),
     reason="Linux process identity and groups are required",
 )
+@pytest.mark.parametrize("unrelated_process_exits", [False, True], ids=["stable-proc", "vanished-proc"])
 def test_stale_recovery_kills_descendants_after_session_leader_exits(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, unrelated_process_exits: bool
 ) -> None:
     marker = tmp_path / "stale-descendant-escaped.txt"
     ready = tmp_path / "stale-descendant-ready.txt"
@@ -1530,6 +1533,8 @@ def test_stale_recovery_kills_descendants_after_session_leader_exits(
     catalog = LargeGraphCatalog(runtime_root / "catalog.sqlite3")
     runtime = DurableLargeGraphRuntime(runtime_root, catalog)
     policy = DataQualityPolicy()
+    unrelated = None
+    fault_triggered = False
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not ready.exists():
@@ -1568,7 +1573,32 @@ def test_stale_recovery_kills_descendants_after_session_leader_exits(
             lambda expected: real_terminate(expected, grace_seconds=0.1),
         )
 
-        assert runtime._recover_interrupted_jobs(stale_after_seconds=0) == 1
+        if unrelated_process_exits:
+            unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            stat_path = Path(f"/proc/{unrelated.pid}/stat")
+            original_read = Path.read_text
+            reads = 0
+
+            def read_with_unrelated_exit(path, *args, **kwargs):
+                nonlocal reads, fault_triggered
+                if path == stat_path:
+                    reads += 1
+                    if reads == 2:
+                        # Open a real proc entry, then reap our unrelated child
+                        # before reading. Linux produces the real ESRCH race.
+                        with path.open(encoding="utf-8") as handle:
+                            fault_triggered = True
+                            unrelated.kill()
+                            unrelated.wait(timeout=2)
+                            return handle.read()
+                return original_read(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "read_text", read_with_unrelated_exit)
+
+        recovered_count = runtime._recover_interrupted_jobs(stale_after_seconds=0)
+        if unrelated_process_exits:
+            assert fault_triggered
+        assert recovered_count == 1
         recovered = catalog.get_job(job_id, user_id="alice", session_id="s1")
         assert recovered is not None
         assert recovered["status"] == "queued"
@@ -1582,6 +1612,9 @@ def test_stale_recovery_kills_descendants_after_session_leader_exits(
         assert not marker.exists()
     finally:
         escape_writer.close()
+        if unrelated is not None and unrelated.poll() is None:
+            unrelated.kill()
+            unrelated.wait(timeout=2)
         if process.is_alive():
             process.kill()
             process.join(timeout=1)
@@ -1590,6 +1623,93 @@ def test_stale_recovery_kills_descendants_after_session_leader_exits(
                 os.killpg(process_group, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not Path("/proc").is_dir(),
+    reason="Linux process identity and groups are required",
+)
+@pytest.mark.parametrize(
+    ("fault", "read_number", "expected_recovered"),
+    [
+        pytest.param("vanished", 1, 1, id="observe-vanished"),
+        pytest.param("vanished", 3, 1, id="pidfd-vanished"),
+        pytest.param("permission", 2, 0, id="scan-permission-denied"),
+        pytest.param("io", 2, 0, id="scan-io-error"),
+        pytest.param("malformed", 2, 0, id="scan-malformed-stat"),
+        pytest.param("permission", 3, 0, id="pidfd-permission-denied"),
+        pytest.param("io", 3, 0, id="pidfd-io-error"),
+        pytest.param("malformed", 3, 0, id="pidfd-malformed-stat"),
+    ],
+)
+def test_stale_recovery_preserves_proc_read_safety(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    fault: str, read_number: int, expected_recovered: int,
+) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    catalog = LargeGraphCatalog(tmp_path / "catalog.sqlite3")
+    runtime = DurableLargeGraphRuntime(tmp_path, catalog)
+    policy = DataQualityPolicy()
+    try:
+        identity = runtime._capture_worker_identity(process.pid)
+        assert identity is not None
+        job_id, _ = catalog.reserve_preparation(
+            user_id="alice", session_id="s1", graph_id="g1",
+            source={"filename": "edges.txt", "size": 10},
+            policy_id=policy.policy_id, policy=policy.to_dict(),
+            request={"source_path": "/private/edges.txt", "user_scope": "alice__s1"},
+        )
+        claimed = catalog.claim_next_job()
+        assert claimed is not None
+        assert catalog.set_worker_pid(
+            job_id, process.pid, lease_id=claimed["lease_id"], identity=identity,
+        )
+        stat_path = Path(f"/proc/{process.pid}/stat")
+        original_read = Path.read_text
+        reads = 0
+        fault_triggered = False
+
+        def read_at_process_boundary(path, *args, **kwargs):
+            nonlocal reads, fault_triggered
+            if path == stat_path:
+                reads += 1
+                # Recovery observes the leader, scans the group, then rechecks
+                # its identity after opening the pidfd. Keep all real behavior
+                # except the chosen filesystem boundary's fault.
+                if reads == read_number:
+                    fault_triggered = True
+                    if fault == "vanished":
+                        with path.open(encoding="utf-8") as handle:
+                            process.kill()
+                            process.wait(timeout=2)
+                            return handle.read()
+                    if fault == "permission":
+                        raise PermissionError("proc entry is unreadable")
+                    if fault == "io":
+                        raise OSError("proc filesystem read failed")
+                    return "invalid proc stat"
+            return original_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_at_process_boundary)
+        recovered_count = runtime._recover_interrupted_jobs(stale_after_seconds=0)
+        assert fault_triggered
+        assert recovered_count == expected_recovered
+        recovered = catalog.get_job(job_id, user_id="alice", session_id="s1")
+        assert recovered is not None
+        if expected_recovered:
+            assert recovered["status"] == "queued"
+        else:
+            assert recovered["status"] == "running"
+            assert recovered["stage"] == "recovery_blocked"
+            assert recovered["lease_id"] == claimed["lease_id"]
+            assert process.poll() is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
 
 
 def test_durable_service_runs_prepare_then_compute(monkeypatch, tmp_path: Path) -> None:
