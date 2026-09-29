@@ -5,7 +5,7 @@ from agno.run import RunContext
 from pydantic import ValidationError
 
 from agent_runtime.execution_store import ControlError
-from agent_runtime.workspace_tools import workspace_root
+from .export import deliver_saved_result, export_result, result_directory
 from .contracts import QueryRequest, RemoteBinding
 
 
@@ -71,7 +71,10 @@ def create_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
     # JSON values in the model schema. QueryRequest still validates at execution.
     async def query_remote_graph(query: str, run_context: RunContext, parameters: dict | None = None,
                                  save_result: bool = False) -> dict[str, Any]:
-        """Run a parameterized native query on the selected remote database; optionally save bounded JSON.
+        """Run a parameterized native query on the selected remote database.
+
+        Long previews and save_result also publish complete query results as downloadable CSV.
+        Use export_remote_graph for a full list/export, especially paginated FalkorDB results.
 
         First load remote-graph-qa using get_skill_instructions for this task.
         Pass parameters as a JSON object, e.g. {"label": 0}, with query using $label.
@@ -79,18 +82,38 @@ def create_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:
         try:
             uid = identity(run_context)
             request = QueryRequest(query=query, parameters=parameters or {}, save_result=save_result)
-            directory = None
-            if save_result:
-                root = workspace_root(run_context)
-                directory = root / 'Ephemeral' / 'remote_graph'
-                if directory.is_symlink() or not directory.resolve().is_relative_to(root):
-                    raise ControlError('REMOTE_GRAPH_INVALID_CONFIG', 422)
+            directory = result_directory(run_context)
             result = await executor.query(uid, source, request, directory)
+            result = await deliver_saved_result(run_context, result)
             return result.model_dump()
         except (ControlError, ValidationError, ValueError) as exc:
             return error(exc)
 
-    return [describe_remote_graph, query_remote_graph]
+    async def export_remote_graph(query: str, run_context: RunContext, parameters: dict | None = None,
+                                  paginate: bool = False) -> dict[str, Any]:
+        """Export query rows to a published, downloadable CSV in one operation.
+
+        Use for complete lists and downloads. success/export_complete require all query rows
+        within the shared row, byte and time budgets; truncated results are never published.
+        For FalkorDB lists beyond 64 rows use paginate=true and an outer RETURN ... ORDER BY
+        stable unique projected column aliases (duplicates are rejected). Do not include SKIP, LIMIT or UNION; pagination is server-managed.
+        Pagination is not a database snapshot: concurrent updates can affect completeness.
+        CSV object/array cells contain JSON. Spreadsheet formula-like strings are escaped.
+        First load remote-graph-qa and its database dialect reference.
+        """
+        try:
+            uid = identity(run_context)
+            result = await export_result(executor, uid, source,
+                QueryRequest(query=query, parameters=parameters or {}), run_context, paginate)
+            return result.model_dump()
+        except TimeoutError:
+            return {'success': False, 'error_code': 'REMOTE_GRAPH_TIMEOUT'}
+        except OSError:
+            return {'success': False, 'error_code': 'REMOTE_GRAPH_EXPORT_FAILED'}
+        except (ControlError, ValidationError, ValueError) as exc:
+            return error(exc)
+
+    return [describe_remote_graph, query_remote_graph, export_remote_graph]
 
 
 def register_remote_graph_tools(executor, binding: RemoteBinding | None) -> list:

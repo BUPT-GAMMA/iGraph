@@ -1,7 +1,10 @@
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
 import { RemoteGraphQueryResult } from './RemoteGraphQueryResult';
-afterEach(cleanup);
+import userEvent from '@testing-library/user-event';
+import { fetchArtifact } from './WorkspaceFiles';
+vi.mock('./WorkspaceFiles', () => ({ fetchArtifact: vi.fn() }));
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const result = { success: true, query_id: 'q1', source: { connection_id: 'c', revision: 2, name: 'Cora', database: 'neo4j', kind: 'neo4j' }, columns: ['count'], rows: [[2708]], returned_rows: 50, truncated: false, preview_truncated: true, elapsed_ms: 4, artifact_path: 'Ephemeral/remote_graph/q1.json' };
 it('identifies a FalkorDB historical result by its frozen source', () => {
   render(<RemoteGraphQueryResult result={{ ...result, source: { ...result.source, kind: 'falkordb', database: 'cora' } }} />);
@@ -60,4 +63,25 @@ it('summarizes nested graph objects without exposing their internal IDs', () => 
   render(<RemoteGraphQueryResult result={{ ...result, columns: ['nodes', 'entry'], rows: [[[node], { node }]] }} />);
   for (const cell of screen.getAllByRole('cell')) expect(cell.textContent).not.toContain('nested-internal-id');
   expect(screen.getByText(/nested-internal-id/).closest('details')).not.toBeNull();
+});
+
+it('downloads a published export for its owning conversation without a model link', async () => {
+  vi.mocked(fetchArtifact).mockResolvedValue(new Blob(['id\n1\n2\n']));
+  vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:export'), revokeObjectURL: vi.fn() });
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  const path = 'Derived/remote_graph/query-1.csv';
+  render(<RemoteGraphQueryResult result={{ ...result, export_complete: true, artifact: { path }, consistency: 'paged_no_snapshot' }} sessionId="original-session" />);
+  await userEvent.click(screen.getByRole('button', { name: /Download CSV|下载 CSV/ }));
+  await waitFor(() => expect(fetchArtifact).toHaveBeenCalledWith('original-session', path));
+  expect(click).toHaveBeenCalled();
+  expect(screen.getByText(/not a snapshot|不代表同一时刻的快照/)).toBeTruthy();
+});
+it('does not offer a complete download for partial or unpublished results', () => {
+  render(<RemoteGraphQueryResult result={{ ...result, truncated: true, export_complete: false, artifact: { path: 'Derived/remote_graph/query-1.csv' } }} sessionId="s" />);
+  expect(screen.queryByRole('button', { name: /Download CSV|下载 CSV/ })).toBeNull();
+});
+it('shows publication errors independently of successful query execution', () => {
+  render(<RemoteGraphQueryResult result={{ ...result, delivery_error: 'REMOTE_GRAPH_EXPORT_FAILED' }} sessionId="s" />);
+  expect(screen.getByRole('alert').textContent).toContain('REMOTE_GRAPH_EXPORT_FAILED');
+  expect(screen.queryByRole('button', { name: /Download CSV|下载 CSV/ })).toBeNull();
 });

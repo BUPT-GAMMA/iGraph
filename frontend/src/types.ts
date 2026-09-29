@@ -14,6 +14,7 @@ export type RemoteConnectionWrite = {
 export type RemoteQueryResult = {
   success: boolean; query_id: string; source: RemoteBinding; columns: string[]; rows: unknown[][];
   returned_rows: number; truncated: boolean; preview_truncated: boolean; elapsed_ms: number;
+  artifact?: ArtifactRef | null; export_complete?: boolean; delivery_error?: string | null; consistency?: string | null;
   artifact_path?: string | null; error_code?: string | null; error_message?: string | null;
 };
 export type Session = {

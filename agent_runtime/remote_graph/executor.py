@@ -80,7 +80,7 @@ class RemoteGraphExecutor:
                     columns=rows.columns, rows=preview.rows, returned_rows=complete.returned_rows,
                     truncated=rows.truncated or complete.truncated, preview_truncated=preview.truncated,
                     elapsed_ms=int((time.monotonic() - started) * 1000))
-                if request.save_result and artifact_dir is not None:
+                if (request.save_result or preview.truncated) and artifact_dir is not None:
                     payload = {**response.model_dump(), 'rows': complete.rows, 'query': request.query,
                                'parameters': request.parameters,
                                'query_time': datetime.now(timezone.utc).isoformat()}

@@ -83,9 +83,20 @@ metadata:
 - 需要后续计算时，在 `query_remote_graph` 顶层参数设置 `save_result=true`，与 `query`、`parameters` 并列；`parameters` 只放查询中引用的参数值。按返回的相对 `artifact_path` 用 `workspace_bash` 读取 JSON。
   文件中的结果仍受查询上限约束；节点、关系、路径和特殊属性有带类型的 JSON 表示。
   最终表格、报告等文件可通过 `workspace_publish` 发布。
-- 用户要求完整列表或下载时，以用户可读取的交付物为完成条件：短列表可直接展示；长列表从实际结果生成文件，
-  用 `workspace_publish` 发布并给出下载链接。`Ephemeral` 中保存成功只表示中间结果已就绪，不表示用户已收到文件。
-  导出任务默认回复下载链接、行数、来源与完整性限制；用户另要表格时，直接沿用文件中已核对的数值与精度。
+- 用户要求完整列表或 CSV 下载时，优先使用 `export_remote_graph`，一次工具调用完成取数、完整性检查与发布；
+  返回 `success=true`、`export_complete=true`、`artifact` 才表示文件已交付，界面直接提供下载按钮。
+  完整性针对实际查询结果，不证明查询口径覆盖了用户全部要求；不要用人为 LIMIT 的样本替代完整列表。
+- Neo4j 可直接导出有界查询。FalkorDB 长列表使用 `paginate=true`，查询必须以按稳定唯一键排序的外层
+  `RETURN ... ORDER BY ...` 结尾，不写 SKIP、LIMIT、UNION。例如：
+  `MATCH (n:Paper) RETURN n.cora_id AS cora_id, n.label AS label ORDER BY cora_id`。
+  服务端按页读取并使用整次导出的行数、字节数和时间预算，最后一页耗尽后才发布；超限或中途失败不交付残缺文件。
+  ORDER BY 使用 RETURN 输出的列名，可多列组合；重复排序键会拒绝导出。先确认排序键的唯一性；多页读取不是事务快照，期间的数据库更新可能造成漏项或重复，必须披露此限制。
+- 普通查询的完整长结果、以及 `save_result=true` 的完整结果也自动发布 CSV，避免仅留在 Ephemeral；
+  `truncated=true` 的查询不自动发布为完整文件，应改用有序导出或明确说明未完成。
+  `delivery_error` 表示读取成功但交付失败，需要重试。模型仍只看到预览，不能声称已逐行分析未读取的文件。
+- CSV 的对象/数组单元格为 JSON；可能被电子表格当成公式的字符串加单引号转义。原始带类型 JSON 仍可用于后续计算。
+  导出回复给出行数、来源、完整性及分页限制；用户还需分析或重排文件时，可用工作区处理后调用 `workspace_publish`。
+
 
 远程报告以远程查询结果及其后续计算为依据，通过聊天或工作区文件交付。
 `create_analysis_report` 会补入当前本地图统计，不能用于远程数据库报告；在报告中标注来源也不能纠正混入本地图事实的问题。
