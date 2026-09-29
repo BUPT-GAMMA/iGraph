@@ -858,6 +858,8 @@ def _session_row(session: dict, default_model: str) -> dict:
         "session_id": session.get("session_id"),
         "project_id": state.get("project_id") or None,
         "active_dataset_id": state.get("active_dataset_id"),
+        "remote_graph": session.get("remote_graph"),
+        "remote_graph_unavailable_reason": session.get("remote_graph_unavailable_reason"),
         "title": session.get("session_name") or "新会话",
         "last_message_preview": preview,
         "updated_at": session.get("updated_at"),
@@ -1679,6 +1681,56 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user.user_id),
         )
         return {"success": True, "model_id": model_id}
+
+    @app.get('/api/remote-graphs')
+    async def remote_graph_connections(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('GET', '/internal/remote-graphs', headers=service_headers(user.user_id))
+
+    @app.get('/api/remote-graph-types')
+    async def remote_graph_types(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('GET', '/internal/remote-graph-types', headers=service_headers(user.user_id))
+
+    @app.post('/api/remote-graphs')
+    async def save_remote_graph(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('POST', '/internal/remote-graphs', headers=service_headers(user.user_id),
+                                     json_body=await remote_graph_form(request))
+
+    @app.post('/api/remote-graphs/test')
+    async def test_remote_graph(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('POST', '/internal/remote-graphs/test', headers=service_headers(user.user_id),
+                                     json_body=await remote_graph_form(request))
+
+    async def remote_graph_form(request: Request) -> dict:
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError
+            return body
+        except (ValueError, UnicodeError):
+            raise HTTPException(422, {'code': 'REMOTE_GRAPH_INVALID_CONFIG'}) from None
+
+    @app.delete('/api/remote-graphs/{connection_id}')
+    async def delete_remote_graph(connection_id: str, revision: int, request: Request):
+        from urllib.parse import quote
+        user = current_user(request, users)
+        return await runtime.request('DELETE', '/internal/remote-graphs/' + quote(connection_id, safe=''),
+                                     headers=service_headers(user.user_id), params={'revision': revision})
+
+    @app.put('/api/sessions/{session_id}/remote-graph')
+    async def select_remote_graph(session_id: str, req: dict, request: Request):
+        from urllib.parse import quote
+        user = current_user(request, users)
+        return await runtime.request('PUT', '/internal/sessions/' + quote(session_id, safe='') + '/remote-graph',
+                                     headers=service_headers(user.user_id), json_body=req)
+
+    async def remote_graph_selection(session_id: str, user_id: str) -> dict:
+        from urllib.parse import quote
+        return await runtime.request('GET', '/internal/sessions/' + quote(session_id, safe='') + '/remote-graph',
+                                     headers=service_headers(user_id))
 
     @app.get('/api/model-providers')
     async def model_providers(request: Request):
@@ -3816,6 +3868,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                                             limit=limit, cursor=cursor, activity=_session_activity)
         available_models = await available_models_for(user)
         default_model = available_models[0] if available_models else "qwen3.6-plus"
+        semaphore = asyncio.Semaphore(4)
+        async def with_remote_selection(row):
+            async with semaphore:
+                selection = await remote_graph_selection(str(row['session_id']), user.user_id)
+                return {**row, **selection}
+        rows = await asyncio.gather(*(with_remote_selection(row) for row in rows))
         return {"success": True, "sessions": [_session_row(row, default_model) for row in rows],
                 "next_cursor": next_cursor, "has_more": next_cursor is not None}
 
@@ -4028,6 +4086,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         control = await runtime.request('GET', f'/internal/sessions/{session_id}/execution',
             headers=forwarded_headers(request, user.user_id)) if controls_enabled() else None
         return {
+            **(await remote_graph_selection(session_id, user.user_id)),
             "success": True,
             "session_id": session_id,
             "restored": True,
@@ -4089,6 +4148,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         runs = await get_session_runs(session_id, request, user.user_id)
         active_run, pending, _ = _active_run_snapshot(runs)
         return {
+            **(await remote_graph_selection(session_id, user.user_id)),
             "session_id": session_id,
             "has_graph": has_graph,
             "dataset_view": _session_dataset_view(

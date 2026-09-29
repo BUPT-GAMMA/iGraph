@@ -8,7 +8,7 @@ Backend and Graph Engine respectively.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -44,6 +44,14 @@ class AgentRuntimeConfig:
     authorization: bool
     job_poll_interval_seconds: float = 2.0
     job_wait_timeout_seconds: float = 0.0
+    remote_graph_secret_key: str = field(default='', repr=False)
+    remote_graph_allowed_hosts: tuple[str, ...] = ()
+    remote_graph_allowed_cidrs: tuple[str, ...] = ()
+    remote_graph_timeout_seconds: float = 30
+    remote_graph_max_rows: int = 10000
+    remote_graph_max_bytes: int = 10 * 1024 * 1024
+    remote_graph_preview_rows: int = 100
+    remote_graph_preview_bytes: int = 64 * 1024
 
     @classmethod
     def from_env(cls) -> "AgentRuntimeConfig":
@@ -77,6 +85,14 @@ class AgentRuntimeConfig:
             telemetry=_env_bool("AGNO_TELEMETRY", False),
             tracing=_env_bool("AGENT_RUNTIME_TRACING", True),
             authorization=_env_bool("AGENT_RUNTIME_AUTHORIZATION", False),
+            remote_graph_secret_key=os.getenv("IGRAPH_REMOTE_GRAPH_SECRET_KEY", "").strip(),
+            remote_graph_allowed_hosts=tuple(v.strip() for v in os.getenv('IGRAPH_REMOTE_GRAPH_ALLOWED_HOSTS', '').split(',') if v.strip()),
+            remote_graph_allowed_cidrs=tuple(v.strip() for v in os.getenv('IGRAPH_REMOTE_GRAPH_ALLOWED_CIDRS', '').split(',') if v.strip()),
+            remote_graph_timeout_seconds=float(os.getenv('IGRAPH_REMOTE_GRAPH_TIMEOUT_SECONDS', '30')),
+            remote_graph_max_rows=int(os.getenv('IGRAPH_REMOTE_GRAPH_MAX_ROWS', '10000')),
+            remote_graph_max_bytes=int(os.getenv('IGRAPH_REMOTE_GRAPH_MAX_BYTES', str(10 * 1024 * 1024))),
+            remote_graph_preview_rows=int(os.getenv('IGRAPH_REMOTE_GRAPH_PREVIEW_ROWS', '100')),
+            remote_graph_preview_bytes=int(os.getenv('IGRAPH_REMOTE_GRAPH_PREVIEW_BYTES', str(64 * 1024))),
             job_poll_interval_seconds=float(
                 os.getenv("AGENT_RUNTIME_JOB_POLL_INTERVAL_SECONDS", "2")
             ),

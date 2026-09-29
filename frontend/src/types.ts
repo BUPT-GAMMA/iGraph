@@ -1,3 +1,22 @@
+export type RemoteGraphKind = 'neo4j' | 'falkordb';
+export type RemoteDatabaseType = {
+  kind: RemoteGraphKind; display_name: string; query_language: string; uri_example: string;
+  target_label: string; username_required: boolean; support_status: string;
+};
+export function remoteDatabaseName(kind: RemoteGraphKind): string { return kind === 'falkordb' ? 'FalkorDB' : 'Neo4j'; }
+export type RemoteBinding = {
+  connection_id: string; revision: number; name: string; kind: RemoteGraphKind; database: string;
+};
+export type RemoteConnection = RemoteBinding & { uri: string; username: string; has_password: boolean };
+export type RemoteConnectionWrite = {
+  connection_id?: string; revision?: number; name: string; kind?: RemoteGraphKind; uri: string; database: string; username: string; password?: string;
+};
+export type RemoteQueryResult = {
+  success: boolean; query_id: string; source: RemoteBinding; columns: string[]; rows: unknown[][];
+  returned_rows: number; truncated: boolean; preview_truncated: boolean; elapsed_ms: number;
+  artifact?: ArtifactRef | null; export_complete?: boolean; delivery_error?: string | null; consistency?: string | null;
+  artifact_path?: string | null; error_code?: string | null; error_message?: string | null;
+};
 export type Session = {
   session_id: string;
   project_id?: string | null;
@@ -9,6 +28,8 @@ export type Session = {
   has_graph?: boolean;
   model?: string;
   active_dataset_id?: string | null;
+  remote_graph?: RemoteBinding | null;
+  remote_graph_unavailable_reason?: string | null;
 };
 
 export type Project = {

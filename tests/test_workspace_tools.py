@@ -747,6 +747,66 @@ def test_mask_allows_dev_null_and_reads_from_protected_zones():
     assert masked("cp Uploaded/a.csv Ephemeral/") is False
 
 
+@pytest.mark.parametrize("command", [
+    'python3 -c "print(1 / 2)"',
+    'python3 -c "print(1/2)"',
+    "python3 - <<'PY'\nprint(1 / 2)\nPY",
+    "bash -c 'python3 -c \"print(1 / 2)\"'",
+    "\npython3 - <<'PY'\nprint(1 / 2)\nPY",
+    "# compute ratio\npython3 - <<'PY'\nprint(1 / 2)\nPY",
+    "cd Ephemeral\npython3 - <<'PY'\nprint(1 / 2)\nPY",
+])
+def test_workspace_arithmetic_is_not_an_absolute_path(tmp_path, command):
+    result = asyncio.run(toolset()["workspace_bash"](command, ctx(tmp_path)))
+    assert result["success"], result
+    assert result["output"].strip() == "0.5"
+
+
+@pytest.mark.parametrize("command", [
+    "sh -c 'rm Uploaded/x'",
+    "env bash -lc 'printf x > Derived/x'",
+    "timeout 1 bash -c 'cat /etc/passwd'",
+    'bash -c "sh -c \'rm Uploaded/x\'"',
+    "bash -c -- 'rm Uploaded/x; true'",
+    "bash -c -e 'rm Uploaded/x; true'",
+    "bash -co posix 'rm Uploaded/x; true'",
+    "sh -c -- 'rm Uploaded/x; true'",
+    'python3 -c "print(1 / 2)" > Derived/x',
+    'python3 -c "print(1 / 2)" && cat ../outside',
+])
+def test_workspace_mask_preserves_shell_boundaries(command):
+    from agent_runtime.workspace_tools import _command_rejects_workspace_mutation
+    assert _command_rejects_workspace_mutation(command)
+
+
+@pytest.mark.parametrize("command", [
+    "python3 - <<'PY'\nprint(1 / 2)\nPY\nrm Uploaded/x",
+    "bash <<'SH'\nrm Uploaded/x\nSH",
+    'printf ok\nrm Uploaded/x',
+    "python3 - <<'PY'\nprint(1 / 2)\n",  # missing delimiter
+])
+def test_workspace_mask_checks_after_heredoc_and_shell_stdin(command):
+    from agent_runtime.workspace_tools import _command_rejects_workspace_mutation
+    assert _command_rejects_workspace_mutation(command)
+
+
+def test_inline_python_cannot_silently_mutate_protected_file_in_fallback(tmp_path):
+    current = ctx(tmp_path)
+    target = tmp_path / 'u1' / 's1' / 'Uploaded' / 'input.txt'
+    target.parent.mkdir(parents=True)
+    target.write_text('original')
+    result = asyncio.run(toolset()['workspace_bash'](
+        'python3 -c "from pathlib import Path; Path(\'Uploaded/input.txt\').write_text(\'changed\')"', current))
+    assert not result['success']
+    assert target.read_text() == 'original'
+
+
+def test_workspace_mask_handles_many_complete_lines_without_recursion():
+    from agent_runtime.workspace_tools import _command_rejects_workspace_mutation
+    assert not _command_rejects_workspace_mutation('\n' * 1100 + 'true')
+    assert _command_rejects_workspace_mutation('\n' * 1100 + 'rm Uploaded/x')
+
+
 def test_mask_rejects_protected_writes_destinations_and_nested_shells():
     from agent_runtime.workspace_tools import _command_rejects_workspace_mutation as masked
 

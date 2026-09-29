@@ -18,6 +18,11 @@ from agent_runtime.memory_api import create_memory_router
 from agent_runtime.recovery import create_recovery_router
 from agent_runtime.model_catalog import ModelCatalog
 from agent_runtime.model_api import create_model_router
+from agent_runtime.remote_graph.api import RemoteGraphSessions, create_remote_graph_router
+from agent_runtime.remote_graph.catalog import RemoteGraphCatalog
+from agent_runtime.remote_graph.migrations import migrate_remote_graph_connections
+from agent_runtime.remote_graph.secrets import SecretBox
+from agent_runtime.remote_graph.executor import RemoteGraphExecutor
 from agent_runtime.execution_control import ExecutionController, create_control_router
 from agent_runtime.execution_store import ExecutionStore, ControlError
 from agent_runtime.execution_store import TERMINAL
@@ -39,17 +44,21 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     db = create_db(settings)
     store = ExecutionStore(db.db_engine)
     catalog = ModelCatalog(store, settings)
+    remote_catalog = RemoteGraphCatalog(store, SecretBox(settings.remote_graph_secret_key))
+    remote_executor = RemoteGraphExecutor(remote_catalog, settings)
     controller = None
     if controls_enabled():
         manager = RunCancellationManager()
         set_cancellation_manager(manager)
         controller = ExecutionController(db, store, manager)
         controller.model_catalog = catalog
+        controller.remote_graph_catalog = remote_catalog
 
     @asynccontextmanager
     async def lifespan(_app):
         validate_service_configuration()
         await asyncio.to_thread(store.migrate)
+        await asyncio.to_thread(migrate_remote_graph_connections, store.engine)
         if controller:
             await controller.restore()
         try:
@@ -70,6 +79,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     base_app.include_router(create_memory_router(db))
     base_app.include_router(create_recovery_router(db))
     base_app.include_router(create_model_router(catalog, db))
+    base_app.include_router(create_remote_graph_router(remote_catalog, controller or RemoteGraphSessions(db), remote_executor))
 
     @base_app.get("/internal/health")
     def internal_health():
@@ -94,7 +104,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         id="igraph-agent-os",
         name="iGraph Agent Runtime",
         description="AgentOS runtime for iGraph sessions, memory, learning and skills",
-        agents=[create_igraph_factory(settings, db, controller)],
+        agents=[create_igraph_factory(settings, db, controller, remote_executor=remote_executor)],
         db=db,
         base_app=base_app,
         on_route_conflict="preserve_agentos",
@@ -174,6 +184,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
                     if row['state']['cancel_status'] != 'none':
                         raise ControlError('RUN_CANCELLED')
                     snapshot = row['state'].get('model_snapshot')
+                    request.state.igraph_remote_graph_binding = row['state'].get('remote_graph_binding')
                     if snapshot:
                         request.state.igraph_model_snapshot = snapshot
                         request.state.igraph_model_config = await asyncio.to_thread(catalog.resolve, uid, snapshot)
