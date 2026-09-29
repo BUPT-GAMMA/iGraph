@@ -270,7 +270,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
             {isAssistant && message.model_snapshot && <div className="message-model-provenance" title={`${message.model_snapshot.model_id} · v${message.model_snapshot.revision}`}>{message.model_snapshot.display_name}</div>}
             {message.history_compacted && <div className="message-model-provenance">{t('Earlier context compacted for this model', '较早上下文已压缩以适应此模型')}</div>}
             {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools, t)) : null}
-            {isAssistant && visibleTools?.filter(tool => ['query_remote_graph', 'describe_remote_graph'].includes(tool.tool || '')).map((tool, index) => <RemoteGraphQueryResult key={tool.call_id || index} result={tool.result} args={tool.args} />)}
+            {isAssistant && visibleTools?.filter(tool => ['query_remote_graph', 'describe_remote_graph', 'export_remote_graph'].includes(tool.tool || '')).map((tool, index) => <RemoteGraphQueryResult key={tool.call_id || index} result={tool.result} args={tool.args} sessionId={artifactSessionId} />)}
             {isAssistant ? planCard(visiblePlan, t) : null}
             {!isAssistant && !isEditing ? attachmentChips : null}
             {isEditing ? <PromptEditor message={message} onCancel={() => setEditingKey(null)} onSubmit={content => {

@@ -87,5 +87,9 @@ class QueryResult(BaseModel):
     preview_truncated: bool = False
     elapsed_ms: int = 0
     artifact_path: str | None = None
+    artifact: dict[str, Any] | None = None
+    export_complete: bool = False
+    delivery_error: str | None = None
+    consistency: str | None = None
     error_code: str | None = None
     error_message: str | None = None
