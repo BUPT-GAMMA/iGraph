@@ -5,8 +5,46 @@ import asyncio
 import logging
 import anyio
 from contextlib import suppress
+import json
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
+
+
+class StartedNativeStream:
+    def __init__(self, lines, iterator):
+        self.lines, self.iterator = lines, iterator
+
+    async def aiter_lines(self):
+        for line in self.lines:
+            yield line
+        async for line in self.iterator:
+            yield line
+
+
+async def wait_for_native_start(response, *, run_id: str):
+    """Keep the owned handoff alive until Agno starts its detached producer.
+
+    HTTP headers arrive before the streaming generator claims the Run. Closing
+    at that point cancels startup, leaving a registered Run preparing forever.
+    Preserve the first event for the observer instead of consuming it twice.
+    """
+    iterator = response.aiter_lines()
+    lines, data = [], []
+    try:
+        async with asyncio.timeout(60):
+            async for line in iterator:
+                lines.append(line)
+                if line.startswith('data:'):
+                    data.append(line[5:].lstrip())
+                elif not line and data:
+                    event = json.loads('\n'.join(data))
+                    if event.get('event') == 'RunStarted' and event.get('run_id') == run_id:
+                        return StartedNativeStream(lines, iterator)
+                    break
+    except (TimeoutError, ValueError):
+        pass
+    raise HTTPException(502, {'code': 'NATIVE_RUN_START_FAILED', 'message': '模型任务未能启动，请重试'})
 
 
 async def close_observation(stack):
