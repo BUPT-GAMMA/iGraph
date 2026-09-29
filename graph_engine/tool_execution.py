@@ -105,8 +105,8 @@ _POLICIES = {
                                       writes={"graph", "dataset_binding"}),
     # These change request identity or session lifecycle, so ordering only a
     # graph resource would miss documents, jobs, models, and dataset bindings.
-    "register_session": _policy(barrier=True),
-    "delete_graph_session": _policy(barrier=True),
+    "register_session": _policy(writes={"graph"}, barrier=True),
+    "delete_graph_session": _policy(writes={"graph"}, barrier=True),
     "set_session_config": _policy(writes={"session_config"}, barrier=True),
 }
 

@@ -49,6 +49,7 @@ export type ComposerProps = {
   models: string[];
   customModels?: CustomModel[];
   activeDatasetName?: string;
+  onRemoteGraph?: () => void;
   onChange: (value: string) => void;
   onModelChange: (model: string) => void;
   onDataset: () => void;
@@ -72,7 +73,7 @@ export type ComposerProps = {
   onDeleteCustomModel?: (modelId: string) => Promise<void>;
 };
 
-export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
+export function Composer({ value, model, models, customModels = [], activeDatasetName, onRemoteGraph, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const { t } = useI18n();
   const { askConfirm, actionDialog } = useActionDialog();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -228,7 +229,8 @@ export function Composer({ value, model, models, customModels = [], activeDatase
       <div className="composer-toolbar">
         <input ref={inputRef} type="file" hidden accept=".sql,.txt,.csv,.edgelist,.dat,.json,.xlsx,.pdf,.pt,.npz,.py,.md,.zip,.yaml,.yml,.js,.tsv" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
         <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title={t('Upload graph file', '上传图文件')} aria-label={t('Upload graph file', '上传图文件')} disabled={disabled || runtimeControlsDisabled}><Icon name="plus" size={20} /></button>
-        <button className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={() => onDataset()} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? t(`Current dataset: ${activeDatasetName}`, `当前数据集：${activeDatasetName}`) : t('Select project dataset', '选择项目数据集')}><Icon name="database" size={12} /><span>{activeDatasetName || t('Dataset', '数据集')}</span></button>
+        {onRemoteGraph && <button className="composer-dataset" onClick={onRemoteGraph} disabled={disabled || uploading || runtimeControlsDisabled}><Icon name="database" size={12} />{t('Remote databases', '远程数据库')}</button>}
+        <button data-testid="local-dataset-selector" className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={() => onDataset()} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? t(`Current dataset: ${activeDatasetName}`, `当前数据集：${activeDatasetName}`) : t('Select project dataset', '选择项目数据集')}><Icon name="database" size={12} /><span>{activeDatasetName || t('Dataset', '数据集')}</span></button>
         <div ref={modelPickerRef} className={`composer-model ${modelOpen ? 'is-open' : ''}`}>
           <button type="button" className="composer-model-trigger" onClick={() => setModelOpen(current => !current)} disabled={disabled || loading || runtimeControlsDisabled || (modelOptions.length === 0 && !onManageModels)} aria-label={t('Select model', '选择模型')} aria-expanded={modelOpen}>
             <span className="composer-model-icon"><ModelProviderIcon modelId={currentCustom?.upstream_model_id || model} size={13} /></span>

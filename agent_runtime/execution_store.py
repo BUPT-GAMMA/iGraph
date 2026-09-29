@@ -291,7 +291,7 @@ class ExecutionStore:
         conn.execute(controls.update().where(controls.c.control_id == row["control_id"]).values(**updated))
         return updated
 
-    def register(self, uid: str, sid: str, key: str, digest: str, *, max_keys_per_minute=30, preparation_owner=None, replace_run_id=None, validate_edit=None, capture_model=None):
+    def register(self, uid: str, sid: str, key: str, digest: str, *, max_keys_per_minute=30, preparation_owner=None, replace_run_id=None, validate_edit=None, capture_model=None, capture_remote_graph=None):
         with self.transaction(uid, sid) as conn:
             self._assert_session_open(conn, uid, sid)
             row = self._find(conn, uid, sid, start_request_id=key)
@@ -310,8 +310,12 @@ class ExecutionStore:
                     raise ControlError('EDIT_UNAVAILABLE')
                 validate_edit(conn, uid, sid, replace_run_id)
             snapshot = capture_model(conn) if capture_model else None
+            remote_binding = capture_remote_graph(conn) if capture_remote_graph else None
+            if hasattr(remote_binding, 'model_dump'):
+                remote_binding = remote_binding.model_dump()
             row = self._insert_run(conn, uid, sid, key, digest)
             row = self._update(conn, row, {**row['state'], 'preparation_owner': preparation_owner, 'replace_run_id': replace_run_id,
+                                         'remote_graph_binding': remote_binding,
                                          **({'model_snapshot': snapshot} if snapshot else {})})
             return row, True
 

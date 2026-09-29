@@ -964,7 +964,10 @@ class DurableLargeGraphRuntime:
                 continue
             try:
                 identity = self._read_linux_process_identity(int(entry.name))
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
+                # An entry may disappear before open (ENOENT) or after open
+                # but before read (ESRCH). Neither denotes an unreadable live
+                # process; other inspection failures still fail closed below.
                 continue
             except (OSError, UnicodeError, ValueError):
                 # Skipping an unreadable live process could let cleanup race
@@ -997,7 +1000,7 @@ class DurableLargeGraphRuntime:
         try:
             try:
                 observed = self._read_linux_process_identity(pid)
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 return True
             except (OSError, UnicodeError, ValueError):
                 return False

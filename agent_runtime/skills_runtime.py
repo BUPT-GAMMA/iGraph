@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from functools import lru_cache
@@ -11,6 +12,24 @@ from agno.skills import LocalSkills, Skills
 
 import backend.data_paths as _dp
 from agent_runtime.config import AgentRuntimeConfig
+from agent_runtime.remote_graph.contracts import RemoteBinding
+
+
+class ReadableSkills(Skills):
+    """Keep Unicode instructions readable in the model's tool message.
+
+    Agno returns a JSON string which model adapters pass through verbatim.
+    Decoding only at the UI boundary leaves the model reading escape sequences.
+    Preserve the upstream payload while serializing its text without ASCII escapes.
+    """
+
+    def _get_skill_reference(self, skill_name: str, reference_path: str | None = None) -> str:
+        result = super()._get_skill_reference(skill_name, reference_path)
+        return json.dumps(json.loads(result), ensure_ascii=False)
+
+    def _get_skill_instructions(self, skill_name: str) -> str:
+        result = super()._get_skill_instructions(skill_name)
+        return json.dumps(json.loads(result), ensure_ascii=False)
 
 
 def bundled_skills_source_path() -> Path:
@@ -62,14 +81,22 @@ def candidate_skills_path(config: AgentRuntimeConfig, user_id: str) -> Path:
     return _dp.user_review_queue_dir(user_id)
 
 
-def build_skills(config: AgentRuntimeConfig, user_id: str) -> Skills:
+def build_skills(config: AgentRuntimeConfig, user_id: str,
+                 remote_binding: RemoteBinding | dict | None = None) -> Skills:
     active_user_dir = user_skills_path(config, user_id)
     candidate_skills_path(config, user_id).mkdir(parents=True, exist_ok=True)
     active_user_dir.mkdir(parents=True, exist_ok=True)
-    return Skills(
+    skills = ReadableSkills(
         loaders=[
             LocalSkills(str(bundled_skills_path(config))),
             # Candidate Skills are deliberately excluded until approval.
             LocalSkills(str(active_user_dir)),
         ]
     )
+    # Each agent owns its Skills instance. Only the server-frozen product is
+    # advertised and retrievable; no model argument can choose another dialect.
+    remote = skills.get_skill("remote-graph-qa")
+    if remote is not None:
+        binding = RemoteBinding.model_validate(remote_binding) if remote_binding else None
+        remote.references = [f"{binding.kind}.md"] if binding else []
+    return skills

@@ -137,7 +137,7 @@ test('global new task follows project context while the recent-task action stays
   await composer.fill('项目对话草稿');
   await page.reload();
   await expect(composer).toHaveValue('项目对话草稿');
-  await page.locator('.composer-dataset').click();
+  await page.getByTestId('local-dataset-selector').click();
   await expect(page.getByRole('dialog', { name: '项目数据集' })).toBeVisible();
   await page.getByRole('dialog', { name: '项目数据集' }).getByRole('button', { name: '关闭', exact: true }).click();
   const request = page.waitForRequest(req => req.method() === 'POST' && new URL(req.url()).pathname === '/api/sessions');
@@ -148,7 +148,7 @@ test('global new task follows project context while the recent-task action stays
   await page.getByRole('button', { name: '新建独立会话' }).click();
   await expect(page).toHaveURL('/?new=1');
   await expect(page.getByRole('heading', { name: '开始图分析', exact: true })).toBeVisible();
-  await page.locator('.composer-dataset').click();
+  await page.getByTestId('local-dataset-selector').click();
   await expect(page.getByRole('dialog', { name: '个人数据集' })).toBeVisible();
 });
 
@@ -209,7 +209,7 @@ test('graph collections degrade safely and recover when switching back to a sing
   await expect(nodeTotal).toHaveText('2,708');
   await page.getByRole('tab', { name: '图谱', exact: true }).click();
 
-  await page.locator('.composer-dataset').click();
+  await page.getByTestId('local-dataset-selector').click();
   const datasetDialog = page.getByRole('dialog', { name: '个人数据集' });
   await datasetDialog.locator('.dataset-row').filter({ hasText: 'hiv' }).locator('.dataset-row-main').click();
 
@@ -235,7 +235,7 @@ test('graph collections degrade safely and recover when switching back to a sing
   await expect(page.getByText('非独立图，无法直接可视化')).toBeVisible();
   await expect(page.locator('.graph-canvas')).toHaveCount(0);
 
-  await page.locator('.composer-dataset').click();
+  await page.getByTestId('local-dataset-selector').click();
   await page.getByRole('dialog', { name: '个人数据集' }).locator('.dataset-row').filter({ hasText: 'Cora' }).locator('.dataset-row-main').click();
   await expect(page.getByText('非独立图，无法直接可视化')).toHaveCount(0);
   await expect(page.locator('.graph-canvas svg')).toBeVisible();
@@ -287,7 +287,7 @@ test('mobile navigation and docked drawers keep their exit animation mounted', a
   await expect(backdrop).toBeHidden();
 
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.locator('.composer-dataset').click();
+  await page.getByTestId('local-dataset-selector').click();
   const datasetDialog = page.getByRole('dialog', { name: '个人数据集' });
   await expect(datasetDialog).toBeVisible();
   await expect(datasetDialog.getByText('会话共享项目数据源，但各自维护独立的图运行状态。')).toHaveCount(0);
