@@ -14,12 +14,12 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   listRemoteGraphs: vi.fn(), listRemoteGraphTypes: vi.fn().mockResolvedValue({ types: [
     { kind: 'neo4j', display_name: 'Neo4j', query_language: 'cypher', uri_example: 'bolt+s://db.example.com:7687', target_label: 'Database', username_required: true, support_status: 'verified' },
     { kind: 'falkordb', display_name: 'FalkorDB', query_language: 'cypher', uri_example: 'rediss://db.example.com:6379', target_label: 'Graph', username_required: false, support_status: 'experimental' },
-  ] }), selectRemoteGraph: vi.fn(), setSessionDataset: vi.fn(),
+  ] }), selectRemoteGraph: vi.fn(), saveRemoteGraph: vi.fn(), setSessionDataset: vi.fn(),
   createSession: vi.fn().mockResolvedValue({ session_id: 'new-s', model: 'model', active_dataset_id: null }),
 }));
 import App from './main';
 import { I18nProvider } from './i18n';
-import { USER_KEY, activateSession, listRemoteGraphs, selectRemoteGraph, setSessionDataset, createSession } from './api';
+import { USER_KEY, activateSession, listRemoteGraphs, selectRemoteGraph, saveRemoteGraph, setSessionDataset, createSession } from './api';
 const connection = { connection_id: 'c', revision: 2, name: 'Cora', kind: 'neo4j' as const, database: 'neo4j', uri: 'bolt+s://db', username: 'reader', has_password: true };
 const binding = { connection_id: 'c', revision: 2, name: 'Cora', kind: 'neo4j' as const, database: 'neo4j' };
 beforeEach(() => {
@@ -98,4 +98,25 @@ it.each(['loaded', 'pending', 'error'])('clears remote panel state on account sw
   expect(within(dialog).queryByText('Cora')).toBeNull();
   await act(async () => resolveNew({ connections: [] }));
   expect((within(dialog).getByRole('button', { name: 'New connection' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it.each(['/?session=other-session', '/?new=1'])('discards a pending save binding when the workspace changes to %s', async route => {
+  let finishSave!: (value: Awaited<ReturnType<typeof saveRemoteGraph>>) => void;
+  vi.mocked(saveRemoteGraph).mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve; }));
+  render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
+  await userEvent.click(await screen.findByRole('button', { name: 'Remote databases' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit Cora' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Save and use' }));
+  expect(saveRemoteGraph).toHaveBeenCalledTimes(1);
+  act(() => {
+    window.history.replaceState({}, '', route);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  if (route.includes('other-session')) {
+    await waitFor(() => expect(activateSession).toHaveBeenCalledWith('other-session', expect.anything()));
+  }
+  await act(async () => finishSave({ connection }));
+  expect(selectRemoteGraph).not.toHaveBeenCalled();
+  expect(createSession).not.toHaveBeenCalled();
+  expect(screen.queryByText('Connection saved and in use')).toBeNull();
 });
