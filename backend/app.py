@@ -46,6 +46,7 @@ from backend.server_datasets import ServerDatasetDirectory, ServerDatasetRecord
 from backend.service_client import ServiceClient, forwarded_headers
 from backend.stream_recovery import close_observation, observation_events, wait_for_native_start
 from backend.users import UserDirectory, UserRecord
+from backend.authentication import AuthenticationStore, install_authentication
 from execution_protocol import (CancelRequest, JobCancelRequest, Target, controls_enabled,
                                 execution_headers, require_service, service_headers,
                                 validate_service_configuration)
@@ -1371,6 +1372,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         settings.default_admin_model,
         settings.default_user_model,
     )
+    auth = AuthenticationStore(
+        settings.auth_database_file or settings.users_file.with_name("authentication.sqlite3"),
+        users, session_ttl_seconds=settings.auth_session_ttl_seconds,
+    )
     custom_models = CustomModelDirectory(settings.custom_models_file or Path("data/backend/custom_models.json").resolve())
     projects = ProjectDirectory(settings.projects_file)
     data_root = settings.projects_file.parent.parent if settings.projects_file.parent.name == "backend" else settings.projects_file.parent
@@ -1608,16 +1613,17 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user.user_id),
             json_body={"user_id": user.user_id, **payload},
         )
+    install_authentication(app, auth, trusted_proxies=settings.auth_trusted_proxies,
+                           allowed_origins=settings.auth_allowed_origins)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
+        allow_origins=list(settings.auth_allowed_origins),
+        allow_credentials=bool(settings.auth_allowed_origins),
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["Retry-After", "X-iGraph-Stream-Version", "X-iGraph-Feedback-Accepted"],
     )
-
     @app.get("/")
     @app.get("/health")
     def health():
@@ -1625,10 +1631,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
     @app.post("/api/auth/validate")
     async def validate(request: Request):
-        user_id = request.headers.get("X-User-ID", "").strip()
-        record = users.get(user_id)
-        if not record or not record.enabled:
-            return {"valid": False, "reason": "user_not_supported" if user_id else "missing_user_id"}
+        record = current_user(request, users)
         models = await available_models_for(record)
         default = (await model_catalog_for(record))['default_model'] if controls_enabled() else (models[0] if models else '')
         return {
@@ -1870,6 +1873,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             await asyncio.to_thread(delete_user_workspaces, user_id)
         except Exception:
             logging.getLogger(__name__).warning('user_workspace_cleanup_failed user_id=%s', user_id, exc_info=True)
+        auth.revoke_user(user_id)
         return {"success": users.delete(user_id), "user_id": user_id}
 
     async def get_session(session_id: str, request: Request, user_id: str) -> dict:
