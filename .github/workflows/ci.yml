@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
   workflow_dispatch:
     inputs:
       full:
@@ -16,7 +17,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 defaults:
   run:
@@ -236,3 +237,43 @@ jobs:
             exit 1
           fi
           echo "All required CI jobs succeeded."
+
+  deploy:
+    name: Deploy main to server
+    needs: gate
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.gate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    concurrency:
+      group: igraph-production-deployment
+      cancel-in-progress: false
+    steps:
+      - name: Check out the tested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Deploy tested source and verify services
+        env:
+          DEPLOY_HOST: ${{ vars.IGRAPH_CD_HOST }}
+          DEPLOY_PORT: ${{ vars.IGRAPH_CD_PORT }}
+          DEPLOY_USER: ${{ vars.IGRAPH_CD_USER }}
+          DEPLOY_KEY: ${{ secrets.IGRAPH_CD_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.IGRAPH_CD_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$DEPLOY_HOST" && -n "$DEPLOY_USER" && "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
+          [[ -n "$DEPLOY_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
+          umask 077
+          deploy_ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$deploy_ssh_dir"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$deploy_ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$deploy_ssh_dir/known_hosts"
+          git archive --format=tar.gz "$GITHUB_SHA" > "$deploy_ssh_dir/source.tar.gz"
+          ssh -T -i "$deploy_ssh_dir/key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$deploy_ssh_dir/known_hosts" \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "python3 /home/kyy/.local/bin/igraph-cd-entry deploy $GITHUB_SHA" < "$deploy_ssh_dir/source.tar.gz"
+          printf 'Deployed commit `%s` after all required CI checks passed.\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
