@@ -72,6 +72,30 @@ def test_registration_login_and_hashed_storage(auth_client):
     assert login(client, "NOVEL_USER").status_code == 200
 
 
+def test_six_character_password_can_register_and_log_in(auth_client):
+    client, _, _ = auth_client
+    response = client.post("/api/auth/register", json={"username": "newuser", "password": "abc123"})
+    assert response.status_code == 201
+    assert client.post("/api/auth/logout").status_code == 200
+    assert login(client, "newuser", "abc123").status_code == 200
+
+
+@pytest.mark.parametrize("username,password", [
+    ("admin", "short"),
+    ("missing", PASSWORD),
+    ("invalid username", PASSWORD),
+    ("admin", "x" * 129),
+])
+def test_login_failures_do_not_reveal_password_rules(auth_client, username, password):
+    client, _, _ = auth_client
+    response = login(client, username, password)
+    assert response.status_code == 401
+    assert response.json()["detail"] == {
+        "code": "AUTH_INVALID_CREDENTIALS", "message": "用户名或密码不正确"
+    }
+    assert "6–128" not in response.text
+
+
 def test_existing_accounts_are_reserved_and_bootstrap_never_overwrites(auth_client):
     client, app, _ = auth_client
     for name in ("admin", "ADMIN", "alice"):
@@ -102,7 +126,8 @@ def test_invalid_password_is_rejected_without_echoing_it(auth_client, password):
 def test_validation_errors_never_echo_secret_input(auth_client):
     client, _, _ = auth_client
     response = client.post("/api/auth/login", json={"username": "admin", "password": [PASSWORD]})
-    assert response.status_code == 422
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "AUTH_INVALID_CREDENTIALS"
     assert PASSWORD not in response.text
 
 

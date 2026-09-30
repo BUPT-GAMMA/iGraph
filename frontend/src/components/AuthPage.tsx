@@ -51,8 +51,8 @@ export function AuthPage({ onAuthenticated, notice = '' }: Props) {
     event.preventDefault();
     if (submission.current) return;
     const normalized = username.trim().toLowerCase();
-    if (!/^[a-z0-9_-]{3,32}$/.test(normalized)) return invalid('username', t('Use 3–32 letters, numbers, underscores or hyphens for your username.', '用户名需为 3–32 位英文字母、数字、下划线或短横线。'));
-    if (password.length < 8 || password.length > 128) return invalid('password', t('Your password must contain 8–128 characters.', '密码长度需为 8–128 位。'));
+    if (mode === 'register' && !/^[a-z0-9_-]{3,32}$/.test(normalized)) return invalid('username', t('Use 3–32 letters, numbers, underscores or hyphens for your username.', '用户名需为 3–32 位英文字母、数字、下划线或短横线。'));
+    if (mode === 'register' && (password.length < 6 || password.length > 128)) return invalid('password', t('Your password must contain 6–128 characters.', '密码长度需为 6–128 位。'));
     if (mode === 'register' && confirmation !== password) return invalid('confirmation', t('The passwords do not match.', '两次输入的密码不一致。'));
     submission.current = true;
     setPending(true); setError(''); setInvalidField('');
