@@ -10,11 +10,9 @@ from tests.test_projects import client as project_client, FakeServiceClient, hea
 def backend(tmp_path, monkeypatch):
     import backend.app as module
     from backend.config import BackendConfig
-    from backend.users import UserRecord
     monkeypatch.setenv('IGRAPH_DATA_ROOT', str(tmp_path))
     monkeypatch.setenv('IGRAPH_CONTROL_SERVICE_KEY', 'bff-service-secret')
     monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'false')
-    monkeypatch.setattr(module, 'current_user', lambda *_: UserRecord('authenticated-alice'))
     calls = []
     async def request(self, method, path, **kwargs):
         calls.append((method, path, kwargs))
@@ -25,7 +23,13 @@ def backend(tmp_path, monkeypatch):
         return {'success': True}
     monkeypatch.setattr(module.ServiceClient, 'request', request)
     config = replace(BackendConfig.from_env(), supported_ids_file=tmp_path / 'ids.txt')
-    with TestClient(module.create_app(config)) as client:
+    config.supported_ids_file.write_text('authenticated-alice\n', encoding='utf-8')
+    app = module.create_app(config)
+    password = 'Test-authenticated-alice-2026!'
+    assert app.state.auth.bootstrap('authenticated-alice', password)
+    with TestClient(app) as client:
+        login = client.post('/api/auth/login', json={'username': 'authenticated-alice', 'password': password})
+        assert login.status_code == 200, login.text
         yield client, calls
 
 

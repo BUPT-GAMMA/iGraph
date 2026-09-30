@@ -1,7 +1,7 @@
 """Backend-owned user directory.
 
-The existing X-User-ID login contract is retained.  The former allow-list is
-used only to seed this repository; Agent Runtime never reads user files.
+The former allow-list seeds this repository. Browser authentication is handled
+separately by Backend; Agent Runtime never reads user or credential files.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -42,6 +43,34 @@ class UserDirectory:
         self.default_admin_model = default_admin_model
         self.default_user_model = default_user_model
         self._lock = threading.RLock()
+
+    @contextmanager
+    def _mutation_lock(self):
+        """Serialize atomic JSON mutations across Backend worker processes."""
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+            with lock_path.open("a+b") as handle:
+                os.chmod(lock_path, 0o600)
+                if os.name == "nt":
+                    import msvcrt
+                    if handle.seek(0, os.SEEK_END) == 0:
+                        handle.write(b"0")
+                        handle.flush()
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    try:
+                        yield
+                    finally:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _ordered_models(default: str, values) -> list[str]:
@@ -111,8 +140,20 @@ class UserDirectory:
     def list(self) -> list[UserRecord]:
         return list(self._load().values())
 
+    def create(self, record: UserRecord) -> UserRecord:
+        with self._mutation_lock():
+            records = self._load()
+            if any(key.lower() == record.user_id.lower() for key in records):
+                raise ValueError("用户已存在")
+            record.roles = ["user"]
+            record.allowed_models = self._default_user_models()
+            record.created_at = record.updated_at = time.time()
+            records[record.user_id] = record
+            self._write(records)
+            return record
+
     def save(self, record: UserRecord) -> UserRecord:
-        with self._lock:
+        with self._mutation_lock():
             records = self._load()
             existing = records.get(record.user_id)
             if existing:
@@ -132,7 +173,7 @@ class UserDirectory:
             return record
 
     def delete(self, user_id: str) -> bool:
-        with self._lock:
+        with self._mutation_lock():
             records = self._load()
             if user_id not in records:
                 return False

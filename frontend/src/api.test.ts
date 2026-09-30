@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser } from './api';
+import { AUTH_ACCOUNT_CHANGED_EVENT, AUTH_EXPIRED_EVENT, ApiError, authenticateUser, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser } from './api';
 
 let unbindAccount = () => {};
 
@@ -43,16 +43,19 @@ describe('authentication headers', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it('uses the rendered account after synchronization', async () => {
+  it('uses a session cookie and pins the expected workspace account', async () => {
     localStorage.setItem(USER_KEY, 'account-b');
     unbindAccount = bindRequestAccount('account-b');
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ session_id: 'B' })));
     vi.stubGlobal('fetch', fetcher);
     await createSession({ initialMessagePreview: 'B draft' });
-    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('account-b');
+    const headers = new Headers(fetcher.mock.calls[0][1].headers);
+    expect(headers.get('X-User-ID')).toBeNull();
+    expect(headers.get('X-iGraph-Account')).toBe('account-b');
+    expect(fetcher.mock.calls[0][1].credentials).toBe('include');
   });
 
-  it('preserves the explicit user being validated when another user is cached', async () => {
+  it('validates the session cookie without accepting a caller supplied user ID', async () => {
     localStorage.setItem(USER_KEY, 'cached-user');
     unbindAccount = bindRequestAccount('rendered-user');
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ valid: true }), {
@@ -65,7 +68,39 @@ describe('authentication headers', () => {
 
     expect(fetcher).toHaveBeenCalledOnce();
     const headers = new Headers(fetcher.mock.calls[0][1]?.headers);
-    expect(headers.get('X-User-ID')).toBe('next-user');
+    expect(headers.get('X-User-ID')).toBeNull();
+    expect(headers.get('X-iGraph-Account')).toBeNull();
+    expect(fetcher.mock.calls[0][1].credentials).toBe('include');
+  });
+
+  it('expires the workspace when cookie validation returns unauthorized', async () => {
+    localStorage.setItem(USER_KEY, 'alice');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 401 })));
+    const expired = vi.fn(); window.addEventListener(AUTH_EXPIRED_EVENT, expired);
+    try {
+      await expect(validateUser('alice')).rejects.toMatchObject({ status: 401 });
+      expect(expired).toHaveBeenCalledOnce();
+      expect(localStorage.getItem(USER_KEY)).toBe('');
+    } finally { window.removeEventListener(AUTH_EXPIRED_EVENT, expired); }
+  });
+
+  it('does not globally expire a workspace for an incorrect login password', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 401 })));
+    const expired = vi.fn(); window.addEventListener(AUTH_EXPIRED_EVENT, expired);
+    try {
+      await expect(authenticateUser('login', 'alice', 'wrong-password')).rejects.toMatchObject({ status: 401 });
+      expect(expired).not.toHaveBeenCalled();
+    } finally { window.removeEventListener(AUTH_EXPIRED_EVENT, expired); }
+  });
+
+  it('requests authoritative identity synchronization for cookie account races', async () => {
+    localStorage.setItem(USER_KEY, 'alice'); unbindAccount = bindRequestAccount('alice');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: { code: 'ACCOUNT_CHANGED', message: 'Account changed' } }), { status: 409 })));
+    const changed = vi.fn(); window.addEventListener(AUTH_ACCOUNT_CHANGED_EVENT, changed);
+    try {
+      await expect(createSession()).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
+      expect(changed).toHaveBeenCalledOnce();
+    } finally { window.removeEventListener(AUTH_ACCOUNT_CHANGED_EVENT, changed); }
   });
 });
 
