@@ -10,6 +10,7 @@ from agno.os import AgentOS
 from runtime_observability import RequestLoggingMiddleware
 from pydantic import BaseModel, Field
 
+from agent_runtime.background_learning import create_background_learning
 from agent_runtime.agno_factory import create_db, create_igraph_factory
 from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.custom_models import register_custom_model, remove_custom_model
@@ -54,6 +55,8 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         controller.model_catalog = catalog
         controller.remote_graph_catalog = remote_catalog
 
+    learning_queue = create_background_learning(db, store, catalog, settings, controller)
+
     @asynccontextmanager
     async def lifespan(_app):
         validate_service_configuration()
@@ -61,9 +64,11 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         await asyncio.to_thread(migrate_remote_graph_connections, store.engine)
         if controller:
             await controller.restore()
+        learning_queue.start()
         try:
             yield
         finally:
+            await learning_queue.close()
             if controller:
                 await controller.close()
 
@@ -104,7 +109,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
         id="igraph-agent-os",
         name="iGraph Agent Runtime",
         description="AgentOS runtime for iGraph sessions, memory, learning and skills",
-        agents=[create_igraph_factory(settings, db, controller, remote_executor=remote_executor)],
+        agents=[create_igraph_factory(settings, db, controller, remote_executor=remote_executor, learning_queue=learning_queue)],
         db=db,
         base_app=base_app,
         on_route_conflict="preserve_agentos",
@@ -114,6 +119,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     )
     app = agent_os.get_app()
     app.add_middleware(RequestLoggingMiddleware)
+    app.state.background_learning = learning_queue
     app.state.execution_controller = controller
     if controller:
         @app.middleware('http')
