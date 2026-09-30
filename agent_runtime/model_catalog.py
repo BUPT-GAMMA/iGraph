@@ -16,7 +16,7 @@ from sqlalchemy import Column, Integer, JSON, String, Table, select, text
 
 from agent_runtime.execution_store import ControlError, controls, metadata
 from agent_runtime.provider_catalog import ProviderCatalogMixin, providers, validate_base_url
-from agent_runtime.shared_provider_catalog import SharedProviderCatalogMixin
+from agent_runtime.shared_provider_catalog import DeploymentProviderCatalogMixin
 
 models = Table('igraph_model_configs', metadata,
     Column('user_id', String(256), primary_key=True),
@@ -34,7 +34,7 @@ preferences = Table('igraph_model_preferences', metadata,
     Column('user_id', String(256), primary_key=True), Column('data', JSON, nullable=False))
 
 
-class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
+class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
     model_table = models
     def __init__(self, store, config):
         self.store, self.config = store, config
@@ -43,7 +43,7 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
         if self.store.engine.dialect.name == 'postgresql':
             key = int.from_bytes(hashlib.sha256(json.dumps([uid, '__models__']).encode()).digest()[:8], 'big', signed=True)
             conn.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': key})
-        self._sync_shared(conn, uid)
+        self._ensure_personal_providers(conn, uid)
 
     def _row(self, conn, uid, cid):
         row = conn.execute(select(models).where(models.c.user_id == uid, models.c.config_id == cid)).mappings().first()
@@ -73,11 +73,12 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
         """Idempotent migration; tombstones prevent deleted legacy rows returning."""
         with self.store.transaction(uid, '__models__') as conn:
             pref = self._preference(conn, uid)
-            pref.update(allowed=list(allowed), is_admin=is_admin)
+            # Old callers may still send roles/allow-lists; they grant no privileges.
+            pref.pop("is_admin", None)
+            pref.pop("allowed", None)
             pref.setdefault('default_model', next(iter(allowed), ''))
             self._set_preference(conn, uid, pref)
-            self._seed_shared(conn)
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             for item in legacy:
                 cid = str(item.get('model_id') or '')
                 if not cid or self._row(conn, uid, cid):
@@ -93,9 +94,6 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
         if not row or row['data'].get('deleted'):
             return 'MODEL_REMOVED'
         data = row['data']
-        if (data.get('source') == 'deployment' and data.get('restricted', True)
-                and row['config_id'] not in self._preference(conn, uid).get('allowed', []) and not self._is_admin(conn, uid)):
-            return 'MODEL_NOT_ALLOWED'
         if not data.get('provider_enabled', True):
             return 'MODEL_PROVIDER_DISABLED'
         if not data.get('enabled', True):
@@ -119,29 +117,26 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
 
     def list(self, uid):
         with self.store.transaction(uid, '__models__') as conn:
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             rows = conn.execute(select(models).where(models.c.user_id == uid)).mappings().all()
             return {'models': [self.public(conn, uid, row) for row in rows if not row['data'].get('deleted')],
                     'default_model': self._preference(conn, uid).get('default_model', '')}
 
     def save(self, uid, data, cid=None, expected_revision=None):
         with self.store.transaction(uid, '__models__') as conn:
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             existing = self._row(conn, uid, cid) if cid else None
             if cid and (not existing or existing['data'].get('deleted')):
                 raise ControlError('MODEL_REMOVED', 404)
             if existing and expected_revision != existing['revision']:
                 raise ControlError('MODEL_CONFIG_CHANGED')
             old = existing['data'] if existing else {}
-            if old.get('source') == 'deployment' and not data.get('provider_id'):
-                raise ControlError('MODEL_PROVIDER_READ_ONLY', 403)
             merged = {**old, **data}
             provider_row = None
             if data.get('provider_id'):
                 if data.get('provider_revision') is None:
                     raise ControlError('MODEL_PROVIDER_CHANGED')
                 provider_row = self._require_provider(conn, uid, data['provider_id'], data['provider_revision'])
-                self._assert_provider_editable(conn, uid, provider_row)
                 if old.get('provider_id') and old['provider_id'] != data['provider_id']:
                     raise ControlError('MODEL_PROVIDER_INVALID', 422)
                 merged.update(self._provider_snapshot(provider_row))
@@ -159,8 +154,6 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
                 provider=str(merged.get('provider') or 'openai-compatible')[:80], base_url=base, api_key=secret,
                 source='custom', enabled=old.get('enabled', True), tools=bool(merged.get('tools', True)),
                 vision=bool(merged.get('vision', False)), context_window=window, max_output_tokens=output)
-            if provider_row and provider_row['data'].get('scope') == 'shared':
-                return self._save_shared_model(conn, uid, provider_row, cid, stored)
             if provider_row:
                 stored.update(self._provider_snapshot(provider_row))
                 if any(r['config_id'] != cid and r['data']['model_id'] == mid
@@ -173,7 +166,7 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
 
     def set_enabled(self, uid, cid, enabled, expected_revision):
         with self.store.transaction(uid, '__models__') as conn:
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             row = self._row(conn, uid, cid)
             if not row or row['data'].get('deleted'):
                 raise ControlError('MODEL_REMOVED', 404)
@@ -184,7 +177,7 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
 
     def set_default(self, uid, cid):
         with self.store.transaction(uid, '__models__') as conn:
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             reason = self._reason(conn, uid, self._row(conn, uid, cid))
             if reason:
                 raise ControlError(reason, 422)
@@ -193,18 +186,13 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
 
     def delete(self, uid, cid, expected_revision):
         with self.store.transaction(uid, '__models__') as conn:
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             row = self._row(conn, uid, cid)
             if not row or row['data'].get('deleted'):
                 raise ControlError('MODEL_REMOVED', 404)
             if row['revision'] != expected_revision:
                 raise ControlError('MODEL_CONFIG_CHANGED')
-            if row['data']['source'] == 'deployment':
-                provider = self._require_provider(conn, uid, row['data']['provider_id'])
-                self._assert_provider_editable(conn, uid, provider)
-                self._remove_shared_models(conn, provider, [cid])
-            else:
-                self._remove_models(conn, uid, [row])
+            self._remove_models(conn, uid, [row])
 
     def _remove_models(self, conn, uid, rows, *, in_use_code='MODEL_IN_USE'):
         if not rows:
@@ -234,7 +222,7 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
 
     def purge_user(self, uid):
         with self.store.transaction(uid, '__models__') as conn:
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             if conn.execute(select(controls.c.control_id).where(controls.c.user_id == uid,
                     controls.c.kind == 'run', controls.c.admission_blocked.is_(True))).first():
                 raise ControlError('MODEL_IN_USE')
@@ -284,7 +272,7 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
     def resolve(self, uid, snapshot):
         """Private lookup. Snapshot never includes keys or endpoint credentials."""
         with self.store.transaction(uid, '__models__') as conn:
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             data = conn.execute(select(versions.c.data).where(versions.c.user_id == uid,
                 versions.c.config_id == snapshot['config_id'], versions.c.revision == snapshot['revision'])).scalar_one_or_none()
             if not data:
@@ -293,7 +281,7 @@ class ModelCatalog(SharedProviderCatalogMixin, ProviderCatalogMixin):
 
     def test_configuration(self, uid, cid, revision):
         with self.store.transaction(uid, '__models__') as conn:
-            self._sync_shared(conn, uid)
+            self._ensure_personal_providers(conn, uid)
             row = self._row(conn, uid, cid)
             if not row or row['data'].get('deleted'):
                 raise ControlError('MODEL_REMOVED', 404)

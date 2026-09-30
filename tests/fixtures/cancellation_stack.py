@@ -88,6 +88,7 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
             stack.enter_context(patch.object(agno_factory, 'create_learning_machine', lambda *_args, **_kwargs: None))
         stack.enter_context(patch.object(mcp_server, '_graph_data', GraphDataClient(url + '/graph')))
         runtime = os_app.create_app(replace(AgentRuntimeConfig.from_env(), skills_root=root / 'skills', tracing=False))
+        runtime.state.execution_controller.learning_queue = runtime.state.background_learning
         graph = GraphDataService(migrate_storage=False)
         graph_api = graph_app(graph)
         # A fresh server owns loop-bound locks and lifespan state on every run;
@@ -106,6 +107,7 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         users.save(UserRecord(user_id='admin', roles=['admin']))
         users.save(UserRecord(user_id='alice', roles=[]))
         bff = backend_app(config)
+        bff.state.auth.bootstrap("admin", "cancellation-test-password")
         metrics = {'calls': {}, 'closed': {}, 'tool_calls': {}, 'contexts': {}}
         model = FastAPI()
 
@@ -224,6 +226,7 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
             for scope in runtime.state.execution_controller.manager.scopes.values():
                 scope.cancel()
             await graph._execution_host.close()
+            await runtime.state.background_learning.close()
             await runtime.state.execution_controller.close()
             if db_url:
                 with db.db_engine.begin() as connection:

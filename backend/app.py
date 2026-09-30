@@ -23,7 +23,7 @@ import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
-from workspace_storage import delete_user_workspaces, delete_workspace, visible_files, derived_file, save_upload
+from workspace_storage import delete_workspace, visible_files, derived_file, save_upload
 from runtime_observability import RequestLoggingMiddleware
 from response_language import resolve_response_language
 from starlette.background import BackgroundTask
@@ -39,13 +39,14 @@ from backend.construction import install_construction_routes, sync_record as syn
 from backend.constructed_import import install_constructed_import_routes
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, project_run, translate_sse
-from backend.identity import current_user, public_user, require_admin
+from backend.identity import current_user, public_user
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
 from backend.projects import ProjectDirectory, ProjectRecord
 from backend.server_datasets import ServerDatasetDirectory, ServerDatasetRecord
 from backend.service_client import ServiceClient, forwarded_headers
-from backend.stream_recovery import close_observation, observation_events
+from backend.stream_recovery import close_observation, observation_events, wait_for_native_start
 from backend.users import UserDirectory, UserRecord
+from backend.authentication import AuthenticationStore, install_authentication
 from execution_protocol import (CancelRequest, JobCancelRequest, Target, controls_enabled,
                                 execution_headers, require_service, service_headers,
                                 validate_service_configuration)
@@ -146,13 +147,6 @@ class FeedbackReq(BaseModel):
     comment: str = ""
     tool_call_id: str = ""
     tool_name: str = ""
-
-
-class UserWriteReq(BaseModel):
-    user_id: str = Field(min_length=1)
-    enabled: bool = True
-    roles: list[str] = Field(default_factory=lambda: ["user"])
-    allowed_models: list[str] = Field(default_factory=list)
 
 
 class CustomModelReq(BaseModel):
@@ -858,6 +852,8 @@ def _session_row(session: dict, default_model: str) -> dict:
         "session_id": session.get("session_id"),
         "project_id": state.get("project_id") or None,
         "active_dataset_id": state.get("active_dataset_id"),
+        "remote_graph": session.get("remote_graph"),
+        "remote_graph_unavailable_reason": session.get("remote_graph_unavailable_reason"),
         "title": session.get("session_name") or "新会话",
         "last_message_preview": preview,
         "updated_at": session.get("updated_at"),
@@ -1369,6 +1365,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         settings.default_admin_model,
         settings.default_user_model,
     )
+    auth = AuthenticationStore(
+        settings.auth_database_file or settings.users_file.with_name("authentication.sqlite3"),
+        users, session_ttl_seconds=settings.auth_session_ttl_seconds,
+    )
     custom_models = CustomModelDirectory(settings.custom_models_file or Path("data/backend/custom_models.json").resolve())
     projects = ProjectDirectory(settings.projects_file)
     data_root = settings.projects_file.parent.parent if settings.projects_file.parent.name == "backend" else settings.projects_file.parent
@@ -1577,7 +1577,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         if not controls_enabled():
             raise HTTPException(409, {'code': 'MODEL_CONTROLS_REQUIRED'})
         return await runtime.request('POST', '/internal/model-catalog/bootstrap', headers=service_headers(user.user_id),
-            json_body={'allowed': user.allowed_models, 'is_admin': 'admin' in user.roles,
+            json_body={'allowed': user.allowed_models,
                        'legacy': [asdict(item) for item in custom_models.list(user.user_id)]})
 
     async def available_models_for(user: UserRecord) -> list[str]:
@@ -1606,16 +1606,17 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user.user_id),
             json_body={"user_id": user.user_id, **payload},
         )
+    install_authentication(app, auth, trusted_proxies=settings.auth_trusted_proxies,
+                           allowed_origins=settings.auth_allowed_origins)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
+        allow_origins=list(settings.auth_allowed_origins),
+        allow_credentials=bool(settings.auth_allowed_origins),
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["Retry-After", "X-iGraph-Stream-Version", "X-iGraph-Feedback-Accepted"],
     )
-
     @app.get("/")
     @app.get("/health")
     def health():
@@ -1623,16 +1624,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
 
     @app.post("/api/auth/validate")
     async def validate(request: Request):
-        user_id = request.headers.get("X-User-ID", "").strip()
-        record = users.get(user_id)
-        if not record or not record.enabled:
-            return {"valid": False, "reason": "user_not_supported" if user_id else "missing_user_id"}
+        record = current_user(request, users)
         models = await available_models_for(record)
         default = (await model_catalog_for(record))['default_model'] if controls_enabled() else (models[0] if models else '')
         return {
             "valid": True,
             "user_id": record.user_id,
-            "is_admin": "admin" in record.roles,
+            "is_admin": False,
             "available_models": models,
             "default_model": default,
         }
@@ -1679,6 +1677,56 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user.user_id),
         )
         return {"success": True, "model_id": model_id}
+
+    @app.get('/api/remote-graphs')
+    async def remote_graph_connections(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('GET', '/internal/remote-graphs', headers=service_headers(user.user_id))
+
+    @app.get('/api/remote-graph-types')
+    async def remote_graph_types(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('GET', '/internal/remote-graph-types', headers=service_headers(user.user_id))
+
+    @app.post('/api/remote-graphs')
+    async def save_remote_graph(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('POST', '/internal/remote-graphs', headers=service_headers(user.user_id),
+                                     json_body=await remote_graph_form(request))
+
+    @app.post('/api/remote-graphs/test')
+    async def test_remote_graph(request: Request):
+        user = current_user(request, users)
+        return await runtime.request('POST', '/internal/remote-graphs/test', headers=service_headers(user.user_id),
+                                     json_body=await remote_graph_form(request))
+
+    async def remote_graph_form(request: Request) -> dict:
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError
+            return body
+        except (ValueError, UnicodeError):
+            raise HTTPException(422, {'code': 'REMOTE_GRAPH_INVALID_CONFIG'}) from None
+
+    @app.delete('/api/remote-graphs/{connection_id}')
+    async def delete_remote_graph(connection_id: str, revision: int, request: Request):
+        from urllib.parse import quote
+        user = current_user(request, users)
+        return await runtime.request('DELETE', '/internal/remote-graphs/' + quote(connection_id, safe=''),
+                                     headers=service_headers(user.user_id), params={'revision': revision})
+
+    @app.put('/api/sessions/{session_id}/remote-graph')
+    async def select_remote_graph(session_id: str, req: dict, request: Request):
+        from urllib.parse import quote
+        user = current_user(request, users)
+        return await runtime.request('PUT', '/internal/sessions/' + quote(session_id, safe='') + '/remote-graph',
+                                     headers=service_headers(user.user_id), json_body=req)
+
+    async def remote_graph_selection(session_id: str, user_id: str) -> dict:
+        from urllib.parse import quote
+        return await runtime.request('GET', '/internal/sessions/' + quote(session_id, safe='') + '/remote-graph',
+                                     headers=service_headers(user_id))
 
     @app.get('/api/model-providers')
     async def model_providers(request: Request):
@@ -1763,62 +1811,6 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=service_headers(user.user_id), params={'revision': revision})
         custom_models.delete(user.user_id, config_id)
         return result
-
-    @app.get("/api/admin/users")
-    def list_users(request: Request):
-        require_admin(request, users)
-        return {"success": True, "users": [public_user(item) for item in users.list()]}
-
-    @app.post("/api/admin/users")
-    def save_user(req: UserWriteReq, request: Request):
-        require_admin(request, users)
-        record = users.save(UserRecord(**req.model_dump()))
-        return {"success": True, "user": public_user(record)}
-
-    @app.delete("/api/admin/users/{user_id}")
-    async def delete_user(user_id: str, request: Request):
-        require_admin(request, users)
-        if user_id == settings.admin_user_id:
-            raise HTTPException(status_code=400, detail="不能删除主管理员")
-        headers = forwarded_headers(request, user_id)
-        sessions_payload = await runtime.request(
-            "GET",
-            "/sessions",
-            headers=headers,
-            params={"type": "agent", "component_id": settings.agent_id, "user_id": user_id, "limit": 1000},
-        )
-        for session in _data_rows(sessions_payload):
-            session_id = str(session.get("session_id") or "") if isinstance(session, dict) else ""
-            if not session_id:
-                continue
-            try:
-                await graph.request("DELETE", f"/sessions/{session_id}", headers=headers)
-            except HTTPException as exc:
-                if exc.status_code != 404:
-                    raise
-            await runtime.request(
-                "DELETE", f"/sessions/{session_id}", headers=headers,
-                params={"type": "agent", "user_id": user_id},
-            )
-        memories = await runtime.request("GET", "/memories", headers=headers, params={"user_id": user_id, "limit": 1000})
-        for memory in _data_rows(memories):
-            memory_id = str(memory.get("memory_id") or "") if isinstance(memory, dict) else ""
-            if memory_id:
-                await runtime.request("DELETE", f"/memories/{memory_id}", headers=headers, params={"user_id": user_id})
-        await runtime.request("DELETE", f"/internal/skills/users/{user_id}/all", headers=headers)
-        await runtime.request('DELETE', '/internal/model-catalog/user/all', headers=service_headers(user_id))
-        for item in custom_models.list(user_id):
-            custom_models.delete(user_id, item.model_id)
-        for item in project_datasets._load().values():
-            if item.user_id == user_id and "construction" in item.metadata:
-                await graph.request("DELETE", f"/construction/{item.dataset_id}", headers={**service_headers(user_id), **scope_headers(item.project_id)})
-        project_datasets.delete_user(user_id)
-        projects.delete_user(user_id)
-        try:
-            await asyncio.to_thread(delete_user_workspaces, user_id)
-        except Exception:
-            logging.getLogger(__name__).warning('user_workspace_cleanup_failed user_id=%s', user_id, exc_info=True)
-        return {"success": users.delete(user_id), "user_id": user_id}
 
     async def get_session(session_id: str, request: Request, user_id: str) -> dict:
         payload = await runtime.request(
@@ -2059,7 +2051,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 if not server_dataset_requires_preparation(source):
                     continue
                 await request_server_dataset_preparation(
-                    source, {"X-User-ID": settings.admin_user_id}
+                    source, {"X-User-ID": "__server_datasets__"}
                 )
             await asyncio.sleep(server_dataset_scan_seconds)
 
@@ -3816,6 +3808,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                                             limit=limit, cursor=cursor, activity=_session_activity)
         available_models = await available_models_for(user)
         default_model = available_models[0] if available_models else "qwen3.6-plus"
+        semaphore = asyncio.Semaphore(4)
+        async def with_remote_selection(row):
+            async with semaphore:
+                selection = await remote_graph_selection(str(row['session_id']), user.user_id)
+                return {**row, **selection}
+        rows = await asyncio.gather(*(with_remote_selection(row) for row in rows))
         return {"success": True, "sessions": [_session_row(row, default_model) for row in rows],
                 "next_cursor": next_cursor, "has_more": next_cursor is not None}
 
@@ -4028,6 +4026,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         control = await runtime.request('GET', f'/internal/sessions/{session_id}/execution',
             headers=forwarded_headers(request, user.user_id)) if controls_enabled() else None
         return {
+            **(await remote_graph_selection(session_id, user.user_id)),
             "success": True,
             "session_id": session_id,
             "restored": True,
@@ -4089,6 +4088,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         runs = await get_session_runs(session_id, request, user.user_id)
         active_run, pending, _ = _active_run_snapshot(runs)
         return {
+            **(await remote_graph_selection(session_id, user.user_id)),
             "session_id": session_id,
             "has_graph": has_graph,
             "dataset_view": _session_dataset_view(
@@ -4509,6 +4509,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 owned_stack = AsyncExitStack()
                 try:
                     upstream = await owned_stack.enter_async_context(runtime.stream('POST', f'/agents/{settings.agent_id}/runs', headers=headers, data=form))
+                    upstream = await wait_for_native_start(upstream, run_id=registration['run_id'])
                     return owned_stack, upstream, registration
                 except BaseException:
                     await failed_native_handoff(session_id, prepared, registration, request)

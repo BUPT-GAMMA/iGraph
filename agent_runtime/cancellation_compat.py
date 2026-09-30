@@ -10,7 +10,7 @@ from contextlib import aclosing
 
 from agno.agent import Agent
 from agno.agent._run import _handle_run_cancellation, _build_cancel_terminal_events
-from agno.exceptions import RunCancelledException
+from agno.exceptions import OutputCheckError, RunCancelledException
 from agno.models.openai.like import OpenAILike
 from agno.knowledge.embedder.openai import OpenAIEmbedder
 from agno.os.managers import event_buffer, sse_subscriber_manager
@@ -19,6 +19,16 @@ from agno.run.base import RunStatus
 
 from agent_runtime.execution_scope import current_scope, operation_id
 from execution_lifecycle import owned_sync
+
+
+class PostHookRunCancelled(RunCancelledException, OutputCheckError):
+    """Pass cancellation through Agno 2.9's post-hook exception boundary.
+
+    The hook runner rethrows check errors but swallows other Exceptions. The
+    outer run handler catches RunCancelledException first, preserving native
+    CANCELLED storage and the active SSE terminal events. Real task cancellation
+    remains on Agno's existing asyncio.CancelledError path.
+    """
 
 
 class CancellableModelMixin:

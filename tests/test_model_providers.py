@@ -22,6 +22,10 @@ def service(tmp_path, monkeypatch):
     store = ExecutionStore(create_engine(f'sqlite:///{tmp_path}/models.db', connect_args={'check_same_thread': False}))
     store.migrate()
     catalog = ModelCatalog(store, SimpleNamespace(llm_api_key='', llm_base_url=''))
+    # Exercise custom providers after the user removes their default connections.
+    catalog.bootstrap('alice', [])
+    for provider in catalog.list_providers('alice')['providers']:
+        catalog.delete_provider('alice', provider['provider_id'], provider['revision'])
     app = FastAPI()
     @app.exception_handler(ControlError)
     async def error(request, exc):

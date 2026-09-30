@@ -14,14 +14,16 @@ from agent_runtime.config import AgentRuntimeConfig
 from agent_runtime.custom_models import get_custom_model
 from agent_runtime.graph_tools import create_graph_tools
 from agent_runtime.workspace_tools import create_workspace_tools
+from agent_runtime.remote_graph.tools import register_remote_graph_tools, remote_graph_context_hook, remote_graph_instructions
 from agent_runtime.agent_notes import update_agent_notes
 from agent_runtime.loop_guard import loop_guard_tool_hook, loop_guard_post_hook
 from agent_runtime.instructions import instructions_for
-from agent_runtime.learning import create_learning_machine
+from agent_runtime.learning import create_learning_machine, completed_turn_learning_hook
 from agent_runtime.model_factory import allowed_model, create_model
 from agent_runtime.skills_runtime import build_skills
 from agent_runtime.cancellation_compat import ControlledAgent, cancellable_tool_hook
 from agent_runtime.construction_state import construction_tool_hook
+from agent_runtime.remote_graph.source_scope import source_scope_hooks
 
 
 AGENT_ID = "igraph-agent"
@@ -48,6 +50,8 @@ def create_igraph_factory(
     config: AgentRuntimeConfig,
     db: PostgresDb,
     execution_controller=None,
+    remote_executor=None,
+    learning_queue=None,
 ) -> AgentFactory:
     def build_agent(ctx: RequestContext) -> Agent:
         raw_input = ctx.input.model_dump() if hasattr(ctx.input, "model_dump") else (ctx.input or {})
@@ -59,6 +63,7 @@ def create_igraph_factory(
         user_id = str(ctx.user_id or claims.get("sub") or "anonymous")
         snapshot = getattr(getattr(ctx.request, 'state', None), 'igraph_model_snapshot', None)
         frozen = getattr(getattr(ctx.request, 'state', None), 'igraph_model_config', None)
+        remote_binding = getattr(getattr(ctx.request, 'state', None), 'igraph_remote_graph_binding', None)
         custom_model = get_custom_model(user_id, options.model)
         if snapshot and frozen:
             options.model = snapshot['config_id']
@@ -68,20 +73,27 @@ def create_igraph_factory(
         except (PermissionError, ValueError) as exc:
             raise FactoryPermissionError(str(exc)) from exc
 
+        learning = create_learning_machine(config, planning_mode=options.planning_mode)
+        if learning is not None:
+            learning.background_queue = learning_queue
+            learning.planning_mode = options.planning_mode
+        source_pre_hook, source_tool_hook = source_scope_hooks(remote_binding, db)
         agent = (ControlledAgent if execution_controller else Agent)(
             id=AGENT_ID,
             name="iGraph Agent",
             model=create_model(model_id, config, custom_model),
             db=db,
-            metadata={'model_snapshot': snapshot} if snapshot else None,
-            tools=[create_graph_tools(config, response_language=options.response_language), *create_workspace_tools(), update_agent_notes],
-            skills=build_skills(config, user_id),
-            learning=create_learning_machine(config, planning_mode=options.planning_mode),
+            metadata={**({'model_snapshot': snapshot} if snapshot else {}),
+                      **({'remote_graph_binding': remote_binding} if remote_binding else {})} or None,
+            tools=[create_graph_tools(config, response_language=options.response_language), *create_workspace_tools(), update_agent_notes,
+                   *register_remote_graph_tools(remote_executor, remote_binding)],
+            skills=build_skills(config, user_id, remote_binding),
+            learning=learning,
             instructions=instructions_for(
                 reasoning_mode=options.reasoning_mode,
                 planning_mode=options.planning_mode,
                 response_language=options.response_language,
-            ),
+            ) + remote_graph_instructions(remote_binding),
             add_history_to_context=True,
             add_session_state_to_context=True,
             num_history_runs=20,
@@ -94,8 +106,9 @@ def create_igraph_factory(
             compress_tool_results=os.getenv("IGRAPH_COMPRESS_TOOL_RESULTS", "").lower() == "true",
             enable_session_summaries=os.getenv("IGRAPH_SESSION_SUMMARIES", "").lower() == "true",
             add_session_summary_to_context=True,
-            post_hooks=[loop_guard_post_hook],
-            tool_hooks=([cancellable_tool_hook] if execution_controller else []) + [loop_guard_tool_hook, construction_tool_hook],
+            post_hooks=[loop_guard_post_hook, completed_turn_learning_hook],
+            pre_hooks=[remote_graph_context_hook(remote_binding), source_pre_hook],
+            tool_hooks=([cancellable_tool_hook] if execution_controller else []) + [source_tool_hook, loop_guard_tool_hook, construction_tool_hook],
         )
         if execution_controller:
             agent.execution_controller = execution_controller

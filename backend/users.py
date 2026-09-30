@@ -1,7 +1,7 @@
 """Backend-owned user directory.
 
-The existing X-User-ID login contract is retained.  The former allow-list is
-used only to seed this repository; Agent Runtime never reads user files.
+Legacy IDs are retained only to preserve old resource ownership. All accounts
+have the same role and model defaults; browser access requires password login.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from backend.model_policy import SUPPORTED_MODELS
 class UserRecord:
     user_id: str
     enabled: bool = True
+    username: str = ""
     roles: list[str] = field(default_factory=lambda: ["user"])
     allowed_models: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
@@ -38,10 +40,37 @@ class UserDirectory:
     ) -> None:
         self.path = path
         self.seed_path = seed_path
-        self.admin_user_id = admin_user_id
-        self.default_admin_model = default_admin_model
+        # The legacy constructor arguments remain accepted for existing deployments.
         self.default_user_model = default_user_model
         self._lock = threading.RLock()
+
+    @contextmanager
+    def _mutation_lock(self):
+        """Serialize atomic JSON mutations across Backend worker processes."""
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+            with lock_path.open("a+b") as handle:
+                os.chmod(lock_path, 0o600)
+                if os.name == "nt":
+                    import msvcrt
+                    if handle.seek(0, os.SEEK_END) == 0:
+                        handle.write(b"0")
+                        handle.flush()
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    try:
+                        yield
+                    finally:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _ordered_models(default: str, values) -> list[str]:
@@ -65,7 +94,7 @@ class UserDirectory:
                 try:
                     payload = json.loads(self.path.read_text(encoding="utf-8"))
                     return {
-                        item["user_id"]: UserRecord(**item)
+                        item["user_id"]: self._ordinary_user(UserRecord(**item))
                         for item in payload.get("users", [])
                         if isinstance(item, dict) and item.get("user_id")
                     }
@@ -73,23 +102,24 @@ class UserDirectory:
                     pass
             records: dict[str, UserRecord] = {}
             for user_id in self._seed_ids():
-                is_admin = user_id == self.admin_user_id
                 records[user_id] = UserRecord(
                     user_id=user_id,
-                    roles=["admin", "user"] if is_admin else ["user"],
-                    allowed_models=(
-                        self._ordered_models(self.default_admin_model, SUPPORTED_MODELS)
-                        if is_admin
-                        else self._default_user_models()
-                    ),
+                    roles=["user"],
+                    allowed_models=self._default_user_models(),
                 )
             return records
 
     def _default_user_models(self) -> list[str]:
         return self._ordered_models(
             self.default_user_model,
-            (model for model in SUPPORTED_MODELS if not model.startswith(("gpt-", "claude-"))),
+            SUPPORTED_MODELS,
         )
+
+    def _ordinary_user(self, record: UserRecord) -> UserRecord:
+        # Legacy role and model allow-list fields no longer grant privileges.
+        record.roles = ["user"]
+        record.allowed_models = self._default_user_models()
+        return record
 
     def _write(self, records: dict[str, UserRecord]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,28 +141,32 @@ class UserDirectory:
     def list(self) -> list[UserRecord]:
         return list(self._load().values())
 
+    def create(self, record: UserRecord) -> UserRecord:
+        with self._mutation_lock():
+            records = self._load()
+            if any(key.lower() == record.user_id.lower() for key in records):
+                raise ValueError("用户已存在")
+            record.roles = ["user"]
+            record.allowed_models = self._default_user_models()
+            record.created_at = record.updated_at = time.time()
+            records[record.user_id] = record
+            self._write(records)
+            return record
+
     def save(self, record: UserRecord) -> UserRecord:
-        with self._lock:
+        with self._mutation_lock():
             records = self._load()
             existing = records.get(record.user_id)
             if existing:
                 record.created_at = existing.created_at
-            record.roles = list(dict.fromkeys(str(role).strip() for role in record.roles if str(role).strip())) or ["user"]
-            if record.user_id == self.admin_user_id and "admin" not in record.roles:
-                record.roles.insert(0, "admin")
+            self._ordinary_user(record)
             record.updated_at = time.time()
-            allowed = [model for model in record.allowed_models if model in SUPPORTED_MODELS]
-            record.allowed_models = allowed or (
-                self._ordered_models(self.default_admin_model, SUPPORTED_MODELS)
-                if "admin" in record.roles
-                else self._default_user_models()
-            )
             records[record.user_id] = record
             self._write(records)
             return record
 
     def delete(self, user_id: str) -> bool:
-        with self._lock:
+        with self._mutation_lock():
             records = self._load()
             if user_id not in records:
                 return False

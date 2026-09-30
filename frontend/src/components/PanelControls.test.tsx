@@ -79,56 +79,22 @@ describe('docked panel controls', () => {
     expect(screen.getByText('新建任务').closest('.sidebar-content')?.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('opens the login form from the signed-out avatar and dispatches input and submit callbacks', () => {
-    const onLoginValueChange = vi.fn();
-    const onLogin = vi.fn();
-    const { rerender } = render(<Sidebar
-      {...sidebarProps}
-      userId=""
-      loginValue=""
-      onLoginValueChange={onLoginValueChange}
-      onLogin={onLogin}
-      collapsed={false}
-      onCollapse={noop}
-    />);
-
-    expect(screen.queryByRole('dialog', { name: '账户' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '打开登录' }));
+  it('does not expose the legacy user ID login form in the sidebar', () => {
+    render(<Sidebar {...sidebarProps} userId="" collapsed={false} onCollapse={noop} />);
+    fireEvent.click(screen.getByRole('button', { name: '账户' }));
     expect(screen.getByRole('dialog', { name: '账户' })).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'alice' } });
-    expect(onLoginValueChange).toHaveBeenCalledWith('alice');
-
-    rerender(<Sidebar
-      {...sidebarProps}
-      userId=""
-      loginValue="alice"
-      onLoginValueChange={onLoginValueChange}
-      onLogin={onLogin}
-      collapsed={false}
-      onCollapse={noop}
-    />);
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
-    expect(onLogin).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText('用户 ID')).toBeNull();
+    expect(screen.queryByRole('button', { name: '登录' })).toBeNull();
   });
 
-  it('lets a signed-in user choose another account from the avatar menu', () => {
-    render(<Sidebar
-      {...sidebarProps}
-      userId="tester"
-      loginValue="tester"
-      collapsed={false}
-      onCollapse={noop}
-    />);
-
+  it('lets a signed-in user sign out from the avatar menu', async () => {
+    const onSignOut = vi.fn().mockResolvedValue(undefined);
+    render(<Sidebar {...sidebarProps} userId="tester" onSignOut={onSignOut} collapsed={false} onCollapse={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '账户：tester' }));
     expect(screen.getByText('当前账户')).toBeTruthy();
     expect(screen.queryByLabelText('用户 ID')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
-    expect(screen.getByLabelText('用户 ID')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '取消' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    await waitFor(() => expect(onSignOut).toHaveBeenCalledOnce());
   });
 
   it('highlights a selected conversation without highlighting its parent project', () => {

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from backend.agent.igraph import IGraph
+# The legacy compatibility import loads deployment .env settings.
+with patch.dict(os.environ):
+    from backend.agent.igraph import IGraph
 
 
 class _FakeMCPClient:

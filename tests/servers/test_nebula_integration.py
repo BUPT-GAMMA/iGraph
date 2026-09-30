@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import unittest
 import uuid
+from unittest.mock import patch
 
 import numpy as np
 
@@ -23,15 +24,18 @@ from graph_data_service.storage.nebula_backend import (
 )
 
 
-load_dotenv_compat()
-
-
 @unittest.skipUnless(
     os.getenv("RUN_NEBULA_INTEGRATION", "").strip().lower() in {"1", "true", "yes"},
     "set RUN_NEBULA_INTEGRATION=1 to run remote NebulaGraph acceptance tests",
 )
 class NebulaGraphIntegrationTest(unittest.TestCase):
     def setUp(self) -> None:
+        # Load deployment settings only after the explicit opt-in has been
+        # checked, and restore them even if setup fails or skips the test.
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        load_dotenv_compat()
         self.config = NebulaConfig.from_env()
         if not self.config.enabled:
             self.skipTest("NEBULA_ENABLED is not enabled")
