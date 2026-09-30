@@ -42,6 +42,12 @@ async def running_stack(root, *, learning=False):
             sock.close()
 
 
+async def other_user_request(client, method, path, **kwargs):
+    async with httpx.AsyncClient(base_url=client.base_url, timeout=30, trust_env=False) as other:
+        (await other.post('/api/auth/login', json={'username': 'alice', 'password': 'cancellation-test-password'})).raise_for_status()
+        return await other.request(method, path, **kwargs)
+
+
 def test_native_handoff_failure_releases_admission_without_replaying_question(tmp_path):
     from backend.service_client import ServiceClient
     from fastapi import HTTPException
@@ -214,7 +220,7 @@ def test_upgrade_keeps_pre_control_run_history_readable_without_creating_executi
             assert value['messages'][-1]['run_id'] == rid
             assert controller.store.get('admin', sid, run_id=rid) is None
             assert metrics['calls'] == {} and not graph._job_manager._jobs
-            wrong = await client.get(f'/api/sessions/{sid}/runs/{rid}/snapshot', headers={'X-User-ID': 'alice'})
+            wrong = await other_user_request(client, 'GET', f'/api/sessions/{sid}/runs/{rid}/snapshot')
             assert wrong.status_code == 404
     asyncio.run(scenario())
 
@@ -321,7 +327,7 @@ def test_disconnect_and_new_run_stop_leave_previous_background_training_alive(tm
                 row = controller.store.get('admin', sid, job_id=job.job_id)
                 import psutil
                 assert psutil.pid_exists(row['state']['worker']['pid'])
-                wrong = await client.post(f'/api/sessions/{sid}/jobs/{job.job_id}/cancel', headers={'X-User-ID': 'alice'}, json={'cancel_request_id': str(uuid4())})
+                wrong = await other_user_request(client, 'POST', f'/api/sessions/{sid}/jobs/{job.job_id}/cancel', json={'cancel_request_id': str(uuid4())})
                 assert wrong.status_code == 404
                 response = await client.post(f'/api/sessions/{sid}/jobs/{job.job_id}/cancel', json={'cancel_request_id': str(uuid4())})
                 assert response.status_code in {200, 202}

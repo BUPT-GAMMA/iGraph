@@ -128,6 +128,12 @@ def register_remote_graph_tools(executor, binding: RemoteBinding | None) -> list
     for function in functions:
         properties = function.parameters['properties']
         for name in ('parameters', 'labels', 'relationship_types'):
-            if name in properties:
-                properties[name] = next(option for option in properties[name]['anyOf'] if option['type'] != 'null')
+            schema = properties.get(name, {})
+            variants = schema.get('anyOf')
+            if variants:
+                non_null = [option for option in variants if option.get('type') != 'null']
+                if len(non_null) == 1:
+                    properties[name] = non_null[0]
+            # Agno can already emit the non-null optional schema. Preserve it
+            # instead of failing the entire agent factory with KeyError.
     return functions
