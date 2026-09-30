@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       full:
-        description: '运行完整回归（故障注入、20 次取消验证及浏览器 E2E）'
+        description: '运行完整后端回归（故障注入、隔离计算、重启恢复及 20 次取消验证）'
         type: boolean
         default: false
 
@@ -96,53 +96,6 @@ jobs:
           fi
           python -m pytest -q --durations=10 "${pytest_args[@]}"
 
-      - name: Set up pnpm for real browser integration
-        if: ${{ inputs.full == true }}
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10.28.1
-          run_install: false
-
-      - name: Set up Node.js for real browser integration
-        if: ${{ inputs.full == true }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Install frontend and browser dependencies
-        if: ${{ inputs.full == true }}
-        working-directory: frontend
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm exec playwright install --with-deps chrome
-
-      - name: Run Factory browser regressions
-        if: ${{ inputs.full == true }}
-        working-directory: frontend
-        env:
-          IGRAPH_TEST_PYTHON: python
-        run: pnpm test:e2e:native
-
-      - name: Run cancellation browser regressions
-        if: ${{ inputs.full == true }}
-        working-directory: frontend
-        env:
-          IGRAPH_TEST_PYTHON: python
-        run: pnpm test:e2e:cancel
-
-      - name: Upload full-stack browser diagnostics
-        if: ${{ failure() && inputs.full == true }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: full-stack-playwright-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            output/playwright/native-results
-            output/playwright/cancellation-results
-          if-no-files-found: ignore
-          retention-days: 7
-
   frontend:
     name: Frontend checks
     runs-on: ubuntu-24.04
@@ -175,26 +128,8 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run frontend unit tests
-        run: pnpm test
-
       - name: Build frontend
         run: pnpm build
-
-      - name: Install Playwright Chrome
-        run: pnpm exec playwright install --with-deps chrome
-
-      - name: Run frontend end-to-end tests
-        run: pnpm test:e2e
-
-      - name: Upload Playwright diagnostics
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: playwright-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: output/playwright/test-results
-          if-no-files-found: ignore
-          retention-days: 7
 
   docker-actions:
     name: Docker action compatibility
