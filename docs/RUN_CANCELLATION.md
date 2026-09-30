@@ -129,7 +129,7 @@ pnpm test:e2e:native
 pnpm test:e2e:cancel
 ```
 
-联合测试使用真实 Factory、MCP、Graph worker、BFF、数据库、HTTP/浏览器，仅模型服务替换为确定性生产者；检查连接关闭、实际 Task/进程退出、调用次数、终态及产物。CI 增加 PostgreSQL 和联合浏览器回归，保留 Python 3.12、Node 22、覆盖率门槛及现有侧栏动画断言。浏览器 Python 可用 `IGRAPH_TEST_PYTHON` 指定，默认项目 `.venv/bin/python`。
+联合测试使用真实 Factory、MCP、Graph worker、BFF、数据库、HTTP/浏览器，仅模型服务替换为确定性生产者；检查连接关闭、实际 Task/进程退出、调用次数、终态及产物。CI 使用 Python 3.12 和 PostgreSQL 验证后端真实 HTTP 链路，Node 22 仅用于前端类型检查和构建，不运行浏览器或侧栏动画测试，也不设覆盖率门槛。浏览器测试保留为手动排查工具，其 Python 可用 `IGRAPH_TEST_PYTHON` 指定，默认项目 `.venv/bin/python`。
 
 ### 本轮验证（2026-09-05）
 
