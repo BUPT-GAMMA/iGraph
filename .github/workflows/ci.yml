@@ -1,10 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-      - dev
+  # 自动 CI 暂停，仅保留手动运行入口；推送或合并不会触发。
   workflow_dispatch:
     inputs:
       full:

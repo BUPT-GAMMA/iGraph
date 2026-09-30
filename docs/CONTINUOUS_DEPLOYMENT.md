@@ -1,8 +1,11 @@
 # main 持续部署
 
-`.github/workflows/ci.yml` 在推送 `main` 和 `dev` 时运行后端功能回归、前端构建以及 Docker 配置检查。
-只有 `main` 的推送（包括合并）且所有必需 CI 作业成功，才会执行 `deploy`。
-手动运行 CI 和推送 `dev` 均不会部署。main 的运行不会因新提交而中途取消，部署另有串行锁。
+当前自动 CI/CD 已暂停。`.github/workflows/ci.yml` 已移除 `push` 触发，
+向 `main`、`dev` 推送或合并代码都不会运行 CI 或自动部署。
+工作流仅保留 `workflow_dispatch` 手动入口；仓库中的工作流也已手动禁用，使用该入口前需重新启用。
+
+以下为保留的部署方案。恢复自动部署时，需要明确恢复工作流的 `push` 触发并启用工作流；
+届时只有 `main` 的推送且必需 CI 作业全部成功才会执行 `deploy`，手动运行 CI 不会部署。
 
 ## GitHub 配置
 
