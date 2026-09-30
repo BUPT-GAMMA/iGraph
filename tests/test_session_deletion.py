@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 from agent_runtime.execution_control import ExecutionController
 from agent_runtime.execution_scope import RunCancellationManager
 from agent_runtime.execution_store import ExecutionStore
-from tests.test_cancellation_failures import running_stack
+from tests.test_cancellation_failures import other_user_request, running_stack
 from tests.test_cancellation_http import eventually
 
 
@@ -60,7 +60,7 @@ def test_delete_running_session_stops_execution_and_hides_before_cleanup(tmp_pat
                     return metrics['calls'].get(question)
                 await eventually(entered, 40)
                 other = (await client.post('/api/sessions', json={'model': 'qwen3.6-plus'})).json()['session_id']
-                denied = await client.delete(f'/api/sessions/{sid}', headers={'X-User-ID': 'alice'})
+                denied = await other_user_request(client, 'DELETE', f'/api/sessions/{sid}', headers={'X-User-ID': 'admin'})
                 assert denied.status_code == 404
                 assert controller.store.session_deletion('admin', sid) is None
                 accepted = await client.delete(f'/api/sessions/{sid}')

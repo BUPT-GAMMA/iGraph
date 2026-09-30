@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from agent_runtime.execution_store import ControlError
-from tests.test_cancellation_failures import running_stack
+from tests.test_cancellation_failures import other_user_request, running_stack
 from tests.test_cancellation_http import eventually
 from tests.servers.test_graph_ml_legacy_regression import _legacy_graph
 
@@ -49,7 +49,7 @@ def test_project_delete_stops_owned_execution_and_preserves_independent_work(tmp
                         return (await client.get(f'/api/sessions/{sid}/runs/control', params=key)).json().get('run_status') == 'paused'
                     return metrics['calls'].get(question)
                 await eventually(entered, 40)
-                denied = await client.request('DELETE', f'/api/projects/{pid}', headers={'X-User-ID': 'alice'}, json={'conversation_action': 'delete'})
+                denied = await other_user_request(client, 'DELETE', f'/api/projects/{pid}', headers={'X-User-ID': 'admin'}, json={'conversation_action': 'delete'})
                 assert denied.status_code == 404
                 assert controller.store.project_deletion('alice', pid) is None
                 response = await client.request('DELETE', f'/api/projects/{pid}', json={'conversation_action': 'delete'})

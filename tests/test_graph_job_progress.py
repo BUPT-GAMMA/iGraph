@@ -392,6 +392,7 @@ def test_real_http_mcp_training_delivers_epochs_and_final_model(tmp_path):
             try:
                 async with httpx.AsyncClient(base_url=url, headers={'X-User-ID': 'admin', 'X-iGraph-Stream-Version': '2'},
                                              timeout=60, trust_env=False) as client:
+                    (await client.post('/api/auth/login', json={'username': 'admin', 'password': 'cancellation-test-password'})).raise_for_status()
                     created = await client.post('/api/sessions', json={'model': 'qwen3.6-plus'})
                     sid = created.json()['session_id']
                     graph.get_required(sid, user_id='admin').set_graph(_legacy_graph())
