@@ -38,8 +38,8 @@ def normalize_username(value: str) -> str:
 
 
 def validate_password(value: str) -> None:
-    if not isinstance(value, str) or not 8 <= len(value) <= 128:
-        raise ValueError("密码长度须为 8–128 个字符")
+    if not isinstance(value, str) or not 6 <= len(value) <= 128:
+        raise ValueError("密码长度须为 6–128 个字符")
     try:
         value.encode("utf-8")
     except UnicodeEncodeError as exc:
@@ -363,6 +363,10 @@ def install_authentication(app, auth: AuthenticationStore, *, trusted_proxies: t
 
     @app.exception_handler(RequestValidationError)
     async def safe_auth_validation(request: Request, exc: RequestValidationError):
+        if request.url.path == "/api/auth/login":
+            return JSONResponse({"detail": {"code": "AUTH_INVALID_CREDENTIALS",
+                                           "message": "用户名或密码不正确"}},
+                                status_code=401, headers={"Cache-Control": "no-store"})
         if request.url.path.startswith("/api/auth/"):
             # FastAPI normally echoes invalid input, including password values.
             detail = [{"loc": error.get("loc"), "msg": error.get("msg"), "type": error.get("type")}
