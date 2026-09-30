@@ -20,7 +20,7 @@ REFUSAL = "该操作已拒绝，只能查询。"
 FOLLOWUP = "查询当前节点总数"
 
 
-def runtime(tmp_path, monkeypatch, *, pause=False, block=None, learning_block=None, controller=None, database=None):
+def runtime(tmp_path, monkeypatch, *, pause=False, block=None, learning_block=None, controller=None, database=None, learning_queue=None):
     """Only provider and unrelated external tools are replaced; stores/DB stay native."""
     extracted, main_contexts = [], []
 
@@ -84,10 +84,11 @@ def runtime(tmp_path, monkeypatch, *, pause=False, block=None, learning_block=No
     monkeypatch.setattr(agno_factory, "create_graph_tools", lambda *args, **kwargs:
                         Function(name="confirm_operation", entrypoint=confirm_operation, requires_confirmation=True) if pause else local_graph)
     monkeypatch.setattr(agno_factory, "create_workspace_tools", lambda: [])
+    monkeypatch.setattr(agno_factory, "register_remote_graph_tools", lambda *_: [])
     monkeypatch.setattr(agno_factory, "build_skills", lambda *_: None)
     db = database or SqliteDb(db_file=str(tmp_path / "learning.db"))
     config = SimpleNamespace(default_model="fixture", embedding_model="", embedding_api_key="")
-    agent = agno_factory.create_igraph_factory(config, db, execution_controller=controller).factory(RequestContext(user_id="alice"))
+    agent = agno_factory.create_igraph_factory(config, db, execution_controller=controller, learning_queue=learning_queue).factory(RequestContext(user_id="alice"))
     agent.telemetry = False
     return agent, db, extracted, main_contexts
 

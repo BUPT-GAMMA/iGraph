@@ -27,6 +27,7 @@ async def running_stack(root, *, learning=False):
         try:
             async with httpx.AsyncClient(base_url=url, headers={'X-User-ID': 'admin', 'X-iGraph-Stream-Version': '2'},
                                          timeout=30, trust_env=False) as client:
+                (await client.post('/api/auth/login', json={'username': 'admin', 'password': 'cancellation-test-password'})).raise_for_status()
                 response = await client.post('/api/sessions', json={'model': 'qwen3.6-plus'})
                 sid = response.json()['session_id']
                 graph.get_required(sid, user_id='admin').set_graph(_legacy_graph())
@@ -116,36 +117,34 @@ def test_disconnect_during_preparation_still_starts_native_run_once(tmp_path):
     asyncio.run(scenario())
 
 
-def test_real_learning_machine_model_connection_stops_with_its_run(tmp_path):
+def test_real_background_learning_does_not_hold_chat_admission(tmp_path, monkeypatch):
+    from agent_runtime import agno_factory
+    monkeypatch.setattr(agno_factory, "register_remote_graph_tools", lambda *_: [])
     async def scenario():
         async with running_stack(tmp_path, learning=True) as (client, sid, graph, controller, metrics):
             target = {'start_request_id': str(uuid4())}
-            # Learning now starts after the main response. Complete the stream
-            # before holding the real auxiliary HTTP connection open.
-            task = asyncio.create_task(client.post(f'/api/sessions/{sid}/chat/stream', json={'message': 'complete-my-name-is-Alice', **target}))
-            try:
-                await eventually(lambda: asyncio.sleep(0, result=len(metrics['calls']) >= 2))
-                auxiliary = [key for key in metrics['calls'] if key != 'complete-my-name-is-Alice']
-                assert auxiliary
-                response = await client.post(f'/api/sessions/{sid}/runs/cancel', json={'target': target, 'cancel_request_id': str(uuid4())})
-                assert response.status_code in {200, 202}
-                streamed = await asyncio.wait_for(task, 10)
-                events = []
-                for line in streamed.text.splitlines():
-                    if line.startswith('data:'):
-                        batch = json.loads(line[5:])
-                        events.extend(batch.get('events', [batch]))
-                assert any(event.get('type') == 'done' for event in events)
-                await eventually(lambda: asyncio.sleep(0, result=all(metrics['closed'].get(key) for key in auxiliary)))
-                async def confirmed():
-                    value = (await client.get(f'/api/sessions/{sid}/runs/control', params=target)).json()
-                    return value if value.get('can_send') else None
-                summary = await eventually(confirmed)
-                assert summary['execution_stopped'] and summary['terminal_persisted']
-                assert summary['run_status'] == 'cancelled' and summary['cancel_status'] == 'confirmed'
-                assert all(count == 1 for count in metrics['calls'].values())
-            finally:
-                task.cancel(); await asyncio.gather(task, return_exceptions=True)
+            response = await client.post(f'/api/sessions/{sid}/chat/stream',
+                json={'message': 'complete-my-name-is-Alice', **target})
+            response.raise_for_status()
+            await eventually(lambda: asyncio.sleep(0, result=len(metrics['calls']) >= 2))
+            auxiliary = [key for key in metrics['calls'] if key != 'complete-my-name-is-Alice']
+            assert auxiliary and not any(metrics['closed'].get(key) for key in auxiliary)
+            async def confirmed():
+                value = (await client.get(f'/api/sessions/{sid}/runs/control', params=target)).json()
+                return value if value.get('can_send') else None
+            summary = await eventually(confirmed)
+            assert summary['execution_stopped'] and summary['terminal_persisted']
+            assert summary['run_status'] == 'completed' and summary['cancel_status'] == 'none'
+            # A genuinely new request is admitted while the auxiliary HTTP call
+            # is still blocked; the complete previous answer stays in history.
+            followup = await client.post(f'/api/sessions/{sid}/chat/stream',
+                json={'message': 'complete-followup', 'start_request_id': str(uuid4())})
+            followup.raise_for_status()
+            assert metrics['calls']['complete-followup'] == 1
+            assert any(message['role'] == 'assistant' for message in metrics['contexts']['complete-followup'])
+            assert not any(metrics['closed'].get(key) for key in auxiliary)
+            await controller.learning_queue.close()
+            await eventually(lambda: asyncio.sleep(0, result=all(metrics['closed'].get(key) for key in auxiliary)))
     asyncio.run(scenario())
 
 

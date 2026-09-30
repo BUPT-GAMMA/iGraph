@@ -51,6 +51,7 @@ def create_igraph_factory(
     db: PostgresDb,
     execution_controller=None,
     remote_executor=None,
+    learning_queue=None,
 ) -> AgentFactory:
     def build_agent(ctx: RequestContext) -> Agent:
         raw_input = ctx.input.model_dump() if hasattr(ctx.input, "model_dump") else (ctx.input or {})
@@ -72,6 +73,10 @@ def create_igraph_factory(
         except (PermissionError, ValueError) as exc:
             raise FactoryPermissionError(str(exc)) from exc
 
+        learning = create_learning_machine(config, planning_mode=options.planning_mode)
+        if learning is not None:
+            learning.background_queue = learning_queue
+            learning.planning_mode = options.planning_mode
         source_pre_hook, source_tool_hook = source_scope_hooks(remote_binding, db)
         agent = (ControlledAgent if execution_controller else Agent)(
             id=AGENT_ID,
@@ -83,7 +88,7 @@ def create_igraph_factory(
             tools=[create_graph_tools(config, response_language=options.response_language), *create_workspace_tools(), update_agent_notes,
                    *register_remote_graph_tools(remote_executor, remote_binding)],
             skills=build_skills(config, user_id, remote_binding),
-            learning=create_learning_machine(config, planning_mode=options.planning_mode),
+            learning=learning,
             instructions=instructions_for(
                 reasoning_mode=options.reasoning_mode,
                 planning_mode=options.planning_mode,
