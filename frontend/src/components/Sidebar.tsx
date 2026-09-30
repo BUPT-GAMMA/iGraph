@@ -8,8 +8,6 @@ import { useI18n, type Translate } from '../i18n';
 import { pinKey, readPins } from '../sessionPins';
 
 function sessionTitle(session: Session, t: Translate) { return session.title || session.preview || session.last_message || t('Untitled analysis', '未命名分析'); }
-function noopLoginValueChange(_value: string) { /* Optional account controls are omitted in isolated component tests. */ }
-function noopLogin() { /* Optional account controls are omitted in isolated component tests. */ }
 
 type Props = {
   projects: Project[];
@@ -23,11 +21,7 @@ type Props = {
   activeId?: string;
   activeProjectId?: string;
   userId: string;
-  loginValue?: string;
-  loginError?: string;
-  loginPending?: boolean;
-  onLoginValueChange?: (value: string) => void;
-  onLogin?: () => void | Promise<void>;
+  onSignOut?: () => void | Promise<void>;
   dark: boolean;
   onTheme: () => void;
   onMemory: () => void;
@@ -76,7 +70,7 @@ function SessionRunIndicator({ status, unread, t }: { status?: string; unread?: 
   return <i className={`session-run-indicator is-static ${status || ''}`} role="status" aria-label={statusLabel} title={statusLabel} />;
 }
 
-export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, onSignOut, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
   const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
@@ -103,7 +97,8 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [switchingAccount, setSwitchingAccount] = useState(false);
+  const [signOutPending, setSignOutPending] = useState(false);
+  const [signOutError, setSignOutError] = useState('');
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
   const projectMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
@@ -156,12 +151,10 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
       const target = event.target as Node;
       if (accountMenuRef.current?.contains(target) || accountTriggerRef.current?.contains(target)) return;
       setAccountMenuOpen(false);
-      setSwitchingAccount(false);
     }
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key !== 'Escape') return;
       setAccountMenuOpen(false);
-      setSwitchingAccount(false);
       accountTriggerRef.current?.focus();
     }
     document.addEventListener('mousedown', closeOnOutside);
@@ -175,7 +168,7 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
   useEffect(() => {
     if (!userId) return;
     setAccountMenuOpen(false);
-    setSwitchingAccount(false);
+    setSignOutError('');
   }, [userId]);
 
   function toggleProjectMenu(project: Project, trigger: HTMLButtonElement) {
@@ -221,7 +214,15 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
   }
 
   const effectivelyCollapsed = collapsed && !mobileOpen;
-  const accountFormVisible = !userId || switchingAccount;
+
+  async function signOut() {
+    if (!onSignOut || signOutPending) return;
+    setSignOutPending(true);
+    setSignOutError('');
+    try { await onSignOut(); }
+    catch { setSignOutError(t('Could not sign out. Please try again.', '退出登录失败，请重试。')); }
+    finally { setSignOutPending(false); }
+  }
 
   function requireAccount(action: () => void) {
     if (userId) action();
@@ -286,19 +287,15 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
     </div>
     <div className="sidebar-footer">
       <div className="account-area">
-        <button ref={accountTriggerRef} className="account-trigger" onClick={() => { setAccountMenuOpen(current => !current); setSwitchingAccount(false); }} aria-label={userId ? t(`Account: ${userId}`, `账户：${userId}`) : t('Open sign in', '打开登录')} aria-haspopup="dialog" aria-expanded={accountMenuOpen}>
+        <button ref={accountTriggerRef} className="account-trigger" onClick={() => { setAccountMenuOpen(current => !current); setSignOutError(''); }} aria-label={userId ? t(`Account: ${userId}`, `账户：${userId}`) : t('Account', '账户')} aria-haspopup="dialog" aria-expanded={accountMenuOpen}>
           <span className={`avatar ${userId ? '' : 'guest'}`}>{(userId || t('G', '访')).slice(0, 1).toUpperCase()}</span>
-          <span className="account-copy"><strong>{userId || t('Not signed in', '未登录')}</strong><span>{userId ? t('Personal workspace', '个人工作区') : t('Select avatar to sign in', '点击头像登录')}</span></span>
+          <span className="account-copy"><strong>{userId || t('Not signed in', '未登录')}</strong><span>{t('Personal workspace', '个人工作区')}</span></span>
           <Icon name="chevron" size={14} />
         </button>
         <PopupPresence>{accountMenuOpen ? <Popup.div variant="popover" ref={accountMenuRef} className="account-popover" role="dialog" aria-label={t('Account', '账户')}>
           <div className="account-popover-head"><span>{userId ? t('Current account', '当前账户') : t('Welcome to iGraph', '欢迎使用 iGraph')}</span><strong>{userId || t('Sign in to sync your projects and conversations', '登录后同步你的项目与会话')}</strong></div>
-          {accountFormVisible ? <form className="account-login-form" onSubmit={event => { event.preventDefault(); void onLogin(); }}>
-            <label htmlFor="sidebar-user-id">{t('User ID', '用户 ID')}</label>
-            <input id="sidebar-user-id" autoFocus value={loginValue} onChange={event => onLoginValueChange(event.target.value)} placeholder={t('Enter your user ID', '请输入用户 ID')} autoComplete="username" disabled={loginPending} />
-            {loginError ? <span className="account-login-error" role="alert">{loginError}</span> : null}
-            <div className="account-login-actions">{userId ? <button type="button" className="account-cancel" onClick={() => setSwitchingAccount(false)}>{t('Cancel', '取消')}</button> : null}<button type="submit" className="account-login-submit" disabled={loginPending || !loginValue.trim()}>{loginPending ? t('Verifying…', '正在验证…') : t('Sign in', '登录')}</button></div>
-          </form> : <button className="account-switch" type="button" onClick={() => setSwitchingAccount(true)}><Icon name="move" size={15} /> {t('Sign in as another user', '使用其他用户登录')}</button>}
+          {signOutError && <span className="account-login-error" role="alert">{signOutError}</span>}
+          {userId && onSignOut && <button className="account-switch" type="button" disabled={signOutPending} onClick={() => void signOut()}><Icon name="arrow-right" size={15} /> {signOutPending ? t('Signing out…', '正在退出…') : t('Sign out', '退出登录')}</button>}
         </Popup.div> : null}</PopupPresence>
       </div>
       <button className="sidebar-theme" onClick={toggleLanguage} aria-label={language === 'en' ? 'Switch to Chinese' : '切换到英文'} title={language === 'en' ? 'Switch to Chinese' : '切换到英文'}><span lang={language === 'en' ? 'zh-CN' : 'en'}>{language === 'en' ? '中' : 'EN'}</span></button>

@@ -3,6 +3,7 @@ import type { RemoteConnection } from './types';
 import { RemoteGraphConnections } from './components/RemoteGraphConnections';
 import { remoteGraphError } from './remoteGraph';
 import { useActionDialog } from './components/useActionDialog';
+import { AuthRoot } from './components/AuthRoot';
 import { PopupPresence } from './components/PopupMotion';
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
@@ -10,7 +11,7 @@ import { createRoot } from 'react-dom/client';
 import { readComposerDraft, writeComposerDraft, clearComposerDraft } from './composerDrafts';
 import { readPins } from './sessionPins';
 import { forgetSessionActivity, pendingActivity, readSessionActivities, saveSessionActivity } from './sessionActivity';
-import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, importServerDataset, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listServerDatasets, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
+import { activateSession, ApiError, bindRequestAccount, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, importServerDataset, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listServerDatasets, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, ConstructionState, CsvBundleSchema, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, ServerDataset, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
@@ -202,13 +203,10 @@ function readPendingFirstTurn(userId: string, sessionId: string): PendingFirstTu
   } catch { return null; }
 }
 
-function App() {
+function App({ onLogout }: { onLogout?: () => Promise<void> } = {}) {
   const { t } = useI18n();
   const [userId, setUser] = useState(getUserId() || (demoMode ? 'demo' : ''));
   const { askConfirm, askPrompt, actionDialog } = useActionDialog(userId);
-  const [loginValue, setLoginValue] = useState(getUserId());
-  const [loginError, setLoginError] = useState('');
-  const [loginPending, setLoginPending] = useState(false);
   const [ready, setReady] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionCursor, setSessionCursor] = useState<string | null>(null);
@@ -850,28 +848,6 @@ function App() {
 
   useLayoutEffect(() => bindRequestAccount(userId), [userId]);
   useEffect(() => {
-    if (demoMode) return;
-    const synchronizeAccount = () => {
-      const nextUserId = getUserId();
-      if (nextUserId !== identityRef.current) resetAccount(nextUserId);
-    };
-    const handleStorage = (event: StorageEvent) => {
-      if (event.storageArea === localStorage && (event.key === USER_KEY || event.key === null)) synchronizeAccount();
-    };
-    const handleVisibility = () => { if (document.visibilityState === 'visible') synchronizeAccount(); };
-    window.addEventListener('storage', handleStorage);
-    window.addEventListener('focus', synchronizeAccount);
-    document.addEventListener('visibilitychange', handleVisibility);
-    // Read the current value, not event.newValue: queued events may already be old.
-    synchronizeAccount();
-    return () => {
-      window.removeEventListener('storage', handleStorage);
-      window.removeEventListener('focus', synchronizeAccount);
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, [userId]);
-
-  useEffect(() => {
     if (!userId || demoMode) return;
     const identity = userId;
     let disposed = false;
@@ -1157,36 +1133,15 @@ function App() {
     setWorkspaceError('');
     setDefaultModel(DEFAULT_MODEL);
     setAvailableModels([DEFAULT_MODEL]);
-    setLoginPending(false);
-    setLoginError('');
-    setLoginValue(nextUserId);
     setUser(nextUserId);
     // Preserve a signed-out deep link, but never reopen another account's route.
     if (previousUserId) writeWorkspaceRoute({ kind: 'home' }, true);
   }
 
-  async function login() {
-    const value = loginValue.trim(); if (!value) return setLoginError(tr('Enter a user ID', '请输入用户 ID'));
-    const accountEpoch = accountEpochRef.current;
-    const storedUserId = getUserId();
-    const stale = () => accountEpochRef.current !== accountEpoch || getUserId() !== storedUserId;
-    setLoginPending(true);
-    try {
-      const response = await validateUser(value);
-      if (stale()) return;
-      if (response.valid === false) throw new Error(tr('Invalid user ID', '用户 ID 无效'));
-      const selectedModel = response.default_model || DEFAULT_MODEL;
-      setUserId(value);
-      resetAccount(value);
-      setDefaultModel(selectedModel);
-      setAvailableModels(normalizedModels(response.available_models, selectedModel));
-      setLoginValue(value);
-      setLoginError('');
-    } catch (cause: any) {
-      if (!stale()) setLoginError(cause.message || tr('Sign-in failed', '登录失败'));
-    } finally {
-      if (accountEpochRef.current === accountEpoch) setLoginPending(false);
-    }
+  async function signOut() {
+    if (!onLogout) return;
+    await onLogout();
+    resetAccount('');
   }
   function newTask(targetProjectId: string | null = null, sourceProjects = projects, updateUrl = true) {
     const projectId = targetProjectId;
@@ -2201,7 +2156,7 @@ function App() {
     <TopBar onMenu={() => setMobileSidebarOpen(true)} onHome={() => showWorkspaceHome()} onModels={userId && !demoMode && cancelEnabled ? () => setModelsOpen(true) : undefined} />
     <PopupPresence key={`modelsOpen-${userId}`}>{modelsOpen && <ModelSettings key={userId} onClose={() => setModelsOpen(false)} onChanged={applyModelCatalog} />}</PopupPresence>
     <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={projects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} loginValue={loginValue} loginError={loginError} loginPending={loginPending} onLoginValueChange={value => { setLoginValue(value); setLoginError(''); }} onLogin={login} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
+      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={projects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} onSignOut={onLogout ? signOut : undefined} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
         {createGraphOpen ? <>
@@ -2258,4 +2213,4 @@ function ChatPaneWithState({ hasGraph, ...props }: any) {
 
 export default App;
 
-createRoot(document.getElementById('root')!).render(<I18nProvider><App /></I18nProvider>);
+createRoot(document.getElementById('root')!).render(<I18nProvider><AuthRoot>{(user, onLogout) => <App key={user.user_id} onLogout={onLogout} />}</AuthRoot></I18nProvider>);

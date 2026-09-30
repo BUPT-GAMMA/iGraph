@@ -23,7 +23,8 @@ it('sends the pinned identity for downloads and rejects cross-zone paths', async
   const fetchMock = vi.fn().mockResolvedValue(new Response('report'));
   vi.stubGlobal('fetch', fetchMock);
   expect(await readBlobText(await fetchArtifact('session', 'Derived/a b.txt'))).toBe('report');
-  expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-User-ID')).toBe('alice');
+  expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-User-ID')).toBeNull();
+  expect(fetchMock.mock.calls[0][1].credentials).toBe('include');
   expect(fetchMock.mock.calls[0][0]).toContain('/workspace/derived/a%20b.txt');
   await expect(fetchArtifact('session', 'Derived/../Ephemeral/private')).rejects.toThrow();
 });

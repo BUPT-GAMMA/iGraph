@@ -5,7 +5,7 @@ class FakeXHR {
   static instances: FakeXHR[] = [];
   upload = { onprogress: undefined as any };
   onload?: () => void; onerror?: () => void; onabort?: () => void; ontimeout?: () => void;
-  status = 200; responseText = ''; headers: Record<string, string> = {}; sent = false;
+  status = 200; responseText = ''; headers: Record<string, string> = {}; sent = false; withCredentials = false;
   constructor() { FakeXHR.instances.push(this); }
   open = vi.fn();
   setRequestHeader(key: string, value: string) { this.headers[key] = value; }
@@ -27,7 +27,9 @@ it('keeps registration fields and waits for the server after upload reaches 100%
   await Promise.resolve();
   expect(progress.mock.calls).toEqual([[42], [100]]);
   expect(settled).not.toHaveBeenCalled();
-  expect(xhr.headers['X-User-ID']).toBe('account-a');
+  expect(xhr.headers['X-User-ID']).toBeUndefined();
+  expect(xhr.headers['X-iGraph-Account']).toBe('account-a');
+  expect(xhr.withCredentials).toBe(true);
   const payload = { success: true, file_token: 'token', filename: 'data.csv', dataset: { dataset_id: 'dataset' }, construction_required: true };
   xhr.respond(payload);
   expect(await result).toEqual(payload);
