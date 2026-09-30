@@ -49,8 +49,8 @@ compose "$source_dir" build
 compose "$active" exec -T postgres sh -c 'exec pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > "$backup/postgres.sql.gz"
 changed=0
 rollback() {
-    result=$?
-    trap - ERR
+    result=${1:-$?}
+    trap - ERR INT TERM HUP
     if (( changed )); then
         echo 'Deployment failed; restoring the previous application images and source.' >&2
         rsync -a --delete --exclude=.env --exclude=host-config --exclude=.git "$backup/source/" "$active/"
@@ -60,6 +60,8 @@ rollback() {
     exit "$result"
 }
 trap rollback ERR
+trap 'rollback 130' INT
+trap 'rollback 143' TERM HUP
 changed=1
 compose "$source_dir" up -d --no-build --pull never --wait --wait-timeout 300
 # Test static assets as well as the health route (the latter alone misses 403s).
@@ -76,6 +78,6 @@ rsync -a --delete --exclude=.env --exclude=host-config --exclude=.git "$source_d
 cp "$source_dir/.env" "$active/.env"
 printf '%s\n' "$sha" > "$active/host-config/deployed-main-commit.txt"
 printf '%s\n' "$sha" > "$state/current-commit.txt"
-trap - ERR
+trap - ERR INT TERM HUP
 compose "$source_dir" ps --format '{{.Service}} {{.State}} {{.Health}}'
 printf 'Successfully deployed main commit %s\n' "$sha"
