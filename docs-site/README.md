@@ -46,9 +46,9 @@ $env:SITE_URL = 'https://igraph-docs.YOUR_SUBDOMAIN.workers.dev'
 npm run deploy
 ```
 
-当前仓库的 `.github/workflows/ci.yml` 检查应用代码，没有独立的文档站发布工作流。修改文档后需运行这里的构建与检查命令。若要接入自动发布，可另行配置 Cloudflare 凭据 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`，并将实际站点域名传给 `SITE_URL`。
+当前仓库没有 GitHub Actions CI 或文档站发布工作流。修改文档后需在本地运行这里的构建与检查命令。若要接入自动发布，可另行配置 Cloudflare 凭据 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`，并将实际站点域名传给 `SITE_URL`。
 
-The current `.github/workflows/ci.yml` checks application code; the repository has no separate docs publishing workflow. Run the build and check commands here after documentation changes. If adding automated publishing, configure `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, and pass the actual site origin as `SITE_URL`.
+The repository has no GitHub Actions CI or docs publishing workflow. Run the build and check commands here locally after documentation changes. If adding automated publishing, configure `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, and pass the actual site origin as `SITE_URL`.
 
 ## 内容与页面 / Content and pages
 

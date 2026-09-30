@@ -11,7 +11,7 @@
 - [AGENT_ORCHESTRATION_INTEGRATION.md](AGENT_ORCHESTRATION_INTEGRATION.md)：基于 dev 的编排功能移植、兼容修复、测试证据和部署条件。
 
 - `AGENTOS_FOUR_MODULE_REFACTOR.md`：**当前主文档**。四模块职责、AgentOS 映射、迁移阶段和依赖方向。
-- [CI_QUALITY_POLICY.md](CI_QUALITY_POLICY.md)：当前 CI 强制检查、覆盖率过渡底线、改善目标和 PR 补测约定。
+- [TESTING.md](TESTING.md)：本地后端回归、前端构建、覆盖率分析和 PR 验证约定。
 - [TOOL_DAG_EXECUTION.md](TOOL_DAG_EXECUTION.md)：工具资源目录、DAG 并行调度、后台作业与并发配置。
 - [TOOL_DAG_VERIFICATION.md](TOOL_DAG_VERIFICATION.md)：真实模型问答、算法并行正确性和构图/前端回归验收记录。
 - [GRAPH_CONSTRUCTION.md](GRAPH_CONSTRUCTION.md)：构图接口、数据集复用、优化预览与提交。
