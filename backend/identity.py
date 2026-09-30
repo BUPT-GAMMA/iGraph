@@ -17,16 +17,9 @@ def current_user(request: Request, users: UserDirectory) -> UserRecord:
     return record
 
 
-def require_admin(request: Request, users: UserDirectory) -> UserRecord:
-    record = current_user(request, users)
-    if "admin" not in record.roles:
-        raise HTTPException(status_code=403, detail="需要管理员权限")
-    return record
-
-
 def public_user(record: UserRecord) -> dict:
-    return {"user_id": record.user_id, "enabled": record.enabled,
+    return {"user_id": record.user_id, "username": record.username or record.user_id, "enabled": record.enabled,
             "roles": list(record.roles), "allowed_models": list(record.allowed_models),
             "created_at": record.created_at, "updated_at": record.updated_at,
-            "is_admin": "admin" in record.roles}
+            "is_admin": False}
 

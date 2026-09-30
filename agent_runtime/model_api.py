@@ -9,7 +9,6 @@ from agent_runtime.execution_store import ControlError, TERMINAL
 
 
 class BootstrapModels(BaseModel):
-    is_admin: bool = False
     allowed: list[str] = Field(default_factory=list)
     legacy: list[dict] = Field(default_factory=list)
 
@@ -130,7 +129,7 @@ def create_model_router(catalog, db):
 
     @router.post('/internal/model-catalog/bootstrap')
     async def bootstrap(req: BootstrapModels, request: Request):
-        return await asyncio.to_thread(catalog.bootstrap, identity(request), req.allowed, req.legacy, req.is_admin)
+        return await asyncio.to_thread(catalog.bootstrap, identity(request), req.allowed, req.legacy)
 
     @router.get('/internal/model-catalog')
     async def listing(request: Request):

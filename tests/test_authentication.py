@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -49,17 +50,19 @@ def test_registration_login_and_hashed_storage(auth_client):
     client, app, settings = auth_client
     response = client.post("/api/auth/register", json={"username": "Novel_User", "password": PASSWORD})
     assert response.status_code == 201
-    assert response.json()["user_id"] == "novel_user"
+    user_id = response.json()["user_id"]
+    assert user_id != "novel_user"
+    assert response.json()["username"] == "novel_user"
     assert response.json()["roles"] == ["user"] and not response.json()["is_admin"]
     assert response.json()["allowed_models"]
-    assert client.get("/api/auth/me").json()["user_id"] == "novel_user"
+    assert client.get("/api/auth/me").json()["user_id"] == user_id
     cookie = response.headers["set-cookie"]
     assert "HttpOnly" in cookie and "SameSite=lax" in cookie
     assert "Secure" not in cookie
     token = client.cookies.get(AUTH_COOKIE)
     with app.state.auth._connection() as connection:
         credential = connection.execute("SELECT * FROM credentials WHERE username='novel_user'").fetchone()
-        session = connection.execute("SELECT * FROM sessions WHERE user_id='novel_user'").fetchone()
+        session = connection.execute("SELECT * FROM sessions WHERE user_id=?", (user_id,)).fetchone()
     assert verify_password(PASSWORD, credential["password_hash"])
     assert credential["password_hash"] != PASSWORD
     assert session["token_hash"] == hashlib.sha256(token.encode()).hexdigest()
@@ -104,7 +107,7 @@ def test_existing_accounts_are_reserved_and_bootstrap_never_overwrites(auth_clie
     assert not app.state.auth.bootstrap("admin", "A-Different-Password!")
     assert login(client, password="A-Different-Password!").status_code == 401
     assert login(client).status_code == 200
-    assert client.get("/api/auth/me").json()["is_admin"]
+    assert client.get("/api/auth/me").json()["is_admin"] is False
 
 
 @pytest.mark.parametrize("username", ["../admin", "a/b", "a\\b", "xy", "a" * 33, "人物姓名", "name:admin", "a b c"])
@@ -139,7 +142,7 @@ def test_header_forgery_is_rejected_and_cookie_alone_decides_owner(auth_client):
     assert client.get("/health").status_code == 200
     assert login(client, "alice").status_code == 200
     assert client.get("/api/auth/me", headers={"X-User-ID": "admin"}).json()["user_id"] == "alice"
-    assert client.get("/api/admin/users", headers={"X-User-ID": "admin"}).status_code == 403
+    assert client.get("/api/admin/users", headers={"X-User-ID": "admin"}).status_code == 404
     validation = client.post("/api/auth/validate", headers={"X-User-ID": "admin"})
     assert validation.status_code == 200 and validation.json()["user_id"] == "alice"
 
@@ -259,10 +262,50 @@ def test_simultaneous_registration_reserves_a_username_once(auth_client):
     other = AuthenticationStore(app.state.auth.path, app.state.users)
     def create(store):
         try:
-            return store.register("sameuser", PASSWORD).user_id
+            return store.register("sameuser", PASSWORD).username
         except HTTPException as exc:
             return exc.status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(create, [app.state.auth, other]))
     assert sorted(results, key=str) == [409, "sameuser"]
-    assert sum(record.user_id == "sameuser" for record in app.state.users.list()) == 1
+    assert sum(record.username == "sameuser" for record in app.state.users.list()) == 1
+
+
+@pytest.mark.parametrize("username", ["admin", "alice"])
+def test_no_account_can_list_modify_or_delete_other_users(auth_client, username):
+    client, app, settings = auth_client
+    # An old stored administrator role is ignored after upgrading.
+    from dataclasses import asdict
+    records = [asdict(record) for record in app.state.users.list()]
+    records[0]["roles"] = ["admin", "user"]
+    settings.users_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.users_file.write_text(json.dumps({"users": records}), encoding="utf-8")
+    before = settings.users_file.read_bytes()
+    assert login(client, username).status_code == 200
+    me = client.get("/api/auth/me").json()
+    assert me["roles"] == ["user"] and me["is_admin"] is False
+    assert client.get("/api/admin/users").status_code == 404
+    assert client.post("/api/admin/users", json={"user_id": "alice", "roles": ["admin"]}).status_code == 404
+    assert client.delete("/api/admin/users/alice").status_code == 404
+    assert settings.users_file.read_bytes() == before
+    assert app.state.users.get("admin").allowed_models == app.state.users.get("alice").allowed_models
+
+
+def test_registering_legacy_admin_name_creates_an_independent_ordinary_account(auth_client):
+    client, app, _ = auth_client
+    assert login(client).status_code == 200
+    project = client.post("/api/projects", json={"name": "Legacy private data"}).json()["project"]
+    assert client.post("/api/auth/logout").status_code == 200
+    # Simulate the old passwordless account: its data must never be publicly claimed.
+    with app.state.auth._connection(write=True) as connection:
+        connection.execute("DELETE FROM credentials WHERE username='admin'")
+    response = client.post("/api/auth/register", json={"username": "admin", "password": "abc123"})
+    assert response.status_code == 201
+    assert response.json()["username"] == "admin"
+    assert response.json()["user_id"] != "admin"
+    assert response.json()["roles"] == ["user"] and response.json()["is_admin"] is False
+    assert client.get("/api/projects").json()["projects"] == []
+    assert client.get(f"/api/projects/{project['project_id']}").status_code == 404
+    assert app.state.users.get("admin") is not None
+    assert client.post("/api/auth/logout").status_code == 200
+    assert login(client, "admin", "abc123").status_code == 200

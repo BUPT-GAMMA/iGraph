@@ -11,6 +11,7 @@ import re
 import secrets
 import sqlite3
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -133,17 +134,14 @@ class AuthenticationStore:
         validate_password(password)
         encoded = password_hash(password)
         with self._connection(write=True) as connection:
-            reserved = {str(value).lower() for value in self.users._seed_ids()}
-            reserved.add(self.users.admin_user_id.lower())
-            reserved.update(record.user_id.lower() for record in self.users.list())
-            if username in reserved or connection.execute(
-                "SELECT 1 FROM credentials WHERE username=?", (username,)
-            ).fetchone():
+            if connection.execute("SELECT 1 FROM credentials WHERE username=?", (username,)).fetchone():
                 raise HTTPException(409, {"code": "AUTH_USERNAME_TAKEN", "message": "该用户名已被使用"})
+            # A new registration must never claim an old passwordless user's data.
+            user_id = f"user-{uuid.uuid4()}"
             connection.execute("INSERT INTO credentials VALUES (?, ?, ?, ?)",
-                               (username, username, encoded, time.time()))
+                               (username, user_id, encoded, time.time()))
             try:
-                return self.users.create(UserRecord(user_id=username))
+                return self.users.create(UserRecord(user_id=user_id, username=username))
             except ValueError as exc:
                 raise HTTPException(409, {"code": "AUTH_USERNAME_TAKEN", "message": "该用户名已被使用"}) from exc
 

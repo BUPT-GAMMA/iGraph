@@ -181,11 +181,14 @@ def test_server_dataset_http_catalog_and_project_import(
     )
 
     async def exercise() -> None:
+        app = create_app(config)
+        assert app.state.auth.bootstrap("admin", "fixture-password")
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=create_app(config)),
+            transport=httpx.ASGITransport(app=app),
             base_url="http://test",
-            headers={"X-User-ID": "admin"},
         ) as client:
+            response = await client.post("/api/auth/login", json={"username": "admin", "password": "fixture-password"})
+            assert response.status_code == 200
             project = (
                 await client.post("/api/projects", json={"name": "Large graph"})
             ).json()["project"]
@@ -249,11 +252,14 @@ def test_large_server_dataset_uses_prepared_snapshot_without_session_copy(
     )
 
     async def exercise() -> None:
+        app = backend_app.create_app(config)
+        assert app.state.auth.bootstrap("admin", "fixture-password")
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=backend_app.create_app(config)),
+            transport=httpx.ASGITransport(app=app),
             base_url="http://test",
-            headers={"X-User-ID": "admin"},
         ) as client:
+            response = await client.post("/api/auth/login", json={"username": "admin", "password": "fixture-password"})
+            assert response.status_code == 200
             project = (
                 await client.post("/api/projects", json={"name": "Prepared graph"})
             ).json()["project"]

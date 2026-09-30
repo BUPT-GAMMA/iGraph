@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 
 from agent_runtime.execution_store import ExecutionStore, ControlError
 from agent_runtime.model_catalog import ModelCatalog
+from agent_runtime.model_registry import SUPPORTED_MODELS
 
 
 @pytest.fixture
@@ -37,10 +38,10 @@ def test_migration_does_not_resurrect_deleted_model(catalog):
     legacy = {'model_id': 'old', 'display_name': 'Old', 'api_key': 'legacy-secret', 'base_url': 'https://old.example/v1'}
     catalog.bootstrap('alice', ['qwen3.6-plus'], [legacy])
     catalog.bootstrap('alice', ['qwen3.6-plus'], [legacy])
-    assert len(catalog.list('alice')['models']) == 2
+    assert len(catalog.list('alice')['models']) == len(SUPPORTED_MODELS) + 1
     catalog.delete('alice', 'old', 1)
     catalog.bootstrap('alice', ['qwen3.6-plus'], [legacy])
-    assert len(catalog.list('alice')['models']) == 1
+    assert len(catalog.list('alice')['models']) == len(SUPPORTED_MODELS)
     assert catalog.selection('alice', 'old-session', 'old')['model_unavailable_reason'] == 'MODEL_REMOVED'
 
 
@@ -100,12 +101,14 @@ def test_invalid_capabilities_and_limits_are_explicit(catalog):
         custom(catalog, context_window=2000)
 
 
-def test_shared_model_is_read_only_for_non_admin_and_keeps_personal_visibility(catalog):
-    with pytest.raises(ControlError, match='MODEL_PROVIDER_READ_ONLY'):
-        catalog.delete('alice', 'qwen3.6-plus', 1)
+def test_default_model_is_editable_and_keeps_personal_visibility(catalog):
     catalog.set_enabled('alice', 'qwen3.6-plus', False, 1)
     catalog.bootstrap('alice', ['qwen3.6-plus'])
-    assert catalog.list('alice')['models'][0]['unavailable_reason'] == 'MODEL_DISABLED'
+    model = next(m for m in catalog.list('alice')['models'] if m['config_id'] == 'qwen3.6-plus')
+    assert model['unavailable_reason'] == 'MODEL_DISABLED'
+    catalog.delete('alice', model['config_id'], model['revision'])
+    catalog.bootstrap('alice', ['qwen3.6-plus'])
+    assert all(m['config_id'] != model['config_id'] for m in catalog.list('alice')['models'])
 
 
 def start(catalog, sid='A', key='request', revision=None):

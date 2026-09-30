@@ -21,6 +21,7 @@ type Props = {
   activeId?: string;
   activeProjectId?: string;
   userId: string;
+  username?: string;
   onSignOut?: () => void | Promise<void>;
   dark: boolean;
   onTheme: () => void;
@@ -70,8 +71,9 @@ function SessionRunIndicator({ status, unread, t }: { status?: string; unread?: 
   return <i className={`session-run-indicator is-static ${status || ''}`} role="status" aria-label={statusLabel} title={statusLabel} />;
 }
 
-export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, onSignOut, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, username, onSignOut, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
+  const accountName = username || userId;
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
   const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
   useEffect(() => {
@@ -287,13 +289,13 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
     </div>
     <div className="sidebar-footer">
       <div className="account-area">
-        <button ref={accountTriggerRef} className="account-trigger" onClick={() => { setAccountMenuOpen(current => !current); setSignOutError(''); }} aria-label={userId ? t(`Account: ${userId}`, `账户：${userId}`) : t('Account', '账户')} aria-haspopup="dialog" aria-expanded={accountMenuOpen}>
-          <span className={`avatar ${userId ? '' : 'guest'}`}>{(userId || t('G', '访')).slice(0, 1).toUpperCase()}</span>
-          <span className="account-copy"><strong>{userId || t('Not signed in', '未登录')}</strong><span>{t('Personal workspace', '个人工作区')}</span></span>
+        <button ref={accountTriggerRef} className="account-trigger" onClick={() => { setAccountMenuOpen(current => !current); setSignOutError(''); }} aria-label={userId ? t(`Account: ${accountName}`, `账户：${accountName}`) : t('Account', '账户')} aria-haspopup="dialog" aria-expanded={accountMenuOpen}>
+          <span className={`avatar ${userId ? '' : 'guest'}`}>{(accountName || t('G', '访')).slice(0, 1).toUpperCase()}</span>
+          <span className="account-copy"><strong>{accountName || t('Not signed in', '未登录')}</strong><span>{t('Personal workspace', '个人工作区')}</span></span>
           <Icon name="chevron" size={14} />
         </button>
         <PopupPresence>{accountMenuOpen ? <Popup.div variant="popover" ref={accountMenuRef} className="account-popover" role="dialog" aria-label={t('Account', '账户')}>
-          <div className="account-popover-head"><span>{userId ? t('Current account', '当前账户') : t('Welcome to iGraph', '欢迎使用 iGraph')}</span><strong>{userId || t('Sign in to sync your projects and conversations', '登录后同步你的项目与会话')}</strong></div>
+          <div className="account-popover-head"><span>{userId ? t('Current account', '当前账户') : t('Welcome to iGraph', '欢迎使用 iGraph')}</span><strong>{accountName || t('Sign in to sync your projects and conversations', '登录后同步你的项目与会话')}</strong></div>
           {signOutError && <span className="account-login-error" role="alert">{signOutError}</span>}
           {userId && onSignOut && <button className="account-switch" type="button" disabled={signOutPending} onClick={() => void signOut()}><Icon name="arrow-right" size={15} /> {signOutPending ? t('Signing out…', '正在退出…') : t('Sign out', '退出登录')}</button>}
         </Popup.div> : null}</PopupPresence>

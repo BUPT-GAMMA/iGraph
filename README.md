@@ -129,17 +129,20 @@ Backend 提供 `POST /api/auth/register`、`POST /api/auth/login`、`GET /api/au
 公开 `/api/*` 请求使用 HttpOnly 会话 cookie，不接受客户端声明的 `X-User-ID` 作为身份。
 服务间的 `X-User-ID` 与服务密钥契约保留，由 Backend 从登录会话派生用户身份。
 
-已有名单中的账户（包括 `admin`）不会被公开注册覆盖。升级后，请在 Backend 运行环境中
-为需要保留的账户初始化密码；此操作只允许设置尚未拥有凭据的已有账户，不会重置密码：
+所有账户权限相同，包括用户名为 `admin` 的账户；不提供用户列表、修改他人角色或删除他人的接口。
+每个账户初次加载模型服务时都会获得独立的智增增默认配置，可以查看和修改自己的密钥、地址及模型。
+默认密钥来自部署配置（已有部署先读取原共享连接）；这只是初始副本，后续修改、停用、删除均只影响本人。
+初始副本可能使用相同的上游 API 密钥，并不代表自动创建了独立的智增增计费账户。
 
-```bash
-python -c 'from dotenv import load_dotenv; load_dotenv(); from getpass import getpass; from backend.authentication import bootstrap_password; print("初始化成功" if bootstrap_password("admin", getpass("设置 admin 初始密码: ")) else "已有登录凭据，未覆盖")'
-```
+已有密码的账户继续使用原密码和数据。旧管理员角色及模型授权差异不再生效；原共享连接按用户迁移，
+保留会话选择、模型 ID 和运行历史快照，删除过的个人配置不会在重启后恢复。
+新注册账户使用独立内部 ID，页面仍显示注册用户名，避免注册同名账户继承旧版无密码账户的历史数据。
+旧版无密码账户的数据会保留；如需恢复访问，可在受信任的 Backend 主机通过
+`backend.authentication.bootstrap_password(旧用户ID, 新密码)` 初始化尚未被注册占用的登录名。
+该维护函数对所有旧账户相同，不授予管理员权限，也不覆盖现有密码。
 
-Docker Compose 部署可在上述命令前加 `docker compose exec backend`。请使用项目配置的
-数据目录和与 Backend 相同的运行用户，确保新建的 SQLite 文件可被服务读写。
 密码哈希和会话 token 哈希默认存于 `${IGRAPH_DATA_ROOT}/backend/authentication.sqlite3`；
-该文件与 `users.json` 均应持久化。仓库不提供默认密码或部署账户的真实凭据。
+该文件与 `users.json` 均应持久化。仓库不提供默认登录密码或部署账户的真实凭据。
 
 前端默认与 Backend 同源，Nginx 保留浏览器请求的 Host 以校验写请求来源。
 HTTPS 反向代理部署时，通过 `BACKEND_AUTH_TRUSTED_PROXIES` 配置真实代理地址/CIDR；
