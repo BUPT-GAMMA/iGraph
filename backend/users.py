@@ -1,7 +1,7 @@
 """Backend-owned user directory.
 
-The former allow-list seeds this repository. Browser authentication is handled
-separately by Backend; Agent Runtime never reads user or credential files.
+Legacy IDs are retained only to preserve old resource ownership. All accounts
+have the same role and model defaults; browser access requires password login.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from backend.model_policy import SUPPORTED_MODELS
 class UserRecord:
     user_id: str
     enabled: bool = True
+    username: str = ""
     roles: list[str] = field(default_factory=lambda: ["user"])
     allowed_models: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
@@ -39,8 +40,7 @@ class UserDirectory:
     ) -> None:
         self.path = path
         self.seed_path = seed_path
-        self.admin_user_id = admin_user_id
-        self.default_admin_model = default_admin_model
+        # The legacy constructor arguments remain accepted for existing deployments.
         self.default_user_model = default_user_model
         self._lock = threading.RLock()
 
@@ -94,7 +94,7 @@ class UserDirectory:
                 try:
                     payload = json.loads(self.path.read_text(encoding="utf-8"))
                     return {
-                        item["user_id"]: UserRecord(**item)
+                        item["user_id"]: self._ordinary_user(UserRecord(**item))
                         for item in payload.get("users", [])
                         if isinstance(item, dict) and item.get("user_id")
                     }
@@ -102,23 +102,24 @@ class UserDirectory:
                     pass
             records: dict[str, UserRecord] = {}
             for user_id in self._seed_ids():
-                is_admin = user_id == self.admin_user_id
                 records[user_id] = UserRecord(
                     user_id=user_id,
-                    roles=["admin", "user"] if is_admin else ["user"],
-                    allowed_models=(
-                        self._ordered_models(self.default_admin_model, SUPPORTED_MODELS)
-                        if is_admin
-                        else self._default_user_models()
-                    ),
+                    roles=["user"],
+                    allowed_models=self._default_user_models(),
                 )
             return records
 
     def _default_user_models(self) -> list[str]:
         return self._ordered_models(
             self.default_user_model,
-            (model for model in SUPPORTED_MODELS if not model.startswith(("gpt-", "claude-"))),
+            SUPPORTED_MODELS,
         )
+
+    def _ordinary_user(self, record: UserRecord) -> UserRecord:
+        # Legacy role and model allow-list fields no longer grant privileges.
+        record.roles = ["user"]
+        record.allowed_models = self._default_user_models()
+        return record
 
     def _write(self, records: dict[str, UserRecord]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,16 +159,8 @@ class UserDirectory:
             existing = records.get(record.user_id)
             if existing:
                 record.created_at = existing.created_at
-            record.roles = list(dict.fromkeys(str(role).strip() for role in record.roles if str(role).strip())) or ["user"]
-            if record.user_id == self.admin_user_id and "admin" not in record.roles:
-                record.roles.insert(0, "admin")
+            self._ordinary_user(record)
             record.updated_at = time.time()
-            allowed = [model for model in record.allowed_models if model in SUPPORTED_MODELS]
-            record.allowed_models = allowed or (
-                self._ordered_models(self.default_admin_model, SUPPORTED_MODELS)
-                if "admin" in record.roles
-                else self._default_user_models()
-            )
             records[record.user_id] = record
             self._write(records)
             return record

@@ -9,6 +9,7 @@ from test_projects import FakeServiceClient, client, headers
 from test_memory_api import memory_stack
 from test_skill_api import skill_client
 from test_remote_graph_api import api as remote_api, FORM
+from test_model_api import api as provider_api
 
 
 def spoofed_headers(user_id, claimed_user_id):
@@ -150,3 +151,42 @@ def test_remote_graph_connections_and_bindings_follow_cookie_owner(public_remote
     assert client.put("/api/sessions/alice-session/remote-graph", headers=other, json={"connection_id": cid}).status_code == 404
     assert client.put("/api/sessions/alice-session/remote-graph", headers=owner, json={"connection_id": cid}).status_code == 200
     assert client.get("/api/remote-graphs", headers=owner).json()["connections"][0]["connection_id"] == cid
+
+
+@pytest.fixture
+def public_model_stack(client, provider_api, monkeypatch):
+    runtime_client, _catalog = provider_api
+    monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'true')
+    original = FakeServiceClient.request
+
+    async def request(self, method, path, *, headers, params=None, json_body=None, **kwargs):
+        if path.startswith(('/internal/model-providers', '/internal/model-catalog')):
+            response = runtime_client.request(method, path, headers=headers, params=params, json=json_body)
+            if response.status_code >= 400:
+                raise HTTPException(response.status_code, response.json()['detail'])
+            return response.json()
+        return await original(self, method, path, headers=headers, params=params, json_body=json_body, **kwargs)
+
+    monkeypatch.setattr(FakeServiceClient, 'request', request)
+    return client
+
+
+def test_personal_model_credentials_follow_cookie_identity_through_both_services(public_model_stack):
+    client = public_model_stack
+    owner, other = headers('alice'), spoofed_headers('admin', 'alice')
+    own = client.get('/api/model-providers', headers=owner).json()['providers']
+    others = client.get('/api/model-providers', headers=other).json()['providers']
+    a = next(p for p in own if p['base_url'] == 'https://test.example/v1')
+    b = next(p for p in others if p['base_url'] == 'https://test.example/v1')
+    assert a['editable'] and b['editable'] and a['provider_id'] != b['provider_id']
+    path = f"/api/model-providers/{a['provider_id']}/credentials?revision={a['revision']}"
+    response = client.get(path, headers=owner)
+    assert response.status_code == 200 and response.json()['api_key'] == 'deployment-secret'
+    assert 'no-store' in response.headers['cache-control']
+    denied = client.get(path, headers=other)
+    assert denied.status_code == 404 and 'deployment-secret' not in denied.text
+    assert client.delete(f"/api/model-providers/{a['provider_id']}?revision={a['revision']}", headers=other).status_code == 404
+    saved = client.post('/api/model-providers', headers=owner, json={**a, 'api_key': 'alice-key', 'name': 'Alice only'})
+    assert saved.status_code == 200
+    path_b = f"/api/model-providers/{b['provider_id']}/credentials?revision={b['revision']}"
+    assert client.get(path_b, headers=other).json()['api_key'] == 'deployment-secret'
