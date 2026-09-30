@@ -1,5 +1,6 @@
 """Real HTTP races which cannot be proved by reducer/status-only assertions."""
 import asyncio
+import json
 import socket
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -26,6 +27,7 @@ async def running_stack(root, *, learning=False):
         try:
             async with httpx.AsyncClient(base_url=url, headers={'X-User-ID': 'admin', 'X-iGraph-Stream-Version': '2'},
                                          timeout=30, trust_env=False) as client:
+                (await client.post('/api/auth/login', json={'username': 'admin', 'password': 'cancellation-test-password'})).raise_for_status()
                 response = await client.post('/api/sessions', json={'model': 'qwen3.6-plus'})
                 sid = response.json()['session_id']
                 graph.get_required(sid, user_id='admin').set_graph(_legacy_graph())
@@ -64,27 +66,85 @@ def test_native_handoff_failure_releases_admission_without_replaying_question(tm
     asyncio.run(scenario())
 
 
-def test_real_learning_machine_model_connection_stops_with_its_run(tmp_path):
+def test_disconnect_during_preparation_still_starts_native_run_once(tmp_path):
+    from backend.service_client import ServiceClient
+
+    async def scenario():
+        async with running_stack(tmp_path) as (client, sid, graph, controller, metrics):
+            ready, release = asyncio.Event(), asyncio.Event()
+            original_stream, original_begin = ServiceClient.stream, controller.begin
+
+            @asynccontextmanager
+            async def delayed_handoff(self, method, path, **kwargs):
+                if path == '/agents/igraph-agent/runs':
+                    ready.set()
+                    await release.wait()
+                async with original_stream(self, method, path, **kwargs) as response:
+                    yield response
+
+            async def slow_native_start(*args, **kwargs):
+                # HTTP 200 headers precede the native producer's durable claim.
+                await asyncio.sleep(.3)
+                return await original_begin(*args, **kwargs)
+
+            question = 'complete-disconnected-preparation'
+            target = {'start_request_id': str(uuid4())}
+            with patch.object(ServiceClient, 'stream', delayed_handoff), patch.object(controller, 'begin', slow_native_start):
+                observer = asyncio.create_task(client.post(f'/api/sessions/{sid}/chat/stream',
+                    json={'message': question, **target}))
+                try:
+                    await asyncio.wait_for(ready.wait(), 40)
+                    observer.cancel()
+                    await asyncio.gather(observer, return_exceptions=True)
+                    await asyncio.sleep(.1)
+                    release.set()
+
+                    async def completed():
+                        result = (await client.get(f'/api/sessions/{sid}/runs/control', params=target)).json()
+                        return result if result.get('can_send') else None
+
+                    result = await eventually(completed, 15)
+                    assert result['run_status'] == 'completed', result
+                    assert result['native_run_created'] and result['terminal_persisted']
+                    assert metrics['calls'][question] == 1
+                    snapshot = await client.get(f'/api/sessions/{sid}/runs/{result["run_id"]}/snapshot')
+                    assert snapshot.json()['snapshot_complete']
+                finally:
+                    release.set()
+                    observer.cancel()
+                    await asyncio.gather(observer, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_real_background_learning_does_not_hold_chat_admission(tmp_path, monkeypatch):
+    from agent_runtime import agno_factory
+    monkeypatch.setattr(agno_factory, "register_remote_graph_tools", lambda *_: [])
     async def scenario():
         async with running_stack(tmp_path, learning=True) as (client, sid, graph, controller, metrics):
             target = {'start_request_id': str(uuid4())}
-            task = asyncio.create_task(client.post(f'/api/sessions/{sid}/chat/stream', json={'message': 'stream-my-name-is-Alice', **target}))
-            try:
-                await eventually(lambda: asyncio.sleep(0, result=len(metrics['calls']) >= 2))
-                auxiliary = [key for key in metrics['calls'] if key != 'stream-my-name-is-Alice']
-                assert auxiliary
-                response = await client.post(f'/api/sessions/{sid}/runs/cancel', json={'target': target, 'cancel_request_id': str(uuid4())})
-                assert response.status_code in {200, 202}
-                await asyncio.wait_for(task, 10)
-                await eventually(lambda: asyncio.sleep(0, result=all(metrics['closed'].get(key) for key in auxiliary)))
-                async def confirmed():
-                    value = (await client.get(f'/api/sessions/{sid}/runs/control', params=target)).json()
-                    return value if value.get('can_send') else None
-                summary = await eventually(confirmed)
-                assert summary['execution_stopped'] and summary['terminal_persisted']
-                assert all(count == 1 for count in metrics['calls'].values())
-            finally:
-                task.cancel(); await asyncio.gather(task, return_exceptions=True)
+            response = await client.post(f'/api/sessions/{sid}/chat/stream',
+                json={'message': 'complete-my-name-is-Alice', **target})
+            response.raise_for_status()
+            await eventually(lambda: asyncio.sleep(0, result=len(metrics['calls']) >= 2))
+            auxiliary = [key for key in metrics['calls'] if key != 'complete-my-name-is-Alice']
+            assert auxiliary and not any(metrics['closed'].get(key) for key in auxiliary)
+            async def confirmed():
+                value = (await client.get(f'/api/sessions/{sid}/runs/control', params=target)).json()
+                return value if value.get('can_send') else None
+            summary = await eventually(confirmed)
+            assert summary['execution_stopped'] and summary['terminal_persisted']
+            assert summary['run_status'] == 'completed' and summary['cancel_status'] == 'none'
+            # A genuinely new request is admitted while the auxiliary HTTP call
+            # is still blocked; the complete previous answer stays in history.
+            followup = await client.post(f'/api/sessions/{sid}/chat/stream',
+                json={'message': 'complete-followup', 'start_request_id': str(uuid4())})
+            followup.raise_for_status()
+            assert metrics['calls']['complete-followup'] == 1
+            assert any(message['role'] == 'assistant' for message in metrics['contexts']['complete-followup'])
+            assert not any(metrics['closed'].get(key) for key in auxiliary)
+            await controller.learning_queue.close()
+            await eventually(lambda: asyncio.sleep(0, result=all(metrics['closed'].get(key) for key in auxiliary)))
     asyncio.run(scenario())
 
 

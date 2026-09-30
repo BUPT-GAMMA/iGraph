@@ -1,4 +1,4 @@
-"""Shared connections use the same management contract without sharing edit rights."""
+"""Deployment defaults become independent user-owned connections, including upgrades."""
 import json
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -19,7 +19,7 @@ def catalog(tmp_path, monkeypatch):
             monkeypatch.delenv(f'{prefix}_{suffix}', raising=False)
     monkeypatch.setenv('LLM_API_KEY', 'seed-secret')
     monkeypatch.setenv('LLM_BASE_URL', 'https://api.zhizengzeng.com/v1')
-    store = ExecutionStore(create_engine(f'sqlite:///{tmp_path}/shared.db', connect_args={'check_same_thread': False}))
+    store = ExecutionStore(create_engine(f'sqlite:///{tmp_path}/providers.db', connect_args={'check_same_thread': False}))
     store.migrate()
     catalog = ModelCatalog(store, SimpleNamespace(llm_api_key='', llm_base_url=''))
     catalog.bootstrap('admin', ['qwen3.6-plus'], is_admin=True)
@@ -35,6 +35,11 @@ def model(catalog, uid='admin', cid='qwen3.6-plus'):
     return next(m for m in catalog.list(uid)['models'] if m['config_id'] == cid)
 
 
+def credentials(catalog, uid, provider=None):
+    p = provider or connection(catalog, uid)
+    return catalog.provider_credentials(uid, p['provider_id'], p['revision'])['api_key']
+
+
 def start(catalog, uid='bob'):
     return catalog.store.register(uid, 'session', 'request', 'fingerprint',
         capture_model=lambda conn: catalog.freeze(conn, uid, 'session'))[0]
@@ -45,133 +50,148 @@ def finish(catalog, run, uid='bob'):
         preparation_stopped=True, agent_stopped=True, terminal_persisted=True, run_status='completed')
 
 
-def test_one_actual_provider_for_all_model_brands_with_separate_edit_rights(catalog):
-    result = catalog.list_providers('admin')
-    assert len(result['providers']) == 1
+def test_all_accounts_get_equivalent_editable_private_defaults(catalog):
+    a, b = connection(catalog), connection(catalog, 'bob')
+    assert a['provider_id'] != b['provider_id']
+    for uid, p in [('admin', a), ('bob', b)]:
+        assert (p['name'], p['preset_id'], p['scope'], p['editable']) == ('智增增', 'zhizengzeng', 'personal', True)
+        assert p['model_count'] == len(SUPPORTED_MODELS)
+        assert credentials(catalog, uid) == 'seed-secret'
+        assert 'seed-secret' not in json.dumps(catalog.list_providers(uid)) + json.dumps(catalog.list(uid))
+    assert {m['config_id'] for m in catalog.list('admin')['models']} == {m['config_id'] for m in catalog.list('bob')['models']}
+
+
+def test_edits_are_private_and_survive_restart_and_bootstrap(catalog, monkeypatch):
     p = connection(catalog)
-    assert (p['name'], p['preset_id'], p['scope'], p['editable']) == ('智增增', 'zhizengzeng', 'shared', True)
-    assert p['model_count'] == len(SUPPORTED_MODELS)
-    assert connection(catalog, 'bob')['provider_id'] == p['provider_id']
-    assert connection(catalog, 'bob')['editable'] is False
-    assert connection(catalog, 'bob')['model_count'] == 1
-    assert model(catalog, 'bob')['provider_name'] == '智增增'
-    assert 'seed-secret' not in json.dumps(result) + json.dumps(catalog.list('admin'))
-    personal = catalog.save_provider('bob', dict(name='My key', preset_id='zhizengzeng', base_url=p['base_url'], api_key='personal-secret'))
-    assert personal['scope'] == 'personal' and personal['editable']
-    assert len(catalog.list_providers('bob')['providers']) == 2
-    assert len(catalog.list_providers('admin')['providers']) == 1
-
-
-def test_existing_ids_defaults_visibility_and_frozen_history_survive_migration(catalog):
-    with catalog.store.transaction('legacy', '__models__') as conn:
-        catalog._set_preference(conn, 'legacy', {'allowed': ['qwen3.6-plus'], 'default_model': 'qwen3.6-plus'})
-        catalog._write(conn, 'legacy', 'qwen3.6-plus', dict(model_id='qwen3.6-plus', display_name='qwen3.6-plus',
-            provider='qwen', source='deployment', base_url='https://old.test/v1', api_key='old-run-secret', enabled=False))
-        conn.execute(selections.insert().values(user_id='legacy', session_id='old', config_id='qwen3.6-plus', revision=4))
-    old_snapshot = dict(config_id='qwen3.6-plus', revision=1)
-    data = catalog.bootstrap('legacy', ['qwen3.6-plus'])
-    assert data['default_model'] == 'qwen3.6-plus'
-    assert data['models'][0]['provider_id'] == connection(catalog)['provider_id']
-    assert data['models'][0]['enabled'] is False
-    choice = catalog.selection('legacy', 'old')
-    assert choice['model'] == 'qwen3.6-plus' and choice['model_revision'] == 4
-    assert catalog.resolve('legacy', old_snapshot)['api_key'] == 'old-run-secret'
-
-
-def test_edits_persist_across_bootstrap_restart_and_keep_account_grants(catalog, monkeypatch):
-    p = connection(catalog)
-    updated = catalog.save_provider('admin', {'name': '新连接', 'base_url': 'https://new.test/v1', 'api_key': 'new-secret'}, p['provider_id'], p['revision'])
-    monkeypatch.setenv('LLM_API_KEY', 'ignored-env-secret')
-    monkeypatch.setenv('LLM_BASE_URL', 'https://ignored.test/v1')
+    updated = catalog.save_provider('admin', {'name': 'Mine', 'base_url': 'https://mine.test/v1', 'api_key': 'private-key'}, p['provider_id'], p['revision'])
+    monkeypatch.setenv('LLM_API_KEY', 'changed-env-key')
     restarted = ModelCatalog(catalog.store, catalog.config)
-    restarted.bootstrap('admin', ['qwen3.6-plus'], is_admin=True)
-    restarted.bootstrap('bob', ['qwen3.6-plus'])
+    restarted.bootstrap('admin', [], is_admin=False)
+    restarted.bootstrap('bob', [], is_admin=True)
     assert connection(restarted) == updated
-    assert model(restarted, 'bob')['base_url'] == 'https://new.test/v1'
-    assert model(restarted, 'bob')['provider_name'] == '新连接'
-    run = start(restarted)
-    assert restarted.resolve('bob', run['state']['model_snapshot'])['api_key'] == 'new-secret'
-    finish(restarted, run)
-    restarted.bootstrap('bob', [])
-    assert model(restarted, 'bob')['unavailable_reason'] == 'MODEL_NOT_ALLOWED'
-    with pytest.raises(ControlError, match='MODEL_NOT_ALLOWED'):
-        restarted.test_configuration('bob', 'qwen3.6-plus', model(restarted, 'bob')['revision'])
+    assert credentials(restarted, 'admin') == 'private-key'
+    assert credentials(restarted, 'bob') == 'seed-secret'
+    assert model(restarted, 'bob')['base_url'] == 'https://api.zhizengzeng.com/v1'
+    assert model(restarted, 'bob')['unavailable_reason'] is None
 
 
-def test_non_admin_cannot_repoint_shared_secrets_or_mutate_shared_catalog(catalog):
-    p = connection(catalog); pid = p['provider_id']; m = model(catalog, 'bob')
+@pytest.mark.parametrize('owner,other', [('admin', 'bob'), ('bob', 'admin')])
+def test_no_role_or_forged_owner_can_read_or_mutate_another_connection(catalog, owner, other):
+    p = connection(catalog, owner); pid = p['provider_id']
     operations = [
-        lambda: catalog.save_provider('bob', {'name': 'Forged', 'scope': 'personal', 'base_url': 'https://attacker.test/v1'}, pid, p['revision']),
-        lambda: catalog.provider_configuration('bob', pid, p['revision']),
-        lambda: catalog.import_provider_models('bob', pid, p['revision'], [{'id': 'new'}]),
-        lambda: catalog.save('bob', {'provider_id': pid, 'provider_revision': p['revision'], 'upstream_model_id': 'new'}),
-        lambda: catalog.save('bob', {'provider_id': pid, 'provider_revision': p['revision'], 'upstream_model_id': 'new'}, m['config_id'], m['revision']),
-        lambda: catalog.save('bob', {'base_url': 'https://attacker.test/v1'}, m['config_id'], m['revision']),
-        lambda: catalog.delete('bob', m['config_id'], m['revision']),
-        lambda: catalog.delete_provider('bob', pid, p['revision']),
+        lambda: catalog.provider_credentials(other, pid, p['revision']),
+        lambda: catalog.provider_configuration(other, pid, p['revision']),
+        lambda: catalog.save_provider(other, {'name': 'Forged', 'scope': 'shared', 'user_id': owner,
+            'base_url': 'https://attacker.test/v1'}, pid, p['revision']),
+        lambda: catalog.import_provider_models(other, pid, p['revision'], [{'id': 'new'}]),
+        lambda: catalog.save(other, {'provider_id': pid, 'provider_revision': p['revision'], 'upstream_model_id': 'new'}),
+        lambda: catalog.delete_provider(other, pid, p['revision']),
     ]
     for operation in operations:
-        with pytest.raises(ControlError, match='MODEL_PROVIDER_READ_ONLY') as error:
+        with pytest.raises(ControlError, match='MODEL_PROVIDER_REMOVED') as error:
             operation()
-        assert error.value.status == 403
-    assert connection(catalog)['revision'] == p['revision']
+        assert error.value.status == 404
+    assert connection(catalog, owner) == p
 
 
-def test_existing_deployment_provider_keeps_model_management(catalog):
-    p = connection(catalog)
-    p = catalog.save_provider('admin', {'base_url': 'http://local.test/v1'}, p['provider_id'], p['revision'])
-    batch = [{'id': 'team/a'}, {'id': 'team/b'}]
-    assert catalog.import_provider_models('admin', p['provider_id'], p['revision'], batch)['added_count'] == 2
-    assert catalog.import_provider_models('admin', p['provider_id'], p['revision'], batch)['added_count'] == 0
-    added = [m for m in catalog.list('bob')['models'] if m['provider_id'] == p['provider_id'] and m['upstream_model_id'].startswith('team/')]
-    assert len(added) == 2  # Explicitly shared new models are available to all accounts.
-    cid = added[0]['config_id']; old = model(catalog, cid=cid)
-    updated = catalog.save('admin', dict(provider_id=p['provider_id'], provider_revision=p['revision'],
-        upstream_model_id='team/a2', display_name='Team A', context_window=65536, vision=True), cid, old['revision'])
-    assert model(catalog, 'bob', cid)['display_name'] == 'Team A'
-    assert model(catalog, 'bob', cid)['vision'] is True
-    with pytest.raises(ControlError, match='MODEL_CONFIG_CHANGED'):
-        catalog.save('admin', dict(provider_id=p['provider_id'], provider_revision=p['revision'], upstream_model_id='team/stale'), cid, old['revision'])
-    catalog.delete('admin', cid, updated['revision'])
-    assert all(m['config_id'] != cid for m in catalog.list('bob')['models'])
-    catalog.delete_provider('admin', p['provider_id'], p['revision'])
-    assert all(m['provider_id'] != p['provider_id'] for m in catalog.list('bob')['models'])
-
-
-def test_active_shared_runs_keep_old_credentials_and_block_cross_user_delete(catalog):
-    p = connection(catalog); run = start(catalog)
-    updated = catalog.save_provider('admin', {'enabled': False, 'api_key': 'rotated-secret', 'base_url': 'https://new.test/v1'}, p['provider_id'], p['revision'])
-    assert model(catalog, 'bob')['unavailable_reason'] == 'MODEL_PROVIDER_DISABLED'
-    frozen = catalog.resolve('bob', run['state']['model_snapshot'])
-    assert frozen['api_key'] == 'seed-secret' and frozen['base_url'] == p['base_url']
-    with pytest.raises(ControlError, match='MODEL_PROVIDER_IN_USE'):
-        catalog.delete_provider('admin', p['provider_id'], updated['revision'])
+def test_default_model_management_only_changes_its_owner(catalog):
+    p = connection(catalog, 'bob')
+    batch = [{'id': 'mine/a'}, {'id': 'mine/b'}]
+    assert catalog.import_provider_models('bob', p['provider_id'], p['revision'], batch)['added_count'] == 2
+    assert catalog.import_provider_models('bob', p['provider_id'], p['revision'], batch)['added_count'] == 0
     assert len(catalog.list('admin')['models']) == len(SUPPORTED_MODELS)
-    assert catalog.resolve('bob', run['state']['model_snapshot'])['api_key'] == 'seed-secret'
-    finish(catalog, run)
-    catalog.delete_provider('admin', p['provider_id'], updated['revision'])
-    catalog.bootstrap('admin', list(SUPPORTED_MODELS), is_admin=True)
-    catalog.bootstrap('bob', ['qwen3.6-plus'])
-    assert catalog.list_providers('admin')['providers'] == []
-    assert catalog.list('bob')['models'] == []
-    assert catalog.selection('bob', 'session')['model_unavailable_reason'] == 'MODEL_REMOVED'
+    original = model(catalog, 'bob')
+    updated = catalog.save('bob', dict(provider_id=p['provider_id'], provider_revision=p['revision'],
+        upstream_model_id='qwen3.6-plus', display_name='My Qwen', context_window=65536, vision=True),
+        original['config_id'], original['revision'])
+    assert model(catalog)['display_name'] == 'qwen3.6-plus'
+    assert model(catalog, 'bob')['display_name'] == 'My Qwen'
+    catalog.delete('bob', updated['config_id'], updated['revision'])
+    catalog.bootstrap('bob', list(SUPPORTED_MODELS), is_admin=True)
+    assert all(m['config_id'] != updated['config_id'] for m in catalog.list('bob')['models'])
+    assert model(catalog)['config_id'] == updated['config_id']
+
+
+def test_frozen_run_survives_migration_and_personal_edits(catalog):
+    # Insert the exact shared-table shape used before this change.
+    shared = dict(provider_id='shared-legacy', revision=3, data=dict(name='智增增', preset_id='zhizengzeng',
+        scope='shared', base_url='https://api.zhizengzeng.com/v1', api_key='old-shared-key', enabled=True,
+        models={'qwen3.6-plus': dict(model_id='qwen3.6-plus', display_name='Shared Qwen', tools=True,
+            vision=False, context_window=131072, max_output_tokens=4096, restricted=True)}))
+    with catalog.store.transaction('legacy', '__models__') as conn:
+        conn.execute(shared_providers.insert().values(**shared))
+        catalog._set_preference(conn, 'legacy', {'allowed': [], 'is_admin': True, 'default_model': 'qwen3.6-plus'})
+        catalog._write(conn, 'legacy', 'qwen3.6-plus', dict(model_id='qwen3.6-plus', display_name='Old',
+            source='deployment', enabled=False, tools=True, **catalog._provider_snapshot(shared)))
+        conn.execute(selections.insert().values(user_id='legacy', session_id='old', config_id='qwen3.6-plus', revision=4))
+    catalog.bootstrap('legacy', [])
+    p = connection(catalog, 'legacy'); m = model(catalog, 'legacy')
+    assert p['provider_id'] != shared['provider_id'] and p['scope'] == 'personal'
+    assert m['config_id'] == 'qwen3.6-plus' and m['enabled'] is False and m['revision'] == 2
+    assert catalog.selection('legacy', 'old')['model_revision'] == 4
+    assert catalog.list('legacy')['default_model'] == 'qwen3.6-plus'
+    catalog.save_provider('legacy', {'api_key': 'new-private-key'}, p['provider_id'], p['revision'])
+    assert catalog.resolve('legacy', {'config_id': 'qwen3.6-plus', 'revision': 1})['api_key'] == 'old-shared-key'
+    assert credentials(catalog, 'legacy') == 'new-private-key'
+    catalog.bootstrap('new-member', [])
+    assert credentials(catalog, 'new-member') == 'old-shared-key'
+    with pytest.raises(ControlError, match='MODEL_PROVIDER_REMOVED'):
+        catalog.provider_credentials('legacy', 'shared-legacy', 3)
     with catalog.store.engine.connect() as conn:
-        stored = str(conn.execute(select(models)).all()) + str(conn.execute(select(versions)).all()) + str(conn.execute(select(shared_providers)).all())
-        assert 'seed-secret' not in stored and 'rotated-secret' not in stored
+        assert conn.execute(select(shared_providers.c.data)).scalar_one()['api_key'] == 'old-shared-key'
 
 
-def test_deleting_shared_model_also_checks_other_users_active_runs(catalog):
-    run = start(catalog); m = model(catalog)
-    with pytest.raises(ControlError, match='MODEL_IN_USE'):
-        catalog.delete('admin', m['config_id'], m['revision'])
-    finish(catalog, run)
-    catalog.delete('admin', m['config_id'], m['revision'])
-    catalog.bootstrap('admin', ['qwen3.6-plus'], is_admin=True)
-    assert all(row['config_id'] != m['config_id'] for row in catalog.list('admin')['models'])
+def test_migration_preserves_tombstones_and_existing_personal_models(catalog):
+    personal = catalog.save_provider('legacy', {'name': 'Mine', 'base_url': 'https://personal.test/v1', 'api_key': 'mine'})
+    custom = catalog.save('legacy', {'provider_id': personal['provider_id'], 'provider_revision': personal['revision'], 'upstream_model_id': 'personal'})
+    with catalog.store.transaction('legacy', '__models__') as conn:
+        catalog._set_preference(conn, 'legacy', {'allowed': ['qwen3.6-plus'], 'default_model': custom['config_id']})
+        catalog._write(conn, 'legacy', 'qwen3.6-plus', {'model_id': 'qwen3.6-plus', 'source': 'deployment', 'deleted': True})
+    catalog.bootstrap('legacy', ['qwen3.6-plus'])
+    assert all(m['config_id'] != 'qwen3.6-plus' for m in catalog.list('legacy')['models'])
+    assert catalog.list('legacy')['default_model'] == custom['config_id']
+    assert model(catalog, 'legacy', custom['config_id']) == custom
+    assert credentials(catalog, 'legacy', personal) == 'mine'
 
 
-def test_shared_delete_racing_admission_is_atomic(catalog):
+def test_deleting_my_provider_does_not_affect_another_users_active_run(catalog):
+    run = start(catalog)
     p = connection(catalog)
+    catalog.delete_provider('admin', p['provider_id'], p['revision'])
+    catalog.bootstrap('admin', list(SUPPORTED_MODELS), is_admin=True)
+    assert catalog.list_providers('admin')['providers'] == []
+    assert catalog.list('admin')['models'] == []
+    assert catalog.resolve('bob', run['state']['model_snapshot'])['api_key'] == 'seed-secret'
+    assert credentials(catalog, 'bob') == 'seed-secret'
+    with catalog.store.engine.connect() as conn:
+        for table in (models, versions):
+            assert 'seed-secret' not in str(conn.execute(select(table).where(table.c.user_id == 'admin')).all())
+
+
+def test_my_active_run_keeps_old_credentials_and_blocks_my_delete(catalog):
+    p = connection(catalog, 'bob'); run = start(catalog)
+    updated = catalog.save_provider('bob', {'api_key': 'rotated', 'enabled': False}, p['provider_id'], p['revision'])
+    assert model(catalog, 'bob')['unavailable_reason'] == 'MODEL_PROVIDER_DISABLED'
+    assert model(catalog)['unavailable_reason'] is None
+    assert catalog.resolve('bob', run['state']['model_snapshot'])['api_key'] == 'seed-secret'
+    with pytest.raises(ControlError, match='MODEL_PROVIDER_IN_USE'):
+        catalog.delete_provider('bob', p['provider_id'], updated['revision'])
+    finish(catalog, run)
+    catalog.delete_provider('bob', p['provider_id'], updated['revision'])
+    assert catalog.selection('bob', 'session')['model_unavailable_reason'] == 'MODEL_REMOVED'
+
+
+def test_bootstrap_from_two_workers_only_creates_one_personal_copy(catalog):
+    def initialize(_):
+        return ModelCatalog(catalog.store, catalog.config).bootstrap('new', ['qwen3.6-plus'])
+    with ThreadPoolExecutor(2) as pool:
+        list(pool.map(initialize, range(2)))
+    assert len(catalog.list_providers('new')['providers']) == 1
+    assert len(catalog.list('new')['models']) == len(SUPPORTED_MODELS)
+
+
+def test_personal_delete_racing_admission_is_atomic(catalog):
+    p = connection(catalog, 'bob')
     def attempt(fn):
         try:
             return fn()
@@ -179,36 +199,10 @@ def test_shared_delete_racing_admission_is_atomic(catalog):
             return exc.code
     with ThreadPoolExecutor(2) as pool:
         admit = pool.submit(attempt, lambda: start(catalog))
-        delete = pool.submit(attempt, lambda: catalog.delete_provider('admin', p['provider_id'], p['revision']))
+        delete = pool.submit(attempt, lambda: catalog.delete_provider('bob', p['provider_id'], p['revision']))
         run, result = admit.result(), delete.result()
     if isinstance(run, str):
         assert run == 'MODEL_REMOVED' and catalog.store.active('bob', 'session') is None
     else:
         assert result == 'MODEL_PROVIDER_IN_USE'
         assert catalog.resolve('bob', run['state']['model_snapshot'])['api_key'] == 'seed-secret'
-
-
-def test_removing_admin_account_does_not_remove_shared_provider(catalog):
-    pid = connection(catalog)['provider_id']
-    catalog.purge_user('admin')
-    assert catalog.list('admin')['models'] == []
-    assert connection(catalog, 'bob')['provider_id'] == pid
-
-
-def test_new_cloud_connections_require_a_key(catalog):
-    p = catalog.save_provider('bob', dict(name='Mine', preset_id='zhizengzeng', base_url='https://api.zhizengzeng.com/v1'))
-    m = catalog.save('bob', dict(provider_id=p['provider_id'], provider_revision=p['revision'], upstream_model_id='qwen3.6-plus'))
-    assert m['unavailable_reason'] == 'MODEL_NOT_CONFIGURED'
-    catalog.save_provider('bob', {'api_key': 'personal'}, p['provider_id'], p['revision'])
-    assert model(catalog, 'bob', m['config_id'])['unavailable_reason'] is None
-
-
-@pytest.mark.parametrize('uid', ['admin', 'bob'])
-def test_new_connections_are_always_owned_by_the_requesting_user(catalog, uid):
-    other = 'bob' if uid == 'admin' else 'admin'
-    p = catalog.save_provider(uid, {'name': 'Private connection', 'scope': 'shared', 'user_id': other,
-        'base_url': 'http://private.test/v1', 'api_key': 'my-secret'})
-    assert p['scope'] == 'personal' and p['editable'] is True
-    assert all(row['provider_id'] != p['provider_id'] for row in catalog.list_providers(other)['providers'])
-    catalog.import_provider_models(uid, p['provider_id'], p['revision'], [{'id': 'private-model'}])
-    assert all(row['provider_id'] != p['provider_id'] for row in catalog.list(other)['models'])

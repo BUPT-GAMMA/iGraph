@@ -601,12 +601,14 @@ def create_control_router(controller: ExecutionController):
             table = await controller.call(controller.db._get_table, table_type='sessions')
             editor = NativeTurnEditor(table)
         catalog = getattr(controller, 'model_catalog', None)
+        remote_catalog = getattr(controller, 'remote_graph_catalog', None)
         legacy_model = (session.session_data or {}).get('session_state', {}).get('model')
         row, claimed = await controller.call(controller.store.register, uid, sid, str(req.start_request_id), req.fingerprint,
                                             preparation_owner=str(req.preparation_owner) if req.preparation_owner else None,
                                             replace_run_id=str(req.replace_run_id) if req.replace_run_id else None,
                                             validate_edit=editor.validate if editor else None,
-                                            capture_model=(lambda conn: catalog.freeze(conn, uid, sid, legacy_model, req.model_revision)) if catalog else None)
+                                            capture_model=(lambda conn: catalog.freeze(conn, uid, sid, legacy_model, req.model_revision)) if catalog else None,
+                                            capture_remote_graph=(lambda conn: remote_catalog.freeze(conn, uid, sid)) if remote_catalog else None)
         controller.known_runs[row['run_id']] = row
         controller.wake(row['run_id'])
         return {**await controller.call(controller.store.summary, row), "preparation_claimed": claimed}

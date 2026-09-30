@@ -38,3 +38,42 @@ def test_explicit_node_visualization_returns_complete_text():
 
     assert overview["nodes"][0]["attrs"]["text"] == text[:300] + "..."
     assert detail["nodes"][0]["attrs"]["text"] == text
+
+
+def test_constructed_graph_displays_distinct_row_labels_without_changing_ids():
+    from graph_data_service.construction import to_graph_data
+
+    graph = {"directed": True, "nodes": [
+        {"id": "row_abc123", "type": "products", "properties": {
+            "table": "products", "row_index": 0, "data": {"product_id": "1"}}},
+        {"id": "row_def456", "type": "products", "properties": {
+            "table": "products", "row_index": 1, "data": {"product_id": "2"}}},
+    ], "edges": [{"id": "e1", "source": "row_abc123", "target": "row_def456",
+                  "type": "related", "properties": {}}]}
+    data = to_graph_data({"dataset_id": "instacart", "revision": 1, "graph": graph})
+    result = GraphCompute().visualize_subgraph(data.to_networkx(), data)
+
+    assert {node["id"]: node["label"] for node in result["nodes"]} == {
+        "row_abc123": "products · #1", "row_def456": "products · #2"}
+    assert (result["edges"][0]["src"], result["edges"][0]["dst"]) == (
+        "row_abc123", "row_def456")
+
+
+def test_constructed_graph_keeps_non_row_names_and_missing_row_metadata():
+    from graph_data_service.construction import to_graph_data
+
+    graph = {"directed": True, "nodes": [
+        {"id": "Alice", "type": "Person", "properties": {}},
+        {"id": "Bob", "type": "Person", "properties": {}},
+        {"id": "row_legacy", "type": "products", "properties": {}},
+    ], "edges": []}
+    data = to_graph_data({"dataset_id": "people", "revision": 1, "graph": graph})
+    result = GraphCompute().visualize_subgraph(data.to_networkx(), data)
+    assert all(node["label"] == node["id"] for node in result["nodes"])
+
+
+def test_regular_graph_keeps_original_node_labels():
+    data = GraphData(num_nodes=1, id2node={0: "row_business_id"},
+                     node2id={"row_business_id": 0}, node_type=["products"])
+    result = GraphCompute().visualize_subgraph(data.to_networkx(), data)
+    assert result["nodes"][0]["label"] == "row_business_id"

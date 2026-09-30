@@ -261,14 +261,58 @@ _MASK_ALLOWED_ABSOLUTE = {"/dev/null", "/dev/stdout", "/dev/stderr"}
 _ZONE_SENSITIVE_COMMANDS = {"rm", "mv", "rmdir", "unlink", "chmod", "chown", "touch", "truncate", "shred"}
 # Commands that write to a destination operand (reads from protected zones stay allowed).
 _DESTINATION_WRITE_COMMANDS = {"cp", "tee", "dd", "ln", "install", "rsync"}
-_SEGMENT_SEPARATORS = frozenset(";&|(){}")
+_SEGMENT_SEPARATORS = frozenset(";&|(){}\n")
 _ASSIGNMENT_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_COMMANDS = {"sh", "bash", "dash", "zsh", "ksh"}
 
 
 def _shell_segments(command: str) -> list[list[str]] | None:
     """Split a command into pipeline segments; None when quoting is malformed."""
 
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|(){}")
+    # A quoted here-document is literal stdin, not shell source. Handle the
+    # common single-document form before shlex (which has no heredoc grammar).
+    # Keep the header/redirections and commands AFTER the delimiter checked.
+    # Shell interpreters are the exception: their stdin IS shell source.
+    prefix = []
+    while True:
+        header, newline, tail = command.partition("\n")
+        if not newline or "<<" in header:
+            break
+        # Peel complete shell lines only. An open quote belongs to a multiline
+        # argument and must stay opaque to the lexer below.
+        head_segments = _shell_segments(header)
+        if head_segments is None:
+            break
+        prefix.extend(head_segments)
+        command = tail
+    if newline and "<<" in header:
+        lexer = shlex.shlex(header, posix=False, punctuation_chars="<>")
+        lexer.whitespace_split = True
+        try:
+            raw = list(lexer)
+        except ValueError:
+            raw = []
+        markers = [i for i, token in enumerate(raw) if token == "<<"]
+        if len(markers) == 1 and markers[0] + 1 < len(raw):
+            delimiter = raw[markers[0] + 1]
+            if len(delimiter) >= 2 and delimiter[0] == delimiter[-1] and delimiter[0] in "\"'":
+                lines = tail.splitlines(keepends=True)
+                end = next((i for i, line in enumerate(lines)
+                            if line.rstrip("\n") == delimiter[1:-1]), None)
+                if end is None:
+                    return None
+                head_segments = _shell_segments(header)
+                rest_segments = _shell_segments("".join(lines[end + 1:]))
+                if head_segments is None or rest_segments is None:
+                    return None
+                body_segments = []
+                if any(token in _SHELL_COMMANDS for segment in head_segments for token in segment):
+                    body_segments = _shell_segments("".join(lines[:end]))
+                    if body_segments is None:
+                        return None
+                return prefix + head_segments + body_segments + rest_segments
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|(){}\n")
+    lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
@@ -281,7 +325,7 @@ def _shell_segments(command: str) -> list[list[str]] | None:
                 segments.append([])
             continue
         segments[-1].append(token)
-    return [segment for segment in segments if segment]
+    return prefix + [segment for segment in segments if segment]
 
 
 def _destination_operands(cmd: str, rest: list[str]) -> list[str]:
@@ -299,16 +343,34 @@ def _segments_reject(segments: list[list[str]]) -> bool:
             segment = segment[1:]
         if not segment:
             continue
-        for token in segment:
+        shell_payloads = set()
+        for shell_index, value in enumerate(segment):
+            if value not in _SHELL_COMMANDS:
+                continue
+            pos, command_mode = shell_index + 1, False
+            while pos < len(segment):
+                option = segment[pos]
+                if option == "--":
+                    pos += 1
+                    break
+                if not option.startswith(("-", "+")) or option in {"-", "+"}:
+                    break
+                command_mode |= bool(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", option))
+                takes_value = (option in {"--rcfile", "--init-file"}
+                               or (not option.startswith("--") and any(c in option[1:] for c in "oO")))
+                pos += 2 if takes_value else 1
+            if command_mode and pos < len(segment):
+                shell_payloads.add(pos)
+        for index, token in enumerate(segment):
             if token.startswith("/") and token not in _MASK_ALLOWED_ABSOLUTE:
                 return True
             if ".." in Path(token).parts:
                 return True
-            if any(char.isspace() for char in token):
-                # A quoted sub-command (bash -c '...', sh -c '...') is analysed
-                # with the same rules; unparseable quoting is left to the sandbox.
+            if index in shell_payloads:
+                # Only shell -c payloads are shell source. Python -c programs,
+                # printf formats and other quoted data must not be re-tokenized.
                 nested = _shell_segments(token)
-                if nested is not None and _segments_reject(nested):
+                if nested is None or _segments_reject(nested):
                     return True
         cmd, rest = segment[0], segment[1:]
         if cmd in _ZONE_SENSITIVE_COMMANDS:

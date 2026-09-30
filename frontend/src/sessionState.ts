@@ -1,3 +1,4 @@
+import type { RemoteBinding } from './types';
 import { editableLatestTurn } from './latestTurn';
 import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
@@ -76,6 +77,8 @@ export type SessionViewState = {
   modelRevision?: number;
   modelUnavailableReason?: string | null;
   activeDatasetId?: string | null;
+  remoteGraph?: RemoteBinding | null;
+  remoteGraphUnavailableReason?: string | null;
   error?: string;
   activeRun: SessionRunState | null;
   unreadCompletion: boolean;
@@ -103,14 +106,14 @@ export type ConversationAction =
   | { type: 'HYDRATE_START'; sessionId: string; requestVersion: number }
   | {
       type: 'HYDRATE_SUCCESS'; sessionId: string; requestVersion: number; messages: Message[];
-      model: string; modelRevision?: number; modelUnavailableReason?: string | null; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
+      model: string; modelRevision?: number; modelUnavailableReason?: string | null; remoteGraph?: RemoteBinding | null; remoteGraphUnavailableReason?: string | null; activeDatasetId?: string | null; feedback?: FeedbackRequest | null;
       activeRun?: ActiveRun | null; generation?: string; preserveMessages?: boolean;
       preserveComposer?: boolean;
       control?: RunControl | null;
       datasetView?: DatasetView | null; hasGraph?: boolean;
     }
   | { type: 'HYDRATE_FAILED'; sessionId: string; requestVersion: number; error: string }
-  | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'pendingAttachments' | 'uploading' | 'model' | 'modelRevision' | 'modelUnavailableReason' | 'activeDatasetId' | 'error' | 'selectedNode'>> }
+  | { type: 'PATCH_VIEW'; sessionId: string; patch: Partial<Pick<SessionViewState, 'draft' | 'attachments' | 'pendingAttachments' | 'uploading' | 'model' | 'modelRevision' | 'modelUnavailableReason' | 'activeDatasetId' | 'remoteGraph' | 'remoteGraphUnavailableReason' | 'error' | 'selectedNode'>> }
   | { type: 'APPEND_MESSAGES'; sessionId: string; messages: Message[] }
   | { type: 'BEGIN_RUN_PREPARATION'; sessionId: string; generation: string }
   | { type: 'START_PREPARED_RUN'; sessionId: string; generation: string; userMessage: Message; assistantMessage: Message }
@@ -872,6 +875,8 @@ export function conversationReducer(state: ConversationState, action: Conversati
         modelRevision: action.modelRevision ?? 0,
         modelUnavailableReason: action.modelUnavailableReason,
         activeDatasetId: action.activeDatasetId,
+        remoteGraph: action.remoteGraph ?? null,
+        remoteGraphUnavailableReason: action.remoteGraphUnavailableReason,
         selectedNode: hydratedGraph.status === 'ready' ? view.selectedNode : null,
         activeRun,
         error: undefined,

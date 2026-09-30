@@ -16,7 +16,9 @@ it('preserves stop identities, request cancellation and authoritative control on
     const [path, request] = fetcher.mock.calls[fetcher.mock.calls.length - 1];
     expect(path).toBe('/api/sessions/s%2F1/runs/cancel');
     expect(request.signal).toBe(signal);
-    expect(request.headers.get('X-User-ID')).toBe('alice');
+    expect(request.headers.get('X-User-ID')).toBeNull();
+    expect(request.headers.get('X-iGraph-Account')).toBe('alice');
+    expect(request.credentials).toBe('include');
     expect(JSON.parse(request.body)).toEqual({ target, cancel_request_id: 'stable-stop' });
     expect(await getRunControl('s/1', target, signal)).toEqual(pending);
     expect(fetcher.mock.calls[fetcher.mock.calls.length - 1][1].method).toBeUndefined();

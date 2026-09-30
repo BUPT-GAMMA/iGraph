@@ -174,15 +174,13 @@ def test_new_provider_api_never_shares_a_users_credentials(api, is_admin):
     assert 'can_manage_shared' not in client.get('/internal/model-providers').json()
 
 
-def test_migrated_credentials_require_admin_and_are_not_cached(api):
+def test_default_credentials_are_owned_by_each_user_and_not_cached(api):
     client, catalog = api
-    p = next(p for p in catalog.list_providers('alice')['providers'] if p['scope'] == 'shared')
+    p = next(p for p in catalog.list_providers('alice')['providers'] if p['base_url'] == 'https://test.example/v1')
     path = f"/internal/model-providers/{p['provider_id']}/credentials?revision={p['revision']}"
-    denied = client.get(path)
-    assert denied.status_code == 403 and 'deployment-secret' not in denied.text
-    catalog.bootstrap('alice', ['qwen3.6-plus'], is_admin=True)
     response = client.get(path)
     assert response.status_code == 200 and response.json()['api_key'] == 'deployment-secret'
     assert response.headers['cache-control'] == 'no-store'
-    catalog.bootstrap('alice', ['qwen3.6-plus'], is_admin=False)
-    assert client.get(path).status_code == 403
+    catalog.bootstrap('bob', ['qwen3.6-plus'], is_admin=True)
+    denied = client.get(path, headers={'X-User-ID': 'bob'})
+    assert denied.status_code == 404 and 'deployment-secret' not in denied.text

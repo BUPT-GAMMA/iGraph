@@ -1,0 +1,68 @@
+name: igraph-nebula-probe
+x-limits: &limits
+  mem_limit: 2g
+  cpus: 2
+  pids_limit: 512
+  restart: "no"
+  networks: [probe]
+services:
+  metad:
+    <<: *limits
+    entrypoint: [taskset, -c, "${IGRAPH_PROBE_CPUSET:-0,1}", /usr/local/nebula/bin/nebula-metad, --flagfile=/usr/local/nebula/etc/nebula-metad.conf, --daemonize=false, --containerized=true]
+    image: vesoft/nebula-metad:v3.8.0@sha256:ab687bd32d3e441d436842b41427ba0961a5e169c46997ef03fa4dcfd5388b35
+    command: [--meta_server_addrs=metad:9559, --local_ip=metad, --ws_ip=metad, --port=9559, --ws_http_port=19559, --data_path=/data/meta, --log_dir=/logs, --heartbeat_interval_secs=1, --num_io_threads=2, --num_worker_threads=4]
+    volumes: [meta-probe-data:/data/meta]
+    healthcheck:
+      test: [CMD, curl, -sf, "http://metad:19559/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+  storaged:
+    <<: *limits
+    entrypoint: [taskset, -c, "${IGRAPH_PROBE_CPUSET:-0,1}", /usr/local/nebula/bin/nebula-storaged, --flagfile=/usr/local/nebula/etc/nebula-storaged.conf, --daemonize=false, --containerized=true]
+    image: vesoft/nebula-storaged:v3.8.0@sha256:7142642ee69001a5b5c50520196538d58bb2ec3930707c067cb4c4e2be3890f9
+    command: [--meta_server_addrs=metad:9559, --local_ip=storaged, --ws_ip=storaged, --port=9779, --ws_http_port=19779, --data_path=/data/storage, --log_dir=/logs, --heartbeat_interval_secs=1, --num_io_threads=2, --num_worker_threads=4]
+    depends_on:
+      metad: {condition: service_healthy}
+    volumes: [storage-probe-data:/data/storage]
+    healthcheck:
+      test: [CMD, curl, -sf, "http://storaged:19779/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+  graphd:
+    <<: *limits
+    entrypoint: [taskset, -c, "${IGRAPH_PROBE_CPUSET:-0,1}", /usr/local/nebula/bin/nebula-graphd, --flagfile=/usr/local/nebula/etc/nebula-graphd.conf, --daemonize=false, --containerized=true]
+    image: vesoft/nebula-graphd:v3.8.0@sha256:1040573cc684ea6cc5e673b667422e9abab607c9d553c2c17c7bac6ad8a74e05
+    command: [--meta_server_addrs=metad:9559, --local_ip=graphd, --ws_ip=graphd, --port=9669, --ws_http_port=19669, --log_dir=/logs, --enable_authorize=true, --heartbeat_interval_secs=1, --num_max_connections=32, --max_allowed_query_size=65536, --system_memory_high_watermark_ratio=0.8, --num_netio_threads=2, --num_accept_threads=1, --num_worker_threads=4]
+    depends_on:
+      metad: {condition: service_healthy}
+      storaged: {condition: service_started}
+    healthcheck:
+      test: [CMD, curl, -sf, "http://graphd:19669/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+  ingress:
+    image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+    command: [python, /relay.py, graphd, "9669"]
+    volumes: [./graph-probe-relay.py:/relay.py:ro]
+    ports: ["127.0.0.1:21190:9669"]
+    networks: [ingress, probe]
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+    healthcheck:
+      test: [CMD, python, -c, "import socket; socket.create_connection(('127.0.0.1', 9669), timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      graphd: {condition: service_healthy}
+volumes:
+  meta-probe-data:
+  storage-probe-data:
+networks:
+  ingress:
+  probe:
+    internal: true

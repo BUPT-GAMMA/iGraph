@@ -2297,9 +2297,19 @@ class GraphCompute:
             if not attrs.get("text") and nx_attrs.get("text"):
                 text = str(nx_attrs["text"])
                 attrs["text"] = text if include_full_node_text or len(text) <= 300 else text[:300] + "..."
+            # Only source rows have a reliable row number. Keep other node
+            # names intact and retain stable ids for selection and topology.
+            display_label = node
+            row_properties = attrs.get("properties", {})
+            row_index = row_properties.get("row_index")
+            if (gd.graph_metadata.get("construction_dataset_id")
+                    and str(node).startswith("row_")
+                    and type(row_index) is int and row_index >= 0
+                    and row_properties.get("table")):
+                display_label = f"{attrs.get('type') or row_properties['table']} · #{row_index + 1}"
             nodes.append({
                 "id": node,
-                "label": node,
+                "label": display_label,
                 "in_degree": g.in_degree(node) if g.is_directed() else g.degree(node),
                 "out_degree": g.out_degree(node) if g.is_directed() else 0,
                 "total_degree": g.degree(node),

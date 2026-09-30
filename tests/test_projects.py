@@ -11,8 +11,13 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import backend.app as backend_app
+from backend.authentication import AUTH_COOKIE
 from backend.config import BackendConfig
 from backend.projects import ProjectDirectory
+
+
+_AUTH_TOKENS: dict[str, str] = {}
+_TEST_PASSWORD = "TestPassword123!"
 
 
 class FakeServiceClient:
@@ -53,6 +58,8 @@ class FakeServiceClient:
         **_kwargs,
     ):
         user_id = headers.get("X-User-ID", "")
+        if self.is_runtime and method == 'GET' and path.startswith('/internal/sessions/') and path.endswith('/remote-graph'):
+            return {'remote_graph': None, 'remote_graph_unavailable_reason': None}
         if not self.is_runtime:
             if method == "POST" and path == "/server-datasets/prepare":
                 request_body = dict(json_body or {})
@@ -282,12 +289,31 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setenv("IGRAPH_CONTROL_SERVICE_KEY", "test-project-key")
     monkeypatch.setattr(backend_app, "ServiceClient", FakeServiceClient)
-    with TestClient(backend_app.create_app(config)) as test_client:
-        yield test_client
+    _AUTH_TOKENS.clear()
+    app = backend_app.create_app(config)
+    for user_id in ("admin", "alice"):
+        assert app.state.auth.bootstrap(user_id, _TEST_PASSWORD)
+    with TestClient(app) as test_client:
+        try:
+            for user_id in ("admin", "alice"):
+                response = test_client.post(
+                    "/api/auth/login",
+                    json={"username": user_id, "password": _TEST_PASSWORD},
+                )
+                assert response.status_code == 200, response.text
+                _AUTH_TOKENS[user_id] = response.cookies[AUTH_COOKIE]
+                # Requests without an explicit Cookie must remain unauthenticated.
+                # Also avoid revoking the previous account's token on the next login.
+                test_client.cookies.clear()
+            yield test_client
+        finally:
+            test_client.cookies.clear()
+            _AUTH_TOKENS.clear()
 
 
 def headers(user_id: str = "admin") -> dict[str, str]:
-    return {"X-User-ID": user_id}
+    token = _AUTH_TOKENS.get(user_id, "invalid-session")
+    return {"Cookie": f"{AUTH_COOKIE}={token}"}
 
 
 def test_project_directory_reads_do_not_create_general(tmp_path: Path):

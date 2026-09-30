@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from backend.agent.igraph import IGraph
+# The legacy compatibility import loads deployment .env settings.
+with patch.dict(os.environ):
+    from backend.agent.igraph import IGraph
 from backend.logging.logger import SessionLogger
 from backend.logging.session_store import SessionStore
 

@@ -1,3 +1,4 @@
+import { RemoteGraphQueryResult } from './RemoteGraphQueryResult';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MarkdownContent } from './MarkdownContent';
 import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
@@ -267,6 +268,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
             <div className="message-label">{isAssistant ? (message.regenerate_of ? t('iGraph Assistant · Regenerated', 'iGraph 助手 · 重新生成') : t('iGraph Assistant', 'iGraph 助手')) : t('You', '你')}</div>
             {message.history_compacted && <div className="message-model-provenance">{t('Earlier context compacted for this model', '较早上下文已压缩以适应此模型')}</div>}
             {isAssistant ? (displayed.processItems?.length ? <ProcessTimeline items={displayed.processItems} tools={visibleTools} compact={isLiveAssistant} streaming={isLiveAssistant} /> : toolList(visibleTools, t)) : null}
+            {isAssistant && visibleTools?.filter(tool => ['query_remote_graph', 'describe_remote_graph', 'export_remote_graph'].includes(tool.tool || '')).map((tool, index) => <RemoteGraphQueryResult key={tool.call_id || index} result={tool.result} args={tool.args} sessionId={artifactSessionId} />)}
             {isAssistant ? planCard(visiblePlan, t) : null}
             {!isAssistant && !isEditing ? attachmentChips : null}
             {isEditing ? <PromptEditor message={message} onCancel={() => setEditingKey(null)} onSubmit={content => {

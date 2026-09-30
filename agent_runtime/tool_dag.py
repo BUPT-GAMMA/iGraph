@@ -156,6 +156,13 @@ class DAGModelMixin:
                         if paused:
                             self._igraph_batch_paused = True
                         await queue.put(("event", index, event))
+                # Agno records StopAgentRun.agent_message in history but does
+                # not emit it as answer content. Preserve the native stop and
+                # surface its assistant reply in both streaming and plain runs.
+                for message in results[index]:
+                    if message.role == "assistant" and message.stop_after_tool_call and message.content:
+                        await queue.put(("event", index, ModelResponse(
+                            event=ModelResponseEvent.assistant_response.value, content=message.content)))
                 await queue.put(("done", index, _outcome(fc, results[index], paused)))
             except BaseException as exc:
                 await queue.put(("error", index, exc))

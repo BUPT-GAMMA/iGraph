@@ -4,7 +4,9 @@ import os
 import unittest
 from unittest.mock import patch
 
-from backend.api_gateway.container_main import config_from_env, main
+# The entry point imports the legacy gateway, which loads deployment settings.
+with patch.dict(os.environ):
+    from backend.api_gateway.container_main import config_from_env, main
 
 
 class ContainerEntrypointTest(unittest.TestCase):
