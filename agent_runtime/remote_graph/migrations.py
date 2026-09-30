@@ -12,19 +12,26 @@ def migrate_remote_graph_connections(engine: Engine) -> None:
         if engine.dialect.name == 'postgresql':
             # One migration per database at a time, including concurrent runtime starts.
             conn.execute(text('SELECT pg_advisory_xact_lock(3923238257127574837)'))
-        if not inspect(conn).has_table(connections.name):
+        # Inspector and textual DDL do not apply schema_translate_map, unlike
+        # Table.create(). Resolve the same physical schema for every operation.
+        schema = conn.schema_for_object(connections)
+        preparer = engine.dialect.identifier_preparer
+        table = preparer.quote(connections.name)
+        if schema is not None:
+            table = f'{preparer.quote_schema(schema)}.{table}'
+        if not inspect(conn).has_table(connections.name, schema=schema):
             connections.create(conn, checkfirst=True)
-        columns = {column['name']: column for column in inspect(conn).get_columns(connections.name)}
+        columns = {column['name']: column for column in inspect(conn).get_columns(connections.name, schema=schema)}
         if 'kind' not in columns:
-            conn.execute(text("ALTER TABLE igraph_remote_graph_connections "
+            conn.execute(text(f"ALTER TABLE {table} "
                               "ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'neo4j'"))
         elif columns['kind']['nullable']:
-            conn.execute(text("UPDATE igraph_remote_graph_connections SET kind = 'neo4j' "
+            conn.execute(text(f"UPDATE {table} SET kind = 'neo4j' "
                               "WHERE kind IS NULL"))
             if engine.dialect.name == 'postgresql':
-                conn.execute(text('ALTER TABLE igraph_remote_graph_connections '
+                conn.execute(text(f'ALTER TABLE {table} '
                                   'ALTER COLUMN kind SET NOT NULL'))
         if (engine.dialect.name == 'postgresql' and 'kind' in columns
                 and columns['kind']['default'] is None):
-            conn.execute(text("ALTER TABLE igraph_remote_graph_connections "
+            conn.execute(text(f"ALTER TABLE {table} "
                               "ALTER COLUMN kind SET DEFAULT 'neo4j'"))
