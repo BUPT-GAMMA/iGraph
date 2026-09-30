@@ -117,6 +117,35 @@ docs/                     设计、迁移和部署文档
 `backend/api_gateway`、`backend/agent` 和旧 `agent_runtime/agent` 仅作为迁移期兼容代码保留，
 默认 Compose 和默认入口不再使用进程内 Runtime。
 
+## 登录与注册
+
+前端先显示登录/注册页，验证服务端会话后才加载工作区。用户名为 3–32 位英文字母、数字、
+下划线或连字符，统一按小写识别；密码为 8–128 位。注册成功后自动进入个人工作区。
+退出登录会撤销当前会话；项目、对话、数据集、个人技能、记忆和远程数据库连接继续按
+原有 `user_id` 归属保存。
+
+Backend 提供 `POST /api/auth/register`、`POST /api/auth/login`、`GET /api/auth/me` 和
+`POST /api/auth/logout`。登录与注册接收 JSON `{ "username": "...", "password": "..." }`。
+公开 `/api/*` 请求使用 HttpOnly 会话 cookie，不接受客户端声明的 `X-User-ID` 作为身份。
+服务间的 `X-User-ID` 与服务密钥契约保留，由 Backend 从登录会话派生用户身份。
+
+已有名单中的账户（包括 `admin`）不会被公开注册覆盖。升级后，请在 Backend 运行环境中
+为需要保留的账户初始化密码；此操作只允许设置尚未拥有凭据的已有账户，不会重置密码：
+
+```bash
+python -c 'from dotenv import load_dotenv; load_dotenv(); from getpass import getpass; from backend.authentication import bootstrap_password; print("初始化成功" if bootstrap_password("admin", getpass("设置 admin 初始密码: ")) else "已有登录凭据，未覆盖")'
+```
+
+Docker Compose 部署可在上述命令前加 `docker compose exec backend`。请使用项目配置的
+数据目录和与 Backend 相同的运行用户，确保新建的 SQLite 文件可被服务读写。
+密码哈希和会话 token 哈希默认存于 `${IGRAPH_DATA_ROOT}/backend/authentication.sqlite3`；
+该文件与 `users.json` 均应持久化。仓库不提供默认密码或部署账户的真实凭据。
+
+前端默认与 Backend 同源，Nginx 保留浏览器请求的 Host 以校验写请求来源。
+HTTPS 反向代理部署时，通过 `BACKEND_AUTH_TRUSTED_PROXIES` 配置真实代理地址/CIDR；
+显式跨源前端使用 `BACKEND_AUTH_ALLOWED_ORIGINS`，禁止使用 `*`。
+相关配置示例见 `.env.example`。
+
 ## 数据归属
 
 | 数据 | 唯一所有者 |
@@ -287,7 +316,7 @@ Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
 
 远程查询依赖既有运行控制来保存可信连接快照：本地部署需在各服务共享 `.env` 设置 `IGRAPH_RUN_CANCEL_ENABLED=true`，按 `docs/RUN_CANCELLATION.md` 迁移后重启相关服务，并核实 `/api/capabilities` 的 `run_cancel_v1` 为 true。
 
-Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置独立的 Fernet 凭据密钥和明确允许的目标主机/CIDR；默认拒绝网络目标。密钥缺失不影响普通聊天，不能保存或解析远程凭据。密钥更换后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。现有 `X-User-ID` 信任是未解决的多用户部署限制，本轮不宣称身份防伪通过，也不阻断隔离本地验证，见[交接记录](docs/testing/intelligent-graph-qa-handoff.md)。
+Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置独立的 Fernet 凭据密钥和明确允许的目标主机/CIDR；默认拒绝网络目标。密钥缺失不影响普通聊天，不能保存或解析远程凭据。密钥更换后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。Backend 的公开接口现使用登录会话认证；历史[交接记录](docs/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于登录改造之前的版本。
 
 离线回归：
 

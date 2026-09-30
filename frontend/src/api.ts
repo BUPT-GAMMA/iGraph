@@ -7,6 +7,16 @@ import type { RemoteBinding, RemoteConnection, RemoteConnectionWrite, RemoteData
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
 export const USER_KEY = 'igraph_user_id';
+export const AUTH_EXPIRED_EVENT = 'igraph-auth-expired';
+export const AUTH_ACCOUNT_CHANGED_EVENT = 'igraph-auth-account-changed';
+
+export type AuthUser = {
+  user_id: string;
+  username?: string;
+  is_admin?: boolean;
+  roles?: string[];
+  allowed_models?: string[];
+};
 
 export type CustomModel = {
   model_id: string;
@@ -112,6 +122,11 @@ export function modelErrorMessage(code?: string | null) {
 export function getUserId() { return localStorage.getItem(USER_KEY) || ''; }
 export function setUserId(value: string) { localStorage.setItem(USER_KEY, value); }
 
+function authExpired() {
+  setUserId('');
+  window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+}
+
 let requestAccount: { userId: string } | undefined;
 
 /** Bind requests to the account rendered by the mounted workspace. */
@@ -124,17 +139,25 @@ export function bindRequestAccount(userId: string) {
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
-  if (!headers.has('X-User-ID')) {
+  if (!path.startsWith('/api/auth/')) {
     const storedUserId = getUserId();
     const userId = requestAccount?.userId ?? storedUserId;
-    // A storage event can arrive after a click. Never send the old workspace's
-    // content with an identity read from another tab; keep the header pinned.
+    // The header declares the workspace's expected account. Authentication
+    // comes only from the HttpOnly cookie; the server rejects account races.
     if (userId !== storedUserId) {
+      window.dispatchEvent(new Event(AUTH_ACCOUNT_CHANGED_EVENT));
       throw new ApiError(409, tr('The account changed in another tab. Wait for it to sync, then try again.', '账户已在其他标签页切换，请等待同步后重试'), null, null, null, 'ACCOUNT_CHANGED');
     }
-    if (userId) headers.set('X-User-ID', userId);
+    if (userId) headers.set('X-iGraph-Account', userId);
   }
-  return fetch(`${API_BASE}${path}`, { ...options, headers });
+  headers.delete('X-User-ID');
+  const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'include', headers });
+  if (response.status === 401 && !/^\/api\/auth\/(?:me|login|register|logout)$/.test(path)) authExpired();
+  if (response.status === 409 && !path.startsWith('/api/auth/')) {
+    const error = await response.clone().json().catch(() => ({}));
+    if ((error?.detail?.code || error?.code) === 'ACCOUNT_CHANGED') window.dispatchEvent(new Event(AUTH_ACCOUNT_CHANGED_EVENT));
+  }
+  return response;
 }
 
 async function json<T>(path: string, options?: RequestInit): Promise<T> {
@@ -191,9 +214,28 @@ export class ApiError extends Error {
   }
 }
 
-export async function validateUser(userId: string) {
+export function getCurrentUser() {
+  return json<AuthUser>('/api/auth/me', { cache: 'no-store' });
+}
+
+export function authenticateUser(mode: 'login' | 'register', username: string, password: string) {
+  return json<AuthUser>(`/api/auth/${mode}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username.trim().toLowerCase(), password }),
+  });
+}
+
+export async function logoutUser() {
+  const response = await apiFetch('/api/auth/logout', { method: 'POST' });
+  if (!response.ok && response.status !== 401) {
+    const data = await response.json().catch(() => ({}));
+    throw ApiError.fromResponse(response.status, data);
+  }
+}
+
+export async function validateUser(_userId: string) {
   const data = await json<{ valid?: boolean; available_models?: string[]; default_model?: string }>('/api/auth/validate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-ID': userId },
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
   });
   return data;
 }
@@ -373,18 +415,24 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
         if (error) reject(error); else resolve(data!);
       }
       xhr.open('POST', `${API_BASE}${path}`);
-      if (identity) xhr.setRequestHeader('X-User-ID', identity);
+      xhr.withCredentials = true;
+      if (identity) xhr.setRequestHeader('X-iGraph-Account', identity);
       xhr.setRequestHeader('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
       xhr.upload.onprogress = event => {
         if (accountChanged()) { finish(accountError()); xhr.abort(); return; }
         if (!settled && event.lengthComputable && event.total > 0) onProgress(Math.min(100, Math.round(event.loaded / event.total * 100)));
       };
       xhr.onload = () => {
+        if (xhr.status === 401) authExpired();
         if (accountChanged()) { finish(accountError()); return; }
         let data: UploadResult;
         try { data = JSON.parse(xhr.responseText); }
         catch { finish(new ApiError(xhr.status, tr('The upload response was invalid. Try again.', '上传响应无效，请重试'))); return; }
-        if (xhr.status < 200 || xhr.status >= 300) { finish(ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'))); return; }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const error = ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'));
+          if (error.code === 'ACCOUNT_CHANGED') window.dispatchEvent(new Event(AUTH_ACCOUNT_CHANGED_EVENT));
+          finish(error); return;
+        }
         if (data?.success !== true || typeof data.file_token !== 'string' || !data.file_token) { finish(new ApiError(xhr.status, tr('The upload did not complete. Try again.', '上传未成功，请重试'))); return; }
         finish(undefined, data);
       };
