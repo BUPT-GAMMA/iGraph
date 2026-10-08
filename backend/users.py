@@ -139,3 +139,21 @@ class UserDirectory:
             del records[user_id]
             self._write(records)
             return True
+
+
+class SingleUserDirectory(UserDirectory):
+    """One workspace owner; old multi-user files remain intact for rollback."""
+
+    def _load(self) -> dict[str, UserRecord]:
+        records = super()._load()
+        owner = records.get(self.admin_user_id) or UserRecord(user_id=self.admin_user_id)
+        owner.enabled = True
+        owner.roles = ["admin", "user"]
+        owner.allowed_models = self._ordered_models(self.default_admin_model, SUPPORTED_MODELS)
+        return {self.admin_user_id: owner}
+
+    def save(self, record: UserRecord) -> UserRecord:
+        raise ValueError("Single-user workspaces do not support account management")
+
+    def delete(self, user_id: str) -> bool:
+        raise ValueError("The workspace owner cannot be deleted")

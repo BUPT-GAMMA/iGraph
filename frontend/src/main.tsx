@@ -9,7 +9,7 @@ import { createRoot } from 'react-dom/client';
 import { readComposerDraft, writeComposerDraft, clearComposerDraft } from './composerDrafts';
 import { readPins } from './sessionPins';
 import { forgetSessionActivity, pendingActivity, readSessionActivities, saveSessionActivity } from './sessionActivity';
-import { activateSession, ApiError, bindRequestAccount, USER_KEY, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, importServerDataset, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listServerDatasets, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, setUserId, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
+import { activateSession, ApiError, bindRequestAccount, createProject as addProject, createSession, deleteCustomModel, deleteProject as removeProject, deleteProjectDataset, deleteSession as removeSession, getMessages, getUserId, importServerDataset, listCustomModels, listProjectConversations, listProjectDatasets, listProjects, listServerDatasets, listSessions, renameProjectDataset, saveCustomModel, setSessionDataset, updateProject as patchProject, updateSessionModel, uploadFile, uploadProjectDataset, validateUser, visualizeGraph, type CustomModel } from './api';
 import type { ActiveRun, AttachmentRef, ConstructionState, CsvBundleSchema, Dataset, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphViewState, Message, NewConversationDraft, Project, ServerDataset, Session, ToolCall } from './types';
 import { RunConnectionManager } from './RunConnectionManager';
 import { RunRecovery } from './RunRecovery';
@@ -205,11 +205,8 @@ function readPendingFirstTurn(userId: string, sessionId: string): PendingFirstTu
 function App() {
   const [userCases, setUserCases] = useState<UserCase[]>([]);
   const { t } = useI18n();
-  const [userId, setUser] = useState(getUserId() || (demoMode ? 'demo' : ''));
+  const userId = getUserId();
   const { askConfirm, askPrompt, actionDialog } = useActionDialog(userId);
-  const [loginValue, setLoginValue] = useState(getUserId());
-  const [loginError, setLoginError] = useState('');
-  const [loginPending, setLoginPending] = useState(false);
   const [ready, setReady] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionCursor, setSessionCursor] = useState<string | null>(null);
@@ -852,35 +849,13 @@ function App() {
 
   useLayoutEffect(() => bindRequestAccount(userId), [userId]);
   useEffect(() => {
-    if (demoMode) return;
-    const synchronizeAccount = () => {
-      const nextUserId = getUserId();
-      if (nextUserId !== identityRef.current) resetAccount(nextUserId);
-    };
-    const handleStorage = (event: StorageEvent) => {
-      if (event.storageArea === localStorage && (event.key === USER_KEY || event.key === null)) synchronizeAccount();
-    };
-    const handleVisibility = () => { if (document.visibilityState === 'visible') synchronizeAccount(); };
-    window.addEventListener('storage', handleStorage);
-    window.addEventListener('focus', synchronizeAccount);
-    document.addEventListener('visibilitychange', handleVisibility);
-    // Read the current value, not event.newValue: queued events may already be old.
-    synchronizeAccount();
-    return () => {
-      window.removeEventListener('storage', handleStorage);
-      window.removeEventListener('focus', synchronizeAccount);
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, [userId]);
-
-  useEffect(() => {
     if (!userId || demoMode) return;
     const identity = userId;
     let disposed = false;
     const stale = () => disposed || identityRef.current !== identity;
     validateUser(identity).then(response => {
       if (stale()) return;
-      if (response.valid === false) throw new Error(tr('Invalid user ID', '用户 ID 无效'));
+      if (response.valid === false) throw new Error(tr('Workspace unavailable', '工作区暂不可用'));
       const selectedModel = response.default_model || DEFAULT_MODEL;
       setDefaultModel(selectedModel);
       setAvailableModels(normalizedModels(response.available_models, selectedModel));
@@ -1113,79 +1088,6 @@ function App() {
     setRecoveredDrafts(remaining);
   }
 
-  function resetAccount(nextUserId: string) {
-    const previousUserId = identityRef.current;
-    if (nextUserId === previousUserId) return;
-    accountEpochRef.current += 1;
-    setModelsOpen(false);
-    identityRef.current = nextUserId;
-    for (const controller of preparationControllersRef.current.values()) controller.abort();
-    preparationControllersRef.current.clear();
-    for (const controller of draftCreationControllersRef.current.values()) controller.abort();
-    draftCreationControllersRef.current.clear();
-    for (const controller of hydrationControllersRef.current.values()) controller.abort();
-    hydrationControllersRef.current.clear();
-    hydrationVersionsRef.current.clear();
-    cancelSessionUploads();
-    recoveryRef.current?.reset();
-    cancellationRef.current?.reset();
-    conversationRef.current = initialConversationState;
-    dispatchConversation({ type: 'RESET' });
-    setBusy(false);
-    setSessions([]);
-    sessionPageRequest.current = null;
-    setSessionCursor(null);
-    setLoadingSessions(false);
-    setSessionListError('');
-    setProjects([]);
-    setRecoveredDrafts([]);
-    setDatasetsByProject({});
-    setServerDatasets([]);
-    setCustomModels([]);
-    setModelCatalog(null);
-    setDatasetOpen(false);
-    setConstructionDataset(null);
-    setManagementOpen(false);
-    setProjectEditor(null);
-    setProjectEditorTarget(null);
-    setDeleteProjectTarget(null);
-    setImportProject(null);
-    setHelpOpen(false);
-    setMobileSidebarOpen(false);
-    setWorkspaceError('');
-    setDefaultModel(DEFAULT_MODEL);
-    setAvailableModels([DEFAULT_MODEL]);
-    setLoginPending(false);
-    setLoginError('');
-    setLoginValue(nextUserId);
-    setUser(nextUserId);
-    // Preserve a signed-out deep link, but never reopen another account's route.
-    if (previousUserId) writeWorkspaceRoute({ kind: 'home' }, true);
-  }
-
-  async function login() {
-    const value = loginValue.trim(); if (!value) return setLoginError(tr('Enter a user ID', '请输入用户 ID'));
-    const accountEpoch = accountEpochRef.current;
-    const storedUserId = getUserId();
-    const stale = () => accountEpochRef.current !== accountEpoch || getUserId() !== storedUserId;
-    setLoginPending(true);
-    try {
-      const response = await validateUser(value);
-      if (stale()) return;
-      if (response.valid === false) throw new Error(tr('Invalid user ID', '用户 ID 无效'));
-      const selectedModel = response.default_model || DEFAULT_MODEL;
-      setUserId(value);
-      resetAccount(value);
-      setDefaultModel(selectedModel);
-      setAvailableModels(normalizedModels(response.available_models, selectedModel));
-      setLoginValue(value);
-      setLoginError('');
-    } catch (cause: any) {
-      if (!stale()) setLoginError(cause.message || tr('Sign-in failed', '登录失败'));
-    } finally {
-      if (accountEpochRef.current === accountEpoch) setLoginPending(false);
-    }
-  }
   useEffect(() => {
     if (!userId || demoMode) { setUserCases([]); return; }
     const controller = new AbortController();
@@ -2186,7 +2088,7 @@ function App() {
     <TopBar onMenu={() => setMobileSidebarOpen(true)} onHome={() => showWorkspaceHome()} onModels={userId && !demoMode && cancelEnabled ? () => setModelsOpen(true) : undefined} />
     <PopupPresence key={`modelsOpen-${userId}`}>{modelsOpen && <ModelSettings key={userId} onClose={() => setModelsOpen(false)} onChanged={applyModelCatalog} />}</PopupPresence>
     <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={projects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} loginValue={loginValue} loginError={loginError} loginPending={loginPending} onLoginValueChange={value => { setLoginValue(value); setLoginError(''); }} onLogin={login} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
+      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={projects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(project); setProjectEditor('edit'); }} onDeleteProject={setDeleteProjectTarget} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
         {createGraphOpen ? <>
@@ -2201,7 +2103,7 @@ function App() {
             ? <ChatPaneWithState conversationKey={`draft:${activeDraft.projectId}`} emptyProjectName={draftProject?.name} emptyContent={!activeDraft.projectId && userCases.length ? <UserCaseGallery cases={userCases} busy={busy} onSelect={(id, question) => void selectUserCase(id, question)} /> : undefined} canCancel={!["editing", "failed"].includes(activeDraft.phase)} onCancel={terminateCurrentRun} messages={[]} value={composerValue} model={model} models={availableModels} customModels={customModels} onManageModels={modelCatalog ? () => setModelsOpen(true) : undefined} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} exampleQuestions={userCaseForDataset(activeDataset, userCases)?.questions} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId, patch: { text: value, phase: 'editing', error: undefined } })} onModelChange={changeModel} onDataset={() => void openDatasets()} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy || !['editing', 'failed'].includes(activeDraft.phase)} sendBlocked={!['editing', 'failed'].includes(activeDraft.phase)} runtimeControlsDisabled={!['editing', 'failed'].includes(activeDraft.phase)} sendBlockedReason={sendBlockedReason} runGateReason={null} interaction={{ kind: 'composer' }} hasGraph={false} onOpenGraph={() => undefined} runTools={[]} plan={null} focusRequest={composerFocusRequest} />
             : activeSession
             ? <ChatPaneWithState artifactSessionId={activeSession.session_id} onEditLatest={editEnabled ? (message: Message, runId: string, content: string) => void send({ message: content, attachments: message.attachments || [], replaceRunId: runId }) : undefined} conversationKey={activeSession.session_id} messages={messages} value={composerValue} model={model} models={availableModels} customModels={customModels} onManageModels={modelCatalog ? () => setModelsOpen(true) : undefined} onSaveCustomModel={addCustomModel} onDeleteCustomModel={removeCustomModel} exampleQuestions={userCaseForDataset(activeDataset, userCases)?.questions} activeDatasetName={activeDataset?.name} onChange={(value: string) => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { draft: value } })} onModelChange={changeModel} onDataset={openDatasets} onSend={() => void send()} onUpload={upload} onRetryAttachment={retryAttachment} onRemoveAttachment={removeAttachment} attachments={activeAttachments} loading={loading} uploading={uploading} disabled={busy} sendBlocked={!runGate.canStartRun} runtimeControlsDisabled={runGate.blocksSessionMutation} sendBlockedReason={sendBlockedReason} canCancel={cancelEnabled && Boolean(activeView?.activeRun) && !runGate.canStartRun} cancellation={activeView?.activeRun?.cancellation} onCancel={terminateCurrentRun} runGateReason={runGate.reason} interaction={bottomInteraction} hasGraph={graphView.status === 'ready' || (graphView.status === 'unsupported' && graphView.code === 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE')} onOpenGraph={() => { setGraphOpen(true); setGraphTab('Graph'); }} onFeedback={respondToFeedback} runTools={runTools} plan={plan} focusRequest={composerFocusRequest} />
-            : <div className={`workspace-home ${userId ? '' : 'signed-out'}`}><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{userId ? t('Start a new graph analysis', '开始新的图分析') : t('Explore graph data, starting with a question', '探索图数据，从一个问题开始')}</h1>{!userId && <p>{t('Select the avatar in the lower-left corner to sign in.', '点击左下角头像登录。')}</p>}{userId ? <button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> {t('New task', '新建任务')}</button> : null}</div>{userId && <UserCaseGallery cases={userCases} busy={busy} onSelect={(id, question) => void selectUserCase(id, question)} />}</div>}
+            : <div className="workspace-home"><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{t('Start a new graph analysis', '开始新的图分析')}</h1><button className="primary-command workspace-home-action" onClick={() => newTask()} disabled={busy}><Icon name="plus" size={16} /> {t('New task', '新建任务')}</button></div><UserCaseGallery cases={userCases} busy={busy} onSelect={(id, question) => void selectUserCase(id, question)} /></div>}
         </>}
       </div>
       {activeSession && !createGraphOpen && <>{graphOpen && <ColumnDivider side="graph" value={graphWidth} minimum={GRAPH_MIN} maximum={GRAPH_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}<GraphWorkspace onGraphQuery={prompt => void send(undefined, prompt)} graphQueryPending={!runGate.canStartRun || uploading || busy} onGraphReset={() => void refreshSessionGraph(activeSession.session_id, {}, true, undefined, true, 'reset')} onConstruct={() => activeDataset && supportsConstruction(activeDataset) ? openConstruction(activeDataset) : void openDatasets()} constructionLabel={activeDataset && supportsConstruction(activeDataset) ? constructionLabel(activeDataset) : t('Build graph', '构图')} onStopJob={cancelEnabled ? stopJob : undefined} data={graph} view={graphView} datasetName={activeDataset?.name} messages={messages} liveTools={demoMode ? demoMlTools : runTools} projectId={activeSession.project_id} sessionId={activeSession.session_id} tab={graphTab} selected={selectedNode} onTab={setGraphTab} onSelect={node => dispatchConversation({ type: 'PATCH_VIEW', sessionId: activeSession.session_id, patch: { selectedNode: node } })} onExpand={expandNode} collapsed={!graphOpen} onToggle={() => setGraphOpen(current => !current)} /></>}

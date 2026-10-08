@@ -8,8 +8,6 @@ import { useI18n, type Translate } from '../i18n';
 import { pinKey, readPins } from '../sessionPins';
 
 function sessionTitle(session: Session, t: Translate) { return session.title || session.preview || session.last_message || t('Untitled analysis', '未命名分析'); }
-function noopLoginValueChange(_value: string) { /* Optional account controls are omitted in isolated component tests. */ }
-function noopLogin() { /* Optional account controls are omitted in isolated component tests. */ }
 
 type Props = {
   projects: Project[];
@@ -23,11 +21,6 @@ type Props = {
   activeId?: string;
   activeProjectId?: string;
   userId: string;
-  loginValue?: string;
-  loginError?: string;
-  loginPending?: boolean;
-  onLoginValueChange?: (value: string) => void;
-  onLogin?: () => void | Promise<void>;
   dark: boolean;
   onTheme: () => void;
   onMemory: () => void;
@@ -76,7 +69,7 @@ function SessionRunIndicator({ status, unread, t }: { status?: string; unread?: 
   return <i className={`session-run-indicator is-static ${status || ''}`} role="status" aria-label={statusLabel} title={statusLabel} />;
 }
 
-export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, loginValue = '', loginError = '', loginPending = false, onLoginValueChange = noopLoginValueChange, onLogin = noopLogin, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
   const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
@@ -102,12 +95,8 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [switchingAccount, setSwitchingAccount] = useState(false);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
   const projectMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const accountMenuRef = useRef<HTMLDivElement | null>(null);
-  const accountTriggerRef = useRef<HTMLButtonElement | null>(null);
   const independentSessions = orderSessions(sessions.filter(session => !session.project_id));
   const activeSessionProjectId = sessions.find(session => session.session_id === activeId)?.project_id;
 
@@ -150,34 +139,6 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
     };
   }, [menuProjectId]);
 
-  useEffect(() => {
-    if (!accountMenuOpen) return;
-    function closeOnOutside(event: MouseEvent) {
-      const target = event.target as Node;
-      if (accountMenuRef.current?.contains(target) || accountTriggerRef.current?.contains(target)) return;
-      setAccountMenuOpen(false);
-      setSwitchingAccount(false);
-    }
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      setAccountMenuOpen(false);
-      setSwitchingAccount(false);
-      accountTriggerRef.current?.focus();
-    }
-    document.addEventListener('mousedown', closeOnOutside);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('mousedown', closeOnOutside);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [accountMenuOpen]);
-
-  useEffect(() => {
-    if (!userId) return;
-    setAccountMenuOpen(false);
-    setSwitchingAccount(false);
-  }, [userId]);
-
   function toggleProjectMenu(project: Project, trigger: HTMLButtonElement) {
     if (menuProjectId === project.project_id) {
       setMenuProjectId(null);
@@ -210,21 +171,13 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
   }
 
   function createStandaloneTask() {
-    if (!userId) {
-      setAccountMenuOpen(true);
-      return;
-    }
-    onNew();
+onNew();
     onCloseMobile();
   }
 
   const effectivelyCollapsed = collapsed && !mobileOpen;
-  const accountFormVisible = !userId || switchingAccount;
 
-  function requireAccount(action: () => void) {
-    if (userId) action();
-    else setAccountMenuOpen(true);
-  }
+  function runAction(action: () => void) { action(); }
 
   return <>
   <aside className={`sidebar ${effectivelyCollapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
@@ -241,13 +194,13 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
       </button>
     </nav>
     <nav className="sidebar-utilities" aria-label={t('Knowledge and capability management', '知识与能力管理')}>
-      <button onClick={() => requireAccount(() => { onMemory(); onCloseMobile(); })}><Icon name="spark" size={16} /><span>{t('Memory', '记忆')}</span></button>
-      <button onClick={() => requireAccount(() => { onSkills(); onCloseMobile(); })}><Icon name="cube" size={16} /><span>{t('Skills', '技能')}</span></button>
+      <button onClick={() => runAction(() => { onMemory(); onCloseMobile(); })}><Icon name="spark" size={16} /><span>{t('Memory', '记忆')}</span></button>
+      <button onClick={() => runAction(() => { onSkills(); onCloseMobile(); })}><Icon name="cube" size={16} /><span>{t('Skills', '技能')}</span></button>
       {onHelp && <button className={helpActive ? 'active' : ''} aria-current={helpActive ? 'page' : undefined} onClick={() => { onHelp(); onCloseMobile(); }}><Icon name="file" size={16} /><span>{t('Help', '帮助')}</span></button>}
     </nav>
     <div className="sidebar-scroll">
       <section className="sidebar-projects">
-        <div className="sidebar-section-head"><span>{t('Projects', '项目')}</span><button onClick={() => requireAccount(() => { onNewProject(); onCloseMobile(); })} title={t('Create project', '创建项目')} aria-label={t('Create project', '创建项目')}><Icon name="plus" size={15} /></button></div>
+        <div className="sidebar-section-head"><span>{t('Projects', '项目')}</span><button onClick={() => runAction(() => { onNewProject(); onCloseMobile(); })} title={t('Create project', '创建项目')} aria-label={t('Create project', '创建项目')}><Icon name="plus" size={15} /></button></div>
         <div className="project-list">
           {projects.length === 0 ? null : projects.map(project => {
             const expanded = expandedProjects.has(project.project_id);
@@ -270,7 +223,7 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
         </div>
       </section>
       <section className="sidebar-recents">
-        <div className="sidebar-section-head"><span>{t('Recent tasks', '最近任务')}</span><button onClick={() => requireAccount(() => { onNew(); onCloseMobile(); })} title={t('Create standalone conversation', '新建独立会话')} aria-label={t('Create standalone conversation', '新建独立会话')}><Icon name="plus" size={15} /></button></div>
+        <div className="sidebar-section-head"><span>{t('Recent tasks', '最近任务')}</span><button onClick={() => runAction(() => { onNew(); onCloseMobile(); })} title={t('Create standalone conversation', '新建独立会话')} aria-label={t('Create standalone conversation', '新建独立会话')}><Icon name="plus" size={15} /></button></div>
         <div className="session-list">
           {independentSessions.length === 0 ? <div className="sidebar-empty">{t('No tasks', '暂无任务')}</div> : independentSessions.map(session => <div className={`session-row ${activeId === session.session_id ? 'selected' : ''}`} key={session.session_id} title={titleFor(session)} onClick={() => { onSelect(session.session_id); onCloseMobile(); }}>
             <Icon name="file" size={15} /><div className="session-copy"><strong><span className="recent-session-name">{titleFor(session)}</span></strong><span>{statusFor(runStatuses[session.session_id]) || (session.has_graph ? t('Graph loaded', '已加载图') : t('Ready to analyze', '待开始分析'))}</span></div><SessionRunIndicator status={runStatuses[session.session_id]} unread={unreadCompletions[session.session_id]} t={t} />{pinButton(session)}<button className="session-delete" onClick={event => { event.stopPropagation(); onDelete(session.session_id); }} title={t('Delete task', '删除任务')} aria-label={t('Delete task', '删除任务')}><Icon name="trash" size={14} /></button>
@@ -283,22 +236,6 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
       {hasMoreSessions && <button className="text-button" onClick={onLoadMoreSessions} disabled={loadingSessions}>{loadingSessions ? t('Loading…', '加载中…') : sessionListError ? t('Retry loading tasks', '重试加载任务') : t('Load older tasks', '加载更多任务')}</button>}
     </div>
     <div className="sidebar-footer">
-      <div className="account-area">
-        <button ref={accountTriggerRef} className="account-trigger" onClick={() => { setAccountMenuOpen(current => !current); setSwitchingAccount(false); }} aria-label={userId ? t(`Account: ${userId}`, `账户：${userId}`) : t('Open sign in', '打开登录')} aria-haspopup="dialog" aria-expanded={accountMenuOpen}>
-          <span className={`avatar ${userId ? '' : 'guest'}`}>{(userId || t('G', '访')).slice(0, 1).toUpperCase()}</span>
-          <span className="account-copy"><strong>{userId || t('Not signed in', '未登录')}</strong><span>{userId ? t('Personal workspace', '个人工作区') : t('Select avatar to sign in', '点击头像登录')}</span></span>
-          <Icon name="chevron" size={14} />
-        </button>
-        <PopupPresence>{accountMenuOpen ? <Popup.div variant="popover" ref={accountMenuRef} className="account-popover" role="dialog" aria-label={t('Account', '账户')}>
-          <div className="account-popover-head"><span>{userId ? t('Current account', '当前账户') : t('Welcome to iGraph', '欢迎使用 iGraph')}</span><strong>{userId || t('Sign in to sync your projects and conversations', '登录后同步你的项目与会话')}</strong></div>
-          {accountFormVisible ? <form className="account-login-form" onSubmit={event => { event.preventDefault(); void onLogin(); }}>
-            <label htmlFor="sidebar-user-id">{t('User ID', '用户 ID')}</label>
-            <input id="sidebar-user-id" autoFocus value={loginValue} onChange={event => onLoginValueChange(event.target.value)} placeholder={t('Enter your user ID', '请输入用户 ID')} autoComplete="username" disabled={loginPending} />
-            {loginError ? <span className="account-login-error" role="alert">{loginError}</span> : null}
-            <div className="account-login-actions">{userId ? <button type="button" className="account-cancel" onClick={() => setSwitchingAccount(false)}>{t('Cancel', '取消')}</button> : null}<button type="submit" className="account-login-submit" disabled={loginPending || !loginValue.trim()}>{loginPending ? t('Verifying…', '正在验证…') : t('Sign in', '登录')}</button></div>
-          </form> : <button className="account-switch" type="button" onClick={() => setSwitchingAccount(true)}><Icon name="move" size={15} /> {t('Sign in as another user', '使用其他用户登录')}</button>}
-        </Popup.div> : null}</PopupPresence>
-      </div>
       <button className="sidebar-theme" onClick={toggleLanguage} aria-label={language === 'en' ? 'Switch to Chinese' : '切换到英文'} title={language === 'en' ? 'Switch to Chinese' : '切换到英文'}><span lang={language === 'en' ? 'zh-CN' : 'en'}>{language === 'en' ? '中' : 'EN'}</span></button>
       <button className="sidebar-theme" onClick={onTheme} aria-label={dark ? t('Switch to light theme', '切换到浅色主题') : t('Switch to dark theme', '切换到深色主题')} title={dark ? t('Switch to light theme', '切换到浅色主题') : t('Switch to dark theme', '切换到深色主题')}><Icon name={dark ? 'sun' : 'moon'} size={17} /></button>
     </div>
