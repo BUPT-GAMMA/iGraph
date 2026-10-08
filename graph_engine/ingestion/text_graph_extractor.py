@@ -143,7 +143,7 @@ class TextChunker:
                 chunks.append(
                     self._make_chunk(chunks, current_parts, current_start, start, current_titles)
                 )
-                overlap = self._tail_overlap(chunks[-1].text)
+                overlap = self._tail_overlap(chunks[-1].text, self.max_chunk_tokens - unit_tokens)
                 current_parts = [overlap, unit_text] if overlap else [unit_text]
                 current_start = max(chunks[-1].end_char - len(overlap), 0) if overlap else start
                 current_tokens = self.count_tokens("".join(current_parts))
@@ -265,7 +265,7 @@ class TextChunker:
                         titles,
                     )
                 )
-                overlap = self._tail_overlap(chunk_text)
+                overlap = self._tail_overlap(chunk_text, self.max_chunk_tokens - piece_tokens)
                 buf = [overlap, piece] if overlap else [piece]
                 buf_start = max(piece_start - len(overlap), absolute_start) if overlap else piece_start
                 token_count = self.count_tokens("".join(buf))
@@ -316,13 +316,14 @@ class TextChunker:
                 break
         return chunks
 
-    def _tail_overlap(self, text: str) -> str:
-        if self.overlap_tokens <= 0:
+    def _tail_overlap(self, text: str, available_tokens: int) -> str:
+        overlap_tokens = min(self.overlap_tokens, available_tokens)
+        if overlap_tokens <= 0:
             return ""
         matches = list(self._TOKEN_RE.finditer(text))
-        if len(matches) <= self.overlap_tokens:
+        if len(matches) <= overlap_tokens:
             return text
-        return text[matches[-self.overlap_tokens].start() :]
+        return text[matches[-overlap_tokens].start() :]
 
     @staticmethod
     def _make_chunk(

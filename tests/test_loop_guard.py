@@ -80,6 +80,13 @@ def test_job_status_and_artifact_changes_are_real_progress():
     assert loop_guard.has_real_progress("get_job_status", args, done_with_new_artifact, done)
 
 
+def test_default_guard_allows_one_hundred_calls_then_stops():
+    guard = ToolLoopGuard()
+    for index in range(100):
+        assert guard.before_call("get_job_status", {"job_id": f"job-{index}"}) is None
+    assert "上限" in (guard.before_call("get_job_status", {"job_id": "job-101"}) or "")
+
+
 def test_guard_stops_after_call_budget():
     guard = ToolLoopGuard(max_calls=1)
     assert guard.before_call("get_graph_info", {}) is None

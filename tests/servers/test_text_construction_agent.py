@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from graph_data_service.construction import validate_graph
-from graph_engine.construction.agent import ConstructionFailed, TabularConstructionSubAgent
+from graph_engine.construction.agent import ConstructionFailed, EvolutionConfig, TabularConstructionSubAgent
 from graph_engine.ingestion.text_graph_extractor import TextChunker
 
 
@@ -93,6 +93,66 @@ class SemanticTextConstructionAgentTest(unittest.TestCase):
         self.assertTrue(all(TextChunker.count_tokens(chunk.text) <= 2
                             for chunk in long_chunks))
 
+    def test_million_chinese_characters_are_fully_processed_with_default_budgets(self):
+        config = EvolutionConfig.from_options({"txt_mode": "entities"})
+        response = "<triples>\n甲 | 合作 | 乙\n</triples>"
+        for separator in ("", "\n", "\n\n"):
+            with self.subTest(separator=repr(separator)):
+                paragraph = "甲与乙合作。" * 150 + separator
+                text = (paragraph * (1_000_000 // len(paragraph) + 1))[:1_000_000]
+                chunks = TextChunker(max_chunk_tokens=config.text_chunk_tokens,
+                                     overlap_tokens=config.text_overlap_tokens).split(text)
+                self.assertGreater(len(chunks), 1000)
+                self.assertLessEqual(len(chunks), config.text_max_chunks)
+                covered = bytearray(len(text))
+                for chunk in chunks:
+                    self.assertLessEqual(TextChunker.count_tokens(chunk.text), config.text_chunk_tokens)
+                    self.assertEqual(chunk.text, text[chunk.start_char:chunk.end_char])
+                    covered[chunk.start_char:chunk.end_char] = b"\x01" * (chunk.end_char - chunk.start_char)
+                self.assertTrue(all(covered[i] or char.isspace() for i, char in enumerate(text)))
+                self.path.write_text(text, encoding="utf-8")
+                # One retry per chunk also exercises the larger call budget.
+                llm = SemanticTextLLM([item for _ in chunks for item in ("invalid", response)])
+                elapsed = [0.0]
+                complete = llm.complete_text
+                def timed_complete(*args, **kwargs):
+                    elapsed[0] += 2.0
+                    return complete(*args, **kwargs)
+                # Simulate realistic cumulative latency beyond the old 15-minute
+                # deadline without spending wall time or model tokens.
+                with patch("graph_engine.construction.agent.time.monotonic", side_effect=lambda: elapsed[0]), \
+                        patch.object(llm, "complete_text", side_effect=timed_complete):
+                    result = TabularConstructionSubAgent(llm_factory=lambda _: llm).run(
+                        self.path, {"txt_mode": "entities", "mode": "llm", "experience_enabled": False})
+                self.assertGreater(result.report["elapsed_seconds"], 900)
+                self.assertEqual(result.report["status"], "ready")
+                self.assertEqual(result.report["semantic_extraction"]["chunk_count"], len(chunks))
+                self.assertEqual(len(llm.calls), 2 * len(chunks))
+                self.assertEqual(len(result.graph["edges"]), 1)
+                self.assertEqual(result.graph["edges"][0]["properties"]["source_chunk_ids"],
+                                 list(range(len(chunks))))
+
+    def test_txt_timeout_is_independent_of_legacy_tabular_environment_and_can_be_overridden(self):
+        with patch.dict(os.environ, {"GRAPH_CONSTRUCTION_MAX_SECONDS": "900"}, clear=True):
+            self.assertEqual(EvolutionConfig.from_options({}).max_seconds, 900)
+            self.assertEqual(EvolutionConfig.from_options({"txt_mode": "entities"}).max_seconds, 43_200)
+            self.assertEqual(EvolutionConfig.from_options({"txt_mode": "entities", "max_seconds": 30}).max_seconds, 30)
+            with patch.dict(os.environ, {"GRAPH_CONSTRUCTION_TEXT_MAX_SECONDS": "7200"}):
+                self.assertEqual(EvolutionConfig.from_options({"txt_mode": "entities"}).max_seconds, 7200)
+                self.assertEqual(EvolutionConfig.from_options({"txt_mode": "entities", "text_max_seconds": 3600}).max_seconds, 3600)
+        for field, value in (("text_max_seconds", 43_201), ("text_max_seconds", float("nan")),
+                             ("text_max_chunks", 4097), ("text_max_calls", 12289)):
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                EvolutionConfig.from_options({"txt_mode": "entities", field: value})
+
+    def test_over_one_million_characters_is_rejected_before_model_calls(self):
+        self.path.write_text("甲" * 1_000_001, encoding="utf-8")
+        llm = SemanticTextLLM([])
+        with self.assertRaises(ConstructionFailed) as caught:
+            TabularConstructionSubAgent(llm_factory=lambda _: llm).run(self.path, self.options())
+        self.assertEqual(caught.exception.code, "text_extraction_input_too_large")
+        self.assertEqual(llm.calls, [])
+
     def test_extracts_deduplicated_grounded_entities_and_relations_with_provenance(self):
         response = """<triples>
 Alice | works at | OpenAI
@@ -149,6 +209,32 @@ Bob | works at | OpenAI
         second, _, _ = self.build([response])
         self.assertEqual(first.graph, second.graph)
         self.assertEqual(first.report["final_graph_sha256"], second.report["final_graph_sha256"])
+
+    def test_novel_characters_include_isolated_people_but_not_places(self):
+        self.path.write_text("林舟与沈月是朋友，两人住在青石镇。许宁独自远行。", encoding="utf-8")
+        response = ("<entities>\n林舟 | 人物\n沈月 | 人物\n许宁 | 人物\n</entities>"
+                    "<triples>\n林舟 | 人物 | 朋友 | 沈月 | 人物\n</triples>")
+        result, llm, _ = self.build([response], entity_types=["人物"], domain="抽取所有人物和人物关系")
+        self.assertEqual({node["properties"]["data"]["name"] for node in result.graph["nodes"]},
+                         {"林舟", "沈月", "许宁"})
+        self.assertEqual({node["type"] for node in result.graph["nodes"]}, {"人物"})
+        self.assertEqual(len(result.graph["edges"]), 1)
+        self.assertIn("抽取所有人物和人物关系", llm.calls[0]["messages"][1]["content"])
+
+    def test_selected_people_without_relationships_are_retained_without_fake_edges(self):
+        self.path.write_text("林舟独自远行。", encoding="utf-8")
+        response = "<entities>\n林舟 | 人物\n</entities><triples>\n无实体\n</triples>"
+        result, _, _ = self.build([response], entity_types=["人物"])
+        self.assertEqual(len(result.graph["nodes"]), 1)
+        self.assertEqual(result.graph["edges"], [])
+
+    def test_standalone_entities_must_be_grounded_and_match_selected_types(self):
+        for row in ("Invented | 人物", "Alice | 组织"):
+            with self.subTest(row=row):
+                response = f"<entities>\n{row}\n</entities><triples>\n无实体\n</triples>"
+                with self.assertRaises(ConstructionFailed) as caught:
+                    self.build([response] * 3, entity_types=["人物"])
+                self.assertEqual(caught.exception.code, "text_extraction_response_invalid")
 
     def test_selected_entity_types_become_node_types_without_refinement_calls(self):
         response = "<triples>\nAlice | 人物 | works at | OpenAI | 组织\n</triples>"
