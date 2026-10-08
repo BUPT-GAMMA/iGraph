@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "filename": "finance-ownership.npz",
+  "dataset": {
+    "dataset_id": "ds_finance_ownership_v1",
+    "name": "金融股权三表（预置图）",
+    "description": "机构、个人和原始持股三表构成的有向属性图；股东指向被投资机构。保留原始字段和证据，可直接使用金融分析工具。",
+    "source_type": "finance_preset",
+    "node_count": 6000,
+    "edge_count": 13436,
+    "is_directed": true,
+    "created_at": "2026-10-08T02:28:04+00:00",
+    "updated_at": "2026-10-08T02:28:04+00:00",
+    "versions": [
+      "v001"
+    ],
+    "edge_entry_count": 13436,
+    "unique_edge_count": 13436,
+    "num_unique_directed_edges": 13436,
+    "num_unique_undirected_edges": 13436,
+    "semantic_type": "directed",
+    "storage_type": "directed",
+    "is_symmetric": false,
+    "has_self_loops": false,
+    "has_duplicate_entries": false,
+    "storage_backend": "local",
+    "graph_ref": null
+  },
+  "sources": {
+    "institution_main.csv": {
+      "sha256": "32f45bc436a8dd4d9adb162b44eef3919b6754de1a36e1e865b48720d68367f9",
+      "rows": 5000
+    },
+    "individual_info.csv": {
+      "sha256": "42488b995e05eb3e0ba99e7ea1961518246c4de4e81abafc1dd04ad35c04fa0a",
+      "rows": 1000
+    },
+    "institution_shareholder_relationship.csv": {
+      "sha256": "30fcd35b17e4e31010721d4438875cfe421bf0e87c66ce1aeec942ac48c39855",
+      "rows": 13436
+    }
+  },
+  "sha256": "0b0147dc4c03e3ef73359ab6c820694276dd418dc81d7f154688bcb0e6529117",
+  "inspection": {
+    "entity_count": 6000,
+    "ownership_fact_count": 13436,
+    "quality_issue_counts": {
+      "OWNERSHIP_TOTAL_EXCEEDED": 13
+    }
+  }
+}

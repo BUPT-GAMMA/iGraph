@@ -40,9 +40,9 @@ def build_dependencies(function_calls):
 
 def tool_parallelism():
     try:
-        return max(1, min(32, int(os.getenv("AGENT_TOOL_MAX_CONCURRENCY", "4"))))
+        return max(1, min(3, int(os.getenv("AGENT_TOOL_MAX_CONCURRENCY", "3"))))
     except ValueError:
-        return 4
+        return 3
 
 
 def _outcome(fc, messages, paused):

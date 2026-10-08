@@ -121,6 +121,7 @@ services:
       AGENT_RUNTIME_SKILLS_ROOT: /data/agent_runtime/skills
       IGRAPH_DATA_ROOT: /data
       AGNO_TELEMETRY: ${AGNO_TELEMETRY:-false}
+      AGENT_TOOL_MAX_CONCURRENCY: ${AGENT_TOOL_MAX_CONCURRENCY:-3}
     volumes:
       - igraph-data:/data
     expose:

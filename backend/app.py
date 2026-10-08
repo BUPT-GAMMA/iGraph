@@ -44,7 +44,7 @@ from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetReco
 from backend.projects import ProjectDirectory, ProjectRecord
 from backend.server_datasets import ServerDatasetDirectory, ServerDatasetRecord
 from backend.service_client import ServiceClient, forwarded_headers
-from backend.stream_recovery import close_observation, observation_events
+from backend.stream_recovery import close_observation, observation_events, wait_for_native_start
 from backend.users import UserDirectory, UserRecord
 from execution_protocol import (CancelRequest, JobCancelRequest, Target, controls_enabled,
                                 execution_headers, require_service, service_headers,
@@ -4509,6 +4509,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 owned_stack = AsyncExitStack()
                 try:
                     upstream = await owned_stack.enter_async_context(runtime.stream('POST', f'/agents/{settings.agent_id}/runs', headers=headers, data=form))
+                    upstream = await wait_for_native_start(upstream, run_id=registration['run_id'])
                     return owned_stack, upstream, registration
                 except BaseException:
                     await failed_native_handoff(session_id, prepared, registration, request)

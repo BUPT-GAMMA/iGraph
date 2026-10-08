@@ -253,6 +253,18 @@ def test_runtime_startup_check_reports_missing_bwrap(monkeypatch):
         workspace_sandbox_startup_check()
 
 
+@pytest.mark.parametrize("binary", [None, "/usr/bin/bwrap"])
+def test_explicitly_disabled_sandbox_starts_but_never_executes(tmp_path, monkeypatch, binary):
+    current = ctx(tmp_path)
+    monkeypatch.setenv("IGRAPH_ENV", "production")
+    monkeypatch.setenv("IGRAPH_WORKSPACE_SANDBOX_MODE", "disabled")
+    monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: binary)
+    workspace_sandbox_startup_check()
+    result = asyncio.run(toolset()["workspace_bash"]("printf forbidden > marker.txt", current))
+    assert result["status"] == "sandbox_unavailable"
+    assert not (tmp_path / "u1" / "s1" / "marker.txt").exists()
+
+
 def test_runtime_startup_check_reports_rootless_probe_failure(monkeypatch):
     monkeypatch.setenv("IGRAPH_ENV", "production")
     monkeypatch.setattr("agent_runtime.workspace_tools.shutil.which", lambda _name: "/usr/bin/bwrap")

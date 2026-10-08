@@ -280,3 +280,20 @@ Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
 ### 模型提供商管理
 
 在工作台右上角打开「模型服务」，管理提供商连接、发现或添加模型，并为新会话选择默认模型。详情见 [模型服务与提供商管理](docs/MODEL_PROVIDERS.md)。
+
+
+## 银行版预置金融图
+
+`feature/user_case` 随镜像包含 `finance-ownership.npz`，无需挂载开发机的 CSV 目录或调用 LLM 构图。Graph Engine 启动时会校验预置资源并首次安装到持久数据卷的公共 Registry 和服务器数据源库；重启不会覆盖已有数据。
+
+部署后新建或打开项目，在项目的数据集面板的服务器数据源库中选择 `finance-ownership`，添加到项目并在会话中选择，即可进行图分析及第一大股东、控制链、集团树、经济权益分析。Agent 也可通过 `list_datasets` 和 `load_dataset` 加载公共数据集 `ds_finance_ownership_v1`。
+
+预置图由 `institution_main.csv`（5,000 行）、`individual_info.csv`（1,000 行）和 `institution_shareholder_relationship.csv`（13,436 行）生成，共 6,000 个节点和 13,436 条有向持股边，方向为股东 → 被投资机构。节点使用 `I:` / `P:` 区分机构和个人；所有原始字段、统计日期和关系行证据均保留。源数据有 13 处持股合计超限，金融工具会继续报告这些质量问题。源文件 SHA-256 和行数见 `graph_engine/resources/finance/manifest.json`。
+
+需要更新预置图时，在仓库根目录执行：
+
+```powershell
+python scripts/prepare_finance_preset.py F:\mypaper\data\finance\finance_csv
+```
+
+更新预置数据时应同步更新数据集版本／标识，再重新构建镜像；已有部署的持久副本不会自动覆盖。`GRAPH_ENGINE_SERVER_DATASETS_DIR` 和 `BACKEND_SERVER_DATASETS_DIR` 如有自定义，须指向同一共享目录。工具 DAG 默认并发 3，`AGENT_TOOL_MAX_CONCURRENCY` 可设为 1–3，更大的值仍封顶 3。

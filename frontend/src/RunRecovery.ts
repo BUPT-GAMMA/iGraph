@@ -64,7 +64,9 @@ export class RunRecovery {
     const valid = () => this.valid(connection, identity);
     let shadow = o.view(sessionId);
     if (!shadow?.activeRun || shadow.activeRun.generation !== generation) {
-      shadow = { ...createSessionView(sessionId), messagesById: shadow?.messagesById || {}, messageOrder: shadow?.messageOrder || [],
+      // START_RUN may still be queued in React. Keep the current model selection
+      // and its revision while preparing the new generation's local run state.
+      shadow = { ...createSessionView(sessionId), ...shadow,
         activeRun: { generation, runId: connection.runId, status: 'starting',
         lastAppliedEventIndex: -1, toolsById: {}, toolOrder: [], plan: null, feedback: null } };
     }
@@ -137,7 +139,7 @@ export class RunRecovery {
     connection.observing = false;
     if (!valid()) return;
     if (o.manager.isCancelling(sessionId)) return;
-    if (operation === 'start' && start && error instanceof ApiError && (error.status === 409 && (error.activeRun || start.replaceRunId) || [400, 422].includes(error.status))) {
+    if (operation === 'start' && start && error instanceof ApiError && (error.status === 409 && (error.activeRun || start.replaceRunId || error.code === 'MODEL_SELECTION_CHANGED') || [400, 422].includes(error.status))) {
       dispatch({ type: 'ROLLBACK_RUN_START', sessionId, generation, restoreDraft: start.message, restoreAttachments: start.attachments });
       if (error.activeRun) {
         dispatch({ type: 'ADOPT_RUN', sessionId, generation, activeRun: error.activeRun, feedback: error.pendingFeedback });
