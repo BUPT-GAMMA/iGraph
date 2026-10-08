@@ -47,5 +47,116 @@
     "quality_issue_counts": {
       "OWNERSHIP_TOTAL_EXCEEDED": 13
     }
+  },
+  "construction_source": {
+    "asset": "source.gz",
+    "filename": "finance.csv",
+    "sha256": "e5586dc777ed4861c0da4ec7688ef0cef3136baad13b5afcb8e76a4378edde0e",
+    "metadata": {
+      "csv_bundle": {
+        "version": "csv_bundle.v1",
+        "source_files": [
+          "institution_main.csv",
+          "individual_info.csv",
+          "institution_shareholder_relationship.csv"
+        ],
+        "tables": [
+          {
+            "name": "institution_main",
+            "columns": [
+              "UUID",
+              "GCID",
+              "REFR_UUID",
+              "CHN_NM",
+              "ENG_NM",
+              "LCL_NM",
+              "CNSLD_SOC_CR_CODE",
+              "RGST_NAT",
+              "OFFC_NAT",
+              "FN_DT",
+              "APRV_DT",
+              "RGST_CPTL",
+              "RGST_CPTL_CCY_CODE",
+              "OPR_SCOP",
+              "RGST_ADR",
+              "OFFC_ADR",
+              "PROV_CODE",
+              "URB_CODE",
+              "ENTP_OPR_ST",
+              "LGL_RPRT",
+              "IDY_FRST_LVL_CODE",
+              "IDY_SCD_CODE",
+              "IDY_FRST_LVL_NAME",
+              "IDY_SCD_NAME",
+              "CHN_SHRT_NM",
+              "RCRD_ST",
+              "CUST_CRDBL",
+              "ENTP_CHAR_CL",
+              "LIST_ST_CODE",
+              "IS_STE_OWN_BKGD",
+              "IS_IVS_INST",
+              "AFFL_RGON",
+              "IS_GRP_CO",
+              "IS_LTD_CO",
+              "STATC_DT"
+            ],
+            "primary_key": [
+              "UUID"
+            ],
+            "foreign_keys": []
+          },
+          {
+            "name": "individual_info",
+            "columns": [
+              "IDV_ID",
+              "IDV_NM",
+              "IDV_MD5",
+              "STATC_DT",
+              "IS_IN_LIST_CO_POS",
+              "IS_BRK_FAH_EXEC",
+              "IS_IDV_GRP_TOP_PNT"
+            ],
+            "primary_key": [
+              "IDV_ID"
+            ],
+            "foreign_keys": []
+          },
+          {
+            "name": "institution_shareholder_relationship",
+            "columns": [
+              "UUID",
+              "INST_CHN_NM",
+              "INST_ENG_NM",
+              "INST_CNSLD_SOC_CR_CODE",
+              "INST_RGST_CTY",
+              "REL_SHRHLR_CUST_ID",
+              "REL_SHRHLR_TP_CODE",
+              "REL_SHRHLR_HOLD_SHR_RTO",
+              "REL_SHRHLR_HOLD_SHR_RANK",
+              "REL_INST_SHRHLR_CHN_NM",
+              "REL_INST_SHRHLR_ENG_NM",
+              "REL_INST_SHRHLR_CNSLD_SOC_CR_CODE",
+              "REL_INST_SHRHLR_RGST_CTY",
+              "REL_IDV_SHRHLR_MD5_INF",
+              "REL_IDV_SHRHLR_NM",
+              "STATC_DT"
+            ],
+            "primary_key": [],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "UUID"
+                ],
+                "ref_table": "institution_main",
+                "ref_columns": [
+                  "UUID"
+                ]
+              }
+            ]
+          }
+        ],
+        "total_bytes": 6427044
+      }
+    }
   }
 }

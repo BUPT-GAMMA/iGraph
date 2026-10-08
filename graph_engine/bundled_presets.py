@@ -52,5 +52,7 @@ def install_bundled_preset(data_root: Path, *, resources: Path, server_root: Pat
                 pass
         finally:
             Path(temporary).unlink(missing_ok=True)
+    from graph_engine.user_case_sources import install_source
+    install_source(resources, manifest, server_root)
     return {"dataset_id": dataset_id, "server_filename": filename,
         "node_count": manifest["dataset"]["node_count"], "edge_count": manifest["dataset"]["edge_count"]}

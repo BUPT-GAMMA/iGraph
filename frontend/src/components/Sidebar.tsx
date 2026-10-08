@@ -209,14 +209,12 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
     });
   }
 
-  function createTaskFromContext() {
+  function createStandaloneTask() {
     if (!userId) {
       setAccountMenuOpen(true);
       return;
     }
-    const projectId = activeProjectId || activeSessionProjectId;
-    if (projectId) onNewInProject(projectId);
-    else onNew();
+    onNew();
     onCloseMobile();
   }
 
@@ -232,7 +230,7 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
   <aside className={`sidebar ${effectivelyCollapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
     <div className="sidebar-head"><button className="sidebar-collapse" onClick={onCollapse} aria-label={mobileOpen ? t('Close left sidebar', '关闭左侧栏') : effectivelyCollapsed ? t('Expand left sidebar', '展开左侧栏') : t('Collapse left sidebar', '收起左侧栏')} title={mobileOpen ? t('Close left sidebar', '关闭左侧栏') : effectivelyCollapsed ? t('Expand left sidebar', '展开左侧栏') : t('Collapse left sidebar', '收起左侧栏')}><Icon name={effectivelyCollapsed ? 'panel-left-open' : 'panel-left-close'} size={18} /></button></div>
     <div className="sidebar-content" aria-hidden={effectivelyCollapsed}>
-    <button className="new-task sidebar-primary-action" onClick={createTaskFromContext}>
+    <button className="new-task sidebar-primary-action" onClick={createStandaloneTask}>
       <span className="sidebar-primary-action-icon sidebar-new-task-icon"><Icon name="plus" size={18} /></span>
       <span className="sidebar-primary-action-label">{t('New task', '新建任务')}</span>
     </button>

@@ -62,5 +62,11 @@
       },
       "checkpoint_cache_hits": 105
     }
+  },
+  "construction_source": {
+    "asset": "source.gz",
+    "filename": "天龙八部.txt",
+    "sha256": "4eca7ec1ed248ee847f8f2a32b87ca5ca12ce595ca4bec7359a2baca5a28b2db",
+    "metadata": {}
   }
 }
