@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "filename": "tianlongbabu-characters.npz",
+  "dataset": {
+    "dataset_id": "ds_tianlongbabu_v1",
+    "name": "天龙八部人物关系（预置图）",
+    "description": "完整《天龙八部》文本经 deepseek-v4-pro 分块抽取的人物关系图；人物和关系保留来源分块，支持邻居、路径、中心性与社区分析。模型抽取关系需结合原文复核。",
+    "source_type": "novel_preset",
+    "node_count": 304,
+    "edge_count": 791,
+    "is_directed": true,
+    "created_at": "2026-10-08T03:36:25+00:00",
+    "updated_at": "2026-10-08T03:36:25+00:00",
+    "versions": [
+      "v001"
+    ],
+    "edge_entry_count": 791,
+    "unique_edge_count": 791,
+    "num_unique_directed_edges": 791,
+    "num_unique_undirected_edges": 791,
+    "semantic_type": "directed",
+    "storage_type": "directed",
+    "is_symmetric": false,
+    "has_self_loops": false,
+    "has_duplicate_entries": false,
+    "storage_backend": "local",
+    "graph_ref": null
+  },
+  "sources": {
+    "天龙八部.txt": {
+      "sha256": "4eca7ec1ed248ee847f8f2a32b87ca5ca12ce595ca4bec7359a2baca5a28b2db",
+      "bytes": 2459800
+    }
+  },
+  "sha256": "0c43425a033a34279fada2733c94155a6c150b23d2a85802613a040f09e12768",
+  "construction": {
+    "model": "deepseek-v4-pro",
+    "semantic_extraction": {
+      "chunks_completed": 106,
+      "chunks_total": 106,
+      "extracted_nodes": 304,
+      "extracted_edges": 791,
+      "chunk_count": 106,
+      "llm_calls": 106,
+      "raw_triple_count": 1072,
+      "deduped_triple_count": 791,
+      "skipped_count": 0,
+      "ungrounded_count": 22
+    },
+    "llm_api": {
+      "successful_calls": 1,
+      "provider_host": "api.zhizengzeng.com",
+      "dns_override_used": false,
+      "response_models": [
+        "deepseek-v4-pro"
+      ],
+      "usage_available_calls": 1,
+      "token_usage": {
+        "prompt_tokens": 9407,
+        "completion_tokens": 765,
+        "total_tokens": 10172
+      },
+      "checkpoint_cache_hits": 105
+    }
+  }
+}

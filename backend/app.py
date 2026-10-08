@@ -3332,6 +3332,28 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "dataset_view": dataset_view,
         }
 
+    @app.get("/api/user-cases")
+    async def list_user_cases(request: Request):
+        current_user(request, users)
+        from backend.user_cases import USER_CASES
+        sources = {item.relative_path for item in server_datasets.list()}
+        return {"cases": [{**item, "available": item["filename"] in sources} for item in USER_CASES]}
+
+    @app.post("/api/user-cases/{case_id}/project")
+    async def open_user_case(case_id: str, request: Request):
+        user = current_user(request, users)
+        from backend.user_cases import USER_CASES
+        case = next((item for item in USER_CASES if item["id"] == case_id), None)
+        if case is None:
+            raise HTTPException(404, "示例不存在")
+        source = next((item for item in server_datasets.list() if item.relative_path == case["filename"]), None)
+        if source is None:
+            raise HTTPException(409, "示例图尚未安装")
+        project = projects.ensure_user_case(user.user_id, case_id, case["name"], case["description"])
+        result = await create_project_dataset_from_server(project.project_id,
+            ServerDatasetImportReq(server_dataset_id=source.server_dataset_id, name=case["name"], set_as_default=True), request)
+        return {"project": _project_row(projects.get(project.project_id, user.user_id)), "dataset": result["dataset"], "case": case}
+
     @app.post("/api/projects/{project_id}/datasets")
     async def create_project_dataset(
         request: Request,

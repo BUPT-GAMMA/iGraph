@@ -220,7 +220,7 @@ export type ConstructionState = {
   dataset_id: string;
   build_id?: string | null;
   failure_code?: string | null;
-  status: 'not_built' | 'algorithm_unavailable' | 'building' | 'ready' | 'failed';
+  status: 'not_built' | 'algorithm_unavailable' | 'building' | 'draft' | 'ready' | 'failed';
   revision: number;
   node_count?: number;
   edge_count?: number;
@@ -277,6 +277,7 @@ export type ConstructionBuildOptions = {
   domain_category?: ConstructionDomainCategory;
   experience_enabled?: boolean;
   delimiter?: string;
+  construction_model?: string;
   txt_mode?: 'auto' | 'lines' | 'entities';
   entity_types?: string[];
   text_refine_enabled?: boolean;

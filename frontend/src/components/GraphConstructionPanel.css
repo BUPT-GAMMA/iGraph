@@ -169,3 +169,6 @@
 .construction-schema-switch button { padding: 8px 12px; border-radius: 7px; color: var(--construction-muted); background: transparent; font-size: 12px; }
 .construction-schema-switch button[aria-pressed="true"] { color: var(--accent-strong); background: var(--accent-soft); }
 @media (max-width: 720px) { .construction-page .construction-panel { height: 100%; min-height: 0; }.construction-mark { display: grid; width: 34px; height: 34px; border-radius: 9px; }.construction-heading { gap: 10px; } }
+
+.construction-rename { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+.construction-rename input { min-width:180px; padding:6px 10px; }

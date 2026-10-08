@@ -60,6 +60,13 @@ class ConstructionLLMClientTest(unittest.TestCase):
             "token_usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
         })
 
+    def test_deepseek_structured_text_disables_thinking_and_rejects_truncation(self):
+        client = ToolCallingLLM(model="deepseek-v4-pro")
+        _, transport = self.complete_with({"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}, client=client)
+        self.assertEqual(json.loads(transport.call_args.args[0].data)["thinking"], {"type": "disabled"})
+        with self.assertRaisesRegex(ConstructionLLMError, "output_truncated"):
+            self.complete_with({"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]}, client=client)
+
     def test_explicit_dns_override_changes_only_resolution_and_keeps_url_host(self):
         payload = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
         body = json.dumps(payload).encode("utf-8")

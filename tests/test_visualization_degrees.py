@@ -77,3 +77,19 @@ def test_regular_graph_keeps_original_node_labels():
                      node2id={"row_business_id": 0}, node_type=["products"])
     result = GraphCompute().visualize_subgraph(data.to_networkx(), data)
     assert result["nodes"][0]["label"] == "row_business_id"
+
+
+def test_semantic_entity_labels_keep_stable_ids_and_searchable_names():
+    from graph_data_service.construction import to_graph_data
+
+    graph = {"directed": True, "nodes": [
+        {"id": "entity_a", "type": "人物", "properties": {"data": {"name": "段誉"}}},
+        {"id": "entity_b", "type": "人物", "properties": {"data": {"name": "虚竹"}}},
+        {"id": "entity_legacy", "type": "人物", "properties": {}},
+    ], "edges": [{"id": "e1", "source": "entity_a", "target": "entity_b",
+                  "type": "结义兄弟", "properties": {}}]}
+    data = to_graph_data({"dataset_id": "novel", "revision": 1, "graph": graph})
+    result = GraphCompute().visualize_subgraph(data.to_networkx(), data)
+    assert {node["id"]: node["label"] for node in result["nodes"]} == {
+        "entity_a": "段誉", "entity_b": "虚竹", "entity_legacy": "entity_legacy"}
+    assert (result["edges"][0]["src"], result["edges"][0]["dst"]) == ("entity_a", "entity_b")

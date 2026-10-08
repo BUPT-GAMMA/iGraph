@@ -21,6 +21,7 @@ function localizedConstructionLabel(dataset: Dataset, t: Translate) {
   const construction = dataset.metadata?.construction as { revision?: number; status?: string } | undefined;
   const status = constructionStatus(dataset);
   if (status === 'building' || status === 'processing') return t('View progress', '查看进度');
+  if (status === 'draft') return t('Save graph result', '保存构图结果');
   if (status === 'failed' || status === 'error') return t('Rebuild graph', '重新构图');
   if (status === 'algorithm_unavailable') return t('Algorithm unavailable', '算法待接入');
   return status === 'ready' || (!construction?.status && Number(construction?.revision) > 0)
@@ -34,6 +35,7 @@ function sourceSummary(dataset: Dataset, t: Translate, formatNumber: (value: num
   const nodes = Number(dataset.metadata?.num_nodes);
   const edges = Number(dataset.metadata?.num_edges);
   if (status === 'building' || status === 'processing') return t('Graph construction is in progress. Reopen it to view progress.', '构图处理中，可重新进入查看进度');
+  if (status === 'draft') return t('Graph draft ready. Save it before starting analysis.', '构图草稿已生成，保存后即可分析');
   if (status === 'failed' || status === 'error') return t('The previous graph construction failed. The source file is still available.', '上次构图失败，源文件仍已保留');
   if (status === 'algorithm_unavailable') return t('The graph construction algorithm is not available yet. The source file is preserved.', '构图算法暂不可用，源文件已保留');
   if (status === 'ready' || (!construction?.status && Number(construction?.revision) > 0)) {

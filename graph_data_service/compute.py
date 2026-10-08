@@ -2371,6 +2371,11 @@ class GraphCompute:
                     and type(row_index) is int and row_index >= 0
                     and row_properties.get("table")):
                 display_label = f"{attrs.get('type') or row_properties['table']} · #{row_index + 1}"
+            entity_name = row_properties.get("data", {}).get("name") if isinstance(row_properties.get("data"), dict) else None
+            if (gd.graph_metadata.get("construction_dataset_id")
+                    and str(node).startswith("entity_")
+                    and isinstance(entity_name, str) and entity_name.strip()):
+                display_label = entity_name.strip()
             nodes.append({
                 "id": node,
                 "label": display_label,

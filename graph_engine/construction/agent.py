@@ -6,6 +6,9 @@ Workload, reflection, tools and reports remain in the construction module.
 from __future__ import annotations
 
 import copy
+import contextvars
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import math
@@ -21,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from graph_data_service.construction import _atomic_json, validate_graph
-from graph_engine.construction.llm import ConstructionLLMError, ToolCallingLLM
+from graph_engine.construction.llm import ConstructionLLMError, ToolCallingLLM, selected_model
 from graph_engine.construction.sources import initial_graph, load_source
 from graph_engine.construction.tools import TRANSFORM_NAMES, fidelity_errors, graph_schema, tool_specs, transform
 from graph_engine.construction.workload import evaluate_workload, generate_workload, validate_queries
@@ -220,12 +223,13 @@ class EvolutionConfig:
     experience_enabled: bool = True
     text_refine_enabled: bool = False
     experience_top_k: int = 8
+    text_parallelism: int = 1
     text_chunk_tokens: int = 1000
     text_overlap_tokens: int = 150
-    # Allow 1M-character TXT inputs, including overlap and paragraph boundaries.
+    # Allow complete long Chinese novels, including overlap and paragraph boundaries.
     text_max_chunks: int = 4096
     text_max_calls: int = 12288
-    text_max_characters: int = 1_000_000
+    text_max_characters: int = 2_000_000
     text_max_seconds: float = 43_200
 
     @classmethod
@@ -256,7 +260,7 @@ class EvolutionConfig:
         bounds = {"query_count": (1, 100), "max_iterations": (1, 30), "max_tool_calls": (1, 100),
                   "workload_attempts": (1, 5), "benchmark_repeats": (1, 15), "sample_rows": (1, 10),
                   "expected_query_runs": (1, 100000), "experience_top_k": (1, 32), "comparison_rounds": (2, 9),
-                  "text_chunk_tokens": (128, 4000), "text_overlap_tokens": (0, 1000),
+                  "text_parallelism": (1, 3), "text_chunk_tokens": (128, 16000), "text_overlap_tokens": (0, 1000),
                   "text_max_chunks": (1, 4096), "text_max_calls": (1, 12288),
                   "text_max_characters": (1, 4_000_000)}
         for name, (low, high) in bounds.items():
@@ -350,7 +354,7 @@ def _retryable_text_error(exc):
 def _text_completion(llm, messages, timeout):
     complete_text = getattr(llm, "complete_text", None)
     if callable(complete_text):
-        message = complete_text(copy.deepcopy(messages), timeout=timeout, max_tokens=4096)
+        message = complete_text(copy.deepcopy(messages), timeout=timeout, max_tokens=14000)
     else:
         complete = getattr(llm, "complete", None)
         if not callable(complete):
@@ -420,6 +424,7 @@ def _parse_typed_entities(response, entity_types, text):
     if len(blocks) != 1 or response.count("<entities>") != 1 or response.count("</entities>") != 1:
         raise _SemanticTextError("text_extraction_response_invalid")
     entities = []
+    ungrounded = False
     for line in blocks[0].splitlines():
         if not line.strip():
             continue
@@ -427,9 +432,14 @@ def _parse_typed_entities(response, entity_types, text):
         if len(parts) != 2 or parts[1] not in entity_types:
             raise _SemanticTextError("text_extraction_response_invalid")
         name = TripleAccumulator.clean_entity(parts[0])
-        if not name or len(name) > 512 or not _grounded_entity(name, text):
+        if not name or len(name) > 512:
             raise _SemanticTextError("text_extraction_response_invalid")
+        if not _grounded_entity(name, text):
+            ungrounded = True
+            continue
         entities.append({"name": name, "type": parts[1]})
+    if ungrounded and not entities:
+        raise _SemanticTextError("text_extraction_response_invalid")
     return entities
 
 
@@ -455,7 +465,9 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
     ungrounded = 0
     rejected = 0
     total_calls = 0
-    for completed, chunk in enumerate(chunks, 1):
+    def extract_chunk(chunk):
+        nonlocal total_calls
+        rejected = ungrounded = 0
         if entity_types:
             prompt = (
                 f"chunk_id: {chunk.chunk_id}\n抽取目标: {extraction_goal}\n"
@@ -475,10 +487,10 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
         last_error_type = None
         for attempt in range(3):
             check_deadline()
-            if total_calls >= config.text_max_calls:
-                raise _SemanticTextError("text_extraction_call_limit_exceeded",
-                                         chunk_id=chunk.chunk_id)
-            total_calls += 1
+            with call_lock:
+                if total_calls >= config.text_max_calls:
+                    raise _SemanticTextError("text_extraction_call_limit_exceeded", chunk_id=chunk.chunk_id)
+                total_calls += 1
             try:
                 remaining = current_deadline()
                 timeout = config.llm_timeout_seconds if remaining is None else min(
@@ -534,26 +546,43 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
         if accepted is None:
             raise _SemanticTextError("text_extraction_response_invalid",
                                      chunk_id=chunk.chunk_id, error_type=last_error_type)
-        for entity in parsed_entities:
-            key = (TripleAccumulator.normalize_entity(entity["name"]), entity["type"])
-            metadata = standalone_entities.setdefault(key, {**entity, "chunk_ids": [], "mentions": 0})
-            if chunk.chunk_id not in metadata["chunk_ids"]:
-                metadata["chunk_ids"].append(chunk.chunk_id)
-                metadata["mentions"] += 1
-            entity_keys.add(key)
-        for triple in accepted:
-            pair = (triple["source_type"], triple["target_type"])
-            if pair not in accumulators:
-                accumulators[pair] = TripleAccumulator()
-            accumulators[pair].add_triples([triple], chunk_id=chunk.chunk_id)
-            for field in ("source", "target"):
-                entity_keys.add((TripleAccumulator.normalize_entity(triple[field]),
-                                 triple[field + "_type"]))
-        progress({
-            "chunks_completed": completed, "chunks_total": len(chunks),
-            "extracted_nodes": len(entity_keys),
-            "extracted_edges": sum(acc.deduped_count for acc in accumulators.values()),
-        })
+        return chunk, accepted, parsed_entities, rejected, ungrounded
+
+    progress({"chunks_completed": 0, "chunks_total": len(chunks), "extracted_nodes": 0, "extracted_edges": 0})
+    call_lock = threading.Lock()
+    context = contextvars.copy_context()
+    def in_context(chunk):
+        return context.copy().run(extract_chunk, chunk)
+
+    pool = ThreadPoolExecutor(max_workers=config.text_parallelism) if config.text_parallelism > 1 else None
+    results = pool.map(in_context, chunks) if pool else map(extract_chunk, chunks)
+    try:
+        for completed, (chunk, accepted, parsed_entities, rejected_count, ungrounded_count) in enumerate(results, 1):
+            rejected += rejected_count
+            ungrounded += ungrounded_count
+            for entity in parsed_entities:
+                key = (TripleAccumulator.normalize_entity(entity["name"]), entity["type"])
+                metadata = standalone_entities.setdefault(key, {**entity, "chunk_ids": [], "mentions": 0})
+                if chunk.chunk_id not in metadata["chunk_ids"]:
+                    metadata["chunk_ids"].append(chunk.chunk_id)
+                    metadata["mentions"] += 1
+                entity_keys.add(key)
+            for triple in accepted:
+                pair = (triple["source_type"], triple["target_type"])
+                if pair not in accumulators:
+                    accumulators[pair] = TripleAccumulator()
+                accumulators[pair].add_triples([triple], chunk_id=chunk.chunk_id)
+                for field in ("source", "target"):
+                    entity_keys.add((TripleAccumulator.normalize_entity(triple[field]),
+                                     triple[field + "_type"]))
+            progress({
+                "chunks_completed": completed, "chunks_total": len(chunks),
+                "extracted_nodes": len(entity_keys),
+                "extracted_edges": sum(acc.deduped_count for acc in accumulators.values()),
+            })
+    finally:
+        if pool:
+            pool.shutdown(wait=True, cancel_futures=True)
     triples = [dict(triple, source_type=source_type, target_type=target_type)
                for (source_type, target_type), acc in accumulators.items()
                for triple in acc.triples()]
@@ -1204,7 +1233,7 @@ class TabularConstructionSubAgent:
 
                 try:
                     llm = self._llm_factory(config) if self._llm_factory else ToolCallingLLM(
-                        timeout=config.llm_timeout_seconds
+                        model=selected_model(options.get("construction_model")), timeout=config.llm_timeout_seconds
                     )
                 except ConstructionLLMError as exc:
                     report.update(llm_used=False, model=None, llm_tool_choice=None,

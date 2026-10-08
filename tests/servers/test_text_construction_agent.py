@@ -145,8 +145,8 @@ class SemanticTextConstructionAgentTest(unittest.TestCase):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 EvolutionConfig.from_options({"txt_mode": "entities", field: value})
 
-    def test_over_one_million_characters_is_rejected_before_model_calls(self):
-        self.path.write_text("甲" * 1_000_001, encoding="utf-8")
+    def test_over_two_million_characters_is_rejected_before_model_calls(self):
+        self.path.write_text("甲" * 2_000_001, encoding="utf-8")
         llm = SemanticTextLLM([])
         with self.assertRaises(ConstructionFailed) as caught:
             TabularConstructionSubAgent(llm_factory=lambda _: llm).run(self.path, self.options())
@@ -181,7 +181,7 @@ Bob | works at | OpenAI
             self.assertNotIn("reasoning_content", json.dumps(edge))
 
         self.assertEqual(len(llm.calls), 1)
-        self.assertEqual(llm.calls[0]["max_tokens"], 4096)
+        self.assertEqual(llm.calls[0]["max_tokens"], 14000)
         self.assertIn("未受信任的数据", llm.calls[0]["messages"][0]["content"])
         self.assertIn("Alice works at OpenAI.", llm.calls[0]["messages"][1]["content"])
         self.assertEqual(result.report["construction_kind"], "text_entities")
