@@ -11,7 +11,7 @@ vi.mock('../api', async importOriginal => ({
   getConstructionSourcePreview: mocks.source,
   previewConstruction: mocks.preview, commitConstruction: mocks.commit,
 }));
-vi.mock('./GraphWorkspace', () => ({ GraphWorkspace: ({ data, onSelect }: any) => <div aria-label="测试图画布">{data.nodes.map((node: any) => <button key={node.id} onClick={() => onSelect(node)}>图节点 {node.id}</button>)}<span>{data.edges.map((edge: any) => `${edge.source} → ${edge.target}`).join(', ')}</span></div> }));
+vi.mock('./GraphWorkspace', () => ({ GraphWorkspace: ({ data, onSelect }: any) => <div aria-label="测试图画布">{data.nodes.map((node: any) => <button key={node.id} data-node-id={node.id} onClick={() => onSelect(node)}>图节点 {node.label ?? node.id}</button>)}<span>{data.edges.map((edge: any) => `${edge.source} → ${edge.target}`).join(', ')}</span></div> }));
 
 const dataset: Dataset = { dataset_id: 'd1', project_id: null, name: '客户关系', original_filename: 'customers.csv', file_type: 'csv', status: 'ready' };
 const graph = { directed: true, nodes: [{ id: 'a', type: 'Person', properties: { phone: '123', age: 29 } }, { id: 'b', type: 'Link', properties: { phone: '123' } }, { id: 'c', type: 'Person', properties: {} }], edges: [{ id: 'e1', source: 'a', target: 'b', type: 'Knows', properties: { weight: 1 } }, { id: 'e2', source: 'b', target: 'c', type: 'Knows', properties: {} }] };
@@ -112,6 +112,32 @@ describe('graph construction workflow', () => {
     expect(screen.queryByRole('button', { name: '图节点 a' })).toBeNull();
     expect(mocks.graph).toHaveBeenCalledWith(dataset, expect.any(AbortSignal));
     expect(mocks.schema).toHaveBeenCalledWith(dataset, expect.any(AbortSignal));
+  });
+
+  it('shows named TXT entities by default and keeps type aggregation as an explicit alternative', async () => {
+    const novel = { directed: true, nodes: [
+      { id: 'entity_shi', type: '人物', properties: { data: { name: '史强' } } },
+      { id: 'entity_luo', type: '人物', properties: { data: { name: '罗辑' } } },
+      { id: 'entity_ye', type: '人物', properties: { data: { name: '叶文洁' } } },
+    ], edges: [{ id: 'relation_1', source: 'entity_shi', target: 'entity_luo', type: '保护', properties: {} }] };
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', source_type: 'txt', status: 'ready', revision: 2 });
+    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph: novel });
+    mocks.schema.mockRejectedValue(new ApiError(503, 'offline'));
+    render(<GraphConstructionPanel dataset={{ ...dataset, file_type: 'txt', original_filename: '2.txt' }} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const shi = await screen.findByRole('button', { name: '图节点 史强' });
+    expect(shi.getAttribute('data-node-id')).toBe('entity_shi');
+    expect(screen.getByRole('button', { name: '图节点 罗辑' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '图节点 叶文洁' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '图节点 人物' })).toBeNull();
+    fireEvent.click(shi);
+    expect(screen.getByText('实例节点 史强 的属性')).toBeTruthy();
+    choose('查找对象', '史强');
+    expect(Array.from((screen.getByLabelText('选择节点') as HTMLSelectElement).options, option => option.value)).toEqual(['', 'entity_shi']);
+    fireEvent.click(screen.getByRole('button', { name: '类型结构' }));
+    expect(screen.getByRole('button', { name: '图节点 人物' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '图节点 史强' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '实体关系图' }));
+    expect(screen.getByRole('button', { name: '图节点 史强' })).toBeTruthy();
   });
 
   it('falls back to a local schema without blocking graph optimization when the schema endpoint fails', async () => {
@@ -593,6 +619,23 @@ describe('long-running graph construction', () => {
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
       domain: '', txt_mode: 'entities', mode: 'llm', entity_types: [], text_refine_enabled: false,
     });
+  });
+
+  it('offers a novel preset that submits people as nodes and their relationships as edges', async () => {
+    const txtDataset: Dataset = { ...sourceDataset, original_filename: 'novel.txt', file_type: 'txt' };
+    mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
+    mocks.build.mockResolvedValue(ready);
+    await act(async () => {
+      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+    });
+    fireEvent.click(screen.getByRole('button', { name: '小说人物关系' }));
+    expect((screen.getByLabelText('TXT 处理方式') as HTMLSelectElement).value).toBe('__entities__');
+    expect((screen.getByLabelText('提取的实体类型（选填）') as HTMLInputElement).value).toBe('人物');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(txtDataset, expect.objectContaining({
+      txt_mode: 'entities', mode: 'llm', entity_types: ['人物'],
+      domain: expect.stringContaining('保留没有明确关系的人物'),
+    }));
   });
 
   it('sends selected TXT entity categories and enables query refinement only when requested', async () => {

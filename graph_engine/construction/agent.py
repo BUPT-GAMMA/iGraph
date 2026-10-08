@@ -37,7 +37,7 @@ from graph_engine.ingestion.text_graph_extractor import (
 
 TYPED_TEXT_EXTRACTION_SYSTEM_PROMPT = TEXT_GRAPH_EXTRACTION_SYSTEM_PROMPT.replace(
     "主体 | 关系 | 客体", "主体 | 主体类型 | 关系 | 客体 | 客体类型"
-)
+) + "\n另用 <entities> 块逐行列出所有符合指定类型的实体，格式：原文名称 | 类型。即使没有关系也要保留实体；不要为孤立实体编造关系。无实体时该块留空。"
 
 
 SYSTEM_PROMPT = """You are iGraph's private tabular graph construction subagent.
@@ -222,9 +222,11 @@ class EvolutionConfig:
     experience_top_k: int = 8
     text_chunk_tokens: int = 1000
     text_overlap_tokens: int = 150
-    text_max_chunks: int = 64
-    text_max_calls: int = 96
+    # Allow 1M-character TXT inputs, including overlap and paragraph boundaries.
+    text_max_chunks: int = 4096
+    text_max_calls: int = 12288
     text_max_characters: int = 1_000_000
+    text_max_seconds: float = 43_200
 
     @classmethod
     def from_options(cls, options):
@@ -242,22 +244,28 @@ class EvolutionConfig:
                         values[field.name] = raw.lower() in {"true", "1"}
                         continue
                     values[field.name] = str(raw) if field.name in {"mode", "domain_category", "resource_profile"} else (
-                        float(raw) if field.name in {"llm_timeout_seconds", "max_seconds", "min_speedup", "max_graph_growth", "min_query_seconds"} else int(raw))
+                        float(raw) if field.name in {"llm_timeout_seconds", "max_seconds", "text_max_seconds", "min_speedup", "max_graph_growth", "min_query_seconds"} else int(raw))
                 except ValueError:
                     raise ValueError(f"Invalid {key}") from None
+        semantic_text = options.get("txt_mode") == "entities"
+        if semantic_text and "max_seconds" not in options:
+            # Both the agent and process supervisor use this resolved timeout.
+            # The legacy SQL/CSV environment timeout must not cut long TXT jobs short.
+            values["max_seconds"] = values.get("text_max_seconds", cls.text_max_seconds)
         config = cls(**values)
         bounds = {"query_count": (1, 100), "max_iterations": (1, 30), "max_tool_calls": (1, 100),
                   "workload_attempts": (1, 5), "benchmark_repeats": (1, 15), "sample_rows": (1, 10),
                   "expected_query_runs": (1, 100000), "experience_top_k": (1, 32), "comparison_rounds": (2, 9),
                   "text_chunk_tokens": (128, 4000), "text_overlap_tokens": (0, 1000),
-                  "text_max_chunks": (1, 512), "text_max_calls": (1, 1536),
+                  "text_max_chunks": (1, 4096), "text_max_calls": (1, 12288),
                   "text_max_characters": (1, 4_000_000)}
         for name, (low, high) in bounds.items():
             value = getattr(config, name)
             if type(value) is not int or not low <= value <= high:
                 raise ValueError(f"{name} must be an integer between {low} and {high}")
-        max_overall_seconds = 43_200 if config.resource_profile == "full_scale" else 3_600
+        max_overall_seconds = 43_200 if semantic_text or config.resource_profile == "full_scale" else 3_600
         for name, low, high in (("llm_timeout_seconds", 1, 600), ("max_seconds", 1, max_overall_seconds),
+                                 ("text_max_seconds", 1, 43_200),
                                  ("min_speedup", 0, 0.9), ("max_graph_growth", 1, 10), ("min_query_seconds", 0, 0.1)):
             value = getattr(config, name)
             if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -405,6 +413,26 @@ def _parse_typed_semantic_response(response, entity_types):
     return rows
 
 
+def _parse_typed_entities(response, entity_types, text):
+    if "<entities>" not in response and "</entities>" not in response:
+        return []  # Accept existing providers that return only triples.
+    blocks = re.findall(r"<entities>(.*?)</entities>", response, flags=re.S)
+    if len(blocks) != 1 or response.count("<entities>") != 1 or response.count("</entities>") != 1:
+        raise _SemanticTextError("text_extraction_response_invalid")
+    entities = []
+    for line in blocks[0].splitlines():
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in re.split(r"[|｜]", line)]
+        if len(parts) != 2 or parts[1] not in entity_types:
+            raise _SemanticTextError("text_extraction_response_invalid")
+        name = TripleAccumulator.clean_entity(parts[0])
+        if not name or len(name) > 512 or not _grounded_entity(name, text):
+            raise _SemanticTextError("text_extraction_response_invalid")
+        entities.append({"name": name, "type": parts[1]})
+    return entities
+
+
 def _extract_semantic_triples(text, llm, config, extraction_goal, progress, entity_types=()):
     if len(text) > config.text_max_characters:
         raise _SemanticTextError("text_extraction_input_too_large")
@@ -416,14 +444,14 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
     if len(chunks) > config.text_max_chunks:
         raise _SemanticTextError("text_extraction_chunk_limit_exceeded")
     if any(TextChunker.count_tokens(chunk.text) > config.text_chunk_tokens for chunk in chunks):
-        # TextChunker deliberately keeps an oversized sentence intact. Refuse
-        # it here rather than sending an unbounded prompt to the provider.
+        # Guard the provider context even if a future chunker emits an oversized chunk.
         raise _SemanticTextError("text_extraction_chunk_too_large")
 
     # Keep the existing normalization and mention accounting, but deduplicate
     # independently for each endpoint-type pair so typed homonyms stay distinct.
     accumulators = {}
     entity_keys = set()
+    standalone_entities = {}
     ungrounded = 0
     rejected = 0
     total_calls = 0
@@ -434,6 +462,7 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
                 f"只提取以下实体类型：{'、'.join(entity_types)}。主体和客体都必须属于这些类型。"
                 "类型必须与列表完全一致。关系按原文语义方向输出。"
                 "每行五列：主体 | 主体类型 | 关系 | 客体 | 客体类型。"
+                "另在 <entities> 块列出所有指定类型的实体，每行：原文名称 | 类型；没有关系的实体也必须列出。"
                 "原文中无符合条件的关系时，在 <triples> 块中输出无实体。\n"
                 f"原文：\n<<<TEXT\n{chunk.text}\nTEXT>>>"
             )
@@ -461,6 +490,7 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
                 ], timeout)
                 parsed = (_parse_typed_semantic_response(response, entity_types) if entity_types
                           else _parse_semantic_response(response))
+                parsed_entities = _parse_typed_entities(response, entity_types, chunk.text) if entity_types else []
             except ConstructionBudgetExceeded:
                 raise
             except _SemanticTextError as exc:
@@ -504,6 +534,13 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
         if accepted is None:
             raise _SemanticTextError("text_extraction_response_invalid",
                                      chunk_id=chunk.chunk_id, error_type=last_error_type)
+        for entity in parsed_entities:
+            key = (TripleAccumulator.normalize_entity(entity["name"]), entity["type"])
+            metadata = standalone_entities.setdefault(key, {**entity, "chunk_ids": [], "mentions": 0})
+            if chunk.chunk_id not in metadata["chunk_ids"]:
+                metadata["chunk_ids"].append(chunk.chunk_id)
+                metadata["mentions"] += 1
+            entity_keys.add(key)
         for triple in accepted:
             pair = (triple["source_type"], triple["target_type"])
             if pair not in accumulators:
@@ -520,10 +557,11 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
     triples = [dict(triple, source_type=source_type, target_type=target_type)
                for (source_type, target_type), acc in accumulators.items()
                for triple in acc.triples()]
-    if not triples:
+    if not triples and not standalone_entities:
         raise _SemanticTextError("text_extraction_empty")
     return {
-        "triples": triples, "chunk_count": len(chunks), "llm_calls": total_calls,
+        "triples": triples, "entities": list(standalone_entities.values()),
+        "chunk_count": len(chunks), "llm_calls": total_calls,
         "raw_triple_count": sum(acc.raw_count for acc in accumulators.values()),
         "deduped_triple_count": len(triples),
         "skipped_count": sum(acc.skipped_count for acc in accumulators.values()) + rejected,
@@ -531,7 +569,7 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
     }
 
 
-def _semantic_graph(triples, *, max_nodes, max_edges):
+def _semantic_graph(triples, *, max_nodes, max_edges, entities=()):
     def node_id(key):
         # Preserve IDs of existing unrestricted TXT graphs; explicit categories
         # participate in identity just as they do in refinement query matching.
@@ -568,6 +606,14 @@ def _semantic_graph(triples, *, max_nodes, max_edges):
         edges.append({"id": edge_id, "type": relation, "source": endpoints[0],
                       "target": endpoints[1], "properties": properties})
         if len(edges) > max_edges:
+            raise _SemanticTextError("text_extraction_graph_too_large")
+    for entity in checked(entities):
+        key = (TripleAccumulator.normalize_entity(entity["name"]), entity["type"])
+        metadata = nodes.setdefault(key, {"name": entity["name"], "type": entity["type"],
+                                          "chunk_ids": set(), "mentions": 0})
+        metadata["chunk_ids"].update(entity.get("chunk_ids", []))
+        metadata["mentions"] = max(metadata["mentions"], int(entity.get("mentions", 1)))
+        if len(nodes) > max_nodes:
             raise _SemanticTextError("text_extraction_graph_too_large")
     graph_nodes = []
     for key in sorted(nodes):
@@ -711,7 +757,8 @@ def _refine_semantic_graph(text, llm, config, entity_types, extracted, graph,
                             "relation": query["relation"], "target": match["target"],
                             "target_type": query["target_type"], "chunk_ids": [chunk.chunk_id],
                             "mentions": 1})
-            graph = validate_graph(_semantic_graph(triples, max_nodes=max_nodes, max_edges=max_edges),
+            graph = validate_graph(_semantic_graph(triples, max_nodes=max_nodes, max_edges=max_edges,
+                                                   entities=extracted.get("entities", [])),
                                    max_nodes=max_nodes, max_edges=max_edges, copy_graph=False)
             if not _text_query_answered(graph, query):
                 metrics["queries_unresolved"] += 1
@@ -1206,14 +1253,14 @@ class TabularConstructionSubAgent:
                     report["llm_api"] = audit_metadata()
                 report["semantic_extraction"].update({
                     key: copy.deepcopy(value) for key, value in extracted.items()
-                    if key != "triples"
+                    if key not in {"triples", "entities"}
                 })
                 report["stage"] = "materializing_graph"
                 save()
                 try:
                     graph = validate_graph(
                         _semantic_graph(extracted["triples"], max_nodes=max_graph_nodes,
-                                        max_edges=max_graph_edges),
+                                        max_edges=max_graph_edges, entities=extracted["entities"]),
                         max_nodes=max_graph_nodes, max_edges=max_graph_edges,
                         copy_graph=False,
                     )
