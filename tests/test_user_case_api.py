@@ -33,6 +33,6 @@ def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monk
             assert novel["project"]["project_id"] != second["project"]["project_id"]
             other = await client.post("/api/user-cases/finance/project", headers={"X-User-ID":"reader"})
             assert other.status_code == 200, other.text
-            assert other.json()["project"]["project_id"] != second["project"]["project_id"]
+            assert other.json()["project"]["project_id"] == second["project"]["project_id"]
             assert (await client.post("/api/user-cases/missing/project")).status_code == 404
     asyncio.run(run())

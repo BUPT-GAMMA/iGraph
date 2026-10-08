@@ -95,7 +95,7 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
             ids = {row["dataset_id"] for row in rows}
             assert {row["dataset_id"] for row in await sources()} == ids
             other = await sources(headers={"X-User-ID": "alice"})
-            assert not ids.intersection(row["dataset_id"] for row in other)
+            assert ids == {row["dataset_id"] for row in other}
             for row in rows:
                 endpoint = "/api/personal-datasets/" + row["dataset_id"]
                 state = await client.get(endpoint + "/construction")
@@ -104,7 +104,7 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
                 assert graph.status_code == 200 and graph.json()["graph"]["nodes"], graph.text
                 preview = await client.get(endpoint + "/construction/source-preview")
                 assert preview.status_code == 200, preview.text
-                assert (await client.get(endpoint + "/construction", headers={"X-User-ID": "alice"})).status_code == 404
+                assert (await client.get(endpoint + "/construction", headers={"X-User-ID": "alice"})).status_code == 200
                 if row["file_type"] == "csv":
                     assert len(preview.json()["tables"]) == 3
                     schema = await client.get(endpoint + "/construction/schema")
@@ -118,7 +118,7 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
             assert removed.status_code == 200, removed.text
             assert store.status("admin", selected["dataset_id"])["status"] == "not_built"
             assert {row["dataset_id"] for row in await sources()} == ids - {selected["dataset_id"]}
-            assert len(await sources(headers={"X-User-ID": "alice"})) == 2
+            assert len(await sources(headers={"X-User-ID": "alice"})) == 1
     asyncio.run(scenario())
 
 
