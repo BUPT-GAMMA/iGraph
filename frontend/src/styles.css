@@ -2080,3 +2080,6 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .user-case-questions button:hover { background:var(--surface-subtle); }
 .workspace-home:has(.user-case-gallery) { overflow:auto; justify-content:flex-start; }
 .workspace-home:has(.user-case-gallery) > .empty-state { min-height:240px; flex:none; padding:36px 20px; }
+
+.chat-scroll:has(.user-case-gallery) .empty-state { margin:20px auto 24px; }
+.chat-scroll:has(.user-case-gallery) .empty-icon { width:48px; height:48px; margin-bottom:14px; border-radius:14px; }

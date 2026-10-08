@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { MarkdownContent } from './MarkdownContent';
 import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
@@ -169,6 +169,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   messages: Message[];
   conversationKey?: string;
   emptyProjectName?: string;
+  emptyContent?: ReactNode;
   exampleQuestions?: string[];
   onOpenGraph: () => void;
   runTools?: ToolCall[];
@@ -185,7 +186,7 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, exampleQuestions, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, emptyContent, exampleQuestions, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
   const { t } = useI18n();
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const latestTurn = editableLatestTurn(messages);
@@ -234,6 +235,12 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
     initializedRef.current = true;
     previousConversationRef.current = conversationKey;
 
+    if (messages.length === 0) {
+      if (shouldForceLatest) element.scrollTop = 0;
+      setShowJumpToLatest(false);
+      return;
+    }
+
     if (shouldForceLatest || sticksToBottomRef.current) {
       scrollToLatest('auto');
       return;
@@ -243,7 +250,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
 
   return <main className="chat-pane">
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-      {messages.length === 0 ? <div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable ? <div className="suggestions">{exampleQuestions?.length ? exampleQuestions.map(question => <button key={question} onClick={() => inputProps.onChange(question)}>{question}</button>) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div> : messages.map((message, index) => {
+      {messages.length === 0 ? <><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable && !emptyContent ? <div className="suggestions">{exampleQuestions?.length ? exampleQuestions.map(question => <button key={question} onClick={() => inputProps.onChange(question)}>{question}</button>) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
         const versions = isAssistant ? answerVersions(message, messages) : [message];
