@@ -1,3 +1,4 @@
+import { useExampleLabels } from '../userCases';
 import { Popup, PopupBackdrop } from './PopupMotion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, getConstructionModels, renameProjectDataset, buildDatasetGraph, commitConstruction, getConstructionGraph, getConstructionSchema, getConstructionState, previewConstruction } from '../api';
@@ -8,6 +9,7 @@ import type { ConstructionBuildOptions, ConstructionDomainCategory, Construction
 import { GraphWorkspace } from './GraphWorkspace';
 import { Icon } from './Icon';
 import { DatasetDescriptionEditor } from './DatasetDescriptionEditor';
+import { ConstructionModelSettings } from './ConstructionModelSettings';
 import { ConstructionSchemaFields } from './ConstructionSchemaFields';
 import { TableSchemaPreview } from './TableSchemaPreview';
 import { SourceDataPreview } from './SourceDataPreview';
@@ -270,6 +272,7 @@ type Props = {
 
 export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChange, onUse, onDatasetUpdated, embedded = false }: Props) {
   const { language, t } = useI18n();
+  const labels = useExampleLabels();
   const translation = useRef(t);
   translation.current = t;
   const formatNumber = (value: number) => value.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US');
@@ -278,6 +281,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
   const [renaming, setRenaming] = useState(false);
   const [constructionModel, setConstructionModel] = useState('deepseek-v4-pro');
   const [constructionModels, setConstructionModels] = useState(['deepseek-v4-pro', 'claude-opus-5-5']);
+  const [modelSettingsDirty, setModelSettingsDirty] = useState(false);
   const [state, setState] = useState<ConstructionState | null>(null);
   const [savedGraph, setSavedGraph] = useState<GraphData | null>(null);
   const [savedSchema, setSavedSchema] = useState<ConstructionSchemaResponse | null>(null);
@@ -433,7 +437,6 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
 
   useEffect(() => { setDatasetName(dataset.name); setNameInput(dataset.name); }, [dataset.name]);
   useEffect(() => {
-    if (dataset.file_type !== 'txt') return;
     const controller = new AbortController();
     void getConstructionModels(controller.signal).then(result => {
       if (!controller.signal.aborted && result.models.length) {
@@ -494,7 +497,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     } else setError(failure(cause, t));
   }
   async function build() {
-    if (postPending.current || isBuilding || !state || state.algorithm_available === false) return;
+    if (postPending.current || isBuilding || modelSettingsDirty || !state || state.algorithm_available === false) return;
     const count = Number(queryCount);
     if (!semanticTextMode && constructionMode === 'llm' && (!Number.isInteger(count) || count < 1 || count > 100)) {
       setError(t('The number of validation queries must be an integer from 1 to 100.', '验证查询数量必须是 1 到 100 之间的整数。')); return;
@@ -523,7 +526,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       const options: ConstructionBuildOptions = semanticTextMode
         ? { domain: sourceDescription, txt_mode: 'entities', mode: 'llm', entity_types: selectedEntityTypes, construction_model: constructionModel, text_refine_enabled: textRefineEnabled, ...(textRefineEnabled ? { query_count: count } : {}) }
         : constructionMode === 'llm'
-          ? { mode: 'llm', query_count: count, domain: sourceDescription, domain_category: domainCategory, experience_enabled: experienceEnabled }
+          ? { mode: 'llm', construction_model: constructionModel, query_count: count, domain: sourceDescription, domain_category: domainCategory, experience_enabled: experienceEnabled }
           : { mode: 'rules', domain: sourceDescription, experience_enabled: false };
       if (!semanticTextMode && sourceType === 'txt' && delimiter === '__lines__') options.txt_mode = 'lines';
       else if (!semanticTextMode && supportsDelimiter && delimiter) options.delimiter = delimiter;
@@ -671,7 +674,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }
   }}>
-    <header className="construction-header"><div className="construction-heading"><span className="construction-mark"><Icon name="schema" size={23} /></span><div><span className="construction-eyebrow">{t('Graph Construction / Data Source', '构图工作台 / 数据源')}</span><h2 id="construction-title">{datasetName}</h2>{renaming ? <form className="construction-rename" onSubmit={event => { event.preventDefault(); void renameDataset(); }}><input aria-label={t('Dataset name', '数据集名称')} maxLength={120} value={nameInput} onChange={event => setNameInput(event.target.value)} autoFocus /><button type="submit" disabled={editingBusy}>{t('Save name', '保存名称')}</button><button type="button" onClick={() => setRenaming(false)}>{t('Cancel', '取消')}</button></form> : <button className="construction-preset-link" disabled={editingBusy} onClick={() => { setNameInput(datasetName); setRenaming(true); }}>{t('Rename dataset', '重命名数据集')}</button>}<p>{state?.source_filename || dataset.original_filename}</p></div></div><div className="construction-header-actions"><span className={`construction-status ${graph && !isBuilding ? 'ready' : ''}`}>{busy === 'loading' ? t('Loading', '读取中') : isBuilding ? t('Building graph', '构图进行中') : state?.status === 'draft' ? t('Draft · Unsaved', '草稿 · 待保存') : graph ? t(`Saved · Version ${state?.revision}`, `已保存 · 版本 ${state?.revision}`) : state?.status === 'failed' ? t('Construction failed', '构图失败') : t('Waiting to build', '等待构图')}</span>{embedded ? <button ref={closeButton} className="secondary-command construction-back-button" disabled={Boolean(busy) && busy !== 'loading' && busy !== 'build'} onClick={requestClose}><Icon name="arrow-left" size={16} /> {t('Back to construction', '返回构图')}</button> : <button ref={closeButton} className="plain-icon" aria-label={t('Close graph construction workspace', '关闭构图工作台')} disabled={Boolean(busy) && busy !== 'loading' && busy !== 'build'} onClick={requestClose}><Icon name="close" size={20} /></button>}</div></header>
+    <header className="construction-header"><div className="construction-heading"><span className="construction-mark"><Icon name="schema" size={23} /></span><div><span className="construction-eyebrow">{t('Graph Construction / Data Source', '构图工作台 / 数据源')}</span><h2 id="construction-title">{labels.name(datasetName)}</h2>{renaming ? <form className="construction-rename" onSubmit={event => { event.preventDefault(); void renameDataset(); }}><input aria-label={t('Dataset name', '数据集名称')} maxLength={120} value={nameInput} onChange={event => setNameInput(event.target.value)} autoFocus /><button type="submit" disabled={editingBusy}>{t('Save name', '保存名称')}</button><button type="button" onClick={() => setRenaming(false)}>{t('Cancel', '取消')}</button></form> : <button className="construction-preset-link" disabled={editingBusy} onClick={() => { setNameInput(datasetName); setRenaming(true); }}>{t('Rename dataset', '重命名数据集')}</button>}<p>{state?.source_filename || dataset.original_filename}</p></div></div><div className="construction-header-actions"><span className={`construction-status ${graph && !isBuilding ? 'ready' : ''}`}>{busy === 'loading' ? t('Loading', '读取中') : isBuilding ? t('Building graph', '构图进行中') : state?.status === 'draft' ? t('Draft · Unsaved', '草稿 · 待保存') : graph ? t(`Saved · Version ${state?.revision}`, `已保存 · 版本 ${state?.revision}`) : state?.status === 'failed' ? t('Construction failed', '构图失败') : t('Waiting to build', '等待构图')}</span>{embedded ? <button ref={closeButton} className="secondary-command construction-back-button" disabled={Boolean(busy) && busy !== 'loading' && busy !== 'build'} onClick={requestClose}><Icon name="arrow-left" size={16} /> {t('Back to construction', '返回构图')}</button> : <button ref={closeButton} className="plain-icon" aria-label={t('Close graph construction workspace', '关闭构图工作台')} disabled={Boolean(busy) && busy !== 'loading' && busy !== 'build'} onClick={requestClose}><Icon name="close" size={20} /></button>}</div></header>
     {(error || notice || conflict) && <div className={`construction-banner ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}><span>{error || notice}</span>{conflict && <button className="secondary-command" disabled={editingBusy} onClick={() => { setNotice(''); void load(); }}>{t('Reload latest version', '重新加载最新版本')}</button>}{error && !conflict && (!state || isBuilding || state.status === 'failed') && <button className="secondary-command" disabled={busy === 'loading'} onClick={() => void load(undefined, isBuilding, isBuilding)}>{isBuilding ? t('Check status again', '重新查询状态') : t('Retry', '重试')}</button>}</div>}
     {confirmClose && <div className="construction-banner warning" role="alert"><span>{embedded
       ? t(`${operations.length} preview ${operations.length === 1 ? 'change has' : 'changes have'} not been saved. Returning will discard ${operations.length === 1 ? 'it' : 'them'}.`, `预览中的 ${operations.length} 项修改尚未保存。返回后将丢弃这些修改。`)
@@ -679,12 +682,15 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     <div className="construction-body">
       <aside className="construction-controls">
         <DatasetDescriptionEditor dataset={dataset} onSaved={onDatasetUpdated} disabled={editingBusy} />
+        <ConstructionModelSettings key={dataset.dataset_id} model={constructionModel} models={constructionModels} disabled={editingBusy}
+          onModelChange={setConstructionModel} onDirtyChange={setModelSettingsDirty} onSavedModel={model => {
+            setConstructionModel(model); setConstructionModels(current => [...new Set([...current, model])]);
+          }} />
         <div className="construction-source"><div><Icon name="file" size={18} /><strong>{t('Source file', '源文件')}</strong><b>{(state?.source_type || dataset.file_type).replace('.', '').toUpperCase()}</b></div>{!graph && <>
           <fieldset className="construction-build-options" disabled={editingBusy || !state || state.algorithm_available === false}>
             {!semanticTextMode && <><label className="construction-check"><input type="checkbox" role="switch" checked={constructionMode === 'llm'} onChange={event => setConstructionMode(event.target.checked ? 'llm' : 'rules')} aria-describedby="construction-mode-help" />{t('Use Agent to optimize the graph', '使用 Agent 优化构图')}</label><small id="construction-mode-help">{constructionMode === 'llm' ? t('Agent optimizes and validates the graph built from rules.', 'Agent 会优化并验证规则化方法构建的图。') : t('Build directly from primary and foreign keys (PK/FK), without automatic optimization.', '仅按主键和外键（PK/FK）构图，不进行自动优化。')}</small></>}
             {!semanticTextMode && constructionMode === 'llm' && <label>{t('Validation queries', '验证查询数量')}<input type="number" min={1} max={100} step={1} value={queryCount} onChange={event => setQueryCount(event.target.value)} /></label>}
             {!semanticTextMode && constructionMode === 'llm' && <label>{t('Domain category', '领域类别')}<select value={domainCategory} onChange={event => setDomainCategory(event.target.value as ConstructionDomainCategory)}>{DOMAIN_CATEGORIES.map(category => <option key={category.value} value={category.value}>{t(category.label.en, category.label.zh)}</option>)}</select></label>}
-            {sourceType === 'txt' && <label>{t('Construction model', '构图大模型')}<select aria-label={t('Construction model', '构图大模型')} value={constructionModel} onChange={event => setConstructionModel(event.target.value)}>{constructionModels.map(model => <option key={model} value={model}>{model}</option>)}</select></label>}
             {sourceType === 'txt' && <button type="button" className="construction-preset-link" onClick={() => {
               setDelimiter('__entities__');
               setEntityTypes('人物');
@@ -696,7 +702,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
             {!semanticTextMode && constructionMode === 'llm' && <><label className="construction-check"><input type="checkbox" checked={experienceEnabled} onChange={event => setExperienceEnabled(event.target.checked)} aria-describedby="construction-experience-help" />{t('Reuse domain experience', '复用领域经验')}</label>
             <small id="construction-experience-help">{t('Experience is reused only within graph construction for the same user and domain. New graphs still require validation. When disabled, this build neither reads nor writes experience.', '仅在构图模块内复用同一用户、同一领域的经验。新图仍需验收；关闭后，本次构图不读取或写入经验。')}</small></>}
           </fieldset>
-          <button className="primary-command" onClick={build} disabled={editingBusy || !state || state.algorithm_available === false}>{isBuilding ? t('Building graph…', '正在构图…') : state?.algorithm_available === false ? t('Construction algorithm unavailable', '构图算法待接入') : state?.status === 'failed' ? t('Rebuild graph', '重新构图') : t('Start construction', '开始构图')}</button>
+          <button className="primary-command" onClick={build} disabled={editingBusy || modelSettingsDirty || !state || state.algorithm_available === false}>{isBuilding ? t('Building graph…', '正在构图…') : state?.algorithm_available === false ? t('Construction algorithm unavailable', '构图算法待接入') : state?.status === 'failed' ? t('Rebuild graph', '重新构图') : t('Start construction', '开始构图')}</button>
           {(isBuilding || state?.algorithm_available === false || semanticTextMode) && <small>{isBuilding ? t('Construction continues on the server and its status is checked every 3 seconds. You can close this window and reopen it to view progress and results.', '构图在服务器持续运行，每 3 秒查询一次状态。关闭窗口后，可重新打开查看进度与结果。') : state?.algorithm_available === false ? t('Graph construction is not available for this file type yet. The source file is preserved.', '此文件类型的构图算法暂不可用，源文件已保留。') : t('The LLM extracts entities and relationships from line-based text to build the graph. Review semantic results manually.', '依据 LLM 从逐行文本中抽取实体与关系并构图；语义结果需要人工核对。')}</small>}
         </>}</div>
         <div className="construction-rule-heading"><strong>{t('Graph data optimization', '图数据优化')}</strong><span>{t('6 operations', '6 项操作')}</span></div>

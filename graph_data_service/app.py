@@ -4664,8 +4664,28 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @app.get("/construction/models")
     async def construction_models_route(request: Request):
         construction_user(request)
-        from graph_engine.construction.llm import construction_models, DEFAULT_CONSTRUCTION_MODEL
-        return {"models": construction_models(), "default_model": DEFAULT_CONSTRUCTION_MODEL}
+        from graph_engine.construction.llm import construction_models, selected_model
+        return {"models": construction_models(), "default_model": selected_model()}
+
+    @app.get("/construction/model-settings")
+    async def construction_model_settings(request: Request):
+        require_service(request)
+        construction_user(request)
+        from graph_engine.construction.settings import public_settings
+        return await run_sync(public_settings)
+
+    @app.post("/construction/model-settings")
+    async def save_construction_model_settings(request: Request):
+        require_service(request)
+        construction_user(request)
+        from graph_engine.construction.settings import ConstructionSettingsWrite, save_settings
+        from pydantic import ValidationError
+        try:
+            body = ConstructionSettingsWrite.model_validate(await request.json())
+            return await run_sync(save_settings, body)
+        except (ValidationError, ValueError):
+            raise HTTPException(422, {"code": "invalid_construction_model_settings",
+                "message": "请检查模型 ID、HTTP(S) API URL 和 API Key；首次配置请同时填写 URL 和 Key。"}) from None
 
     @app.get("/construction/capabilities")
     def construction_capabilities(request: Request):

@@ -32,8 +32,35 @@ vi.mock('./api', async () => ({
 }));
 
 import App from './main';
+import { I18nProvider } from './i18n';
 
 const source: Dataset = { dataset_id: 'source-1', project_id: null, name: '订单关系', original_filename: 'orders.csv', file_type: 'csv', status: 'source_ready' };
+
+it('keeps example questions and default project names localized after entering a project', async () => {
+  const example = { id: 'tianlongbabu', name: '天龙八部人物关系示例', filename: 'tianlongbabu-characters.npz', description: '已构好的小说图',
+    questions: ['检查人物关系'], available: true, translations: { en: { name: 'Character graph example', description: 'A ready-made character graph', questions: ['Inspect character relationships'] } } };
+  mocks.getUserCases.mockResolvedValue({ cases: [example] });
+  const dataset: Dataset = { ...source, project_id: 'novel-project', dataset_id: 'novel-dataset', name: example.name,
+    original_filename: example.filename, description: example.description, status: 'ready', metadata: { user_case_id: example.id } };
+  mocks.openUserCase.mockResolvedValue({ project: { project_id: 'novel-project', user_id: 'graph-user', name: example.name, default_dataset_id: dataset.dataset_id }, dataset });
+  mocks.listDatasets.mockImplementation((projectId: string | null) => Promise.resolve({ datasets: [{ ...dataset, project_id: projectId }] }));
+  render(<I18nProvider initialLanguage="zh"><App /></I18nProvider>);
+  await screen.findByRole('heading', { name: example.name });
+  fireEvent.click(screen.getByRole('button', { name: 'EN', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Use example graph' }));
+  await screen.findByRole('heading', { name: 'Start graph analysis in Character graph example' });
+  expect(await screen.findByRole('button', { name: 'Inspect character relationships' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Create a conversation in Character graph example' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '中文', exact: true }));
+  expect(screen.getByRole('button', { name: '检查人物关系' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: '开始在 天龙八部人物关系示例 中图分析' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'EN', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create your graph' }));
+  expect(await screen.findByRole('button', { name: 'View graph build Character graph example' })).toBeTruthy();
+  expect(screen.getByText('A ready-made character graph')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '中文', exact: true }));
+  expect(screen.getByRole('button', { name: '查看构图 天龙八部人物关系示例' })).toBeTruthy();
+});
 
 beforeEach(() => {
   localStorage.clear(); sessionStorage.clear(); window.history.replaceState({}, '', '/');

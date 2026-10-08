@@ -4,10 +4,10 @@ import { ApiError } from '../api';
 import type { ConstructionOperation, Dataset } from '../types';
 import { GraphConstructionPanel } from './GraphConstructionPanel';
 
-const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn(), rename: vi.fn(), models: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn(), rename: vi.fn(), settings: vi.fn(), saveSettings: vi.fn(), models: vi.fn() }));
 vi.mock('../api', async importOriginal => ({
   ...await importOriginal<typeof import('../api')>(),
-  getConstructionModels: mocks.models, renameProjectDataset: mocks.rename, getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
+  getConstructionModelSettings: mocks.settings, saveConstructionModelSettings: mocks.saveSettings, getConstructionModels: mocks.models, renameProjectDataset: mocks.rename, getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
   getConstructionSourcePreview: mocks.source,
   previewConstruction: mocks.preview, commitConstruction: mocks.commit,
 }));
@@ -33,6 +33,7 @@ async function openPanel(onSaved = vi.fn(), onClose = vi.fn()) {
 }
 
 beforeEach(() => {
+  mocks.settings.mockResolvedValue({ model: 'deepseek-v4-pro', has_base_url: false, has_api_key: false, has_server_config: true });
   mocks.models.mockResolvedValue({ models: ['deepseek-v4-pro', 'claude-opus-5-5'], default_model: 'deepseek-v4-pro' });
   mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'ready', revision: 2, algorithm_available: false });
   mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph });
@@ -521,7 +522,7 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      mode: 'llm', query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
+      mode: 'llm', construction_model: 'deepseek-v4-pro', query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
     });
     expect(saved).toHaveBeenCalledTimes(1);
     expect(saved).toHaveBeenCalledWith(sourceDataset, graph, 3);
@@ -681,7 +682,7 @@ describe('long-running graph construction', () => {
     expect(screen.getByText(/关闭后，本次构图不读取或写入经验/).textContent).toContain('新图仍需验收');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      mode: 'llm', query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
+      mode: 'llm', construction_model: 'deepseek-v4-pro', query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
     });
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });

@@ -1382,7 +1382,8 @@ class TabularConstructionSubAgent:
                 "domain_key": profile["key"], "retrieved": [], "recorded_observations": 0}
             experience_source_key = _experience_source_key(source) if memory is not None else None
             initial_size = max(1, len(graph["nodes"]) + len(graph["edges"]))
-            llm = self._llm_factory(config) if self._llm_factory else ToolCallingLLM(timeout=config.llm_timeout_seconds)
+            llm = self._llm_factory(config) if self._llm_factory else ToolCallingLLM(
+                model=selected_model(options.get("construction_model")), timeout=config.llm_timeout_seconds)
             report["llm_used"] = llm is not None
             report["model"] = getattr(llm, "model", "injected-client" if llm else None)
             report["llm_tool_choice"] = getattr(llm, "tool_choice", None)

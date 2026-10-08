@@ -172,3 +172,6 @@
 
 .construction-rename { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
 .construction-rename input { min-width:180px; padding:6px 10px; }
+.construction-model-settings { display:flex; flex-direction:column; gap:10px; margin:12px 0; padding:14px; border:1px solid var(--border); border-radius:10px; }
+.construction-model-settings small { line-height:1.5; color:var(--muted); }
+.construction-model-settings [role="alert"] { color:var(--danger, #c43d3d); }
