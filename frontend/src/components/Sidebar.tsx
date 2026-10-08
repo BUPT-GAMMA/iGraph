@@ -171,7 +171,7 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
   }
 
   function createStandaloneTask() {
-onNew();
+    onNew();
     onCloseMobile();
   }
 

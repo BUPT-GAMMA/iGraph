@@ -132,4 +132,15 @@ def instructions_for(
     elif planning_mode == "never":
         instructions.append("除非用户明确要求，不生成独立计划，优先直接完成当前请求。")
     instructions.append(build_turn_language_instruction(response_language))
+    instructions.append(
+        "## Required final-answer layout\n"
+        "After finishing tool calls, start the final answer immediately with ONE short conclusion sentence, "
+        "not a heading, preamble or multi-sentence paragraph. Use 'Conclusion: ' in English or '结论：' in Chinese. "
+        "Keep that opening sentence within 40 English words or 60 Chinese characters; put all additional facts "
+        "and explanations in the body AFTER a blank line. Preserve material uncertainty in the conclusion. "
+        "Then provide the normal evidence and analysis. End with a separate concluding paragraph starting "
+        "with 'Summary: ' in English or '总结：' in Chinese. Both the opening conclusion and closing summary "
+        "are required, even for a short answer. Never fabricate a conclusion when tools fail. "
+        "For strict JSON output, use a first 'conclusion' field and a last 'summary' field instead of prose labels."
+    )
     return instructions
