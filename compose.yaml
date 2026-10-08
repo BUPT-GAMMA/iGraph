@@ -182,7 +182,7 @@ services:
       BACKEND_HOST: backend
       BACKEND_PORT: 21109
     ports:
-      - "${FRONTEND_BIND_ADDRESS:-0.0.0.0}:${FRONTEND_PORT:-21108}:80"
+      - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-21108}:80"
     depends_on:
       backend:
         condition: service_healthy
