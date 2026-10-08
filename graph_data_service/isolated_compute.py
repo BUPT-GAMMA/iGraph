@@ -86,6 +86,7 @@ async def run_isolated(service, session_id, user_id, tool, arguments, progress=N
         payload = {'tool': tool, 'arguments': service._strip_internal_graph_ml_args(arguments),
                    'session_id': session_id, 'user_id': user_id, 'graph_version': version,
                    'graph_path': graph_path, 'artifact_root': str(root), 'staging_root': str(stage),
+                   'graph_source': session.version_source(version) if uses_graph else {},
                    'llm_model': session.llm_model,
                    'model_run_context': asdict(context),
                    'uploads': {name: asdict(record) for name, record in session._uploads_by_name.items()}}

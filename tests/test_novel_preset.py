@@ -24,3 +24,23 @@ def test_complete_novel_is_bundled_and_installed_without_llm(tmp_path, monkeypat
     path.write_bytes(b"saved-user-version")
     install_novel_preset(tmp_path)
     assert path.read_bytes() == b"saved-user-version"
+
+def test_novel_names_are_exactly_searchable_without_embedding_service():
+    from graph_data_service.embedding import LexicalProvider
+    from graph_data_service.search import EntitySearchIndex, NodeSearchRequest
+
+    graph = GraphData.load(str(RESOURCES / FILENAME))
+    index = EntitySearchIndex(graph, 1, LexicalProvider())
+    identities = []
+    for name in ("萧峰", "乔峰", "段誉", "虚竹"):
+        result = index.search_nodes(NodeSearchRequest(query=name))
+        assert result["success"] and not result["ambiguous"]
+        assert result["best"]["confidence"] == "high"
+        assert result["best"]["display_name"] == name
+        assert result["best"]["score"] == 1.0
+        node_id = result["best"]["node_id"]
+        identity = result["best"]["node_name"]
+        assert graph.id2node[node_id] == identity
+        identities.append(identity)
+    # The extracted graph stores these aliases separately; search must not merge them.
+    assert len(set(identities)) == 4

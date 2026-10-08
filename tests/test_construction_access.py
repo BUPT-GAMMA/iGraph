@@ -36,7 +36,8 @@ def scoped_engine(tmp_path, monkeypatch):
         item = directory.create(project_id=pid, user_id='alice', name=label,
             original_filename=f'{label}-private.csv', content=b'id,phone\nalice,123\n')
         records[label] = item
-        store.build('alice', item.dataset_id, item.storage_path, item.original_filename, {})
+        draft = store.build('alice', item.dataset_id, item.storage_path, item.original_filename, {})
+        store.optimize('alice', item.dataset_id, draft['revision'], [], commit=True)
     records['raw'] = directory.create(project_id=pids[0], user_id='alice', name='raw',
         original_filename='raw.txt', content=b'pending source')
     access = ConstructionAccessClient('http://authority', transport=httpx.ASGITransport(app=auth))
@@ -83,7 +84,7 @@ def test_all_dataset_read_write_entrypoints_deny_cross_scope(scoped_engine, call
     item = s.records[target]
     did = item.dataset_id
     headers = session_headers(caller)
-    edit = {'base_revision': 1, 'operations': [{'op': 'reverse_edges', 'edge_ids': ['knows-1']}]}
+    edit = {'base_revision': 2, 'operations': [{'op': 'reverse_edges', 'edge_ids': ['knows-1']}]}
     attempts = [('GET', f'/construction/{did}', None), ('GET', f'/construction/{did}/graph', None),
         ('POST', f'/construction/{did}/preview', edit), ('POST', f'/construction/{did}/commit', edit),
         ('POST', f'/construction/{did}/source', {'source_path': item.storage_path, 'source_filename': item.original_filename}),
@@ -97,7 +98,7 @@ def test_all_dataset_read_write_entrypoints_deny_cross_scope(scoped_engine, call
         assert response.status_code == 404, (path, response.text)
         assert response.json()['detail']['code'] == 'DATASET_SCOPE_REQUIRED'
         assert 'phone' not in response.text and item.original_filename not in response.text
-    assert s.store.graph('alice', did)['revision'] == 1
+    assert s.store.graph('alice', did)['revision'] == 2
     own = s.records[caller]
     assert s.client.get(f'/construction/{own.dataset_id}/graph', headers=headers).status_code == 200
 
@@ -124,7 +125,7 @@ def test_authorized_unbuilt_sources_and_canonical_source_path(scoped_engine):
         response = s.client.post(f'/construction/{own.dataset_id}/{suffix}', headers=session_headers('a'),
             json={'source_path': other.storage_path, 'source_filename': other.original_filename})
         assert response.status_code == 403 and response.json()['detail']['code'] == 'invalid_source'
-    assert s.store.graph('alice', own.dataset_id)['revision'] == 1
+    assert s.store.graph('alice', own.dataset_id)['revision'] == 2
 
 
 def test_deleted_and_migrated_metadata_revokes_reads_and_cleanup_stays_idempotent(scoped_engine):
@@ -134,7 +135,7 @@ def test_deleted_and_migrated_metadata_revokes_reads_and_cleanup_stays_idempoten
     assert s.client.get(f'/construction/{item.dataset_id}/graph', headers=session_headers('a')).status_code == 404
     assert ids(s.client.get('/datasets', headers=session_headers('a'))) == {'public-demo'}
     # Leftover graph files do not authorize themselves.
-    assert s.store.graph('alice', item.dataset_id)['revision'] == 1
+    assert s.store.graph('alice', item.dataset_id)['revision'] == 2
     item = s.records['b']
     s.directory.migrate_to_personal(item.project_id, 'alice')
     assert s.client.get(f'/construction/{item.dataset_id}/graph', headers=session_headers('b')).status_code == 404
@@ -300,7 +301,7 @@ def test_existing_graph_type_does_not_disclose_foreign_dataset_or_enable_constru
     for tool in ('get_constructed_graph', 'load_constructed_graph',
                  'preview_graph_optimization', 'commit_graph_optimization'):
         requests.append(('POST', f'/sessions/a/tools/{tool}', {'arguments': {'dataset_id': did,
-            'base_revision': 1, 'operations': [{'op': 'remove_self_loops'}]}}))
+            'base_revision': 2, 'operations': [{'op': 'remove_self_loops'}]}}))
     for method, path, body in requests:
         response = s.client.request(method, path, headers=headers, json=body)
         assert response.status_code == 422, (path, response.text)
@@ -310,7 +311,7 @@ def test_existing_graph_type_does_not_disclose_foreign_dataset_or_enable_constru
     # The same endpoint still returns the saved CSV revision.
     response = s.client.get(f'/construction/{s.records["a"].dataset_id}', headers=headers)
     assert response.status_code == 200 and response.json()['status'] == 'ready'
-    assert response.json()['revision'] == 1
+    assert response.json()['revision'] == 2
 
 
 @pytest.mark.parametrize('detail', [

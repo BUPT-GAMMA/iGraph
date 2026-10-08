@@ -7,9 +7,13 @@ import type { ConstructionState, CsvBundleSchema, Dataset } from '../types';
 import { constructionStatus, supportsConstruction } from '../construction';
 import { Icon } from './Icon';
 import { CsvBundleDialog } from './CsvBundleDialog';
+import { UserCaseGallery } from './UserCaseGallery';
+import type { UserCase } from '../userCases';
 
 type Props = {
   datasets: Dataset[];
+  userCases?: UserCase[];
+  onSelectUserCase?: (id: string, question?: string) => void;
   busy?: boolean;
   onUpload: (file: File | File[], schema?: CsvBundleSchema, name?: string) => void;
   onConstruct: (dataset: Dataset) => void;
@@ -49,7 +53,7 @@ function sourceType(dataset: Dataset) {
   return (dataset.file_type || dataset.original_filename.split('.').pop() || 'FILE').replace(/^\./, '').toUpperCase();
 }
 
-export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConstruct, onDelete, onStateChange }: Props) {
+export function CreateGraphWorkspace({ datasets, userCases = [], onSelectUserCase, busy = false, onUpload, onConstruct, onDelete, onStateChange }: Props) {
   const { language, t } = useI18n();
   const formatNumber = (value: number) => value.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -58,6 +62,7 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
   const stateCallback = useRef(onStateChange);
   stateCallback.current = onStateChange;
   const constructible = datasets.filter(supportsConstruction);
+  const availableCount = constructible.length + userCases.filter(item => item.available).length;
   const monitored = constructible.filter(dataset => ['building', 'processing'].includes(constructionStatus(dataset)));
   const monitorSignature = monitored.map(dataset => `${dataset.project_id || 'personal'}:${dataset.dataset_id}`).sort().join('|');
 
@@ -125,7 +130,8 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
       </section>
 
       <section className="create-graph-sources" aria-labelledby="create-graph-sources-title">
-        <div className="create-graph-section-head"><div><h2 id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2></div><span>{t(`${formatNumber(constructible.length)} available`, `${formatNumber(constructible.length)} 个可用`)}</span></div>
+        <div className="create-graph-section-head"><div><h2 id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2></div><span>{t(`${formatNumber(availableCount)} available`, `${formatNumber(availableCount)} 个可用`)}</span></div>
+        {onSelectUserCase && <UserCaseGallery cases={userCases} busy={busy} onSelect={onSelectUserCase} />}
         {constructible.length ? <div className="create-graph-source-grid">{constructible.map(dataset => <article className="create-graph-source-card" key={dataset.dataset_id}>
           <div className="create-graph-source-icon"><Icon name="database" size={20} /></div>
           <div className="create-graph-source-copy"><div><strong title={dataset.name}>{dataset.name}</strong><span>{sourceType(dataset)}</span></div><p>{sourceSummary(dataset, t, formatNumber)}</p>{dataset.description && <p title={dataset.description}>{dataset.description}</p>}</div>
@@ -133,7 +139,7 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
             <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${dataset.name}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>
             {onDelete && <button className="plain-icon create-graph-delete" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete dataset', '删除数据集')} aria-label={t(`Delete dataset ${dataset.name}`, `删除数据集 ${dataset.name}`)}><Icon name="trash" size={16} /></button>}
           </div>
-        </article>)}</div> : <div className="create-graph-empty">
+        </article>)}</div> : userCases.length ? null : <div className="create-graph-empty">
           <span><Icon name="graph" size={34} /></span><strong>{t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong><button className="secondary-command" onClick={chooseFile} disabled={busy}>{t('Upload your first source', '上传第一个数据源')}</button>
         </div>}
       </section>

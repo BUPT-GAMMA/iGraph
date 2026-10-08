@@ -112,6 +112,7 @@ def test_construction_http_preview_commit_reload_properties_and_session_snapshot
     assert network.edges["alice", "bob"]["properties"]["since"] == 2020
     info = client.get("/sessions/session-one/graph/info", headers=headers).json()
     assert info["construction_dataset_id"] == "ds-people"
+    assert info["construction_applicable"] is True
     assert info["graph_info"]["construction_revision"] == 2
     visual = client.post("/sessions/session-one/graph/visualize", headers=headers, json={"arguments": {}}).json()
     assert next(node for node in visual["nodes"] if node["id"] == "alice")["attrs"]["properties"]["phone"] == "123"
@@ -437,3 +438,31 @@ def test_build_without_path_reuses_authorized_registered_source(construction_htt
     assert reused.status_code == 200 and reused.json()['reused']
     for body in ({'source_path': '\u0000'}, {'source_filename': 'other.csv'}):
         assert client.post('/construction/ds-people/build', headers=headers, json=body).status_code == 403
+
+@pytest.mark.parametrize("preset", ["finance", "novel"])
+def test_imported_example_does_not_advertise_snapshot_id_as_current_construction(construction_http, preset):
+    from graph_engine import finance_preset, novel_preset
+    module = finance_preset if preset == "finance" else novel_preset
+    client, service, _store, _source, headers = construction_http
+    session = service.get_or_create("session-one", user_id="alice")
+    path = module.RESOURCES / module.FILENAME
+    original = GraphData.load(str(path)).graph_metadata
+    session.register_upload(file_token="example", original_filename=path.name, saved_path=str(path))
+    # A historical binding must not make an imported snapshot a live construction.
+    session.bind_dataset(original["construction_dataset_id"], str(original["construction_revision"]))
+    loaded = client.post("/sessions/session-one/graph/load_upload", headers=headers,
+                         json={"filename": path.name, "append": False})
+    assert loaded.status_code == 200 and loaded.json()["success"], loaded.text
+    for restored in (False, True):
+        if restored:
+            snapshot = GraphSession("session-one", "alice")
+            assert snapshot.load_snapshot()
+            service._sessions[service._session_key("session-one", "alice")] = snapshot
+        info = client.get("/sessions/session-one/graph/info", headers=headers).json()
+        assert info["loaded"] is True
+        for scope in (info, info["graph_info"]):
+            assert scope["construction_dataset_id"] is None
+            assert scope["construction_revision"] is None
+            assert scope["construction_applicable"] is False
+        # Properties remain available through normal analysis tools.
+        assert service.get_required("session-one", "alice").get_graph().graph_metadata == original
