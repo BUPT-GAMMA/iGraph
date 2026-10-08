@@ -329,7 +329,7 @@ def test_custom_model_api_validates_isolates_syncs_updates_and_deletes(client: T
 
     listed = client.get("/api/models/custom", headers=headers()).json()["models"]
     assert [item["model_id"] for item in listed] == ["team/model-v1"]
-    assert client.get("/api/models/custom", headers=headers("alice")).json()["models"] == []
+    assert client.get("/api/models/custom", headers=headers("alice")).json()["models"] == listed
     assert "team/model-v1" in client.post("/api/auth/validate", headers=headers()).json()["available_models"]
 
     updated = client.post(
@@ -427,10 +427,10 @@ def test_project_training_runs_aggregate_sessions_and_persist_job_status(client:
     assert FakeServiceClient.graph_status_calls == ["job-gcn"]
 
 
-def test_project_training_runs_enforce_project_ownership(client: TestClient):
+def test_project_training_runs_ignore_legacy_account_selection(client: TestClient):
     project = client.post("/api/projects", headers=headers(), json={"name": "Private experiments"}).json()["project"]
     response = client.get(f"/api/projects/{project['project_id']}/training-runs", headers=headers("alice"))
-    assert response.status_code == 404
+    assert response.status_code == 200
 
 
 def test_new_session_chat_receives_cross_session_training_summary(client: TestClient):
@@ -472,7 +472,7 @@ def test_new_session_chat_receives_cross_session_training_summary(client: TestCl
     }]
 
 
-def test_project_delete_conversations_and_cross_user_isolation(client: TestClient):
+def test_project_delete_conversations_in_single_workspace(client: TestClient):
     project = client.post("/api/projects", headers=headers(), json={"name": "Temporary"}).json()["project"]
     session_id = client.post(
         "/api/sessions",
@@ -485,7 +485,7 @@ def test_project_delete_conversations_and_cross_user_isolation(client: TestClien
         headers=headers("alice"),
         json={"project_id": project["project_id"]},
     )
-    assert forbidden.status_code == 404
+    assert forbidden.status_code == 200
 
     deleted = client.request(
         "DELETE",
@@ -1287,8 +1287,8 @@ def test_workspace_upload_preserves_dataset_registration_and_download_ownership(
     (root / "Ephemeral/private.txt").write_text("private intermediate")
     listed = client.get(f"/api/sessions/{sid}/workspace/files", headers=headers())
     assert len(listed.json()["files"]) == 3
-    assert client.get(f"/api/sessions/{sid}/workspace/files", headers=headers("alice")).status_code == 404
-    assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt").status_code == 401
+    assert client.get(f"/api/sessions/{sid}/workspace/files", headers=headers("alice")).status_code == 200
+    assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt").content == b"public report"
     assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt", headers=headers()).content == b"public report"
     assert client.get(f"/api/sessions/{sid}/workspace/derived/%2E%2E%2FEphemeral%2Fprivate.txt", headers=headers()).status_code == 404
 

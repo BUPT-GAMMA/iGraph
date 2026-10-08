@@ -148,13 +148,6 @@ class FeedbackReq(BaseModel):
     tool_name: str = ""
 
 
-class UserWriteReq(BaseModel):
-    user_id: str = Field(min_length=1)
-    enabled: bool = True
-    roles: list[str] = Field(default_factory=lambda: ["user"])
-    allowed_models: list[str] = Field(default_factory=list)
-
-
 class CustomModelReq(BaseModel):
     model_id: str = Field(min_length=1, max_length=120)
     display_name: str = Field(min_length=1, max_length=120)
