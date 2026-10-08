@@ -390,6 +390,13 @@ function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
 export function getConstructionModels(signal?: AbortSignal) {
   return json<{ models: string[]; default_model: string }>('/api/construction-models', { signal });
 }
+export type ConstructionModelSettings = { model: string; has_base_url: boolean; has_api_key: boolean; has_server_config: boolean };
+export function getConstructionModelSettings(signal?: AbortSignal) {
+  return json<ConstructionModelSettings>('/api/construction-model-settings', { signal });
+}
+export function saveConstructionModelSettings(settings: { model: string; base_url: string; api_key: string; clear_api_key: boolean }) {
+  return json<ConstructionModelSettings>('/api/construction-model-settings', { method: 'POST', body: JSON.stringify(settings) });
+}
 export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionState>(constructionUrl(dataset), { signal });
 }

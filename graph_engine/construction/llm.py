@@ -14,6 +14,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from graph_engine.construction.settings import read_settings
 
 
 class ConstructionLLMError(RuntimeError):
@@ -28,11 +29,12 @@ DEFAULT_CONSTRUCTION_MODEL = "deepseek-v4-pro"
 
 def construction_models():
     configured = os.getenv("GRAPH_CONSTRUCTION_MODELS", "deepseek-v4-pro,claude-opus-5-5")
-    return list(dict.fromkeys(value.strip() for value in configured.split(",") if value.strip()))
+    saved = read_settings().get("model") or os.getenv("GRAPH_CONSTRUCTION_MODEL") or DEFAULT_CONSTRUCTION_MODEL
+    return list(dict.fromkeys([saved, *(value.strip() for value in configured.split(",") if value.strip())]))
 
 
 def selected_model(value=None):
-    model = value or os.getenv("GRAPH_CONSTRUCTION_MODEL") or DEFAULT_CONSTRUCTION_MODEL
+    model = value or read_settings().get("model") or os.getenv("GRAPH_CONSTRUCTION_MODEL") or DEFAULT_CONSTRUCTION_MODEL
     if value is not None and (not isinstance(value, str) or model not in construction_models()):
         raise ValueError("请选择服务器配置的构图模型")
     return model
@@ -40,7 +42,8 @@ def selected_model(value=None):
 
 class ToolCallingLLM:
     def __init__(self, *, model=None, timeout=120, tool_choice=None):
-        self.model = model or os.getenv("GRAPH_CONSTRUCTION_MODEL") or os.getenv("LLM_MODEL") or DEFAULT_CONSTRUCTION_MODEL
+        saved = read_settings()
+        self.model = model or saved.get("model") or os.getenv("GRAPH_CONSTRUCTION_MODEL") or os.getenv("LLM_MODEL") or DEFAULT_CONSTRUCTION_MODEL
         # Some compatible providers reject required with nested operation
         # schemas. Auto preserves the complete schema; the agent still requires
         # actual tool calls within bounded workload/evolution attempts.
@@ -58,13 +61,16 @@ class ToolCallingLLM:
         prefixes = ("GRAPH_CONSTRUCTION", *prefixes, "LLM")
         self._key = next((os.environ[p + "_API_KEY"] for p in prefixes if os.getenv(p + "_API_KEY")), "")
         base = next((os.environ[p + "_BASE_URL"] for p in prefixes if os.getenv(p + "_BASE_URL")), "")
+        if "base_url" in saved:
+            base, self._key = saved["base_url"], saved.get("api_key", "")
         if not self._key or not base:
             raise ConstructionLLMError("construction_llm_unavailable: configure GRAPH_CONSTRUCTION_API_KEY/BASE_URL or the model provider environment")
         if not base.startswith(("https://", "http://")):
             raise ConstructionLLMError("construction_llm_invalid_base_url")
         self._url = base.rstrip("/") + "/chat/completions"
         self._provider_host = urllib.parse.urlsplit(self._url).hostname
-        resolved_ip = os.getenv("GRAPH_CONSTRUCTION_RESOLVED_IP", "").strip()
+        # A saved custom gateway must never inherit another gateway's DNS pin.
+        resolved_ip = "" if "base_url" in saved else os.getenv("GRAPH_CONSTRUCTION_RESOLVED_IP", "").strip()
         if resolved_ip:
             try:
                 ipaddress.ip_address(resolved_ip)

@@ -46,6 +46,21 @@ def construction_http(tmp_path, monkeypatch):
         yield client, service, store, source, headers
 
 
+def test_construction_settings_are_private_and_separate_from_dataset_options(construction_http):
+    client, _, _, _, headers = construction_http
+    path = '/construction/model-settings'
+    assert client.get(path).status_code in (401, 403)
+    result = client.post(path, headers=headers, json={'model': 'team/extractor', 'base_url': 'https://gateway.test', 'api_key': 'private-secret'})
+    assert result.status_code == 200
+    assert result.json()['has_api_key'] is True
+    assert 'private-secret' not in result.text and 'gateway.test' not in result.text
+    listing = client.get('/construction/models', headers=headers).json()
+    assert listing['default_model'] == 'team/extractor'
+    assert 'team/extractor' in listing['models']
+    assert client.post(path, headers=headers, json={'model': 'm', 'base_url': 'file:///secret'}).status_code == 422
+    assert client.get(path, headers=headers).json()['model'] == 'team/extractor'
+
+
 def build_ready(client, store, source, headers):
     store.register_algorithm("csv", lambda _source, _options: copy.deepcopy(GRAPH))
     response = client.post("/construction/ds-people/build", headers=headers,

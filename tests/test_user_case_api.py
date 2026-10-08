@@ -23,6 +23,10 @@ def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monk
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=backend_app.create_app(config)), base_url="http://test", headers={"X-User-ID":"admin"}) as client:
             listing = (await client.get("/api/user-cases")).json()["cases"]
             assert len(listing) == 2 and all(item["available"] and len(item["questions"]) >= 3 for item in listing)
+            for item in listing:
+                english = item['translations']['en']
+                assert english['name'] and english['description']
+                assert len(english['questions']) == len(item['questions'])
             first = await client.post("/api/user-cases/finance/project")
             assert first.status_code == 200, first.text
             second = (await client.post("/api/user-cases/finance/project")).json()

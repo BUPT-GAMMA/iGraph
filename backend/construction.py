@@ -19,6 +19,13 @@ class BuildRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConstructionSettingsRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+    base_url: str = Field(default="", max_length=2048)
+    api_key: str = Field(default="", max_length=8192)
+    clear_api_key: bool = False
+
+
 class SaveRequest(BaseModel):
     base_revision: int = Field(ge=1)
     operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
@@ -102,6 +109,17 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
     async def models(request: Request):
         user = user_for(request)
         return await graph.request("GET", "/construction/models", headers=headers(request, user.user_id, None))
+
+    @app.get("/api/construction-model-settings")
+    async def model_settings(request: Request):
+        user = user_for(request)
+        return await graph.request("GET", "/construction/model-settings", headers=headers(request, user.user_id, None))
+
+    @app.post("/api/construction-model-settings")
+    async def save_model_settings(req: ConstructionSettingsRequest, request: Request):
+        user = user_for(request)
+        return await graph.request("POST", "/construction/model-settings", headers=headers(request, user.user_id, None),
+                                   json_body=req.model_dump())
 
     @app.get("/api/personal-datasets/{dataset_id}/construction")
     @app.get("/api/datasets/{dataset_id}/construction", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])

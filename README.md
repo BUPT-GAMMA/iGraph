@@ -8,6 +8,12 @@
 聊天回复跟随发送时的界面语言（中文/英文）；切换语言影响下一轮回复，不翻译历史消息。
 工具分析后的回答先给一句话结论，再展开依据和建议，末尾保留总结。
 
+示例卡片、推荐问题和默认示例项目名称随界面语言即时切换，已生成的历史消息保留原文。
+模型服务中的 URL 和 API Key 输入框默认留空，不自动加载已保存密钥；留空保留服务器连接。
+构图页面提供模型选择、自定义模型 ID、URL 和 API Key 配置，供 TXT 抽取和表格智能构图使用。
+构图配置保存至持久卷 `/data/configuration/construction-model.json`，不会写入数据集构图参数或报告。
+完整的服务器部署、SSH 隧道、备份及故障排查步骤见 [单用户版部署说明](docs/SINGLE_USER_DEPLOYMENT.zh-CN.txt)。
+
 iGraph 采用四个一级业务模块：Frontend、Backend、Agent Runtime 和 Graph Engine。
 Agent Runtime 使用开源 Agno AgentOS；Session、Run、Memory、Learning、Skills、Approval
 和 Trace 不再由 Backend 的进程内对象维护。
