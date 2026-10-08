@@ -158,6 +158,11 @@ class ConstructionSaveReq(BaseModel):
     operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
 
 
+class ConstructionPresetReq(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: Literal["finance", "tianlongbabu"]
+
+
 class ConstructionImportReq(BaseModel):
     source_dataset_id: str = Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_-]+$")
 
@@ -4691,6 +4696,17 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         # An omitted path keeps the registered source/ready-result reuse contract.
         source_path = grant.source.source_path if req.source_path is not None else None
         return await svc._construction_coordinator.build(uid, dataset_id, source_path, grant.source.source_filename, req.options)
+
+    @app.post("/construction/{dataset_id}/preset")
+    async def construction_preset(dataset_id: str, req: ConstructionPresetReq, request: Request):
+        require_service(request)
+        uid, grant = await construction_grant(request, dataset_id)
+        if grant.scope != "personal" or grant.source is None:
+            raise HTTPException(403, "示例数据源必须为已授权个人数据集")
+        svc._construction_coordinator.ensure_writable(uid, dataset_id)
+        from graph_engine.user_case_sources import seed_construction
+        return await run_sync(seed_construction, svc._construction, uid, dataset_id,
+            grant.source.source_path, grant.source.source_filename, req.case_id)
 
     @app.post("/construction/{dataset_id}/import")
     async def construction_import(dataset_id: str, req: ConstructionImportReq, request: Request):

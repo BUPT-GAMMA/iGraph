@@ -209,7 +209,7 @@ describe('docked panel controls', () => {
     expect(screen.queryByLabelText('回复已完成')).toBeNull();
   });
 
-  it('creates tasks in the focused project and keeps the recent-task action independent', () => {
+  it('opens standalone tasks from the main action and project tasks only from the project action', () => {
     const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
     const projectSession = { session_id: 'session-1', project_id: 'project-1', title: '项目会话' };
     const independentSession = { session_id: 'standalone', project_id: null, title: '独立会话' };
@@ -226,15 +226,17 @@ describe('docked panel controls', () => {
 
     rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[projectSession]} activeProjectId="project-1" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNewInProject).toHaveBeenLastCalledWith('project-1');
+    expect(onNewInProject).not.toHaveBeenCalled();
 
     rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[projectSession]} activeId="session-1" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNewInProject).toHaveBeenLastCalledWith('project-1');
+    expect(onNewInProject).not.toHaveBeenCalled();
 
     rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[independentSession]} activeId="standalone" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNew).toHaveBeenCalledTimes(3);
+    expect(onNew).toHaveBeenCalledTimes(5);
+    fireEvent.click(screen.getByRole('button', { name: '在 项目一 中新建会话' }));
+    expect(onNewInProject).toHaveBeenCalledExactlyOnceWith('project-1');
   });
 
   it('uses one right panel toggle for both expanded and collapsed states', () => {

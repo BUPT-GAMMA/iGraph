@@ -49,6 +49,9 @@ class ProjectDatasetDirectory:
     def _safe_filename(filename: str) -> str:
         basename = Path(str(filename or "dataset.bin")).name.strip() or "dataset.bin"
         safe = _SAFE_FILENAME.sub("_", basename).strip("._")
+        suffix = Path(basename).suffix
+        if suffix and re.fullmatch(r"\.[A-Za-z0-9]+", suffix) and not Path(safe).suffix:
+            safe = "dataset" + suffix
         return safe[:180] or "dataset.bin"
 
     def _load(self) -> dict[str, ProjectDatasetRecord]:
@@ -64,12 +67,12 @@ class ProjectDatasetDirectory:
         }
 
 
-    def _write(self, records: dict[str, ProjectDatasetRecord]) -> None:
+    def _write(self, records: dict[str, ProjectDatasetRecord], *, installed_user_cases=None) -> None:
         self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": 2,
-            "datasets": [asdict(records[key]) for key in sorted(records)],
-        }
+        payload = json.loads(self.metadata_path.read_text(encoding="utf-8")) if self.metadata_path.is_file() else {}
+        payload.update(version=2, datasets=[asdict(records[key]) for key in sorted(records)])
+        if installed_user_cases is not None:
+            payload["installed_user_cases"] = installed_user_cases
         fd, tmp_name = tempfile.mkstemp(
             prefix="project-datasets-",
             suffix=".json",
@@ -290,6 +293,28 @@ class ProjectDatasetDirectory:
                     os.unlink(tmp_name)
                 shutil.rmtree(dataset_dir, ignore_errors=True)
                 raise
+
+    def ensure_user_case_source(self, *, user_id: str, case: dict, source_path: Path,
+                                source: dict) -> ProjectDatasetRecord | None:
+        """Install an independent personal source once, preserving edits and deletions."""
+        with self._lock:
+            records = self._load()
+            existing = next((item for item in records.values()
+                if item.user_id == user_id and item.project_id is None
+                and item.metadata.get("user_case_id") == case["id"]), None)
+            if existing is not None:
+                return existing
+            payload = json.loads(self.metadata_path.read_text(encoding="utf-8")) if self.metadata_path.is_file() else {}
+            installed = payload.get("installed_user_cases", [])
+            identity = [user_id, case["id"]]
+            if identity in installed:
+                return None
+            dataset = self.create(project_id=None, user_id=user_id, name=case["name"],
+                original_filename=source["filename"], content=source_path.read_bytes(), description=case["description"])
+            dataset.metadata.update(source.get("metadata", {}), user_case_id=case["id"])
+            records[dataset.dataset_id] = dataset
+            self._write(records, installed_user_cases=[*installed, identity])
+            return dataset
 
     def create_reference(
         self,

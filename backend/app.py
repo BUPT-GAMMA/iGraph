@@ -3182,11 +3182,27 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         count = sum(session_project_id(session, user.user_id) == project_id for session in rows)
         return {"success": True, "project": _project_row(project, count)}
 
+    async def ensure_personal_user_case_sources(request, user_id):
+        from backend.user_cases import USER_CASES, installed_source
+        for case in USER_CASES:
+            source = installed_source(server_datasets.root, case)
+            if source is None:
+                continue
+            dataset = project_datasets.ensure_user_case_source(user_id=user_id, case=case,
+                source_path=source[0], source=source[1])
+            if dataset is None or dataset.metadata.get("construction", {}).get("revision", 0):
+                continue
+            state = await graph.request("POST", f"/construction/{dataset.dataset_id}/preset",
+                headers={**service_headers(user_id), **scope_headers(None)}, json_body={"case_id": case["id"]})
+            sync_construction_record(project_datasets, dataset, state)
+
     @app.get("/api/projects/{project_id}/datasets")
     async def list_project_datasets(request: Request, project_id: str | None = None):
         user = current_user(request, users)
         project = project_or_404(project_id, user.user_id) if project_id else None
         default_dataset_id = project.default_dataset_id if project else None
+        if project_id is None:
+            await ensure_personal_user_case_sources(request, user.user_id)
         rows = project_datasets.list(project_id, user.user_id)
         return {
             "success": True,
