@@ -64,6 +64,57 @@ def test_native_handoff_failure_releases_admission_without_replaying_question(tm
     asyncio.run(scenario())
 
 
+def test_disconnect_during_preparation_still_starts_native_run_once(tmp_path):
+    from backend.service_client import ServiceClient
+
+    async def scenario():
+        async with running_stack(tmp_path) as (client, sid, graph, controller, metrics):
+            ready, release = asyncio.Event(), asyncio.Event()
+            original_stream, original_begin = ServiceClient.stream, controller.begin
+
+            @asynccontextmanager
+            async def delayed_handoff(self, method, path, **kwargs):
+                if path == '/agents/igraph-agent/runs':
+                    ready.set()
+                    await release.wait()
+                async with original_stream(self, method, path, **kwargs) as response:
+                    yield response
+
+            async def slow_native_start(*args, **kwargs):
+                # HTTP 200 headers precede the native producer's durable claim.
+                await asyncio.sleep(.3)
+                return await original_begin(*args, **kwargs)
+
+            question = 'complete-disconnected-preparation'
+            target = {'start_request_id': str(uuid4())}
+            with patch.object(ServiceClient, 'stream', delayed_handoff), patch.object(controller, 'begin', slow_native_start):
+                observer = asyncio.create_task(client.post(f'/api/sessions/{sid}/chat/stream',
+                    json={'message': question, **target}))
+                try:
+                    await asyncio.wait_for(ready.wait(), 40)
+                    observer.cancel()
+                    await asyncio.gather(observer, return_exceptions=True)
+                    await asyncio.sleep(.1)
+                    release.set()
+
+                    async def completed():
+                        result = (await client.get(f'/api/sessions/{sid}/runs/control', params=target)).json()
+                        return result if result.get('can_send') else None
+
+                    result = await eventually(completed, 15)
+                    assert result['run_status'] == 'completed', result
+                    assert result['native_run_created'] and result['terminal_persisted']
+                    assert metrics['calls'][question] == 1
+                    snapshot = await client.get(f'/api/sessions/{sid}/runs/{result["run_id"]}/snapshot')
+                    assert snapshot.json()['snapshot_complete']
+                finally:
+                    release.set()
+                    observer.cancel()
+                    await asyncio.gather(observer, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 def test_real_learning_machine_model_connection_stops_with_its_run(tmp_path):
     async def scenario():
         async with running_stack(tmp_path, learning=True) as (client, sid, graph, controller, metrics):

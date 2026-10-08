@@ -46,6 +46,32 @@ beforeEach(() => {
 afterEach(() => { managers.splice(0).forEach(manager => manager.abortAll()); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('single recovery coordinator', () => {
+  it('preserves the selected model revision before React commits the new run', async () => {
+    const h = harness(true, false, true);
+    h.dispatch({ type: 'PATCH_VIEW', sessionId: 'A', patch: { model: 'qwen3.6-plus', modelRevision: 2 } });
+    vi.mocked(streamChat).mockResolvedValue(undefined);
+    const connection = h.manager.acquire({ sessionId: 'A', generation: 'next', foreground: true, retry: vi.fn(), onDetached: vi.fn() })!;
+    await h.recovery.consume(connection, 'start', { message: 'question', attachments: [] });
+    expect(streamChat).toHaveBeenCalledOnce();
+    expect(vi.mocked(streamChat).mock.calls[0][8]).toBe(2);
+  });
+
+  it('restores the draft after model selection rejection without polling an unregistered run', async () => {
+    const h = harness(true, false, true);
+    const error = ApiError.fromResponse(409, { detail: { code: 'MODEL_SELECTION_CHANGED' } });
+    vi.mocked(streamChat).mockRejectedValue(error);
+    const connection = h.manager.acquire({ sessionId: 'A', generation: 'g', foreground: true, retry: vi.fn(), onDetached: vi.fn() })!;
+    await h.recovery.consume(connection, 'start', { message: 'question', attachments: [] });
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(h.view().draft).toBe('question');
+    expect(h.view().error).toBe(error.message);
+    expect(selectRunGate(h.view()).canStartRun).toBe(true);
+    expect(streamChat).toHaveBeenCalledOnce();
+    expect(getRunControl).not.toHaveBeenCalled();
+    expect(resumeRun).not.toHaveBeenCalled();
+    expect(h.manager.all()).toHaveLength(0);
+  });
+
   it('preserves a preparation conflict message while restoring the draft after confirmed failure', async () => {
     const h = harness(true, false, true);
     const error = ApiError.fromResponse(409, { detail: { code: 'JOB_IDEMPOTENCY_CONFLICT' } });

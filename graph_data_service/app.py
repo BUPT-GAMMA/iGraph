@@ -4530,6 +4530,8 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         validate_service_configuration()
+        from graph_engine.finance_preset import install_finance_preset
+        await run_sync(install_finance_preset, _dp.data_root())
         await svc._construction_coordinator.restore()
         if svc._execution_host:
             await svc._execution_host.restore()

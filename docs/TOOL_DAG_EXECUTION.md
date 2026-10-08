@@ -47,7 +47,7 @@ flowchart LR
 
 | 环境变量 | 默认 | 用途 |
 | --- | --- | --- |
-| `AGENT_TOOL_MAX_CONCURRENCY` | 4 | 单轮 Agent 就绪节点并发，范围 1–32 |
+| `AGENT_TOOL_MAX_CONCURRENCY` | 3 | 单轮 Agent 就绪节点并发，范围 1–3，配置更大值仍封顶 3 |
 | `GRAPH_COMPUTE_CONCURRENCY` | min(4, CPU 数) | 普通算法进程池 worker 数 |
 | `GRAPH_COMPUTE_GLOBAL_CONCURRENCY` | worker 数 | 全局普通计算并发 |
 | `GRAPH_COMPUTE_PER_USER_CONCURRENCY` | worker 数 | 每用户普通计算并发；原默认 1 已解除 |
