@@ -23,9 +23,24 @@ class ConstructionLLMError(RuntimeError):
 _DNS_OVERRIDE_LOCK = threading.Lock()
 
 
+DEFAULT_CONSTRUCTION_MODEL = "deepseek-v4-pro"
+
+
+def construction_models():
+    configured = os.getenv("GRAPH_CONSTRUCTION_MODELS", "deepseek-v4-pro,claude-opus-5-5")
+    return list(dict.fromkeys(value.strip() for value in configured.split(",") if value.strip()))
+
+
+def selected_model(value=None):
+    model = value or os.getenv("GRAPH_CONSTRUCTION_MODEL") or DEFAULT_CONSTRUCTION_MODEL
+    if value is not None and (not isinstance(value, str) or model not in construction_models()):
+        raise ValueError("请选择服务器配置的构图模型")
+    return model
+
+
 class ToolCallingLLM:
     def __init__(self, *, model=None, timeout=120, tool_choice=None):
-        self.model = model or os.getenv("GRAPH_CONSTRUCTION_MODEL") or os.getenv("LLM_MODEL") or "qwen3.6-plus"
+        self.model = model or os.getenv("GRAPH_CONSTRUCTION_MODEL") or os.getenv("LLM_MODEL") or DEFAULT_CONSTRUCTION_MODEL
         # Some compatible providers reject required with nested operation
         # schemas. Auto preserves the complete schema; the agent still requires
         # actual tool calls within bounded workload/evolution attempts.
@@ -57,6 +72,7 @@ class ToolCallingLLM:
                 raise ConstructionLLMError("construction_llm_invalid_resolved_ip") from None
         self._resolved_ip = resolved_ip or None
         self.timeout = timeout
+        self._audit_lock = threading.Lock()
         self.successful_calls = 0
         self.response_models = []
         self.usage_available_calls = 0
@@ -93,6 +109,9 @@ class ToolCallingLLM:
                 socket.getaddrinfo = original
 
     def _request(self, body, *, timeout=None):
+        if self.model.startswith("deepseek-v4"):
+            # Extraction needs the final structured text within its output budget.
+            body = {**body, "thinking": {"type": "disabled"}}
         body = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
         request = urllib.request.Request(self._url, data=body, headers={
             "Authorization": "Bearer " + self._key, "Content-Type": "application/json",
@@ -103,25 +122,28 @@ class ToolCallingLLM:
                 if len(payload) > 4 * 1024 * 1024:
                     raise ConstructionLLMError("construction_llm_response_too_large")
             document = json.loads(payload)
+            if document["choices"][0].get("finish_reason") == "length":
+                raise ConstructionLLMError("construction_llm_output_truncated")
             message = document["choices"][0]["message"]
             if not isinstance(message, dict):
                 raise ValueError("invalid response")
-            response_model = document.get("model")
-            if isinstance(response_model, str) and 0 < len(response_model) <= 200:
-                if response_model not in self.response_models:
-                    self.response_models.append(response_model)
-            usage = document.get("usage")
-            if isinstance(usage, dict):
-                captured = {}
-                for key in self.token_usage:
-                    value = usage.get(key)
-                    if type(value) is int and value >= 0:
-                        captured[key] = value
-                if captured:
-                    self.usage_available_calls += 1
-                    for key, value in captured.items():
-                        self.token_usage[key] += value
-            self.successful_calls += 1
+            with self._audit_lock:
+                response_model = document.get("model")
+                if isinstance(response_model, str) and 0 < len(response_model) <= 200:
+                    if response_model not in self.response_models:
+                        self.response_models.append(response_model)
+                usage = document.get("usage")
+                if isinstance(usage, dict):
+                    captured = {}
+                    for key in self.token_usage:
+                        value = usage.get(key)
+                        if type(value) is int and value >= 0:
+                            captured[key] = value
+                    if captured:
+                        self.usage_available_calls += 1
+                        for key, value in captured.items():
+                            self.token_usage[key] += value
+                self.successful_calls += 1
             # Keep only standard chat fields; never persist internal reasoning.
             return {k: message[k] for k in ("role", "content", "tool_calls") if k in message}
         except urllib.error.HTTPError as exc:

@@ -22,6 +22,7 @@ export function constructionLabel(dataset: Dataset) {
   const construction = constructionMetadata(dataset);
   const status = constructionStatus(dataset);
   if (status === 'building' || status === 'processing') return tr('View progress', '查看进度');
+  if (status === 'draft') return tr('Save graph', '保存构图');
   if (status === 'failed' || status === 'error') return tr('Build again', '重新构图');
   if (status === 'algorithm_unavailable') return tr('Algorithm unavailable', '算法待接入');
   return status === 'ready' || (!construction?.status && Number(construction?.revision) > 0)

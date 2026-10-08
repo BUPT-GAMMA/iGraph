@@ -19,6 +19,11 @@ class BuildRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class SaveRequest(BaseModel):
+    base_revision: int = Field(ge=1)
+    operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
 class EditRequest(BaseModel):
     base_revision: int = Field(ge=1)
     operations: list[dict[str, Any]] = Field(min_length=1, max_length=100)
@@ -93,6 +98,11 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
             result = {**result, "algorithm_available": available}
         return {**result, "source_filename": dataset.original_filename, "source_type": dataset.file_type}
 
+    @app.get("/api/construction-models")
+    async def models(request: Request):
+        user = user_for(request)
+        return await graph.request("GET", "/construction/models", headers=headers(request, user.user_id, None))
+
     @app.get("/api/personal-datasets/{dataset_id}/construction")
     @app.get("/api/datasets/{dataset_id}/construction", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction")
@@ -159,7 +169,7 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
     @app.post("/api/personal-datasets/{dataset_id}/construction/commit")
     @app.post("/api/datasets/{dataset_id}/construction/commit", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.post("/api/projects/{project_id}/datasets/{dataset_id}/construction/commit")
-    async def commit(dataset_id: str, req: EditRequest, request: Request, project_id: str | None = None):
+    async def commit(dataset_id: str, req: SaveRequest, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
         result = await graph.request("POST", f"/construction/{dataset_id}/commit",
             headers=headers(request, user.user_id, project_id), json_body=req.model_dump())

@@ -257,7 +257,7 @@ class ConstructionStoreTest(unittest.TestCase):
         self.assertEqual(state["last_build_status"], "algorithm_unavailable")
         self.assertIn("已就绪", state["message"])
         self.assertNotIn("尚未接入", state["message"])
-        self.assertEqual(upgraded.build("user-a", "dataset-txt")["status"], "ready")
+        self.assertEqual(upgraded.build("user-a", "dataset-txt")["status"], "draft")
 
     def test_status_exposes_only_bounded_whitelisted_agent_progress(self):
         self.store.register_source("user-a", "progress", self.source, "example.csv")
@@ -475,7 +475,7 @@ class ConstructionStoreTest(unittest.TestCase):
             finally:
                 release.set()
             self.assertTrue(build.result(timeout=5)["success"])
-        self.assertEqual(self.store.status("user-a", "dataset-1")["status"], "ready")
+        self.assertEqual(self.store.status("user-a", "dataset-1")["status"], "draft")
 
     def test_status_inside_the_builder_is_not_mistaken_for_an_abandoned_reentrant_lock(self):
         observed = []
@@ -527,7 +527,9 @@ class ConstructionStoreTest(unittest.TestCase):
             process.close()
 
     def test_interrupted_build_preserves_an_already_saved_graph_and_revision(self):
-        original = self.build_ready()
+        self.build_ready()
+        self.store.optimize("user-a", "dataset-1", 1, [], commit=True)
+        original = self.store.graph("user-a", "dataset-1")
         with self.store._lock("user-a", "dataset-1") as directory:
             record = self.store._read(directory, "dataset-1")
             record.update(status="building", last_build_status="building")
@@ -542,6 +544,7 @@ class ConstructionStoreTest(unittest.TestCase):
 
     def test_recovery_rereads_after_taking_the_lock_and_keeps_a_newer_completed_record(self):
         self.build_ready()
+        self.store.optimize("user-a", "dataset-1", 1, [], commit=True)
         record = self.store._read(self.store._directory("user-a", "dataset-1"), "dataset-1")
         stale_snapshot = {**copy.deepcopy(record), "status": "building", "last_build_status": "building"}
         with patch.object(self.store, "_read", side_effect=[stale_snapshot, record]), \

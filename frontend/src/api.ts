@@ -1,3 +1,4 @@
+import type { UserCase } from './userCases';
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionSourcePreview, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
@@ -394,6 +395,9 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
 function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
   return `${datasetScopeUrl(dataset.project_id)}/${encodeURIComponent(dataset.dataset_id)}/construction`;
 }
+export function getConstructionModels(signal?: AbortSignal) {
+  return json<{ models: string[]; default_model: string }>('/api/construction-models', { signal });
+}
 export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionState>(constructionUrl(dataset), { signal });
 }
@@ -595,4 +599,11 @@ export async function resumeRun(sessionId: string, runId: string, lastEventIndex
     headers,
   });
   await consumeSseResponse(response, sessionId, handlers);
+}
+
+export function getUserCases(signal?: AbortSignal) {
+  return json<{ cases: UserCase[] }>('/api/user-cases', { signal });
+}
+export function openUserCase(caseId: string) {
+  return json<{ project: Project; dataset: Dataset; case: UserCase }>(`/api/user-cases/${encodeURIComponent(caseId)}/project`, { method: 'POST' });
 }

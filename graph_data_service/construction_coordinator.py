@@ -236,6 +236,12 @@ class ConstructionCoordinator:
         if not isinstance(options, dict):
             raise ConstructionError("invalid_operation", "options must be a JSON object.")
         _json_keys(options)
+        if "construction_model" in options:
+            from graph_engine.construction.llm import selected_model
+            try:
+                selected_model(options["construction_model"])
+            except ValueError:
+                raise ConstructionError("invalid_construction_model", "请选择服务器配置的构图模型。", 422) from None
         fingerprint = hashlib.sha256(_json([str(source_path) if source_path is not None else None,
                                            source_filename, options]).encode()).hexdigest()
         key = (user_id, dataset_id)

@@ -152,6 +152,12 @@ class ConstructionOptimizeReq(BaseModel):
     operations: list[dict[str, Any]] = Field(min_length=1, max_length=100)
 
 
+class ConstructionSaveReq(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_revision: int = Field(strict=True, ge=1)
+    operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
 class ConstructionImportReq(BaseModel):
     source_dataset_id: str = Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_-]+$")
 
@@ -2124,7 +2130,7 @@ class GraphDataService:
         """
         from graph_data_service.graph_snapshot import snapshot_summary
 
-        document = self._construction.graph(user_id, dataset_id)
+        document = self._construction.graph(user_id, dataset_id, saved_only=True)
         graph = to_graph_data(document)
         session = self.get_or_create(session_id, user_id=user_id)
         context = job_context.get()
@@ -4532,6 +4538,8 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         validate_service_configuration()
         from graph_engine.finance_preset import install_finance_preset
         await run_sync(install_finance_preset, _dp.data_root())
+        from graph_engine.novel_preset import install_novel_preset
+        await run_sync(install_novel_preset, _dp.data_root())
         await svc._construction_coordinator.restore()
         if svc._execution_host:
             await svc._execution_host.restore()
@@ -4639,6 +4647,12 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         if invalid:
             raise HTTPException(403, {"code": "invalid_source", "message": "数据源与已授权数据集不匹配。"})
 
+    @app.get("/construction/models")
+    async def construction_models_route(request: Request):
+        construction_user(request)
+        from graph_engine.construction.llm import construction_models, DEFAULT_CONSTRUCTION_MODEL
+        return {"models": construction_models(), "default_model": DEFAULT_CONSTRUCTION_MODEL}
+
     @app.get("/construction/capabilities")
     def construction_capabilities(request: Request):
         construction_user(request)
@@ -4708,7 +4722,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         return await run_sync(svc.do_preview_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
 
     @app.post("/construction/{dataset_id}/commit")
-    async def construction_commit(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
+    async def construction_commit(dataset_id: str, req: ConstructionSaveReq, request: Request):
         uid = construction_user(request)
         if request.headers.get("X-Run-ID") and svc._execution_host:
             sid = request.headers.get("X-Session-ID", "")

@@ -4,10 +4,10 @@ import { ApiError } from '../api';
 import type { ConstructionOperation, Dataset } from '../types';
 import { GraphConstructionPanel } from './GraphConstructionPanel';
 
-const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn(), rename: vi.fn(), models: vi.fn() }));
 vi.mock('../api', async importOriginal => ({
   ...await importOriginal<typeof import('../api')>(),
-  getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
+  getConstructionModels: mocks.models, renameProjectDataset: mocks.rename, getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
   getConstructionSourcePreview: mocks.source,
   previewConstruction: mocks.preview, commitConstruction: mocks.commit,
 }));
@@ -33,6 +33,7 @@ async function openPanel(onSaved = vi.fn(), onClose = vi.fn()) {
 }
 
 beforeEach(() => {
+  mocks.models.mockResolvedValue({ models: ['deepseek-v4-pro', 'claude-opus-5-5'], default_model: 'deepseek-v4-pro' });
   mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'ready', revision: 2, algorithm_available: false });
   mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph });
   mocks.schema.mockResolvedValue(schema);
@@ -617,7 +618,7 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
 
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      domain: '', txt_mode: 'entities', mode: 'llm', entity_types: [], text_refine_enabled: false,
+      domain: '', txt_mode: 'entities', mode: 'llm', construction_model: 'deepseek-v4-pro', entity_types: [], text_refine_enabled: false,
     });
   });
 
@@ -651,7 +652,7 @@ describe('long-running graph construction', () => {
     fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: '4' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      domain: '', txt_mode: 'entities', mode: 'llm',
+      domain: '', txt_mode: 'entities', mode: 'llm', construction_model: 'deepseek-v4-pro',
       entity_types: ['人物', '事件', '组织'], text_refine_enabled: true, query_count: 4,
     });
   });
@@ -815,5 +816,47 @@ describe('long-running graph construction', () => {
     expect(saved).toHaveBeenCalledTimes(1);
     expect(mocks.graph).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('explicit construction publishing', () => {
+  it('renames the dataset inside the construction page', async () => {
+    const updated = vi.fn();
+    mocks.rename.mockResolvedValue({ dataset: { ...dataset, name: '人物关系图' } });
+    render(<GraphConstructionPanel dataset={dataset} onClose={vi.fn()} onSaved={vi.fn()} onDatasetUpdated={updated} />);
+    await screen.findByLabelText('测试图画布');
+    fireEvent.click(screen.getByRole('button', { name: '重命名数据集' }));
+    choose('数据集名称', '人物关系图');
+    fireEvent.click(screen.getByRole('button', { name: '保存名称' }));
+    expect(await screen.findByRole('heading', { name: '人物关系图' })).toBeTruthy();
+    expect(mocks.rename).toHaveBeenCalledWith(dataset.project_id, dataset.dataset_id, '人物关系图');
+    expect(updated).toHaveBeenCalledWith(expect.objectContaining({ name: '人物关系图' }));
+  });
+  it('keeps a completed build unpublished until the save button is clicked', async () => {
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true });
+    mocks.build.mockResolvedValue({ dataset_id: 'd1', status: 'draft', revision: 2 });
+    const saved = vi.fn(), use = vi.fn();
+    render(<GraphConstructionPanel dataset={{ ...dataset, status: 'source_ready' }} onClose={vi.fn()} onSaved={saved} onUse={use} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '开始构图' }).matches(':disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: '开始构图' }));
+    expect(await screen.findByText('草稿 · 待保存')).toBeTruthy();
+    expect(saved).not.toHaveBeenCalled();
+    expect(mocks.commit).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '在当前会话使用' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '保存构图结果' }));
+    await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
+    expect(mocks.commit).toHaveBeenCalledWith(expect.objectContaining({ dataset_id: 'd1' }), 2, []);
+    expect(screen.getByRole('button', { name: '在当前会话使用' })).toBeTruthy();
+  });
+  it('submits the chosen construction model for semantic TXT', async () => {
+    const txt = { ...dataset, file_type: 'txt', original_filename: 'novel.txt', status: 'source_ready' };
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true });
+    mocks.build.mockResolvedValue({ dataset_id: 'd1', status: 'building', revision: 0 });
+    render(<GraphConstructionPanel dataset={txt} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '开始构图' }).matches(':disabled')).toBe(false));
+    expect((screen.getByLabelText('构图大模型') as HTMLSelectElement).value).toBe('deepseek-v4-pro');
+    choose('TXT 处理方式', '__entities__'); choose('构图大模型', 'claude-opus-5-5');
+    fireEvent.click(screen.getByRole('button', { name: '开始构图' }));
+    await waitFor(() => expect(mocks.build).toHaveBeenCalledWith(txt, expect.objectContaining({ construction_model: 'claude-opus-5-5' })));
   });
 });
