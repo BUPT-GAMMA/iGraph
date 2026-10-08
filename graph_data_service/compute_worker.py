@@ -68,6 +68,12 @@ def compute(payload):
         isolated_session = service.get_or_create(session.session_id, user_id=session.user_id)
         isolated_session._graph = graph
         isolated_session._graph_version = session.graph_version
+        # Keep snapshot provenance in the isolated view as well as the API
+        # process; otherwise get_graph_info exposes an imported construction ID.
+        if payload.get('graph_source'):
+            isolated_session._write_version_records([{
+                'graph_version': session.graph_version, 'source': payload['graph_source'],
+            }])
         isolated_session._uploads_by_name = {name: UploadFileRecord(**record) for name, record in payload.get('uploads', {}).items()}
         isolated_session.llm_model = payload.get('llm_model', '')
         if payload.get('dataset_directory'):

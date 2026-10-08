@@ -3022,9 +3022,19 @@ class GraphDataService:
         edge_types = edge_type_values_for_graph(gd)
         preview_payload = self._graph_preview(gd)
         ml_readiness = graph_ml_readiness_for_graph(gd)
+        # An imported NPZ/JSON may contain the ID used to create its snapshot.
+        # That provenance is not a construction dataset in the current project.
+        # Use the persisted version source so restored sessions behave the same.
+        imported_snapshot = session.version_source(summary.graph_version).get("kind") == "upload"
+        construction_dataset_id = None if imported_snapshot else gd.graph_metadata.get("construction_dataset_id")
+        construction_revision = None if imported_snapshot else gd.graph_metadata.get("construction_revision")
+        construction_state = {
+            "construction_dataset_id": construction_dataset_id,
+            "construction_revision": construction_revision,
+            "construction_applicable": bool(construction_dataset_id),
+        }
         graph_info_payload = {
-            "construction_dataset_id": gd.graph_metadata.get("construction_dataset_id"),
-            "construction_revision": gd.graph_metadata.get("construction_revision"),
+            **construction_state,
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
             "num_edge_entries": summary.num_edge_entries,
@@ -3066,8 +3076,7 @@ class GraphDataService:
             "loaded": True,
             "session_id": session_id,
             "graph_version": summary.graph_version,
-            "construction_dataset_id": gd.graph_metadata.get("construction_dataset_id"),
-            "construction_revision": gd.graph_metadata.get("construction_revision"),
+            **construction_state,
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
             "num_edge_entries": summary.num_edge_entries,
