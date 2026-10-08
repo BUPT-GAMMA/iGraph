@@ -24,7 +24,7 @@ const highlightedGraph = {
 beforeEach(() => {
   vi.resetAllMocks();
   localStorage.clear(); sessionStorage.clear();
-  localStorage.setItem(USER_KEY, 'exploration-user');
+  localStorage.setItem(USER_KEY, 'admin');
   window.history.replaceState({}, '', '/?session=A');
   vi.mocked(validateUser).mockResolvedValue({ valid: true, default_model: 'model' });
   vi.mocked(listSessions).mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] });
@@ -56,7 +56,7 @@ async function openExploration() {
 
 describe('actual App graph exploration', () => {
   it('starts a new analysis turn while preserving the composer and excluding its attachments', async () => {
-    writeComposerDraft('exploration-user', 'A', { draft: '尚未发送的另一个问题', attachments: [{ filename: 'private.csv', file_token: 'private-token' }], pendingAttachments: [] });
+    writeComposerDraft('admin', 'A', { draft: '尚未发送的另一个问题', attachments: [{ filename: 'private.csv', file_token: 'private-token' }], pendingAttachments: [] });
     const { container, unmount } = await openExploration();
     fireEvent.change(screen.getByRole('textbox', { name: '图谱问题' }), { target: { value: '请找出相关论文' } });
     fireEvent.click(screen.getByRole('button', { name: '定位并显示' }));
@@ -71,7 +71,7 @@ describe('actual App graph exploration', () => {
     expect(screen.getByRole('button', { name: '移除 private.csv' })).toBeTruthy();
     expect(container.querySelector('.user-message')?.textContent || container.textContent).toContain('请找出相关论文');
     expect((screen.getByRole('button', { name: '正在对话中处理…' }) as HTMLButtonElement).disabled).toBe(true);
-    await waitFor(() => expect(readComposerDraft('exploration-user', 'A')).toMatchObject({
+    await waitFor(() => expect(readComposerDraft('admin', 'A')).toMatchObject({
       draft: '尚未发送的另一个问题', attachments: [{ filename: 'private.csv', file_token: 'private-token' }], preserveDuringRun: true,
     }));
     unmount();
@@ -80,7 +80,7 @@ describe('actual App graph exploration', () => {
     await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
     expect((screen.getByPlaceholderText(composerPlaceholder) as HTMLTextAreaElement).value).toBe('尚未发送的另一个问题');
     expect(screen.getByRole('button', { name: '移除 private.csv' })).toBeTruthy();
-    expect(readComposerDraft('exploration-user', 'A')?.attachments).toEqual([{ filename: 'private.csv', file_token: 'private-token' }]);
+    expect(readComposerDraft('admin', 'A')?.attachments).toEqual([{ filename: 'private.csv', file_token: 'private-token' }]);
     expect(streamChat).toHaveBeenCalledOnce();
   });
 
