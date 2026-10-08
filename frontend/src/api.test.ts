@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser } from './api';
+import { ApiError, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser, saveConstructionModelSettings } from './api';
 
 let unbindAccount = () => {};
 
@@ -20,6 +20,17 @@ function responseFromChunks(chunks: string[]) {
 }
 
 describe('single-user workspace requests', () => {
+  it('sends construction settings as a JSON object accepted by FastAPI', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ model: 'deepseek-v4-pro', has_api_key: true })));
+    vi.stubGlobal('fetch', fetcher);
+    const settings = { model: 'deepseek-v4-pro', base_url: 'https://gateway.test/v1', api_key: 'test-key', clear_api_key: false };
+    await saveConstructionModelSettings(settings);
+    expect(fetcher.mock.calls[0][0]).toBe('/api/construction-model-settings');
+    const request = fetcher.mock.calls[0][1];
+    expect(request.method).toBe('POST');
+    expect(new Headers(request.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(request.body)).toEqual(settings);
+  });
   it.each(['', 'old-user', 'another-user'])('ignores a cached account (%s)', async cached => {
     localStorage.setItem(USER_KEY, cached);
     unbindAccount = bindRequestAccount('stale-rendered-user');
