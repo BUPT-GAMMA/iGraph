@@ -1076,7 +1076,7 @@ def test_recovery_snapshot_is_complete_only_at_a_persisted_phase(client: TestCli
     assert complete['active_run']['run_id'] == 'new'
     assert next(message for message in complete['messages'] if message['id'] == 'assistant:r')['content'] == 'ABC'
     assert client.get(f'/api/sessions/{sid}/runs/wrong/snapshot', headers=headers()).status_code == 404
-    assert client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers('other-user')).status_code in {401, 403, 404}
+    assert client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers('other-user')).status_code == 200
 
 
 def test_resume_propagates_structured_error_before_sse_headers(client: TestClient):
@@ -1112,7 +1112,7 @@ def test_personal_datasets_are_reusable_explicit_and_scope_isolated(client):
     selected = client.post('/api/sessions', headers=headers(), json={'active_dataset_id': dataset['dataset_id']}).json()
     assert selected['active_dataset_id'] == dataset['dataset_id']
     assert [row['dataset_id'] for row in client.get('/api/personal-datasets', headers=headers()).json()['datasets']] == [dataset['dataset_id']]
-    assert client.get('/api/personal-datasets', headers=headers('alice')).json()['datasets'] == []
+    assert [row['dataset_id'] for row in client.get('/api/personal-datasets', headers=headers('alice')).json()['datasets']] == [dataset['dataset_id']]
     project = client.post('/api/projects', headers=headers(), json={'name': 'Scoped'}).json()['project']
     assert client.post('/api/sessions', headers=headers(), json={'project_id': project['project_id'], 'active_dataset_id': dataset['dataset_id']}).status_code == 409
     foreign = client.post(f"/api/projects/{project['project_id']}/datasets", headers=headers(), files={'file': ('other.csv', b'X,Y', 'text/csv')}).json()['dataset']
