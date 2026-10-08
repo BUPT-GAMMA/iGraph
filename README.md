@@ -1,5 +1,13 @@
 # iGraph
 
+本分支为单用户版：打开网页即进入默认工作区，不提供登录、注册、头像或切换用户入口。
+所有公开 API 请求统一归属 `IGRAPH_ADMIN_USER_ID`（默认 `admin`），忽略客户端遗留的用户选择；
+部署仍应通过回环地址和 SSH 隧道访问。内部服务密钥校验保持启用。
+复用已有数据卷时继续使用该工作区的数据，其他旧用户的数据不删除、不自动合并。
+
+聊天回复跟随发送时的界面语言（中文/英文）；切换语言影响下一轮回复，不翻译历史消息。
+工具分析后的回答先给一句话结论，再展开依据和建议，末尾保留总结。
+
 iGraph 采用四个一级业务模块：Frontend、Backend、Agent Runtime 和 Graph Engine。
 Agent Runtime 使用开源 Agno AgentOS；Session、Run、Memory、Learning、Skills、Approval
 和 Trace 不再由 Backend 的进程内对象维护。

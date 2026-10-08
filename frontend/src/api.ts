@@ -7,6 +7,7 @@ import { currentLanguage, tr } from './i18n';
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
 export const USER_KEY = 'igraph_user_id';
+export const WORKSPACE_USER_ID = 'admin';
 
 export type CustomModel = {
   model_id: string;
@@ -103,14 +104,16 @@ export function modelErrorMessage(code?: string | null) {
   return code ? messages[code] || code : '';
 }
 
-export function getUserId() { return localStorage.getItem(USER_KEY) || ''; }
-export function setUserId(value: string) { localStorage.setItem(USER_KEY, value); }
+// A stable browser-storage namespace. The backend independently binds every
+// public request to the deployment owner; stale account selections are ignored.
+export function getUserId() { return WORKSPACE_USER_ID; }
+export function setUserId(_value: string) { /* Account selection is unavailable. */ }
 
 let requestAccount: { userId: string } | undefined;
 
 /** Bind requests to the account rendered by the mounted workspace. */
 export function bindRequestAccount(userId: string) {
-  const account = { userId };
+  const account = { userId: WORKSPACE_USER_ID };
   requestAccount = account;
   return () => { if (requestAccount === account) requestAccount = undefined; };
 }
@@ -118,16 +121,7 @@ export function bindRequestAccount(userId: string) {
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
-  if (!headers.has('X-User-ID')) {
-    const storedUserId = getUserId();
-    const userId = requestAccount?.userId ?? storedUserId;
-    // A storage event can arrive after a click. Never send the old workspace's
-    // content with an identity read from another tab; keep the header pinned.
-    if (userId !== storedUserId) {
-      throw new ApiError(409, tr('The account changed in another tab. Wait for it to sync, then try again.', '账户已在其他标签页切换，请等待同步后重试'), null, null, null, 'ACCOUNT_CHANGED');
-    }
-    if (userId) headers.set('X-User-ID', userId);
-  }
+  headers.set('X-User-ID', WORKSPACE_USER_ID);
   return fetch(`${API_BASE}${path}`, { ...options, headers });
 }
 
@@ -185,10 +179,8 @@ export class ApiError extends Error {
   }
 }
 
-export async function validateUser(userId: string) {
-  const data = await json<{ valid?: boolean; available_models?: string[]; default_model?: string }>('/api/auth/validate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-ID': userId },
-  });
+export async function validateUser(_userId?: string) {
+  const data = await json<{ valid?: boolean; available_models?: string[]; default_model?: string }>('/api/workspace');
   return data;
 }
 

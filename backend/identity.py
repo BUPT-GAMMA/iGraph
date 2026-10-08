@@ -9,6 +9,26 @@ from fastapi import HTTPException, Request
 from backend.users import UserDirectory, UserRecord
 
 
+class SingleUserMiddleware:
+    """Bind public API requests to the deployment owner, never a browser ID.
+
+    Internal service authentication and ownership headers remain unchanged.
+    This workspace is served through the deployment's loopback/SSH boundary.
+    """
+
+    def __init__(self, app, user_id: str):
+        self.app = app
+        self.user_id = user_id.encode("utf-8")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").startswith("/api/"):
+            scope = {**scope, "headers": [
+                (key, value) for key, value in scope.get("headers", [])
+                if key.lower() != b"x-user-id"
+            ] + [(b"x-user-id", self.user_id)]}
+        await self.app(scope, receive, send)
+
+
 def current_user(request: Request, users: UserDirectory) -> UserRecord:
     # Compatibility contract: the current frontend sends X-User-ID.  JWT can
     # be introduced at this boundary without changing Agent Runtime ownership.

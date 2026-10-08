@@ -79,58 +79,17 @@ describe('docked panel controls', () => {
     expect(screen.getByText('新建任务').closest('.sidebar-content')?.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('opens the login form from the signed-out avatar and dispatches input and submit callbacks', () => {
-    const onLoginValueChange = vi.fn();
-    const onLogin = vi.fn();
-    const { rerender } = render(<Sidebar
-      {...sidebarProps}
-      userId=""
-      loginValue=""
-      onLoginValueChange={onLoginValueChange}
-      onLogin={onLogin}
-      collapsed={false}
-      onCollapse={noop}
-    />);
-
-    expect(screen.queryByRole('dialog', { name: '账户' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '打开登录' }));
-    expect(screen.getByRole('dialog', { name: '账户' })).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'alice' } });
-    expect(onLoginValueChange).toHaveBeenCalledWith('alice');
-
-    rerender(<Sidebar
-      {...sidebarProps}
-      userId=""
-      loginValue="alice"
-      onLoginValueChange={onLoginValueChange}
-      onLogin={onLogin}
-      collapsed={false}
-      onCollapse={noop}
-    />);
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
-    expect(onLogin).toHaveBeenCalledOnce();
-  });
-
-  it('lets a signed-in user choose another account from the avatar menu', () => {
-    render(<Sidebar
-      {...sidebarProps}
-      userId="tester"
-      loginValue="tester"
-      collapsed={false}
-      onCollapse={noop}
-    />);
-
-    fireEvent.click(screen.getByRole('button', { name: '账户：tester' }));
-    expect(screen.getByText('当前账户')).toBeTruthy();
+  it('opens tasks without login and has no account or avatar controls', () => {
+    const onNew = vi.fn();
+    const { container } = render(<Sidebar {...sidebarProps} onNew={onNew} collapsed={false} onCollapse={noop} />);
+    expect(container.querySelector('.account-area, .avatar')).toBeNull();
+    expect(screen.queryByRole('button', { name: /登录|账户|Sign in|Account/ })).toBeNull();
     expect(screen.queryByLabelText('用户 ID')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
-    expect(screen.getByLabelText('用户 ID')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '取消' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
+    expect(screen.queryByText('tester')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    expect(onNew).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: '切换到英文' })).toBeTruthy();
   });
-
   it('highlights a selected conversation without highlighting its parent project', () => {
     const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
     const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '会话一' }];

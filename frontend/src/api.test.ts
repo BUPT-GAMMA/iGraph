@@ -19,56 +19,24 @@ function responseFromChunks(chunks: string[]) {
   }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-describe('authentication headers', () => {
-  it.each([
-    ['session creation', () => createSession({ initialMessagePreview: 'private draft' })],
-    ['chat', () => streamChat('A', 'private draft', [], {}, new AbortController().signal)],
-    ['session upload', () => uploadFile('A', new File(['private'], 'private.csv'))],
-    ['dataset upload', () => uploadProjectDataset(null, new File(['private'], 'private.csv'))],
-  ])('blocks %s before storage synchronization can run', async (_name, send) => {
-    unbindAccount = bindRequestAccount('account-a');
-    localStorage.setItem(USER_KEY, 'account-b');
-    const fetcher = vi.fn();
+describe('single-user workspace requests', () => {
+  it.each(['', 'old-user', 'another-user'])('ignores a cached account (%s)', async cached => {
+    localStorage.setItem(USER_KEY, cached);
+    unbindAccount = bindRequestAccount('stale-rendered-user');
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ session_id: 'A' })));
     vi.stubGlobal('fetch', fetcher);
-
-    await expect(send()).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
-    expect(fetcher).not.toHaveBeenCalled();
+    await createSession({ initialMessagePreview: 'draft' });
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('admin');
   });
 
-  it('blocks requests when another tab clears the account', async () => {
-    unbindAccount = bindRequestAccount('account-a');
-    const fetcher = vi.fn();
+  it('loads the workspace directly without a login request', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ valid: true })));
     vi.stubGlobal('fetch', fetcher);
-    await expect(createSession()).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
-    expect(fetcher).not.toHaveBeenCalled();
-  });
-
-  it('uses the rendered account after synchronization', async () => {
-    localStorage.setItem(USER_KEY, 'account-b');
-    unbindAccount = bindRequestAccount('account-b');
-    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ session_id: 'B' })));
-    vi.stubGlobal('fetch', fetcher);
-    await createSession({ initialMessagePreview: 'B draft' });
-    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('account-b');
-  });
-
-  it('preserves the explicit user being validated when another user is cached', async () => {
-    localStorage.setItem(USER_KEY, 'cached-user');
-    unbindAccount = bindRequestAccount('rendered-user');
-    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ valid: true }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }));
-    vi.stubGlobal('fetch', fetcher);
-
-    await validateUser('next-user');
-
-    expect(fetcher).toHaveBeenCalledOnce();
-    const headers = new Headers(fetcher.mock.calls[0][1]?.headers);
-    expect(headers.get('X-User-ID')).toBe('next-user');
+    await validateUser();
+    expect(fetcher.mock.calls[0][0]).toBe('/api/workspace');
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('Accept-Language')).toContain('zh');
   });
 });
-
 describe('SSE parser', () => {
   it('handles UTF-8 byte splits, CRLF across chunks, comments and multiline data', async () => {
     const bytes = new TextEncoder().encode(': heartbeat\r\ndata: {"type":"token",\r\ndata: "content":"中文🙂"}\r\n\r\n');

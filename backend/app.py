@@ -23,7 +23,7 @@ import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
-from workspace_storage import delete_user_workspaces, delete_workspace, visible_files, derived_file, save_upload
+from workspace_storage import delete_workspace, visible_files, derived_file, save_upload
 from runtime_observability import RequestLoggingMiddleware
 from response_language import resolve_response_language
 from starlette.background import BackgroundTask
@@ -39,13 +39,13 @@ from backend.construction import install_construction_routes, sync_record as syn
 from backend.constructed_import import install_constructed_import_routes
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, project_run, translate_sse
-from backend.identity import current_user, public_user, require_admin
+from backend.identity import current_user, SingleUserMiddleware
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
 from backend.projects import ProjectDirectory, ProjectRecord
 from backend.server_datasets import ServerDatasetDirectory, ServerDatasetRecord
 from backend.service_client import ServiceClient, forwarded_headers
 from backend.stream_recovery import close_observation, observation_events, wait_for_native_start
-from backend.users import UserDirectory, UserRecord
+from backend.users import SingleUserDirectory, UserRecord
 from execution_protocol import (CancelRequest, JobCancelRequest, Target, controls_enabled,
                                 execution_headers, require_service, service_headers,
                                 validate_service_configuration)
@@ -1362,7 +1362,7 @@ def _sse(payload: dict[str, Any]) -> str:
 
 def create_app(config: BackendConfig | None = None) -> FastAPI:
     settings = config or BackendConfig.from_env()
-    users = UserDirectory(
+    users = SingleUserDirectory(
         settings.users_file,
         settings.supported_ids_file,
         settings.admin_user_id,
@@ -1607,6 +1607,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             json_body={"user_id": user.user_id, **payload},
         )
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(SingleUserMiddleware, user_id=settings.admin_user_id)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -1621,16 +1622,15 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     def health():
         return {"status": "ok", "module": "backend"}
 
-    @app.post("/api/auth/validate")
+    @app.get("/api/workspace")
+    @app.post("/api/auth/validate", include_in_schema=False)
     async def validate(request: Request):
-        user_id = request.headers.get("X-User-ID", "").strip()
-        record = users.get(user_id)
-        if not record or not record.enabled:
-            return {"valid": False, "reason": "user_not_supported" if user_id else "missing_user_id"}
+        record = current_user(request, users)
         models = await available_models_for(record)
         default = (await model_catalog_for(record))['default_model'] if controls_enabled() else (models[0] if models else '')
         return {
             "valid": True,
+            "single_user": True,
             "user_id": record.user_id,
             "is_admin": "admin" in record.roles,
             "available_models": models,
@@ -1763,62 +1763,6 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=service_headers(user.user_id), params={'revision': revision})
         custom_models.delete(user.user_id, config_id)
         return result
-
-    @app.get("/api/admin/users")
-    def list_users(request: Request):
-        require_admin(request, users)
-        return {"success": True, "users": [public_user(item) for item in users.list()]}
-
-    @app.post("/api/admin/users")
-    def save_user(req: UserWriteReq, request: Request):
-        require_admin(request, users)
-        record = users.save(UserRecord(**req.model_dump()))
-        return {"success": True, "user": public_user(record)}
-
-    @app.delete("/api/admin/users/{user_id}")
-    async def delete_user(user_id: str, request: Request):
-        require_admin(request, users)
-        if user_id == settings.admin_user_id:
-            raise HTTPException(status_code=400, detail="不能删除主管理员")
-        headers = forwarded_headers(request, user_id)
-        sessions_payload = await runtime.request(
-            "GET",
-            "/sessions",
-            headers=headers,
-            params={"type": "agent", "component_id": settings.agent_id, "user_id": user_id, "limit": 1000},
-        )
-        for session in _data_rows(sessions_payload):
-            session_id = str(session.get("session_id") or "") if isinstance(session, dict) else ""
-            if not session_id:
-                continue
-            try:
-                await graph.request("DELETE", f"/sessions/{session_id}", headers=headers)
-            except HTTPException as exc:
-                if exc.status_code != 404:
-                    raise
-            await runtime.request(
-                "DELETE", f"/sessions/{session_id}", headers=headers,
-                params={"type": "agent", "user_id": user_id},
-            )
-        memories = await runtime.request("GET", "/memories", headers=headers, params={"user_id": user_id, "limit": 1000})
-        for memory in _data_rows(memories):
-            memory_id = str(memory.get("memory_id") or "") if isinstance(memory, dict) else ""
-            if memory_id:
-                await runtime.request("DELETE", f"/memories/{memory_id}", headers=headers, params={"user_id": user_id})
-        await runtime.request("DELETE", f"/internal/skills/users/{user_id}/all", headers=headers)
-        await runtime.request('DELETE', '/internal/model-catalog/user/all', headers=service_headers(user_id))
-        for item in custom_models.list(user_id):
-            custom_models.delete(user_id, item.model_id)
-        for item in project_datasets._load().values():
-            if item.user_id == user_id and "construction" in item.metadata:
-                await graph.request("DELETE", f"/construction/{item.dataset_id}", headers={**service_headers(user_id), **scope_headers(item.project_id)})
-        project_datasets.delete_user(user_id)
-        projects.delete_user(user_id)
-        try:
-            await asyncio.to_thread(delete_user_workspaces, user_id)
-        except Exception:
-            logging.getLogger(__name__).warning('user_workspace_cleanup_failed user_id=%s', user_id, exc_info=True)
-        return {"success": users.delete(user_id), "user_id": user_id}
 
     async def get_session(session_id: str, request: Request, user_id: str) -> dict:
         payload = await runtime.request(
@@ -4338,7 +4282,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         }
         factory_options = {
             **options,
-            "response_language": resolve_response_language(req.message),
+            "response_language": resolve_response_language(req.message, request.headers.get("Accept-Language")),
         }
         project_id = session_project_id(session, user.user_id)
         training_payload = await project_training_runs(project_id, request, current_session_id=session_id)
