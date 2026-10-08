@@ -395,7 +395,7 @@ export function getConstructionModelSettings(signal?: AbortSignal) {
   return json<ConstructionModelSettings>('/api/construction-model-settings', { signal });
 }
 export function saveConstructionModelSettings(settings: { model: string; base_url: string; api_key: string; clear_api_key: boolean }) {
-  return json<ConstructionModelSettings>('/api/construction-model-settings', { method: 'POST', body: JSON.stringify(settings) });
+  return json<ConstructionModelSettings>('/api/construction-model-settings', modelJson('POST', settings));
 }
 export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionState>(constructionUrl(dataset), { signal });
