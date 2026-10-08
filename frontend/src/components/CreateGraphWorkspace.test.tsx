@@ -1,6 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { UserCase } from '../userCases';
 import type { Dataset } from '../types';
 
 const mocks = vi.hoisted(() => ({ state: vi.fn() }));
@@ -121,22 +120,4 @@ describe('create graph workspace', () => {
       columns: ['customer_id'], ref_table: 'customers', ref_columns: ['customer_id'],
     }]);
   });
-});
-
-it('lists both installed examples in My graph sources and opens the selected example or question', () => {
-  const onSelectUserCase = vi.fn();
-  const cases: UserCase[] = [
-    { id: 'finance', name: '金融股权示例', filename: 'finance-ownership.npz', description: '已构好的金融图', questions: ['检查股权数据质量'], available: true },
-    { id: 'tianlongbabu', name: '天龙八部人物关系示例', filename: 'tianlongbabu-characters.npz', description: '已构好的人物图', questions: ['展示主要人物关系'], available: true },
-  ];
-  render(<CreateGraphWorkspace datasets={[]} userCases={cases} onSelectUserCase={onSelectUserCase} onUpload={vi.fn()} onConstruct={vi.fn()} />);
-  const sources = screen.getByRole('region', { name: '我的构图数据源' });
-  expect(sources.textContent).toContain('金融股权示例');
-  expect(sources.textContent).toContain('天龙八部人物关系示例');
-  expect(sources.textContent).toContain('2 个可用');
-  expect(screen.queryByText('还没有可构图的数据源')).toBeNull();
-  fireEvent.click(screen.getAllByRole('button', { name: '使用示例图' })[0]);
-  expect(onSelectUserCase).toHaveBeenLastCalledWith('finance');
-  fireEvent.click(screen.getByRole('button', { name: '展示主要人物关系' }));
-  expect(onSelectUserCase).toHaveBeenLastCalledWith('tianlongbabu', '展示主要人物关系');
 });

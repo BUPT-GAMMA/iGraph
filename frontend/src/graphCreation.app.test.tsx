@@ -4,6 +4,7 @@ import type { ConstructionState, Dataset } from './types';
 
 const mocks = vi.hoisted(() => ({
   listDatasets: vi.fn(),
+  getUserCases: vi.fn(),
   uploadDataset: vi.fn(),
   deleteDataset: vi.fn(),
 }));
@@ -22,6 +23,7 @@ vi.mock('./api', async () => ({
   listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
   listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
   getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true }),
+  getUserCases: mocks.getUserCases,
   listProjectDatasets: mocks.listDatasets,
   uploadProjectDataset: mocks.uploadDataset,
   deleteProjectDataset: mocks.deleteDataset,
@@ -33,6 +35,10 @@ const source: Dataset = { dataset_id: 'source-1', project_id: null, name: '订�
 
 beforeEach(() => {
   localStorage.clear(); sessionStorage.clear(); window.history.replaceState({}, '', '/');
+  mocks.getUserCases.mockReset().mockResolvedValue({ cases: [
+    { id: 'finance', name: '金融股权示例', filename: 'finance-ownership.npz', description: '已构好的金融图', questions: ['检查股权数据质量'], available: true },
+    { id: 'tianlongbabu', name: '天龙八部人物关系示例', filename: 'tianlongbabu-characters.npz', description: '已构好的人物图', questions: ['展示主要人物关系'], available: true },
+  ] });
   mocks.listDatasets.mockReset().mockResolvedValue({ datasets: [source], default_dataset_id: null });
   mocks.uploadDataset.mockReset().mockResolvedValue({ dataset: source, default_dataset_id: null });
   mocks.deleteDataset.mockReset().mockResolvedValue({ success: true });
@@ -40,6 +46,26 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('actual App graph creation destination', () => {
+  it('shows examples on the home and new-task pages while keeping My graph sources for datasets only', async () => {
+    render(<App />);
+    await screen.findByRole('heading', { name: '金融股权示例' });
+    expect(screen.getByRole('heading', { name: '天龙八部人物关系示例' })).toBeTruthy();
+
+    fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
+    await screen.findByRole('heading', { name: '开始图分析' });
+    expect(window.location.search).toBe('?new=1');
+    expect(screen.getByRole('heading', { name: '金融股权示例' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '天龙八部人物关系示例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '展示主要人物关系' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '创建你的图' }));
+    await screen.findByRole('button', { name: '构图 订单关系' });
+    expect(screen.getByText('1 个可用')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: '金融股权示例' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '天龙八部人物关系示例' })).toBeNull();
+    expect(screen.queryByRole('region', { name: '示例图分析' })).toBeNull();
+  });
+
   it('confirms deletion, sends it once, and removes only the chosen construction source', async () => {
     const other = { ...source, dataset_id: 'source-2', name: '保留的数据集' };
     mocks.listDatasets.mockResolvedValue({ datasets: [source, other] });
