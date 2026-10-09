@@ -39,7 +39,7 @@ export type ModelCatalog = { models: ModelConfiguration[]; default_model: string
 export const listModels = () => json<ModelCatalog>('/api/models');
 
 export type ContextWindowUsage = {
-  basis: 'last_request_estimate'; config_id: string; model_revision?: number | null;
+  basis: 'last_request_estimate' | 'provider_usage'; config_id: string; model_revision?: number | null;
   context_window: number; input_tokens: number; tool_tokens: number;
   output_reserve: number; safety_reserve: number; remaining_tokens: number;
   remaining_ratio: number; history_compacted: boolean; updated_at: number;

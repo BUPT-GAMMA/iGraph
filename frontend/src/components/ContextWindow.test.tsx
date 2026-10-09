@@ -50,3 +50,11 @@ it('does not show zero or an old value after a request failure', async () => {
   await screen.findByText('用量暂不可用');
   expect(screen.queryByRole('meter')).toBeNull();
 });
+
+it.each(['zh', 'en'] as const)('identifies provider-reported input in %s', async language => {
+  vi.mocked(getContextWindow).mockResolvedValue({ context_window_usage: { ...usage, basis: 'provider_usage', input_tokens: 7500, remaining_tokens: 500 } });
+  render(<I18nProvider initialLanguage={language}><ContextWindow sessionId="A" model={model} loading={false} /></I18nProvider>);
+  await waitFor(() => expect(screen.getByRole('meter').getAttribute('value')).toBe('500'));
+  expect(screen.getByText(language === 'zh' ? /按接口返回的最近一次请求输入用量计算/ : /Calculated from the provider/)).toBeTruthy();
+  expect(screen.getByText(language === 'zh' ? '工具定义（估算）' : 'Tool definitions (estimated)')).toBeTruthy();
+});
