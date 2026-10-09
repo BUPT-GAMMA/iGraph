@@ -31,6 +31,7 @@ describe('actual App help destination', () => {
     fireEvent.click(entry);
     expect(await screen.findByRole('heading', { name: '帮助与能力清单' })).toBeTruthy();
     expect(screen.getByRole('dialog', { name: '帮助与能力清单' })).toBeTruthy();
+    expect(screen.getByRole('tabpanel', { name: '使用流程' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: '开始新的图分析' })).toBeTruthy();
     expect(entry.getAttribute('aria-current')).toBe('page');
     expect(window.location.search).toBe('');
@@ -45,6 +46,7 @@ describe('actual App help destination', () => {
     render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
     expect(await screen.findByRole('heading', { name: 'Help & capabilities' })).toBeTruthy();
     expect(screen.getByRole('dialog', { name: 'Help & capabilities' })).toBeTruthy();
+    expect(screen.getByRole('tabpanel', { name: 'Usage pipeline' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Help' }).getAttribute('aria-current')).toBe('page');
     window.history.replaceState({}, '', '/');
     fireEvent.popState(window);
