@@ -5,7 +5,7 @@ import { getConstructionState } from '../api';
 import { useI18n } from '../i18n';
 import type { Translate } from '../i18n';
 import type { ConstructionState, CsvBundleSchema, Dataset } from '../types';
-import { constructionStatus, supportsConstruction } from '../construction';
+import { constructionStatus, isPtGraph, supportsConstruction } from '../construction';
 import { Icon } from './Icon';
 import { CsvBundleDialog } from './CsvBundleDialog';
 
@@ -14,6 +14,7 @@ type Props = {
   busy?: boolean;
   onUpload: (file: File | File[], schema?: CsvBundleSchema, name?: string) => void;
   onConstruct: (dataset: Dataset) => void;
+  onAnalyze?: (dataset: Dataset) => void;
   onDelete?: (dataset: Dataset) => void;
   onStateChange?: (dataset: Dataset, state: ConstructionState) => void;
 };
@@ -35,6 +36,13 @@ function sourceSummary(dataset: Dataset, t: Translate, formatNumber: (value: num
   const status = constructionStatus(dataset);
   const nodes = Number(dataset.metadata?.num_nodes);
   const edges = Number(dataset.metadata?.num_edges);
+  if (isPtGraph(dataset)) {
+    if (dataset.status === 'failed' || dataset.status === 'error') return t('Unable to load this PT graph. Check the file format and upload it again.', 'PT 图加载失败，请检查文件格式后重新上传。');
+    if (dataset.status !== 'ready') return t('The PT graph is being prepared.', 'PT 图正在准备中。');
+    return Number.isFinite(nodes) && Number.isFinite(edges)
+      ? t(`PT graph · ${formatNumber(nodes)} nodes · ${formatNumber(edges)} edges`, `PT 图 · ${formatNumber(nodes)} 个节点 · ${formatNumber(edges)} 条边`)
+      : t('PT file uploaded · Graph structure is checked when loaded for analysis.', 'PT 文件已上传 · 开始分析时加载并校验图结构。');
+  }
   if (status === 'building' || status === 'processing') return t('Graph construction is in progress. Reopen it to view progress.', '构图处理中，可重新进入查看进度');
   if (status === 'draft') return t('Graph draft ready. Save it before starting analysis.', '构图草稿已生成，保存后即可分析');
   if (status === 'failed' || status === 'error') return t('The previous graph construction failed. The source file is still available.', '上次构图失败，源文件仍已保留');
@@ -50,7 +58,7 @@ function sourceType(dataset: Dataset) {
   return (dataset.file_type || dataset.original_filename.split('.').pop() || 'FILE').replace(/^\./, '').toUpperCase();
 }
 
-export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConstruct, onDelete, onStateChange }: Props) {
+export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConstruct, onAnalyze, onDelete, onStateChange }: Props) {
   const { language, t } = useI18n();
   const labels = useExampleLabels();
   const formatNumber = (value: number) => value.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US');
@@ -59,8 +67,8 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
   const [selectionError, setSelectionError] = useState('');
   const stateCallback = useRef(onStateChange);
   stateCallback.current = onStateChange;
-  const constructible = datasets.filter(supportsConstruction);
-  const monitored = constructible.filter(dataset => ['building', 'processing'].includes(constructionStatus(dataset)));
+  const sources = datasets.filter(dataset => supportsConstruction(dataset) || isPtGraph(dataset));
+  const monitored = sources.filter(dataset => !isPtGraph(dataset) && ['building', 'processing'].includes(constructionStatus(dataset)));
   const monitorSignature = monitored.map(dataset => `${dataset.project_id || 'personal'}:${dataset.dataset_id}`).sort().join('|');
 
   useEffect(() => {
@@ -82,6 +90,9 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
   function selected(files: FileList | null) {
     const chosen = Array.from(files || []);
     if (!chosen.length) return;
+    if (chosen.some(file => !/\.(sql|csv|txt|pt)$/i.test(file.name))) {
+      setSelectionError(t('Choose a SQL, CSV, TXT, or PT file.', '请选择 SQL、CSV、TXT 或 PT 文件。')); return;
+    }
     if (chosen.length === 1 && !chosen[0].name.toLowerCase().endsWith('.csv')) {
       setSelectionError(''); onUpload(chosen[0]); return;
     }
@@ -97,7 +108,7 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
         <span className="context-icon"><Icon name="graph" size={23} /></span>
         <div><h1>{t('Graph Construction Workspace', '构图工作台')}</h1></div>
       </div>
-      <input ref={inputRef} type="file" hidden multiple accept=".sql,.csv,.txt" onChange={event => { selected(event.currentTarget.files); event.currentTarget.value = ''; }} />
+      <input ref={inputRef} type="file" hidden multiple accept=".sql,.csv,.txt,.pt" onChange={event => { selected(event.currentTarget.files); event.currentTarget.value = ''; }} />
       <button className="primary-command create-graph-upload-button" onClick={chooseFile} disabled={busy}><Icon name="upload" size={16} /> {t('Upload source', '上传数据源')}</button>
     </header>
 
@@ -111,28 +122,30 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
         <div className="create-graph-flow" aria-label={t('Graph construction workflow', '构图流程')}>
           <div className="create-graph-step">
             <div className="create-graph-step-head"><span>01</span><span className="create-graph-step-icon"><Icon name="file" size={20} /></span></div>
-            <div className="create-graph-step-copy"><strong>{t('Add a data source', '添加数据源')}</strong><small>SQL / CSV / TXT</small></div>
+            <div className="create-graph-step-copy"><strong>{t('Add a data source', '添加数据源')}</strong><small>SQL / CSV / TXT / PT</small></div>
           </div>
           <span className="create-graph-flow-arrow" aria-hidden="true"><Icon name="arrow-right" size={16} /></span>
           <div className="create-graph-step">
             <div className="create-graph-step-head"><span>02</span><span className="create-graph-step-icon"><Icon name="graph" size={20} /></span></div>
-            <div className="create-graph-step-copy"><strong>{t('Generate and validate', '生成并验证')}</strong></div>
+            <div className="create-graph-step-copy"><strong>{t('Build or load a graph', '构图或载入现成图')}</strong></div>
           </div>
           <span className="create-graph-flow-arrow" aria-hidden="true"><Icon name="arrow-right" size={16} /></span>
           <div className="create-graph-step">
             <div className="create-graph-step-head"><span>03</span><span className="create-graph-step-icon"><Icon name="check" size={20} /></span></div>
-            <div className="create-graph-step-copy"><strong>{t('Save and optimize', '保存与优化')}</strong></div>
+            <div className="create-graph-step-copy"><strong>{t('Select and analyze', '选择图并分析')}</strong></div>
           </div>
         </div>
       </section>
 
       <section className="create-graph-sources" aria-labelledby="create-graph-sources-title">
-        <div className="create-graph-section-head"><div><h2 id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2></div><span>{t(`${formatNumber(constructible.length)} available`, `${formatNumber(constructible.length)} 个可用`)}</span></div>
-        {constructible.length ? <div className="create-graph-source-grid">{constructible.map(dataset => <article className="create-graph-source-card" key={dataset.dataset_id}>
+        <div className="create-graph-section-head"><div><h2 id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2></div><span>{t(`${formatNumber(sources.length)} available`, `${formatNumber(sources.length)} 个可用`)}</span></div>
+        {sources.length ? <div className="create-graph-source-grid">{sources.map(dataset => <article className="create-graph-source-card" key={dataset.dataset_id}>
           <div className="create-graph-source-icon"><Icon name="database" size={20} /></div>
           <div className="create-graph-source-copy"><div><strong title={labels.name(dataset.name)}>{labels.name(dataset.name)}</strong><span>{sourceType(dataset)}</span></div><p>{sourceSummary(dataset, t, formatNumber)}</p>{dataset.description && <p title={labels.description(dataset.description)}>{labels.description(dataset.description)}</p>}</div>
           <div className="create-graph-source-actions">
-            <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${labels.name(dataset.name)}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>
+            {isPtGraph(dataset)
+              ? <button className="secondary-command" onClick={() => onAnalyze?.(dataset)} disabled={busy || dataset.status !== 'ready' || !onAnalyze} aria-label={t(`Start analysis ${labels.name(dataset.name)}`, `开始分析 ${labels.name(dataset.name)}`)}>{t('Start analysis', '开始分析')} <Icon name="arrow-right" size={14} /></button>
+              : <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${labels.name(dataset.name)}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>}
             {onDelete && <button className="plain-icon create-graph-delete" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete dataset', '删除数据集')} aria-label={t(`Delete dataset ${labels.name(dataset.name)}`, `删除数据集 ${labels.name(dataset.name)}`)}><Icon name="trash" size={16} /></button>}
           </div>
         </article>)}</div> : <div className="create-graph-empty">

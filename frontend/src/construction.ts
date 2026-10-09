@@ -18,6 +18,10 @@ export function supportsConstruction(dataset: Dataset) {
   return ['sql', 'csv', 'txt'].includes(extension) || Boolean(dataset.metadata?.construction);
 }
 
+export function isPtGraph(dataset: Dataset) {
+  return (dataset.file_type || dataset.original_filename.split('.').pop() || '').toLowerCase().replace(/^\./, '') === 'pt';
+}
+
 export function constructionLabel(dataset: Dataset) {
   const construction = constructionMetadata(dataset);
   const status = constructionStatus(dataset);

@@ -121,4 +121,15 @@ describe('HelpPage', () => {
     expect(screen.getByRole('button', { name: /CSV 单表或多表/ }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByText(/检查连通分量与孤立记录/)).toBeTruthy();
   });
+
+  it.each(['zh', 'en'] as const)('explains the direct PT import workflow without construction steps in %s', language => {
+    render(<I18nProvider initialLanguage={language}><HelpPage /></I18nProvider>);
+    fireEvent.click(screen.getByRole('button', { name: language === 'zh' ? 'PT 现成图文件' : 'PT Ready-made graph' }));
+    const panel = screen.getByRole('tabpanel');
+    expect(within(panel).getByRole('list', { name: language === 'zh' ? 'PT 到图分析的操作步骤' : 'PT to graph analysis' }).children).toHaveLength(4);
+    expect(within(panel).getByText(language === 'zh' ? /PT 导入不产生构图草稿/ : /PT imports do not produce a construction draft/)).toBeTruthy();
+    expect(within(panel).getByText(language === 'zh' ? /在 PT 数据源卡片点击/ : /Click “Start analysis” on the PT source card/)).toBeTruthy();
+    expect(within(panel).queryByRole('heading', { name: language === 'zh' ? '开始构图并查看进度' : 'Start construction and monitor progress' })).toBeNull();
+    if (language === 'en') expect(panel.textContent).not.toMatch(/[\u3400-\u9fff]/);
+  });
 });

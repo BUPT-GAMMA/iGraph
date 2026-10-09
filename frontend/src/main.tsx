@@ -26,7 +26,7 @@ import { ChatPane } from './components/ChatPane';
 import { GraphWorkspace } from './components/GraphWorkspace';
 import { GraphConstructionPanel } from './components/GraphConstructionPanel';
 import { CreateGraphWorkspace } from './components/CreateGraphWorkspace';
-import { constructionLabel, supportsConstruction } from './construction';
+import { constructionLabel, isPtGraph, supportsConstruction } from './construction';
 import { BrandLogo, Icon } from './components/Icon';
 import { ManagementPanel } from './components/ManagementPanel';
 import { DeleteProjectDialog, ProjectDialog } from './components/ProjectDialogs';
@@ -1938,8 +1938,9 @@ function App() {
         ...current.filter(item => item.dataset_id !== response.dataset.dataset_id),
         response.dataset,
       ]);
-      if (supportsConstruction(response.dataset)) openConstruction(response.dataset);
-      else setWorkspaceError(tr('The file was saved, but its format cannot be used to construct a graph. Upload a SQL, CSV, or TXT file.', '此文件已保存，但当前格式不能用于构图。请上传 SQL、CSV 或 TXT 文件。'));
+      if (isPtGraph(response.dataset)) setConstructionDataset(null);
+      else if (supportsConstruction(response.dataset)) openConstruction(response.dataset);
+      else setWorkspaceError(tr('The file was saved, but this workspace supports SQL, CSV, TXT, or PT files.', '此文件已保存，但此工作台仅支持 SQL、CSV、TXT 或 PT 文件。'));
     } catch (cause: any) {
       if (identityRef.current === identity) setWorkspaceError(cause.message || tr('Could not upload the graph-construction source', '构图数据源上传失败'));
     } finally {
@@ -1967,6 +1968,12 @@ function App() {
   function openConstruction(dataset: Dataset) {
     setDatasetOpen(false);
     setConstructionDataset(dataset);
+  }
+  function analyzeSourceGraph(dataset: Dataset) {
+    if (busy || dataset.status !== 'ready' || !isPtGraph(dataset)) return;
+    const draft = newTask(dataset.project_id);
+    if (draft) dispatchConversation({ type: 'PATCH_DRAFT', projectId: draft.projectId, draftId: draft.draftId,
+      patch: { activeDatasetId: dataset.dataset_id, phase: 'editing', error: undefined } });
   }
   function constructionStateUpdated(dataset: Dataset, state: ConstructionState) {
     const merge = (item: Dataset): Dataset => {
@@ -2095,7 +2102,7 @@ function App() {
           {workspaceError && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {workspaceError}</div>}
           {constructionDataset
             ? <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} embedded onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} />
-            : <CreateGraphWorkspace datasets={datasetsByProject[draftScopeKey(null)] || []} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onDelete={removeDataset} onStateChange={constructionStateUpdated} />}
+            : <CreateGraphWorkspace datasets={datasetsByProject[draftScopeKey(null)] || []} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onAnalyze={analyzeSourceGraph} onDelete={removeDataset} onStateChange={constructionStateUpdated} />}
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
           {modelNotice?.sessionId === activeSession?.session_id && modelNotice && <div className="model-switch-notice" role="status">{t(`Next message: ${modelNotice.name}`, `下一条消息将使用：${modelNotice.name}`)}<button className="plain-icon" onClick={() => setModelNotice(null)} aria-label={t('Dismiss model notice', '关闭模型切换提示')}><Icon name="close" size={12} /></button></div>}
