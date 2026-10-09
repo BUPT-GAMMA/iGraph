@@ -151,19 +151,39 @@ def prepare_history(messages, *, tools=None, context_window=32768, output_tokens
 
 
 class ModelHistoryMixin:
-    def _record_context_usage(self, messages, tools, settings, run_response, *, compacted=False):
+    @staticmethod
+    def _publish_context_usage(usage, run_response):
         from agent_runtime.execution_scope import current_scope
-        usage = context_window_usage(messages, tools, settings, compacted=compacted)
-        snapshot = (getattr(run_response, 'metadata', None) or {}).get('model_snapshot') or {}
-        usage.update(config_id=snapshot.get('config_id') or settings.get('model_id') or self.id,
-                     model_revision=snapshot.get('revision'))
         if run_response is not None:
             run_response.metadata = {**(run_response.metadata or {}), 'context_window_usage': usage}
         scope = current_scope.get()
         if scope is not None and run_response is not None and getattr(run_response, 'run_id', scope.run_id) == scope.run_id:
-            # The scope is run-owned, removed on completion, and never stores
-            # credentials or message content in the public usage snapshot.
             scope.context_window_usage = usage
+
+    def _record_context_usage(self, messages, tools, settings, run_response, *, compacted=False):
+        usage = context_window_usage(messages, tools, settings, compacted=compacted)
+        snapshot = (getattr(run_response, 'metadata', None) or {}).get('model_snapshot') or {}
+        usage.update(config_id=snapshot.get('config_id') or settings.get('model_id') or self.id,
+                     model_revision=snapshot.get('revision'))
+        self._publish_context_usage(usage, run_response)
+
+    def _record_provider_context_usage(self, response, run_response):
+        # Each response reports one request, never the cumulative run metrics.
+        # Providers may omit usage or send output-only stream deltas; keep the
+        # estimate (or preceding input report) in those cases.
+        metrics = getattr(response, 'response_usage', None)
+        tokens = getattr(metrics, 'input_tokens', 0) or 0
+        if getattr(self, 'igraph_protocol', '') == 'anthropic':
+            tokens += (getattr(metrics, 'cache_read_tokens', 0) or 0) + (getattr(metrics, 'cache_write_tokens', 0) or 0)
+        if not isinstance(tokens, (int, float)) or not math.isfinite(tokens) or tokens <= 0:
+            return
+        usage = (getattr(run_response, 'metadata', None) or {}).get('context_window_usage')
+        if not usage:
+            return
+        usage = {**usage, 'basis': 'provider_usage', 'input_tokens': int(tokens), 'updated_at': time.time()}
+        usage['remaining_tokens'] = max(0, usage['context_window'] - usage['input_tokens'] - usage['output_reserve'] - usage['safety_reserve'])
+        usage['remaining_ratio'] = usage['remaining_tokens'] / usage['context_window']
+        self._publish_context_usage(usage, run_response)
 
     def _prepare_history(self, messages, tools, run_response):
         settings = getattr(self, 'igraph_capabilities', None)
@@ -184,19 +204,26 @@ class ModelHistoryMixin:
 
     async def ainvoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         prepared = self._prepare_history(messages, tools, run_response)
-        return await super().ainvoke(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
+        response = await super().ainvoke(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
+        self._record_provider_context_usage(response, run_response)
+        return response
 
     async def ainvoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         prepared = self._prepare_history(messages, tools, run_response)
         async with aclosing(super().ainvoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)) as iterator:
             async for event in iterator:
+                self._record_provider_context_usage(event, run_response)
                 yield event
 
     def invoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
-        return super().invoke(self._prepare_history(messages, tools, run_response), assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
+        response = super().invoke(self._prepare_history(messages, tools, run_response), assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
+        self._record_provider_context_usage(response, run_response)
+        return response
 
     def invoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
-        yield from super().invoke_stream(self._prepare_history(messages, tools, run_response), assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
+        for event in super().invoke_stream(self._prepare_history(messages, tools, run_response), assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs):
+            self._record_provider_context_usage(event, run_response)
+            yield event
 
     def _stamp_provider_state(self, response):
         item = response[0] if isinstance(response, tuple) else response

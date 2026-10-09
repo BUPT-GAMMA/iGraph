@@ -93,18 +93,59 @@ async def test_native_agno_request_uses_upstream_id_and_strips_foreign_fields(mo
     def respond(req):
         captures.append(json.loads(req.content))
         return httpx.Response(200, json={'id': 'chatcmpl-test', 'object': 'chat.completion', 'created': 1,
-            'model': 'upstream-b', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'OK'}, 'finish_reason': 'stop'}]})
+            'model': 'upstream-b', 'usage': {'prompt_tokens': 7000, 'completion_tokens': 10, 'total_tokens': 7010},
+            'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'OK'}, 'finish_reason': 'stop'}]})
     config = dict(model_id='custom-test', upstream_model_id='upstream-b', base_url='http://example.test/v1',
         api_key='', allow_anonymous=True, context_window=32768, max_output_tokens=1024, vision=False)
     model = create_model('custom-test', SimpleNamespace(), config)
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         model.async_client = AsyncOpenAI(api_key='local', base_url=config['base_url'], http_client=client)
         messages = [Message(role='user', content='old question'), Message(role='assistant', content='old answer', reasoning_content='DO NOT TRANSMIT'), Message(role='user', content='new question')]
-        result = await model.ainvoke(messages, Message(role='assistant'))
+        run = SimpleNamespace(metadata={})
+        result = await model.ainvoke(messages, Message(role='assistant'), run_response=run)
     assert result.content == 'OK'
     assert captures[0]['model'] == 'upstream-b' and captures[0]['max_tokens'] == 1024
     assert 'DO NOT TRANSMIT' not in json.dumps(captures)
     assert len(captures[0]['messages']) == 3
+    assert run.metadata['context_window_usage']['basis'] == 'provider_usage'
+    assert run.metadata['context_window_usage']['input_tokens'] == 7000
+
+
+@pytest.mark.anyio
+async def test_stream_usage_replaces_estimate_and_never_accumulates_or_overwrites_another_run():
+    from agent_runtime.execution_scope import RunScope, current_scope
+    from agno.metrics import MessageMetrics
+    from agno.models.response import ModelResponse
+    class Provider:
+        async def ainvoke_stream(self, *args, **kwargs):
+            yield ModelResponse(response_usage=MessageMetrics(input_tokens=7500, cache_read_tokens=1000))
+            yield ModelResponse(response_usage=MessageMetrics(input_tokens=7500, cache_read_tokens=1000))
+            yield ModelResponse(response_usage=MessageMetrics(output_tokens=100))
+    class Model(ModelHistoryMixin, Provider):
+        id = 'test'
+        igraph_protocol = 'anthropic'
+        igraph_capabilities = dict(model_id='test', context_window=10000, max_output_tokens=1000, vision=False)
+    model = Model()
+    scope = RunScope('primary', 'admin', 'session-a', 1)
+    token = current_scope.set(scope)
+    try:
+        primary = SimpleNamespace(metadata={}, run_id='primary')
+        async for _ in model.ainvoke_stream([Message(role='user', content='test')], Message(role='assistant'), run_response=primary):
+            pass
+        usage = primary.metadata['context_window_usage']
+        assert usage['input_tokens'] == 8500  # Includes cached context, not repeated stream usage.
+        assert usage['remaining_tokens'] == 0
+        assert usage['basis'] == 'provider_usage'
+        assert scope.context_window_usage == usage
+        background = SimpleNamespace(metadata={}, run_id='learning')
+        model._prepare_history([Message(role='user', content='background')], [], background)
+        model._record_provider_context_usage(ModelResponse(response_usage=MessageMetrics(input_tokens=100)), background)
+        assert background.metadata['context_window_usage']['input_tokens'] == 100
+        assert scope.context_window_usage == usage
+        model._record_provider_context_usage(ModelResponse(), primary)
+        assert primary.metadata['context_window_usage'] == usage
+    finally:
+        current_scope.reset(token)
 
 
 @pytest.mark.parametrize('protocol', ['openai-responses', 'anthropic', 'gemini'])

@@ -28,7 +28,7 @@ export function ContextWindow({ sessionId, model, loading }: { sessionId?: strin
   }, [identity, loading]);
 
   const candidate = state.identity === identity ? state.usage : null;
-  const usage = candidate?.basis === 'last_request_estimate' && candidate.config_id === model?.config_id
+  const usage = candidate && ['last_request_estimate', 'provider_usage'].includes(candidate.basis) && candidate.config_id === model?.config_id
     && (candidate.model_revision == null || candidate.model_revision === model.revision)
     && candidate.context_window === model?.context_window
     && [candidate.context_window, candidate.remaining_tokens, candidate.input_tokens, candidate.output_reserve, candidate.safety_reserve, candidate.tool_tokens].every(value => Number.isFinite(value) && value >= 0)
@@ -45,11 +45,13 @@ export function ContextWindow({ sessionId, model, loading }: { sessionId?: strin
       {usage && <meter min={0} max={usage.context_window} value={remaining} aria-label={t('Remaining context tokens', '剩余上下文 Token')} />}
     </summary>
     <div className="context-window-details">
-      <p>{t('Estimated from the latest model request, including conversation, system instructions and tools. Output space and a safety margin are reserved. This is not cumulative billing usage; the unsent draft is not included.', '按最近一次模型请求估算，包含对话、系统指令及工具，已预留回复空间和安全余量。此值不是累计计费用量，也不包含尚未发送的草稿。')}</p>
+      <p>{usage?.basis === 'provider_usage'
+        ? t('Calculated from the provider’s reported input for the latest request, including conversation, system instructions and tools. Output space and a safety margin are reserved. This is not cumulative billing usage; the unsent draft is not included.', '按接口返回的最近一次请求输入用量计算，包含对话、系统指令及工具，已预留回复空间和安全余量。此值不是累计计费用量，也不包含尚未发送的草稿。')
+        : t('Estimated from the latest model request, including conversation, system instructions and tools. Output space and a safety margin are reserved. This is not cumulative billing usage; the unsent draft is not included.', '按最近一次模型请求估算，包含对话、系统指令及工具，已预留回复空间和安全余量。此值不是累计计费用量，也不包含尚未发送的草稿。')}</p>
       {model && <p>{t('Configured window', '配置的窗口')}：{format(model.context_window)} tokens</p>}
       {usage ? <dl>
         <div><dt>{t('Request input (includes tools)', '请求输入（含工具）')}</dt><dd>{format(usage.input_tokens)}</dd></div>
-        <div><dt>{t('Tool definitions', '其中工具定义')}</dt><dd>{format(usage.tool_tokens)}</dd></div>
+        <div><dt>{t('Tool definitions (estimated)', '工具定义（估算）')}</dt><dd>{format(usage.tool_tokens)}</dd></div>
         <div><dt>{t('Reserved for reply', '回复预留')}</dt><dd>{format(usage.output_reserve)}</dd></div>
         <div><dt>{t('Safety margin', '安全余量')}</dt><dd>{format(usage.safety_reserve)}</dd></div>
       </dl> : <p>{t('Send a message to measure the selected model’s request. Older conversations may not have a saved estimate.', '发送消息后会统计所选模型的请求。旧会话可能没有已保存的估算值。')}</p>}
