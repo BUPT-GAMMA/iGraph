@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import time
 from agno.models.message import Message
 from contextlib import aclosing
 
@@ -20,6 +21,26 @@ def estimate_tokens(value):
     wire = json.dumps(value, ensure_ascii=False, default=str)
     ascii_chars = sum(ord(char) < 128 for char in wire)
     return math.ceil(ascii_chars / 3 + (len(wire.encode('utf-8')) - ascii_chars) / 2) + 16
+
+
+def message_tokens(messages):
+    return sum(estimate_tokens({'role': item.role, 'content': item.content, 'tool_calls': item.tool_calls})
+               + 2048 * len(item.images or []) for item in messages)
+
+
+def context_window_usage(messages, tools, settings, *, compacted=False):
+    """Last request occupancy, not cumulative provider billing across calls."""
+    window = int(settings['context_window'])
+    output = int(settings['max_output_tokens'])
+    safety = max(512, window // 10)
+    tool_tokens = estimate_tokens(tools or [])
+    input_tokens = message_tokens(messages) + tool_tokens
+    remaining = max(0, window - output - safety - input_tokens)
+    return {'basis': 'last_request_estimate', 'context_window': window,
+            'input_tokens': input_tokens, 'tool_tokens': tool_tokens,
+            'output_reserve': output, 'safety_reserve': safety,
+            'remaining_tokens': remaining, 'remaining_ratio': remaining / window,
+            'history_compacted': compacted, 'updated_at': time.time()}
 
 
 def normalize_history(messages, *, protocol="openai-compatible", history_key=None):
@@ -97,7 +118,7 @@ def prepare_history(messages, *, tools=None, context_window=32768, output_tokens
             raise ValueError('MODEL_MEDIA_UNSUPPORTED')
     budget = context_window - output_tokens - max(512, context_window // 10) - estimate_tokens(tools or [])
     def cost(items):
-        return sum(estimate_tokens({'role': item.role, 'content': item.content, 'tool_calls': item.tool_calls}) + (2048 * len(item.images or [])) for item in items)
+        return message_tokens(items)
     if cost(normalized) <= budget:
         return normalized, False
     # Never truncate system instructions or the current user/tool turn. The user
@@ -130,13 +151,33 @@ def prepare_history(messages, *, tools=None, context_window=32768, output_tokens
 
 
 class ModelHistoryMixin:
+    def _record_context_usage(self, messages, tools, settings, run_response, *, compacted=False):
+        from agent_runtime.execution_scope import current_scope
+        usage = context_window_usage(messages, tools, settings, compacted=compacted)
+        snapshot = (getattr(run_response, 'metadata', None) or {}).get('model_snapshot') or {}
+        usage.update(config_id=snapshot.get('config_id') or settings.get('model_id') or self.id,
+                     model_revision=snapshot.get('revision'))
+        if run_response is not None:
+            run_response.metadata = {**(run_response.metadata or {}), 'context_window_usage': usage}
+        scope = current_scope.get()
+        if scope is not None and run_response is not None and getattr(run_response, 'run_id', scope.run_id) == scope.run_id:
+            # The scope is run-owned, removed on completion, and never stores
+            # credentials or message content in the public usage snapshot.
+            scope.context_window_usage = usage
+
     def _prepare_history(self, messages, tools, run_response):
         settings = getattr(self, 'igraph_capabilities', None)
         if not settings:
             return messages
-        prepared, compacted = prepare_history(messages, tools=tools,
-            context_window=settings['context_window'], output_tokens=settings['max_output_tokens'], vision=settings['vision'],
-            protocol=getattr(self, 'igraph_protocol', 'openai-compatible'), history_key=getattr(self, 'igraph_history_key', None))
+        try:
+            prepared, compacted = prepare_history(messages, tools=tools,
+                context_window=settings['context_window'], output_tokens=settings['max_output_tokens'], vision=settings['vision'],
+                protocol=getattr(self, 'igraph_protocol', 'openai-compatible'), history_key=getattr(self, 'igraph_history_key', None))
+        except ValueError as exc:
+            if str(exc).startswith('MODEL_CONTEXT_TOO_LARGE'):
+                self._record_context_usage(normalize_history(messages), tools, settings, run_response)
+            raise
+        self._record_context_usage(prepared, tools, settings, run_response, compacted=compacted)
         if compacted and run_response is not None:
             run_response.metadata = {**(run_response.metadata or {}), 'history_compacted': True}
         return prepared

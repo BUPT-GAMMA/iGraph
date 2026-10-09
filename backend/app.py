@@ -4101,6 +4101,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         session = await get_session(session_id, request, user.user_id)
         return {"success": True, "session_id": session_id, "context_usage": session.get("metrics") or {}}
 
+    @app.get('/api/sessions/{session_id}/context-window')
+    async def session_context_window(session_id: str, request: Request):
+        user = current_user(request, users)
+        return await runtime.request('GET', f'/internal/sessions/{session_id}/context-window',
+                                     headers=service_headers(user.user_id))
+
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request):
         user = current_user(request, users)

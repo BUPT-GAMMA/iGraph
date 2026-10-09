@@ -33,6 +33,7 @@ class RunScope:
     native_run_created: bool = False
     terminal_write_pending: bool = False
     cancel_requested_at: float | None = None
+    context_window_usage: dict | None = None
 
     def check(self) -> None:
         if self.stopped.is_set():

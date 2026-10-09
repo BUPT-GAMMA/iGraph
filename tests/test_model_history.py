@@ -5,7 +5,7 @@ import httpx
 import pytest
 from agno.models.message import Message
 from openai import AsyncOpenAI
-from agent_runtime.model_history import normalize_history, prepare_history
+from agent_runtime.model_history import normalize_history, prepare_history, context_window_usage, estimate_tokens, ModelHistoryMixin
 from agent_runtime.model_factory import create_model
 
 
@@ -39,6 +39,39 @@ def test_context_compaction_keeps_current_turn_and_full_persisted_history():
 def test_current_input_too_large_fails_instead_of_truncating():
     with pytest.raises(ValueError, match='MODEL_CONTEXT_TOO_LARGE'):
         prepare_history([Message(role='user', content='x' * 9000)], context_window=2048, output_tokens=512)
+
+
+def test_context_window_counts_one_request_and_reserves_tools_output_and_headroom():
+    messages = [Message(role='system', content='instructions'), Message(role='user', content='分析人物')]
+    tools = [{'name': 'get_node_info', 'description': 'Graph tool'}]
+    settings = dict(context_window=10000, max_output_tokens=1000)
+    usage = context_window_usage(messages, tools, settings)
+    assert usage['tool_tokens'] == estimate_tokens(tools)
+    assert usage['remaining_tokens'] == 10000 - usage['input_tokens'] - 1000 - 1000
+    assert usage['remaining_ratio'] == usage['remaining_tokens'] / 10000
+    assert context_window_usage(messages, tools, settings)['input_tokens'] == usage['input_tokens']
+    assert context_window_usage([Message(role='user', content='x' * 50000)], tools, settings)['remaining_tokens'] == 0
+
+
+def test_last_request_estimate_is_run_owned_and_persisted_even_on_overflow():
+    from agent_runtime.execution_scope import RunScope, current_scope
+    model = ModelHistoryMixin()
+    model.id = 'upstream'
+    model.igraph_capabilities = dict(model_id='config-a', context_window=10000, max_output_tokens=1000, vision=False)
+    response = SimpleNamespace(metadata={'model_snapshot': {'config_id': 'config-a', 'revision': 2}})
+    scope = RunScope('run-a', 'alice', 'A', 1)
+    token = current_scope.set(scope)
+    try:
+        model._prepare_history([Message(role='user', content='short')], [], response)
+        usage = response.metadata['context_window_usage']
+        assert usage == scope.context_window_usage
+        assert usage['config_id'] == 'config-a' and usage['model_revision'] == 2
+        assert usage['remaining_tokens'] > 0
+        with pytest.raises(ValueError, match='MODEL_CONTEXT_TOO_LARGE'):
+            model._prepare_history([Message(role='user', content='x' * 50000)], [], response)
+        assert scope.context_window_usage['remaining_tokens'] == 0
+    finally:
+        current_scope.reset(token)
 
 
 def test_incompatible_media_is_not_silently_removed():
