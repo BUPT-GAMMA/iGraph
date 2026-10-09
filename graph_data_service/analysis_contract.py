@@ -53,6 +53,47 @@ def _nonfinite_result(value):
     return isinstance(value, Real) and not isinstance(value, int) and not math.isfinite(value)
 
 
+def _attach_node_labels(result, graph):
+    """Resolve IDs already present in a result without fetching whole neighborhoods.
+
+    IDs stay canonical: labels are evidence from stored properties, never an
+    alias merge. Bound the extra payload even for explicitly unlimited queries.
+    """
+    if not isinstance(result, dict) or not result.get('success'):
+        return result
+    labels = {}
+    truncated = False
+
+    def visit(value):
+        nonlocal truncated
+        if isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+        elif isinstance(value, str) and value in graph and value not in labels:
+            properties = graph.nodes[value].get('properties', {})
+            if not isinstance(properties, dict):
+                return
+            data = properties.get('data')
+            name = data.get('name') if isinstance(data, dict) else None
+            name = name or properties.get('name')
+            if not isinstance(name, str) or not name.strip() or name == value:
+                return
+            if len(labels) >= 200 or len(name) > 200:
+                truncated = True
+                return
+            labels[value] = name
+
+    visit(result)
+    if labels:
+        result['node_labels'] = labels
+    if truncated:
+        result['node_labels_truncated'] = True
+    return result
+
+
 def analysis_contract(function):
     """Guard direct, HTTP and worker calls with the same parameter-aware policy.
 
@@ -117,5 +158,5 @@ def analysis_contract(function):
                     'error': '计算结果包含非有限数值，请检查边权规模和算法适用条件。'}
         if multi or project:
             result['multigraph_policy'] = policy
-        return result
+        return _attach_node_labels(result, graph)
     return invoke
