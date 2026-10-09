@@ -76,6 +76,28 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('actual App graph creation destination', () => {
+  it('retains a PT upload in the source library and binds it to an analysis draft without construction', async () => {
+    const pt: Dataset = { dataset_id: 'pt-graph', project_id: null, name: 'PT 验收图', original_filename: 'PT 验收图.pt', file_type: 'pt', status: 'ready' };
+    mocks.listDatasets.mockResolvedValue({ datasets: [] });
+    mocks.uploadDataset.mockResolvedValue({ dataset: pt, default_dataset_id: null });
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    await screen.findByText('还没有可构图的数据源');
+    const file = new File(['pt bytes'], pt.original_filename);
+    fireEvent.change(container.querySelector('.create-graph-workspace input[type="file"]')!, { target: { files: [file] } });
+    const analyze = await screen.findByRole('button', { name: '开始分析 PT 验收图' });
+    expect(mocks.uploadDataset).toHaveBeenCalledWith(null, file, undefined, undefined, undefined);
+    expect(screen.queryByRole('region', { name: '构图编辑器' })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    mocks.listDatasets.mockResolvedValue({ datasets: [pt] });
+    fireEvent.click(analyze);
+    await screen.findByRole('heading', { name: '开始图分析' });
+    expect(window.location.search).toBe('?new=1');
+    expect(screen.getByRole('button', { name: 'PT 验收图' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '创建你的图' }));
+    expect(await screen.findByRole('button', { name: '开始分析 PT 验收图' })).toBeTruthy();
+  });
+
   it('returns from an example project to both examples when New task is clicked', async () => {
     const dataset: Dataset = { dataset_id: 'novel-graph', project_id: 'novel-project', name: '天龙八部人物关系示例', original_filename: 'tianlongbabu-characters.npz', file_type: 'npz', status: 'ready' };
     mocks.openUserCase.mockResolvedValue({ project: { project_id: 'novel-project', user_id: 'graph-user', name: '天龙八部人物关系示例', default_dataset_id: dataset.dataset_id }, dataset });

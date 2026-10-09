@@ -36,7 +36,7 @@
 .help-pipeline p { margin: 8px 0 0; color: #475569; }
 .help-pipeline-kicker { color: var(--accent-strong); font-size: 11px; font-weight: 650; letter-spacing: .06em; }
 .help-pipeline-intro h2 { margin: 5px 0 0; font-size: 22px; line-height: 1.4; }
-.help-format-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 20px 0; }
+.help-format-picker { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 20px 0; }
 .help-format-picker button { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 12px; text-align: left; color: #475569; background: #fff; border: 1px solid #dbe2ed; border-radius: 10px; }
 .help-format-picker button strong { font-size: 15px; }
 .help-format-picker button span { font-size: 11px; line-height: 1.5; }
@@ -74,4 +74,5 @@
 [data-theme="dark"] .help-pipeline-map span { background: #243047; }
 [data-theme="dark"] .help-pipeline-callout, [data-theme="dark"] .help-pipeline-shortcut, [data-theme="dark"] .help-pipeline-troubleshooting { border-color: #334155; }
 [data-theme="dark"] .help-pipeline-steps > li:not(:last-child)::after { background: #334155; }
+@media (max-width: 520px) { .help-format-picker { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 720px) { .help-drawer { padding: 18px 16px; }.help-page-inner { padding-top: 18px; }.help-tool-list, .help-model-grid { grid-template-columns: 1fr; } .help-search { max-width: none; } .help-tabs { width: 100%; } .help-tabs button { flex: 1; justify-content: center; padding: 10px 5px; font-size: 12px; } }
