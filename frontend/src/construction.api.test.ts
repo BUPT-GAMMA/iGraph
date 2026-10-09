@@ -14,8 +14,7 @@ describe('construction API boundaries', () => {
     const scope = projectId ? '/api/projects/project%20%2F1/datasets' : '/api/personal-datasets';
     expect(fetchMock.mock.calls[0][0]).toBe(`${scope}/data%20%2F1/construction/source-preview?delimiter=%09`);
     expect(fetchMock.mock.calls[0][1].signal).toBe(signal);
-    expect(fetchMock.mock.calls[0][1].headers.get('X-User-ID')).toBeNull();
-    expect(fetchMock.mock.calls[0][1].credentials).toBe('include');
+    expect(fetchMock.mock.calls[0][1].headers.get('X-User-ID')).toBe('admin');
   });
   it.each([null, 'project /1'])('uses the correct dataset scope (%s), identity, and revision in every operation', async projectId => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ success: true }), { status: 200 }));
@@ -26,8 +25,7 @@ describe('construction API boundaries', () => {
     await getConstructionState(current); await buildDatasetGraph(current); await getConstructionGraph(current);
     await previewConstruction(current, 7, operations); await commitConstruction(current, 7, operations);
     expect(fetchMock.mock.calls.map(call => call[0])).toEqual([path, `${path}/build`, `${path}/graph`, `${path}/preview`, `${path}/commit`]);
-    expect(fetchMock.mock.calls[0][1].headers.get('X-User-ID')).toBeNull();
-    expect(fetchMock.mock.calls[0][1].credentials).toBe('include');
+    expect(fetchMock.mock.calls[0][1].headers.get('X-User-ID')).toBe('admin');
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ options: {} });
     for (const index of [3, 4]) expect(JSON.parse(fetchMock.mock.calls[index][1].body)).toEqual({ base_revision: 7, operations });
   });

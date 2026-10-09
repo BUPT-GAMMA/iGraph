@@ -13,7 +13,7 @@ import { USER_KEY, activateSession, createProject, createSession, listProjectCon
 import { composerStorageKey, readComposerDraft, writeComposerDraft } from './composerDrafts';
 const placeholder = '今天帮你分析什么？粘贴边列表，或直接用自然语言提问';
 beforeEach(() => {
-  vi.resetAllMocks(); localStorage.clear(); sessionStorage.clear(); localStorage.setItem(USER_KEY, 'ux-user');
+  vi.resetAllMocks(); localStorage.clear(); sessionStorage.clear(); localStorage.setItem(USER_KEY, 'admin');
   window.history.replaceState({}, '', '/?session=A');
   vi.mocked(validateUser).mockResolvedValue({ valid: true, default_model: 'qwen3.6-plus' });
   vi.mocked(listSessions).mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }] });
@@ -46,7 +46,7 @@ it('loads older task pages, merges duplicates and retries a failed page', async 
 });
 
 it('restores old pinned tasks separately without consuming the next-page cursor', async () => {
-  localStorage.setItem('igraph-pinned-sessions:v1:ux-user', JSON.stringify(['pinned-old', 'deleted']));
+  localStorage.setItem('igraph-pinned-sessions:v1:admin', JSON.stringify(['pinned-old', 'deleted']));
   vi.mocked(listSessions).mockResolvedValueOnce({ sessions: [{ session_id: 'A', title: 'Session A' }], next_cursor: 'more' })
     .mockResolvedValueOnce({ sessions: [{ session_id: 'pinned-old', title: 'Pinned older task' }] });
   await mount();
@@ -55,7 +55,7 @@ it('restores old pinned tasks separately without consuming the next-page cursor'
   expect(screen.getByRole('button', { name: '加载更多任务' })).toBeTruthy();
 });
 
-it('ignores a late page response after switching accounts', async () => {
+it('keeps pagination when legacy account storage changes', async () => {
   let finish!: (value: any) => void;
   vi.mocked(listSessions).mockResolvedValueOnce({ sessions: [{ session_id: 'A', title: 'Session A' }], next_cursor: 'old-account' })
     .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
@@ -63,9 +63,9 @@ it('ignores a late page response after switching accounts', async () => {
   await mount();
   fireEvent.click(screen.getByRole('button', { name: '加载更多任务' }));
   act(() => { localStorage.setItem(USER_KEY, 'next-account'); window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, storageArea: localStorage })); });
-  await screen.findByRole('button', { name: '账户：next-account' });
+  expect(screen.queryByRole('button', { name: '账户：next-account' })).toBeNull();
   await act(async () => finish({ sessions: [{ session_id: 'secret', title: 'Private older task' }] }));
-  expect(screen.queryByText('Private older task')).toBeNull();
+  expect(screen.getByText('Private older task')).toBeTruthy();
 });
 
 async function mount() { const view = render(<App />); await screen.findByPlaceholderText(placeholder); return view; }
@@ -105,7 +105,7 @@ it('removing a pending file aborts its upload and ignores late success', async (
   await act(async () => finish({ success: true, filename: 'data.pt', file_token: 'late' }));
   expect(screen.queryByRole('button', { name: '移除 data.pt' })).toBeNull();
 });
-it('aborts account A uploads and rejects their late result after switching accounts', async () => {
+it('keeps uploads when legacy account storage changes', async () => {
   let finish!: (value: any) => void;
   vi.mocked(uploadFile).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
   const { container } = await mount(); choose(container, 'private.pt');
@@ -114,10 +114,10 @@ it('aborts account A uploads and rejects their late result after switching accou
     localStorage.setItem(USER_KEY, 'next-account');
     window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, storageArea: localStorage }));
   });
-  await screen.findByRole('button', { name: '账户：next-account' });
-  expect(vi.mocked(uploadFile).mock.calls[0][2]?.aborted).toBe(true);
+  expect(screen.queryByRole('button', { name: '账户：next-account' })).toBeNull();
+  expect(vi.mocked(uploadFile).mock.calls[0][2]?.aborted).toBe(false);
   await act(async () => finish({ success: true, filename: 'private.pt', file_token: 'private-token' }));
-  expect(container.textContent).not.toContain('private.pt');
+  expect(container.textContent).toContain('private.pt');
 });
 it('uploads a new-task file before the first message without starting an agent run', async () => {
   window.history.replaceState({}, '', '/?new=1');
@@ -141,20 +141,20 @@ it('restores an ordinary composer draft and attachments after remount, then clea
   const first = await mount();
   fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value: '未发送草稿' } });
   choose(first.container);
-  await waitFor(() => expect(readComposerDraft('ux-user', 'A')?.attachments).toHaveLength(1));
+  await waitFor(() => expect(readComposerDraft('admin', 'A')?.attachments).toHaveLength(1));
   first.unmount();
   await mount();
   expect((screen.getByPlaceholderText(placeholder) as HTMLTextAreaElement).value).toBe('未发送草稿');
   expect(screen.getByRole('button', { name: '移除 data.pt' })).toBeTruthy();
   fireEvent.keyDown(screen.getByPlaceholderText(placeholder), { key: 'Enter' });
   await waitFor(() => expect(streamChat).toHaveBeenCalledOnce());
-  await waitFor(() => expect(localStorage.getItem(composerStorageKey('ux-user', 'A'))).toBeNull());
+  await waitFor(() => expect(localStorage.getItem(composerStorageKey('admin', 'A'))).toBeNull());
 });
 it('restores unfinished files as needing reselection and isolates stored drafts', async () => {
-  writeComposerDraft('ux-user', 'A', { draft: '保留内容', attachments: [], pendingAttachments: [
+  writeComposerDraft('admin', 'A', { draft: '保留内容', attachments: [], pendingAttachments: [
     { localId: 'file', filename: 'pending.pt', file: new File(['data'], 'pending.pt'), status: 'uploading', progress: 50 },
   ] });
-  expect(localStorage.getItem(composerStorageKey('ux-user', 'A'))).not.toContain('progress');
+  expect(localStorage.getItem(composerStorageKey('admin', 'A'))).not.toContain('progress');
   expect(readComposerDraft('other-user', 'A')).toBeNull();
   await mount();
   expect(screen.getByText('需重新选择')).toBeTruthy();
@@ -199,7 +199,7 @@ it('retains process events and regeneration links when loading history', async (
 
 it('opens a project draft immediately after creation without materializing a conversation', async () => {
   vi.mocked(createProject).mockResolvedValue({ success: true, project: {
-    project_id: 'new-project', user_id: 'ux-user', name: '新项目',
+    project_id: 'new-project', user_id: 'admin', name: '新项目',
   } });
   const { container } = await mount();
   fireEvent.click(screen.getByRole('button', { name: '创建项目' }));
@@ -215,7 +215,7 @@ it('opens a project draft immediately after creation without materializing a con
 });
 
 it('toggling a project keeps the current conversation, draft and URL', async () => {
-  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'ux-user', name: '项目一' }] });
+  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'admin', name: '项目一' }] });
   vi.mocked(listSessions).mockResolvedValue({ sessions: [
     { session_id: 'A', title: 'Session A' }, { session_id: 'B', project_id: 'p', title: '项目会话' },
   ] });
@@ -238,7 +238,7 @@ it('toggling a project keeps the current conversation, draft and URL', async () 
 
 it('opens legacy project URLs as project drafts and replaces the obsolete route', async () => {
   window.history.replaceState({}, '', '/?project=p');
-  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'ux-user', name: '项目一' }] });
+  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'admin', name: '项目一' }] });
   vi.mocked(listProjectConversations).mockResolvedValue({ conversations: [] });
   vi.mocked(listProjectDatasets).mockResolvedValue({ project_id: 'p', datasets: [], default_dataset_id: null });
   const { container } = await mount();
@@ -249,7 +249,7 @@ it('opens legacy project URLs as project drafts and replaces the obsolete route'
 });
 
 it('opens the chosen project datasets without navigating, uploads there, and selects into its draft', async () => {
-  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'ux-user', name: '项目一' }] });
+  vi.mocked(listProjects).mockResolvedValue({ projects: [{ project_id: 'p', user_id: 'admin', name: '项目一' }] });
   const dataset = { dataset_id: 'p-data', project_id: 'p', name: '项目图', original_filename: 'p.csv', file_type: 'csv', status: 'ready' };
   vi.mocked(listProjectDatasets).mockImplementation(async projectId => ({ project_id: projectId, datasets: projectId === 'p' ? [dataset] : [] }));
   vi.mocked(uploadProjectDataset).mockResolvedValue({ success: true, dataset: { ...dataset, dataset_id: 'p-upload', name: '新图' }, default_dataset_id: 'p-data' });

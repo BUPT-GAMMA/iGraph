@@ -403,3 +403,21 @@ def test_property_relationship_analysis_survives_isolated_conversion_and_snapsho
                 assert graph.num_unique_edges == graph.to_networkx().number_of_edges() == 4
                 assert graph.degree_by_name('B') == 3
     asyncio.run(scenario())
+
+@pytest.mark.parametrize('imported', [False, True])
+def test_isolated_graph_info_retains_snapshot_source_and_matches_http(service, imported):
+    from graph_data_service.graph_data import GraphData
+    from graph_data_service.session import UploadFileRecord
+    from graph_engine.novel_preset import RESOURCES, FILENAME
+
+    session = service.get_required('s', user_id='alice')
+    path = RESOURCES / FILENAME
+    session.set_graph(GraphData.load(str(path)))
+    if imported:
+        session.mark_version_upload_source(session.graph_version, UploadFileRecord('preset', path.name, str(path)))
+    expected = service.do_get_graph_info('s', user_id='alice')
+    actual = asyncio.run(isolated(service, 'get_graph_info', {}))
+    for value in (actual, actual['graph_info']):
+        assert value['construction_applicable'] is (not imported)
+        assert value['construction_dataset_id'] == (None if imported else 'ds_tianlongbabu_v1')
+    assert actual == expected

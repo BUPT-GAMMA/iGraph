@@ -1632,8 +1632,8 @@
           {
             "type": "paragraph",
             "text": {
-              "zh": "模型可以在同一轮提交多个原生工具调用。运行时保持这些调用的相对先后关系，读取工具目录中的资源声明，构建有向无环图（DAG）。当一个调用写入的资源会被另一个读取或写入时，后者等待前者；当后一个调用要写入前一个正在读取的资源时，同样建立顺序。只有相互独立的节点才并行运行。默认最多并发 4 个工具，可通过 AGENT_TOOL_MAX_CONCURRENCY 调整，取值会限制在 1 到 32 之间。",
-              "en": "A model may emit several native tool calls in one turn. The runtime preserves their relative ordering and builds a directed acyclic graph from resource contracts. A later call waits if it reads or writes a resource written by an earlier call, or writes a resource the earlier call reads. Only independent nodes run concurrently. The default concurrency limit is 4; AGENT_TOOL_MAX_CONCURRENCY is clamped to 1–32."
+              "zh": "模型可以在同一轮提交多个原生工具调用。运行时保持这些调用的相对先后关系，读取工具目录中的资源声明，构建有向无环图（DAG）。当一个调用写入的资源会被另一个读取或写入时，后者等待前者；当后一个调用要写入前一个正在读取的资源时，同样建立顺序。只有相互独立的节点才并行运行。默认最多并发 3 个工具，可通过 AGENT_TOOL_MAX_CONCURRENCY 降低并发，取值会限制在 1 到 3 之间。",
+              "en": "A model may emit several native tool calls in one turn. The runtime preserves their relative ordering and builds a directed acyclic graph from resource contracts. A later call waits if it reads or writes a resource written by an earlier call, or writes a resource the earlier call reads. Only independent nodes run concurrently. The default concurrency limit is 3; AGENT_TOOL_MAX_CONCURRENCY is clamped to 1–3."
             }
           },
           {
@@ -5154,8 +5154,8 @@
                   "en": "AGENT_TOOL_MAX_CONCURRENCY"
                 },
                 {
-                  "zh": "4 (1–32)",
-                  "en": "4 (1–32)"
+                  "zh": "3 (1–3)",
+                  "en": "3 (1–3)"
                 },
                 {
                   "zh": "同轮就绪工具调用。",
@@ -9417,8 +9417,8 @@
                   "en": "AGENT_TOOL_MAX_CONCURRENCY"
                 },
                 {
-                  "zh": "单轮工具调度默认 4，限制在 1–32；与图计算进程池是不同设置",
-                  "en": "Per-turn tool scheduling defaults to 4, clamped to 1–32; separate from the graph process pool"
+                  "zh": "单轮工具调度默认 3，限制在 1–3；与图计算进程池是不同设置",
+                  "en": "Per-turn tool scheduling defaults to 3, clamped to 1–3; separate from the graph process pool"
                 }
               ],
               [

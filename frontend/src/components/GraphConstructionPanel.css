@@ -22,6 +22,13 @@
 .construction-source .primary-command { width: 100%; margin: 3px 0 9px; }
 .construction-source small, .construction-form small { display: block; font-size: 11px; line-height: 1.65; color: var(--construction-muted); overflow-wrap: anywhere; }
 .construction-build-options { min-width: 0; padding: 0; margin: 0 0 10px; border: 0; }
+.construction-preset-link { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; margin: 4px 0 0; padding: 4px 0; border: 0; border-radius: 3px; background: transparent; box-shadow: none; color: var(--accent-strong, #1d4ed8); font: inherit; font-size: 12px; font-weight: 550; line-height: 1.5; text-align: left; cursor: pointer; }
+.construction-preset-link:not(:disabled):hover { background: transparent; color: var(--accent, #2563eb); }
+.construction-preset-link:not(:disabled):hover span { text-decoration: underline; text-underline-offset: 4px; }
+.construction-preset-link svg { flex-shrink: 0; transition: transform .16s ease; }
+.construction-preset-link:not(:disabled):hover svg { transform: translateX(3px); }
+.construction-preset-link:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 4px; }
+@media (prefers-reduced-motion: reduce) { .construction-preset-link svg { transition: none; } }
 .construction-build-options label { display: grid; gap: 6px; margin: 12px 0; font-size: 12px; }
 .construction-build-options input:not([type="checkbox"]), .construction-build-options select, .construction-build-options textarea { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px 10px; border: 1px solid var(--construction-line); border-radius: 6px; background: var(--construction-bg); color: var(--construction-text); font: inherit; }
 .construction-build-options textarea { resize: vertical; min-height: 78px; max-height: 200px; }
@@ -162,3 +169,9 @@
 .construction-schema-switch button { padding: 8px 12px; border-radius: 7px; color: var(--construction-muted); background: transparent; font-size: 12px; }
 .construction-schema-switch button[aria-pressed="true"] { color: var(--accent-strong); background: var(--accent-soft); }
 @media (max-width: 720px) { .construction-page .construction-panel { height: 100%; min-height: 0; }.construction-mark { display: grid; width: 34px; height: 34px; border-radius: 9px; }.construction-heading { gap: 10px; } }
+
+.construction-rename { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+.construction-rename input { min-width:180px; padding:6px 10px; }
+.construction-model-settings { display:flex; flex-direction:column; gap:10px; margin:12px 0; padding:14px; border:1px solid var(--border); border-radius:10px; }
+.construction-model-settings small { line-height:1.5; color:var(--muted); }
+.construction-model-settings [role="alert"] { color:var(--danger, #c43d3d); }

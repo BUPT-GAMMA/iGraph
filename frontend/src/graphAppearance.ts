@@ -3,15 +3,26 @@ import type { GraphData, Highlight } from './types';
 import { currentLanguage, tr } from './i18n';
 import type { Translate } from './i18n';
 const COMMUNITY_COLORS = ['#3b82f6', '#f97316', '#10b981', '#a855f7', '#eab308', '#ef4444', '#06b6d4', '#ec4899'];
-export const DEFAULT_HIGHLIGHT_COLORS: Record<string, string> = { node: 'var(--accent, #2563eb)', path: '#d97706', subgraph: '#7c3aed' };
+export const DEFAULT_HIGHLIGHT_COLORS: Record<string, string> = { node: 'var(--accent, #2563eb)', path: '#f97316', subgraph: '#7c3aed' };
 
-export function normalizeHighlights(value: GraphData['highlights']): Highlight[] {
-  if (Array.isArray(value)) return value;
+export function normalizeHighlights(value: GraphData['highlights'], edges: GraphData['edges'] = []): Highlight[] {
   if (!value || typeof value !== 'object') return [];
-  const output: Highlight[] = [];
-  (value.nodes || []).forEach((item, index) => output.push({ id: `node-${index}`, type: 'node', nodes: item.ids || [], color: item.color, label: item.label }));
-  (value.paths || []).forEach((item, index) => output.push({ id: `path-${index}`, type: 'path', nodes: item.node_sequence || [], edges: item.edges as Highlight['edges'], color: item.color, label: item.label }));
-  (value.subgraphs || []).forEach((item, index) => output.push({ id: `subgraph-${index}`, type: 'subgraph', nodes: item.nodes || [], edges: item.edges as Highlight['edges'], color: item.color, label: item.label }));
+  const output: Highlight[] = Array.isArray(value) ? [...value] : [];
+  if (!Array.isArray(value)) {
+    (value.nodes || []).forEach((item, index) => output.push({ id: `node-${index}`, type: 'node', nodes: item.ids || [], color: item.color, label: item.label }));
+    (value.paths || []).forEach((item, index) => output.push({ id: `path-${index}`, type: 'path', nodes: item.node_sequence || [], edges: item.edges as Highlight['edges'], color: item.color, label: item.label }));
+    (value.subgraphs || []).forEach((item, index) => output.push({ id: `subgraph-${index}`, type: 'subgraph', nodes: item.nodes || [], edges: item.edges as Highlight['edges'], color: item.color, label: item.label }));
+  }
+  // Older tool results specify only nodes. Show their existing connections too,
+  // but never broaden an explicitly selected path/subgraph with extra edges.
+  if (output.length && output.every(item => !item.type || item.type === 'node')) {
+    const ids = new Set(output.flatMap(item => (item.nodes || []).map(endpointId)));
+    const connections: NonNullable<Highlight['edges']> = (edges || [])
+      .map(edge => [endpointId(edge.src ?? edge.source), endpointId(edge.dst ?? edge.target)] as [string, string])
+      .filter(([source, target]) => ids.has(source) && ids.has(target));
+    if (connections.length) output.push({ id: 'highlighted-node-edges', type: 'path', edges: connections,
+      color: DEFAULT_HIGHLIGHT_COLORS.path, label: tr('Highlighted connections', '高亮关系') });
+  }
   return output;
 }
 

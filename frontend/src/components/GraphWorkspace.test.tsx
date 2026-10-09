@@ -31,6 +31,34 @@ afterEach(() => {
 });
 
 describe('GraphWorkspace visualization layers', () => {
+  it('highlights node-only group-tree results as stars with orange FK edges over an ordinary graph background', () => {
+    const data = {
+      nodes: ['root', 'member-a', 'member-b', 'holding-a', 'holding-b', 'outside'].map(id => ({ id })),
+      edges: [
+        { source: 'holding-a', target: 'root' }, { source: 'holding-a', target: 'member-a' },
+        { source: 'holding-b', target: 'root' }, { source: 'holding-b', target: 'member-b' },
+        { source: 'outside', target: 'root' },
+      ],
+      directed: true,
+      highlights: { nodes: [
+        { ids: ['root'], color: '#f97316' }, { ids: ['member-a', 'member-b'], color: '#2563eb' },
+        { ids: ['holding-a', 'holding-b'], color: '#16a34a' },
+      ], paths: [], subgraphs: [] },
+    };
+    const { container } = render(<GraphWorkspace data={data} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
+    expect(container.querySelectorAll('[data-highlight-shape="star"]')).toHaveLength(5);
+    expect(container.querySelectorAll('circle.graph-node-dot')).toHaveLength(1);
+    expect(container.querySelectorAll('.graph-link.is-path-highlight')).toHaveLength(4);
+    container.querySelectorAll<SVGElement>('.graph-link.is-path-highlight').forEach(edge => {
+      expect(edge.style.stroke).toBe('#f97316');
+      expect(Number.parseFloat(edge.style.strokeWidth)).toBeGreaterThan(2);
+    });
+    expect(container.querySelectorAll('.graph-link:not(.is-path-highlight)')).toHaveLength(1);
+    expect(container.querySelector('.graph-link:last-child')?.classList.contains('is-path-highlight')).toBe(true);
+    expect(container.querySelector('[data-node-id="member-a"] path.graph-node-dot')?.getAttribute('fill')).toBe('#2563eb');
+    expect(container.querySelector('[data-node-id="holding-a"] path.graph-node-dot')?.getAttribute('fill')).toBe('#16a34a');
+  });
+
   it('switches report UI labels without changing the narrative or original node names', () => {
     const report = { version: 'analysis_report.v2', title: '用户标题', summary: '本轮中文结论。', sections: [{
       id: 'structure-overview', title: '结构概览', title_i18n: { en: 'Graph overview', zh: '结构概览' },
@@ -276,10 +304,8 @@ describe('GraphWorkspace visualization layers', () => {
       highlights: [{ type: 'path', edges: [['a', 'b']], color: '#f59e0b' }],
     }} tab="Graph" onTab={vi.fn()} selected={null} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} />);
     await waitFor(() => expect(container.querySelectorAll('.is-path-highlight')).toHaveLength(1));
-    const edges = Array.from(container.querySelectorAll('.graph-link'));
-    // Result edges are prioritized ahead of the unhighlighted reverse edge.
-    expect(edges[0].classList.contains('is-path-highlight')).toBe(true);
-    expect(edges[1].classList.contains('is-path-highlight')).toBe(false);
+    expect(container.querySelector('.graph-link[data-source="a"][data-target="b"]')?.classList.contains('is-path-highlight')).toBe(true);
+    expect(container.querySelector('.graph-link[data-source="b"][data-target="a"]')?.classList.contains('is-path-highlight')).toBe(false);
   });
   it('renders community colors, node halos, path edges, subgraph hulls, and legends', async () => {
     const { container } = render(<GraphWorkspace
@@ -309,6 +335,16 @@ describe('GraphWorkspace visualization layers', () => {
     await waitFor(() => expect(container.querySelectorAll('.graph-node')).toHaveLength(4));
     const nodeFills = new Set([...container.querySelectorAll('.graph-node-dot')].map(node => node.getAttribute('fill')));
     expect(nodeFills.size).toBe(3);
+    expect(container.querySelector('[data-node-id="a"] .is-highlighted')?.getAttribute('fill')).toBe('#22c55e');
+    expect(container.querySelectorAll('[data-highlight-shape="star"]')).toHaveLength(4);
+    const positions = [...container.querySelectorAll('.graph-node')].map(node => node.getAttribute('transform'));
+    fireEvent.click(screen.getByRole('button', { name: '显示设置' }));
+    fireEvent.change(screen.getByLabelText('高亮形状'), { target: { value: 'triangle' } });
+    expect(container.querySelectorAll('[data-highlight-shape="triangle"]')).toHaveLength(4);
+    expect([...container.querySelectorAll('.graph-node')].map(node => node.getAttribute('transform'))).toEqual(positions);
+    expect(container.querySelector('.legend-dot.node-highlight.is-triangle')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '恢复默认' }));
+    expect(container.querySelectorAll('[data-highlight-shape="star"]')).toHaveLength(4);
     expect([...container.querySelectorAll('.graph-node-halo')].filter(node => Number(node.getAttribute('r')) > 0)).toHaveLength(4);
     expect(container.querySelectorAll('.graph-link.is-path-highlight')).toHaveLength(2);
     expect(container.querySelectorAll('.graph-link.is-subgraph-highlight')).toHaveLength(2);

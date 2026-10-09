@@ -1,4 +1,4 @@
-"""BFF forwards the identity returned by the authentication boundary."""
+"""BFF forwards the single workspace owner identity, never a caller claim."""
 from dataclasses import replace
 
 import pytest
@@ -13,6 +13,7 @@ def backend(tmp_path, monkeypatch):
     monkeypatch.setenv('IGRAPH_DATA_ROOT', str(tmp_path))
     monkeypatch.setenv('IGRAPH_CONTROL_SERVICE_KEY', 'bff-service-secret')
     monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'false')
+    monkeypatch.setenv('IGRAPH_ADMIN_USER_ID', 'workspace-owner')
     calls = []
     async def request(self, method, path, **kwargs):
         calls.append((method, path, kwargs))
@@ -23,13 +24,7 @@ def backend(tmp_path, monkeypatch):
         return {'success': True}
     monkeypatch.setattr(module.ServiceClient, 'request', request)
     config = replace(BackendConfig.from_env(), supported_ids_file=tmp_path / 'ids.txt')
-    config.supported_ids_file.write_text('authenticated-alice\n', encoding='utf-8')
-    app = module.create_app(config)
-    password = 'Test-authenticated-alice-2026!'
-    assert app.state.auth.bootstrap('authenticated-alice', password)
-    with TestClient(app) as client:
-        login = client.post('/api/auth/login', json={'username': 'authenticated-alice', 'password': password})
-        assert login.status_code == 200, login.text
+    with TestClient(module.create_app(config)) as client:
         yield client, calls
 
 
@@ -41,14 +36,14 @@ def backend(tmp_path, monkeypatch):
     ('DELETE', '/api/remote-graphs/connection-1?revision=3', None, '/internal/remote-graphs/connection-1'),
     ('PUT', '/api/sessions/s1/remote-graph', {'connection_id': None}, '/internal/sessions/s1/remote-graph'),
 ])
-def test_proxy_uses_authenticated_identity_and_service_secret(backend, method, path, body, internal):
+def test_proxy_uses_workspace_identity_and_service_secret(backend, method, path, body, internal):
     client, calls = backend
     response = client.request(method, path, json=body,
                               headers={'X-User-ID': 'forged-bob', 'X-iGraph-Service-Key': 'forged-service'})
     assert response.status_code == 200, response.text
     call = next(call for call in calls if call[1] == internal)
     assert call[0] == method
-    assert call[2]['headers'] == {'X-User-ID': 'authenticated-alice', 'X-iGraph-Service-Key': 'bff-service-secret'}
+    assert call[2]['headers'] == {'X-User-ID': 'workspace-owner', 'X-iGraph-Service-Key': 'bff-service-secret'}
     if body is not None:
         assert call[2]['json_body'] == body
     if method == 'DELETE':

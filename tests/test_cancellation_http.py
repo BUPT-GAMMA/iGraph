@@ -51,7 +51,6 @@ async def exercise(root, mode):
             await asyncio.sleep(.01)
         headers = {'X-User-ID': 'admin', 'X-iGraph-Stream-Version': '2'}
         async with httpx.AsyncClient(base_url=url, headers=headers, timeout=30, trust_env=False) as client:
-            (await client.post('/api/auth/login', json={'username': 'admin', 'password': 'cancellation-test-password'})).raise_for_status()
             question, start = mode + '-' + str(uuid4()), str(uuid4())
             response = await client.post('/api/sessions', json={'client_session_id': str(uuid4()), 'model': 'qwen3.6-plus'})
             assert response.status_code == 200, response.text
@@ -79,11 +78,6 @@ async def exercise(root, mode):
                 # Unauthorized native execution cannot bypass public admission.
                 native = await client.post('/runtime/agents/igraph-agent/runs', data={'message': 'unregistered', 'session_id': sid})
                 assert native.status_code == 403
-                async with httpx.AsyncClient(base_url=url, timeout=30, trust_env=False) as other:
-                    (await other.post('/api/auth/login', json={'username': 'alice', 'password': 'cancellation-test-password'})).raise_for_status()
-                    wrong = await other.post(f'/api/sessions/{sid}/runs/cancel', headers={'X-User-ID': 'admin'},
-                                             json={'cancel_request_id': cancel_id, 'target': key})
-                assert wrong.status_code == 404
                 response = await client.post(f'/api/sessions/{sid}/runs/cancel', json={'cancel_request_id': cancel_id, 'target': key})
                 assert response.status_code in {200, 202}, response.text
                 rid = response.json()['run_id']

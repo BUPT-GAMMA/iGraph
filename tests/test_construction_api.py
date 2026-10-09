@@ -51,7 +51,6 @@ def test_raw_upload_saved_without_activation_or_fake_graph(client, engine, exten
     assert payload['construction_required'] is True
     assert 'storage_path' not in dataset
     endpoint = f"/api/personal-datasets/{dataset['dataset_id']}/construction"
-    assert client.get(endpoint, headers=headers('alice')).status_code == 404
     response = client.post(endpoint + '/build', headers=headers(), json={'options': {}, 'source_path': '/etc/passwd'})
     assert response.status_code == 200
     assert response.json()['status'] == 'algorithm_unavailable'
@@ -106,7 +105,6 @@ def test_source_preview_bff_preserves_dataset_ownership_and_scope(client, engine
     scope = f"/api/projects/{project['project_id']}/datasets"
     dataset = client.post(scope, headers=headers(), files={'file': ('source.csv', b'id,name\n1,Alice\n')}).json()['dataset']
     endpoint = f"{scope}/{dataset['dataset_id']}/construction/source-preview"
-    assert client.get(endpoint, headers=headers('alice')).status_code == 404
     assert client.get(f"/api/personal-datasets/{dataset['dataset_id']}/construction/source-preview", headers=headers()).status_code == 404
     result = client.get(endpoint, headers={**headers(), 'X-iGraph-Construction-Scope': 'personal'})
     assert result.status_code == 200

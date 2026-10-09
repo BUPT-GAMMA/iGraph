@@ -29,7 +29,7 @@ function navigate(id: string) {
 }
 let restoreStorage = () => {};
 beforeEach(() => {
-  sessionStorage.clear(); localStorage.clear(); localStorage.setItem(USER_KEY, 'recovery-user'); window.history.replaceState({}, '', '/?session=A');
+  sessionStorage.clear(); localStorage.clear(); localStorage.setItem(USER_KEY, 'admin'); window.history.replaceState({}, '', '/?session=A');
   vi.mocked(validateUser).mockReset().mockResolvedValue({ valid: true, default_model: 'model' });
   vi.mocked(listProjects).mockReset().mockResolvedValue({ projects: [] });
   vi.mocked(listSessions).mockReset().mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Session A' }, { session_id: 'B', title: 'Session B' }] });
@@ -63,7 +63,7 @@ describe('actual App recovery', () => {
     await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
     navigate('B');
     await waitFor(() => expect(first.container.querySelector('.session-row.selected')?.textContent).toContain('Session B'));
-    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.runId).toBe('r'));
+    await waitFor(() => expect(readSessionActivities('admin').find(item => item.sessionId === 'A')?.runId).toBe('r'));
     first.unmount();
     vi.mocked(resumeRun).mockClear();
     vi.mocked(activateSession).mockClear();
@@ -79,7 +79,7 @@ describe('actual App recovery', () => {
 
   it('restores an offline completion, keeps its blue dot across reloads, and clears it permanently when opened', async () => {
     window.history.replaceState({}, '', '/?session=B');
-    localStorage.setItem(activityKey('recovery-user', 'A'), JSON.stringify({ sessionId: 'A', runId: 'r', status: 'streaming' }));
+    localStorage.setItem(activityKey('admin', 'A'), JSON.stringify({ sessionId: 'A', runId: 'r', status: 'streaming' }));
     vi.mocked(activateSession).mockResolvedValue({ ...complete(), messages: [] });
     vi.mocked(getCapabilities).mockResolvedValue({ run_cancel_v1: false, job_cancel_v1: false });
     vi.mocked(resumeRun).mockImplementationOnce(async (sessionId, runId, _cursor, handlers) => {
@@ -87,13 +87,13 @@ describe('actual App recovery', () => {
     });
     const first = render(<App />);
     await screen.findByRole('status', { name: '回复已完成' });
-    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.completedRunId).toBe('r'));
+    await waitFor(() => expect(readSessionActivities('admin').find(item => item.sessionId === 'A')?.completedRunId).toBe('r'));
     first.unmount();
     const second = render(<App />);
     await screen.findByRole('status', { name: '回复已完成' });
     fireEvent.click(screen.getByText('Session A'));
     await waitFor(() => expect(screen.queryByRole('status', { name: '回复已完成' })).toBeNull());
-    await waitFor(() => expect(readSessionActivities('recovery-user').find(item => item.sessionId === 'A')?.readRunId).toBe('r'));
+    await waitFor(() => expect(readSessionActivities('admin').find(item => item.sessionId === 'A')?.readRunId).toBe('r'));
     second.unmount();
     window.history.replaceState({}, '', '/?session=B');
     render(<App />);
@@ -104,75 +104,41 @@ describe('actual App recovery', () => {
   });
 
   it('discards activity for deleted tasks without restoring its run', async () => {
-    localStorage.setItem(activityKey('recovery-user', 'deleted'), JSON.stringify({ sessionId: 'deleted', runId: 'old', status: 'streaming' }));
+    localStorage.setItem(activityKey('admin', 'deleted'), JSON.stringify({ sessionId: 'deleted', runId: 'old', status: 'streaming' }));
     vi.mocked(listSessions).mockImplementation(async options => options?.ids ? { sessions: [] } : { sessions: [{ session_id: 'A', title: 'Session A' }] });
     vi.mocked(activateSession).mockResolvedValue({ ...complete(), messages: [] });
     render(<App />);
     await screen.findByText('Session A');
-    expect(localStorage.getItem(activityKey('recovery-user', 'deleted'))).toBeNull();
+    expect(localStorage.getItem(activityKey('admin', 'deleted'))).toBeNull();
     expect(resumeRun).not.toHaveBeenCalled();
   });
 
-  it.each(['storage', 'focus', 'visibility'])('synchronizes accounts on %s and discards the old stream', async trigger => {
-    vi.mocked(activateSession).mockResolvedValue(active('old account response'));
+  it.each(['storage', 'focus', 'visibility'])('keeps the workspace and stream when legacy identity changes on %s', async trigger => {
+    vi.mocked(activateSession).mockResolvedValue(active('workspace response'));
     const { container } = render(<App />);
-    await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
-    const call = vi.mocked(resumeRun).mock.calls[0];
-    vi.mocked(listSessions).mockResolvedValue({ sessions: [{ session_id: 'next', title: 'Next Account Session' }] });
-    act(() => {
-      localStorage.setItem(USER_KEY, 'next-user');
-      if (trigger === 'storage') window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, newValue: 'next-user', storageArea: localStorage }));
-      else if (trigger === 'focus') window.dispatchEvent(new Event('focus'));
-      else document.dispatchEvent(new Event('visibilitychange'));
-    });
-    await screen.findByRole('button', { name: '账户：next-user' });
-    await screen.findByText('Next Account Session');
-    expect(call[4].aborted).toBe(true);
-    expect(window.location.search).toBe('');
-    act(() => call[3].onBatch?.({ protocol_version: 2, session_id: 'A', run_id: 'r', event_index: 101,
-      events: [{ type: 'token', content: 'late private output' }] }));
-    expect(container.textContent).not.toContain('old account response');
-    expect(container.textContent).not.toContain('late private output');
-    expect(cancelRun).not.toHaveBeenCalled();
-  });
-
-  it.each([USER_KEY, null])('clears the workspace when another tab removes the account (%s)', async key => {
-    vi.mocked(activateSession).mockResolvedValue(active());
-    render(<App />);
     await waitFor(() => expect(resumeRun).toHaveBeenCalledOnce());
     const signal = vi.mocked(resumeRun).mock.calls[0][4];
     act(() => {
-      if (key === null) localStorage.clear(); else localStorage.removeItem(USER_KEY);
-      window.dispatchEvent(new StorageEvent('storage', { key, newValue: null, storageArea: localStorage }));
+      localStorage.setItem(USER_KEY, 'old-account');
+      if (trigger === 'storage') window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, newValue: 'old-account', storageArea: localStorage }));
+      else if (trigger === 'focus') window.dispatchEvent(new Event('focus'));
+      else document.dispatchEvent(new Event('visibilitychange'));
     });
-    await screen.findByRole('button', { name: '打开登录' });
-    expect(signal.aborted).toBe(true);
-    expect(screen.queryByText('Session A')).toBeNull();
-    expect(screen.queryByRole('button', { name: '发送' })).toBeNull();
+    expect(signal.aborted).toBe(false);
+    expect(window.location.search).toBe('?session=A');
+    expect(container.querySelector('.account-area')).toBeNull();
+    expect(container.textContent).toContain('workspace response');
+    expect(cancelRun).not.toHaveBeenCalled();
   });
 
-  it('does not overwrite a synchronized identity with an old login response', async () => {
-    window.history.replaceState({}, '', '/');
-    let finishLogin!: (value: { valid: boolean }) => void;
-    const pending = new Promise<{ valid: boolean }>(resolve => { finishLogin = resolve; });
+  it('opens a deep link with no saved user', async () => {
+    localStorage.removeItem(USER_KEY);
+    vi.mocked(activateSession).mockResolvedValue(complete());
     render(<App />);
-    await waitFor(() => expect(listSessions).toHaveBeenCalled());
-    vi.mocked(validateUser).mockImplementation(identity => identity === 'stale-login' ? pending : Promise.resolve({ valid: true, default_model: 'model' }));
-    fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
-    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
-    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'stale-login' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
-    await waitFor(() => expect(validateUser).toHaveBeenCalledWith('stale-login'));
-    act(() => {
-      localStorage.setItem(USER_KEY, 'next-user');
-      window.dispatchEvent(new StorageEvent('storage', { key: USER_KEY, newValue: 'next-user', storageArea: localStorage }));
-    });
-    await screen.findByRole('button', { name: '账户：next-user' });
-    await act(async () => { finishLogin({ valid: true }); await pending; });
-    expect(localStorage.getItem(USER_KEY)).toBe('next-user');
-    expect(screen.queryByRole('button', { name: '账户：stale-login' })).toBeNull();
+    await screen.findByText('ABC');
+    expect(screen.queryByRole('button', { name: '打开登录' })).toBeNull();
+    expect(activateSession).toHaveBeenCalledWith('A', expect.anything());
   });
-
   it.each(['streaming', 'before response'])('removes an accepted deletion during %s and ignores late output', async phase => {
     vi.mocked(activateSession).mockResolvedValue(phase === 'streaming' ? active() : { ...complete(), messages: [] });
     const { container } = render(<App />);
@@ -275,7 +241,7 @@ describe('actual App recovery', () => {
     await waitFor(() => expect(vi.mocked(resumeRun).mock.calls[0][4].aborted).toBe(true));
   });
   it('ignores a persisted cursor on refresh and rebuilds from -1', async () => {
-    sessionStorage.setItem('igraph-active-run:v2:recovery-user:A', JSON.stringify({ runId: 'r', lastEventIndex: 99 }));
+    sessionStorage.setItem('igraph-active-run:v2:admin:A', JSON.stringify({ runId: 'r', lastEventIndex: 99 }));
     vi.mocked(activateSession).mockResolvedValue(active());
     render(<App />);
     await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(1));
@@ -296,7 +262,7 @@ describe('actual App recovery', () => {
     expect(cancelRun).toHaveBeenCalledOnce();
   });
   it('clears legacy observer pauses without turning them into cancellation', async () => {
-    sessionStorage.setItem('igraph-run-watch-paused:v1:recovery-user:A', '1');
+    sessionStorage.setItem('igraph-run-watch-paused:v1:admin:A', '1');
     vi.mocked(activateSession).mockResolvedValue(active());
     vi.mocked(resumeRun).mockImplementationOnce(async (_s, _r, _c, handlers) => {
       handlers.onBatch?.({ protocol_version: 2, session_id: 'A', run_id: 'r', event_index: 0, events: [{ type: 'done', content: 'ABC' }] });
@@ -306,131 +272,6 @@ describe('actual App recovery', () => {
     await waitFor(() => expect((container.querySelector('.send-button') as HTMLButtonElement).disabled).toBe(false));
     expect(resumeRun).toHaveBeenCalledTimes(1);
     expect(cancelRun).not.toHaveBeenCalled();
-    expect(sessionStorage.getItem('igraph-run-watch-paused:v1:recovery-user:A')).toBeNull();
-  });
-  it('ignores previous-account loads that finish after switching identities', async () => {
-    let resolveOldProjects!: (value: { projects: Array<{ project_id: string; user_id: string; name: string }> }) => void;
-    let resolveOldModels!: (value: ModelCatalog) => void;
-    const oldProjects = new Promise<{ projects: Array<{ project_id: string; user_id: string; name: string }> }>(resolve => { resolveOldProjects = resolve; });
-    const oldModels = new Promise<ModelCatalog>(resolve => { resolveOldModels = resolve; });
-    vi.mocked(listProjects)
-      .mockReset()
-      .mockImplementationOnce(() => oldProjects)
-      .mockResolvedValue({ projects: [] });
-    vi.mocked(listSessions)
-      .mockReset()
-      .mockResolvedValue({ sessions: [{ session_id: 'next-session', title: 'Next Account Session' }] });
-    vi.mocked(listModels)
-      .mockReset()
-      .mockImplementationOnce(() => oldModels)
-      .mockResolvedValue(catalog('model', 'next-custom'));
-    window.history.replaceState({}, '', '/');
-    const { container } = render(<App />);
-    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
-    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
-    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'next-user' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
-
-    await waitFor(() => expect(container.textContent).toContain('Next Account Session'));
-    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(2));
-    await act(async () => {
-      resolveOldProjects({ projects: [{ project_id: 'old-project', user_id: 'recovery-user', name: 'Old Account Project' }] });
-      resolveOldModels(catalog('old-custom'));
-      await Promise.resolve();
-    });
-
-    expect(listSessions).toHaveBeenCalledOnce();
-    expect(container.textContent).not.toContain('Old Account Project');
-    fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
-    fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
-    expect(screen.getByRole('button', { name: 'next-custom' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'old-custom' })).toBeNull();
-  });
-  it('releases the global busy state when an account changes during project loading', async () => {
-    let resolveOldConversations!: (value: { conversations: [] }) => void;
-    const oldConversations = new Promise<{ conversations: [] }>(resolve => { resolveOldConversations = resolve; });
-    vi.mocked(listProjects)
-      .mockReset()
-      .mockResolvedValueOnce({ projects: [{ project_id: 'old-project', user_id: 'recovery-user', name: 'Old Account Project' }] })
-      .mockResolvedValue({ projects: [] });
-    vi.mocked(listSessions).mockReset().mockResolvedValue({ sessions: [] });
-    vi.mocked(listProjectConversations).mockReset().mockImplementationOnce(() => oldConversations);
-    window.history.replaceState({}, '', '/?project=old-project');
-    const { container } = render(<App />);
-    await waitFor(() => expect(listProjectConversations).toHaveBeenCalledOnce());
-
-    fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
-    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
-    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'next-user' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
-
-    await waitFor(() => expect(screen.getByRole('button', { name: '账户：next-user' })).toBeTruthy());
-    await waitFor(() => expect(container.querySelector('.workspace-home-action')).not.toBeNull());
-    const homeAction = container.querySelector('.workspace-home-action') as HTMLButtonElement;
-    expect(homeAction.disabled).toBe(false);
-    await act(async () => {
-      resolveOldConversations({ conversations: [] });
-      await Promise.resolve();
-    });
-    expect(homeAction.disabled).toBe(false);
-  });
-  it('ignores an old model update after switching away from and back to the same account', async () => {
-    let resolveOldUpdate!: (value: { session_id: string; model: string; available_models: string[] }) => void;
-    const oldUpdate = new Promise<{ session_id: string; model: string; available_models: string[] }>(resolve => { resolveOldUpdate = resolve; });
-    let recoveryValidationCount = 0;
-    vi.mocked(validateUser).mockReset().mockImplementation(async identity => {
-      if (identity === 'next-user') return { valid: true, default_model: 'next-model', available_models: ['next-model'] };
-      recoveryValidationCount += 1;
-      return recoveryValidationCount === 1
-        ? { valid: true, default_model: 'model', available_models: ['model', 'old-choice'] }
-        : { valid: true, default_model: 'fresh-a-model', available_models: ['fresh-a-model'] };
-    });
-    vi.mocked(listSessions)
-      .mockReset()
-      .mockResolvedValueOnce({ sessions: [{ session_id: 'A', title: 'Session A', model: 'model' }] })
-      .mockResolvedValue({ sessions: [] });
-    vi.mocked(activateSession).mockResolvedValue({ ...complete(), available_models: ['model', 'old-choice'] });
-    vi.mocked(updateSessionModel).mockReturnValue(oldUpdate);
-
-    render(<App />);
-    const modelTrigger = await screen.findByRole('button', { name: '选择模型' });
-    fireEvent.click(modelTrigger);
-    fireEvent.click(within(screen.getByRole('group', { name: '可用模型' })).getByRole('button', { name: 'old-choice' }));
-    await waitFor(() => expect(updateSessionModel).toHaveBeenCalledWith('A', 'old-choice', 0));
-    vi.mocked(listModels).mockResolvedValue({ ...catalog('fresh-a-model'), default_model: 'fresh-a-model' });
-
-    act(() => window.history.replaceState({}, '', '/'));
-    fireEvent.click(screen.getByRole('button', { name: '账户：recovery-user' }));
-    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
-    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'next-user' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
-
-    await screen.findByRole('button', { name: '账户：next-user' });
-    fireEvent.click(screen.getByRole('button', { name: '账户：next-user' }));
-    fireEvent.click(screen.getByRole('button', { name: '使用其他用户登录' }));
-    fireEvent.change(screen.getByLabelText('用户 ID'), { target: { value: 'recovery-user' } });
-    fireEvent.click(screen.getByRole('button', { name: '登录' }));
-
-    await screen.findByRole('button', { name: '账户：recovery-user' });
-    fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
-    const nextTrigger = await screen.findByRole('button', { name: '选择模型' });
-    expect(nextTrigger.textContent).toContain('fresh-a-model');
-
-    await act(async () => {
-      resolveOldUpdate({ session_id: 'A', model: 'old-choice', available_models: ['old-choice', 'leaked-model'] });
-      await oldUpdate;
-    });
-
-    expect(nextTrigger.textContent).toContain('fresh-a-model');
-    expect((nextTrigger as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(nextTrigger);
-    const modelGroup = screen.getByRole('group', { name: '可用模型' });
-    expect(within(modelGroup).queryByRole('button', { name: 'old-choice' })).toBeNull();
-    expect(within(modelGroup).queryByRole('button', { name: 'leaked-model' })).toBeNull();
+    expect(sessionStorage.getItem('igraph-run-watch-paused:v1:admin:A')).toBeNull();
   });
 });

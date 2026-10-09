@@ -1,6 +1,7 @@
+import { useExampleLabels } from '../userCases';
 import { Popup, PopupBackdrop } from './PopupMotion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, buildDatasetGraph, commitConstruction, getConstructionGraph, getConstructionSchema, getConstructionState, previewConstruction } from '../api';
+import { ApiError, getConstructionModels, renameProjectDataset, buildDatasetGraph, commitConstruction, getConstructionGraph, getConstructionSchema, getConstructionState, previewConstruction } from '../api';
 import { useI18n } from '../i18n';
 import type { Translate } from '../i18n';
 import { isGraphData } from '../types';
@@ -8,6 +9,7 @@ import type { ConstructionBuildOptions, ConstructionDomainCategory, Construction
 import { GraphWorkspace } from './GraphWorkspace';
 import { Icon } from './Icon';
 import { DatasetDescriptionEditor } from './DatasetDescriptionEditor';
+import { ConstructionModelSettings } from './ConstructionModelSettings';
 import { ConstructionSchemaFields } from './ConstructionSchemaFields';
 import { TableSchemaPreview } from './TableSchemaPreview';
 import { SourceDataPreview } from './SourceDataPreview';
@@ -43,6 +45,9 @@ function rawProperties(item: Record<string, unknown> | undefined) {
 function display(value: unknown) { return typeof value === 'object' ? JSON.stringify(value) : String(value ?? ''); }
 function instanceNodeName(node: Record<string, unknown>, t: Translate) {
   const id = String(node.id ?? '');
+  const data = rawProperties(node).data;
+  const name = properties(node).name ?? (data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>).name : undefined);
+  if (id.startsWith('entity_') && typeof name === 'string' && name.trim()) return name.trim();
   if (!id.startsWith('row_')) return id;
   const type = String(node.type || t('Node', '节点'));
   const rowIndex = rawProperties(node).row_index;
@@ -228,7 +233,7 @@ async function loadReadyAssets(dataset: Dataset, signal?: AbortSignal): Promise<
   };
 }
 
-function ConstructionAgentStream({ state }: { state: ConstructionState | null }) {
+function ConstructionAgentStream({ state, mode }: { state: ConstructionState | null; mode: 'rules' | 'llm' }) {
   const { t } = useI18n();
   const progress = state?.progress;
   const events = (progress?.events || []).slice(-8);
@@ -251,7 +256,7 @@ function ConstructionAgentStream({ state }: { state: ConstructionState | null })
       {metrics.queries_passed !== undefined && <span>{t('Queries passed', '查询通过')} <b>{metrics.queries_passed}</b></span>}
       {metrics.queries_repaired !== undefined && <span>{t('Facts repaired', '已修正事实')} <b>{metrics.queries_repaired}</b></span>}
     </div>}
-    <small className="construction-agent-disclosure">{t('Only progress and validation results are shown. Agent reasoning is never displayed.', '这里只展示运行进度与验收结果，不展示 Agent 内部推理。')}</small>
+    <small className="construction-agent-disclosure">{(progress?.mode || mode) === 'rules' ? t('Building directly from primary and foreign keys, without automatic optimization.', '直接按主键和外键构图，不进行自动优化。') : t('Only progress and validation results are shown. Agent reasoning is never displayed.', '这里只展示运行进度与验收结果，不展示 Agent 内部推理。')}</small>
   </section>;
 }
 
@@ -267,9 +272,16 @@ type Props = {
 
 export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChange, onUse, onDatasetUpdated, embedded = false }: Props) {
   const { language, t } = useI18n();
+  const labels = useExampleLabels();
   const translation = useRef(t);
   translation.current = t;
   const formatNumber = (value: number) => value.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US');
+  const [datasetName, setDatasetName] = useState(dataset.name);
+  const [nameInput, setNameInput] = useState(dataset.name);
+  const [renaming, setRenaming] = useState(false);
+  const [constructionModel, setConstructionModel] = useState('deepseek-v4-pro');
+  const [constructionModels, setConstructionModels] = useState(['deepseek-v4-pro', 'claude-opus-5-5']);
+  const [modelSettingsDirty, setModelSettingsDirty] = useState(false);
   const [state, setState] = useState<ConstructionState | null>(null);
   const [savedGraph, setSavedGraph] = useState<GraphData | null>(null);
   const [savedSchema, setSavedSchema] = useState<ConstructionSchemaResponse | null>(null);
@@ -293,7 +305,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
   const [tab, setTab] = useState<'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts'>('Graph');
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
   const [schemaSelected, setSchemaSelected] = useState<Record<string, unknown> | null>(null);
-  const [schemaView, setSchemaView] = useState<'tables' | 'optimized'>('tables');
+  const [schemaView, setSchemaView] = useState<'tables' | 'optimized' | 'instances'>('tables');
   const [rule, setRule] = useState<Rule>('collapse_node');
   const [nodeIds, setNodeIds] = useState<string[]>([]);
   const [edgeIds, setEdgeIds] = useState<string[]>([]);
@@ -333,7 +345,14 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     ? constructionSourceTables(dataset, savedSchema) : [], [sourceType, dataset, savedSchema]);
   const tableGraph = useMemo(() => sourceTables.length ? tableRelationGraph(sourceTables) : null, [sourceTables]);
   const showTableSchema = Boolean(tableGraph) && schemaView === 'tables';
-  const canvasGraph = activeSchema?.schema.graph || null;
+  const showInstanceGraph = sourceType === 'txt' && schemaView !== 'optimized';
+  const instanceGraph = useMemo<GraphData | null>(() => graph ? {
+    directed: graph.directed,
+    nodes: graph.nodes.map(node => ({ ...node, label: instanceNodeName(node, t) })),
+    edges: graph.edges.map(edge => ({ ...edge, label: String(edge.type || '') })),
+    num_nodes: graph.nodes.length, num_edges: graph.edges.length,
+  } : null, [graph, t]);
+  const canvasGraph = showInstanceGraph ? instanceGraph : activeSchema?.schema.graph || null;
   const localizedCanvasGraph = useMemo<GraphData | null>(() => canvasGraph ? {
     ...canvasGraph,
     nodes: canvasGraph.nodes.map(node => ({ ...node, label: localizedSchemaLabel(node.label, t) })),
@@ -361,7 +380,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     if (!quiet) { setBusy('loading'); setError(''); }
     try {
       const nextState = await getConstructionState(dataset, signal);
-      const assets = nextState.status === 'ready' ? await loadReadyAssets(dataset, signal) : null;
+      const assets = ['ready', 'draft'].includes(nextState.status) ? await loadReadyAssets(dataset, signal) : null;
       const snapshot = assets?.snapshot || null;
       if (signal?.aborted || !alive.current || version !== lifecycle.current || attempt !== buildAttempt.current) return null;
       // A later status response must not replace a completed graph or its edits.
@@ -370,13 +389,14 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
         if (currentBuildId.current && nextState.build_id && currentBuildId.current !== nextState.build_id) return null;
         // Until the POST or a building snapshot identifies this attempt, an
         // earlier failure cannot resolve it or discard its eventual success.
-        if (postPending.current && nextState.status !== 'building' && nextState.status !== 'ready' &&
+        if (postPending.current && nextState.status !== 'building' && !['ready', 'draft'].includes(nextState.status) &&
             (!currentBuildId.current || nextState.build_id !== currentBuildId.current)) return null;
         if (nextState.status === 'building' && nextState.build_id) currentBuildId.current = nextState.build_id;
       }
       const publishedState = snapshot ? { ...nextState, revision: snapshot.revision } : nextState;
       const restoredQueryCount = progressQueryCount(nextState);
       if (restoredQueryCount !== null) setQueryCount(restoredQueryCount);
+      if (nextState.progress?.mode) setConstructionMode(nextState.progress.mode);
       setState(publishedState);
       callbacks.current.onStateChange?.(callbacks.current.dataset, publishedState);
       const waiting = nextState.status === 'building' || nextState.status === 'not_built' && postPending.current;
@@ -391,11 +411,11 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       else if (publish && snapshot) {
         buildResolved.current = true; postPending.current = false;
         setBusy(previous => previous === 'build' ? '' : previous);
-        if (notifiedRevision.current !== snapshot.revision) {
+        if (nextState.status === 'ready' && notifiedRevision.current !== snapshot.revision) {
           notifiedRevision.current = snapshot.revision;
           callbacks.current.onSaved(callbacks.current.dataset, snapshot.graph, snapshot.revision);
         }
-        setNotice(translation.current('The graph has been saved to this dataset and is ready for future use.', '构图已保存到此数据集，后续可直接使用。'));
+        setNotice(nextState.status === 'draft' ? translation.current('Graph draft ready. Save the construction result to use it for analysis.', '构图草稿已生成，请点击保存构图结果后用于分析。') : translation.current('The graph has been saved to this dataset and is ready for future use.', '构图已保存到此数据集，后续可直接使用。'));
       } else if (nextState.status === 'failed' || nextState.status === 'algorithm_unavailable') {
         buildResolved.current = true; postPending.current = false;
         setBusy(previous => previous === 'build' ? '' : previous);
@@ -415,6 +435,28 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     } finally { if (!quiet && !signal?.aborted && alive.current && version === lifecycle.current) setBusy(''); }
   }, [dataset.dataset_id, dataset.project_id]);
 
+  useEffect(() => { setDatasetName(dataset.name); setNameInput(dataset.name); }, [dataset.name]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void getConstructionModels(controller.signal).then(result => {
+      if (!controller.signal.aborted && result.models.length) {
+        setConstructionModels(result.models); setConstructionModel(result.default_model);
+      }
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [dataset.dataset_id, dataset.file_type]);
+  async function renameDataset() {
+    const name = nameInput.trim();
+    if (!name || name.length > 120) { setError(t('Enter a name of 1–120 characters.', '请输入 1 到 120 字的数据集名称。')); return; }
+    setBusy('rename'); setError('');
+    try {
+      const result = await renameProjectDataset(dataset.project_id, dataset.dataset_id, name);
+      if (!alive.current) return;
+      setDatasetName(result.dataset.name); setRenaming(false); onDatasetUpdated?.(result.dataset);
+    } catch (cause) { if (alive.current) handleFailure(cause); }
+    finally { if (alive.current) setBusy(''); }
+  }
+
   useEffect(() => {
     alive.current = true;
     lifecycle.current += 1;
@@ -422,7 +464,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     currentBuildId.current = null;
     buildAttempt.current += 1;
     setState(null); setSavedGraph(null); setSavedSchema(null); setSchemaWarning(''); setMonitoringBuild(false); setNotice(''); setQueryCount('15'); setDomain('');
-    setSelected(null); setSchemaSelected(null);
+    setSelected(null); setSchemaSelected(null); setSchemaView('tables');
     setDomainCategory('auto'); setConstructionMode('rules'); setExperienceEnabled(true); setDelimiter(''); setEntityTypes(''); setTextRefineEnabled(false);
     const controller = new AbortController();
     const priorFocus = document.activeElement as HTMLElement | null;
@@ -455,9 +497,9 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     } else setError(failure(cause, t));
   }
   async function build() {
-    if (postPending.current || isBuilding || !state || state.algorithm_available === false) return;
+    if (postPending.current || isBuilding || modelSettingsDirty || !state || state.algorithm_available === false) return;
     const count = Number(queryCount);
-    if (!semanticTextMode && (!Number.isInteger(count) || count < 1 || count > 100)) {
+    if (!semanticTextMode && constructionMode === 'llm' && (!Number.isInteger(count) || count < 1 || count > 100)) {
       setError(t('The number of validation queries must be an integer from 1 to 100.', '验证查询数量必须是 1 到 100 之间的整数。')); return;
     }
     if (semanticTextMode && textRefineEnabled && (!Number.isInteger(count) || count < 1 || count > 100)) {
@@ -482,15 +524,17 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       // No AbortSignal: closing this view must not cancel the server-side build.
       const sourceDescription = domain.trim() || dataset.description?.trim() || '';
       const options: ConstructionBuildOptions = semanticTextMode
-        ? { domain: sourceDescription, txt_mode: 'entities', mode: 'llm', entity_types: selectedEntityTypes, text_refine_enabled: textRefineEnabled, ...(textRefineEnabled ? { query_count: count } : {}) }
-        : { mode: constructionMode, query_count: count, domain: sourceDescription, domain_category: domainCategory, experience_enabled: experienceEnabled };
+        ? { domain: sourceDescription, txt_mode: 'entities', mode: 'llm', entity_types: selectedEntityTypes, construction_model: constructionModel, text_refine_enabled: textRefineEnabled, ...(textRefineEnabled ? { query_count: count } : {}) }
+        : constructionMode === 'llm'
+          ? { mode: 'llm', construction_model: constructionModel, query_count: count, domain: sourceDescription, domain_category: domainCategory, experience_enabled: experienceEnabled }
+          : { mode: 'rules', domain: sourceDescription, experience_enabled: false };
       if (!semanticTextMode && sourceType === 'txt' && delimiter === '__lines__') options.txt_mode = 'lines';
       else if (!semanticTextMode && supportsDelimiter && delimiter) options.delimiter = delimiter;
       const result = await buildDatasetGraph(dataset, options);
       if (!alive.current || version !== lifecycle.current || attempt !== buildAttempt.current || buildResolved.current) return;
       postPending.current = false;
       currentBuildId.current = result.build_id || null;
-      if (result.status === 'ready') {
+      if (['ready', 'draft'].includes(result.status)) {
         const assets = await loadReadyAssets(dataset);
         const snapshot = assets.snapshot;
         if (!alive.current || version !== lifecycle.current || attempt !== buildAttempt.current || buildResolved.current) return;
@@ -499,11 +543,11 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
         setState(completedState); setSavedGraph(snapshot.graph); setSavedSchema(assets.schema); setSchemaWarning(assets.warning);
         setSchemaSelected(null);
         callbacks.current.onStateChange?.(callbacks.current.dataset, completedState);
-        if (notifiedRevision.current !== snapshot.revision) {
+        if (result.status === 'ready' && notifiedRevision.current !== snapshot.revision) {
           notifiedRevision.current = snapshot.revision;
           onSaved(dataset, snapshot.graph, snapshot.revision);
         }
-        setNotice(t('The graph has been saved to this dataset and is ready for future use.', '构图已保存到此数据集，后续可直接使用。'));
+        setNotice(result.status === 'draft' ? t('Graph draft ready. Save the construction result to use it for analysis.', '构图草稿已生成，请点击保存构图结果后用于分析。') : t('The graph has been saved to this dataset and is ready for future use.', '构图已保存到此数据集，后续可直接使用。'));
       } else {
         setState(result); setMonitoringBuild(result.status === 'building');
         callbacks.current.onStateChange?.(callbacks.current.dataset, result);
@@ -533,7 +577,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
           ? t('The connection was interrupted, but construction may still be running on the server. Checking the existing task status.', '请求连接已中断，服务器可能仍在构图。正在查询已有任务状态。')
           : t('Confirming the graph construction result on the server.', '正在确认服务器上的构图结果。'));
         const latest = await load(undefined, true, true);
-        if (alive.current && version === lifecycle.current && attempt === buildAttempt.current && latest?.status !== 'building' && latest?.status !== 'ready') {
+        if (alive.current && version === lifecycle.current && attempt === buildAttempt.current && latest?.status !== 'building' && latest?.status !== 'ready' && latest?.status !== 'draft') {
           if (!uncertain) handleFailure(cause);
         }
       }
@@ -564,7 +608,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     finally { if (alive.current) setBusy(''); }
   }
   async function save() {
-    if (!state || !operations.length || conflict) return;
+    if (!state || (!operations.length && state.status !== 'draft') || conflict) return;
     setBusy('save'); setError(''); setNotice('');
     try {
       const result = await commitConstruction(dataset, state.revision, operations);
@@ -630,7 +674,7 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
       if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }
   }}>
-    <header className="construction-header"><div className="construction-heading"><span className="construction-mark"><Icon name="schema" size={23} /></span><div><span className="construction-eyebrow">{t('Graph Construction / Data Source', '构图工作台 / 数据源')}</span><h2 id="construction-title">{dataset.name}</h2><p>{state?.source_filename || dataset.original_filename}</p></div></div><div className="construction-header-actions"><span className={`construction-status ${graph && !isBuilding ? 'ready' : ''}`}>{busy === 'loading' ? t('Loading', '读取中') : isBuilding ? t('Building graph', '构图进行中') : graph ? t(`Saved · Version ${state?.revision}`, `已保存 · 版本 ${state?.revision}`) : state?.status === 'failed' ? t('Construction failed', '构图失败') : t('Waiting to build', '等待构图')}</span>{embedded ? <button ref={closeButton} className="secondary-command construction-back-button" disabled={Boolean(busy) && busy !== 'loading' && busy !== 'build'} onClick={requestClose}><Icon name="arrow-left" size={16} /> {t('Back to construction', '返回构图')}</button> : <button ref={closeButton} className="plain-icon" aria-label={t('Close graph construction workspace', '关闭构图工作台')} disabled={Boolean(busy) && busy !== 'loading' && busy !== 'build'} onClick={requestClose}><Icon name="close" size={20} /></button>}</div></header>
+    <header className="construction-header"><div className="construction-heading"><span className="construction-mark"><Icon name="schema" size={23} /></span><div><span className="construction-eyebrow">{t('Graph Construction / Data Source', '构图工作台 / 数据源')}</span><h2 id="construction-title">{labels.name(datasetName)}</h2>{renaming ? <form className="construction-rename" onSubmit={event => { event.preventDefault(); void renameDataset(); }}><input aria-label={t('Dataset name', '数据集名称')} maxLength={120} value={nameInput} onChange={event => setNameInput(event.target.value)} autoFocus /><button type="submit" disabled={editingBusy}>{t('Save name', '保存名称')}</button><button type="button" onClick={() => setRenaming(false)}>{t('Cancel', '取消')}</button></form> : <button className="construction-preset-link" disabled={editingBusy} onClick={() => { setNameInput(datasetName); setRenaming(true); }}>{t('Rename dataset', '重命名数据集')}</button>}<p>{state?.source_filename || dataset.original_filename}</p></div></div><div className="construction-header-actions"><span className={`construction-status ${graph && !isBuilding ? 'ready' : ''}`}>{busy === 'loading' ? t('Loading', '读取中') : isBuilding ? t('Building graph', '构图进行中') : state?.status === 'draft' ? t('Draft · Unsaved', '草稿 · 待保存') : graph ? t(`Saved · Version ${state?.revision}`, `已保存 · 版本 ${state?.revision}`) : state?.status === 'failed' ? t('Construction failed', '构图失败') : t('Waiting to build', '等待构图')}</span>{embedded ? <button ref={closeButton} className="secondary-command construction-back-button" disabled={Boolean(busy) && busy !== 'loading' && busy !== 'build'} onClick={requestClose}><Icon name="arrow-left" size={16} /> {t('Back to construction', '返回构图')}</button> : <button ref={closeButton} className="plain-icon" aria-label={t('Close graph construction workspace', '关闭构图工作台')} disabled={Boolean(busy) && busy !== 'loading' && busy !== 'build'} onClick={requestClose}><Icon name="close" size={20} /></button>}</div></header>
     {(error || notice || conflict) && <div className={`construction-banner ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}><span>{error || notice}</span>{conflict && <button className="secondary-command" disabled={editingBusy} onClick={() => { setNotice(''); void load(); }}>{t('Reload latest version', '重新加载最新版本')}</button>}{error && !conflict && (!state || isBuilding || state.status === 'failed') && <button className="secondary-command" disabled={busy === 'loading'} onClick={() => void load(undefined, isBuilding, isBuilding)}>{isBuilding ? t('Check status again', '重新查询状态') : t('Retry', '重试')}</button>}</div>}
     {confirmClose && <div className="construction-banner warning" role="alert"><span>{embedded
       ? t(`${operations.length} preview ${operations.length === 1 ? 'change has' : 'changes have'} not been saved. Returning will discard ${operations.length === 1 ? 'it' : 'them'}.`, `预览中的 ${operations.length} 项修改尚未保存。返回后将丢弃这些修改。`)
@@ -638,18 +682,27 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
     <div className="construction-body">
       <aside className="construction-controls">
         <DatasetDescriptionEditor dataset={dataset} onSaved={onDatasetUpdated} disabled={editingBusy} />
+        <ConstructionModelSettings key={dataset.dataset_id} model={constructionModel} models={constructionModels} disabled={editingBusy}
+          onModelChange={setConstructionModel} onDirtyChange={setModelSettingsDirty} onSavedModel={model => {
+            setConstructionModel(model); setConstructionModels(current => [...new Set([...current, model])]);
+          }} />
         <div className="construction-source"><div><Icon name="file" size={18} /><strong>{t('Source file', '源文件')}</strong><b>{(state?.source_type || dataset.file_type).replace('.', '').toUpperCase()}</b></div>{!graph && <>
           <fieldset className="construction-build-options" disabled={editingBusy || !state || state.algorithm_available === false}>
-            {!semanticTextMode && <><label className="construction-check"><input type="checkbox" role="switch" checked={constructionMode === 'llm'} onChange={event => setConstructionMode(event.target.checked ? 'llm' : 'rules')} aria-describedby="construction-mode-help" />{t('Use Agent to optimize the graph', '使用 Agent 优化构图')}</label><small id="construction-mode-help">{constructionMode === 'llm' ? t('Agent optimizes and validates the graph built from rules.', 'Agent 会优化并验证规则化方法构建的图。') : t('Only rule-based construction runs by default; no Agent is used.', '默认仅执行规则化构图，不使用 Agent。')}</small></>}
-            {!semanticTextMode && <label>{t('Validation queries', '验证查询数量')}<input type="number" min={1} max={100} step={1} value={queryCount} onChange={event => setQueryCount(event.target.value)} /></label>}
-            {!semanticTextMode && <label>{t('Domain category', '领域类别')}<select value={domainCategory} onChange={event => setDomainCategory(event.target.value as ConstructionDomainCategory)}>{DOMAIN_CATEGORIES.map(category => <option key={category.value} value={category.value}>{t(category.label.en, category.label.zh)}</option>)}</select></label>}
+            {!semanticTextMode && <><label className="construction-check"><input type="checkbox" role="switch" checked={constructionMode === 'llm'} onChange={event => setConstructionMode(event.target.checked ? 'llm' : 'rules')} aria-describedby="construction-mode-help" />{t('Use Agent to optimize the graph', '使用 Agent 优化构图')}</label><small id="construction-mode-help">{constructionMode === 'llm' ? t('Agent optimizes and validates the graph built from rules.', 'Agent 会优化并验证规则化方法构建的图。') : t('Build directly from primary and foreign keys (PK/FK), without automatic optimization.', '仅按主键和外键（PK/FK）构图，不进行自动优化。')}</small></>}
+            {!semanticTextMode && constructionMode === 'llm' && <label>{t('Validation queries', '验证查询数量')}<input type="number" min={1} max={100} step={1} value={queryCount} onChange={event => setQueryCount(event.target.value)} /></label>}
+            {!semanticTextMode && constructionMode === 'llm' && <label>{t('Domain category', '领域类别')}<select value={domainCategory} onChange={event => setDomainCategory(event.target.value as ConstructionDomainCategory)}>{DOMAIN_CATEGORIES.map(category => <option key={category.value} value={category.value}>{t(category.label.en, category.label.zh)}</option>)}</select></label>}
+            {sourceType === 'txt' && <button type="button" className="construction-preset-link" onClick={() => {
+              setDelimiter('__entities__');
+              setEntityTypes('人物');
+              setDomain('抽取小说全文中明确出现的所有人物作为节点，人物之间明确陈述的关系作为边；保留没有明确关系的人物，不把地点、组织或事件作为人物，不编造关系。');
+            }}><span>{t('Novel character relationships', '小说人物关系')}</span><Icon name="arrow-right" size={15} /></button>}
             {supportsDelimiter && <label>{sourceType === 'txt' ? t('TXT processing mode', 'TXT 处理方式') : t('Text delimiter (optional)', '文本分隔符（选填）')}<select aria-label={sourceType === 'txt' ? t('TXT processing mode', 'TXT 处理方式') : t('Text delimiter (optional)', '文本分隔符（选填）')} value={delimiter} onChange={event => setDelimiter(event.target.value)}><option value="">{sourceType === 'txt' ? t('Auto: tabular when tab-separated, otherwise one record per line', '自动：制表符表格，否则逐行记录') : t('Comma (default)', '默认逗号')}</option>{sourceType === 'txt' && <option value="__entities__">{t('Extract entities and relationships with AI (LLM)', '智能抽取实体与关系（LLM）')}</option>}{sourceType === 'txt' && <option value="__lines__">{t('Force one record per line (do not infer relationships)', '强制逐行记录（不推断关系）')}</option>}<option value={'\t'}>{t('Tab', '制表符')}</option><option value=",">{t('Comma', '逗号')}</option><option value="|">{t('Vertical bar', '竖线')}</option><option value=";">{t('Semicolon', '分号')}</option><option value=" ">{t('Space', '空格')}</option></select><small className={semanticTextMode ? 'construction-text-disclosure' : undefined}>{sourceType === 'txt' ? semanticTextMode ? t('The full TXT content is sent to the graph model in chunks. The LLM identifies explicit entities and relationships; review the generated result manually.', 'TXT 全文将分块发送至构图模型；LLM 会识别文本中明确出现的实体和关系，生成结果需人工核对。') : t('Auto mode recognizes tab-separated tables; otherwise it creates one record per line. You can also choose another table delimiter or force line-by-line records.', '自动模式只识别制表符表格，否则按逐行记录构图；也可选择其他表格分隔符或强制逐行记录。') : t('A blank CSV delimiter uses commas. Other delimiters still enforce header and column-count validation.', 'CSV 留空时使用逗号；选择其他分隔符后仍会严格校验表头和列数。')}</small></label>}
             <label>{semanticTextMode ? t('Extraction focus (optional)', '抽取目标（选填）') : t('Domain description (optional)', '领域描述（选填）')}<textarea rows={3} maxLength={16000} value={domain} onChange={event => setDomain(event.target.value)} placeholder={semanticTextMode ? t('For example: focus on people, organizations, locations, and their explicit relationships', '例如：关注人物、组织、地点及其明确关系') : t('For example: e-commerce order fulfillment, focusing on relationships among customers, products, and orders', '例如：电商订单履约，关注客户、商品和订单之间的关系')} /></label>
-            {semanticTextMode && <><label>{t('Entity types to extract (optional)', '提取的实体类型（选填）')}<input value={entityTypes} onChange={event => setEntityTypes(event.target.value)} placeholder={t('People, events, organizations', '人物、事件、组织')} aria-describedby="construction-entity-types-help" /></label><small id="construction-entity-types-help">{t('Separate types with commas. Only entities in these categories will be used as graph nodes. Leave blank to extract all types.', '用逗号或顿号分隔；图中只保留这些类型的实体。留空则不限类型。')}</small><label className="construction-check"><input type="checkbox" role="switch" checked={textRefineEnabled} onChange={event => setTextRefineEnabled(event.target.checked)} aria-describedby="construction-text-refine-help" />{t('Use Agent to refine the TXT graph', '使用 Agent refine TXT 构图')}</label><small id="construction-text-refine-help">{textRefineEnabled ? t('Agent creates questions from the source text, checks their answers on the graph, and repairs missing facts before publishing.', 'Agent 会从原文提出查询，在图上核对答案，并在发布前修正缺失事实。') : t('The graph is saved after extraction without query-based refinement.', '抽取完成后直接保存图，不进行查询与修正。')}</small>{textRefineEnabled && <label>{t('Validation queries', '验证查询数量')}<input type="number" min={1} max={100} step={1} value={queryCount} onChange={event => setQueryCount(event.target.value)} /></label>}</>}
-            {!semanticTextMode && <><label className="construction-check"><input type="checkbox" checked={experienceEnabled} onChange={event => setExperienceEnabled(event.target.checked)} aria-describedby="construction-experience-help" />{t('Reuse domain experience', '复用领域经验')}</label>
+            {semanticTextMode && <><label>{t('Entity types to extract (optional)', '提取的实体类型（选填）')}<input value={entityTypes} onChange={event => setEntityTypes(event.target.value)} placeholder={t('People, events, organizations', '人物、事件、组织')} aria-describedby="construction-entity-types-help" /></label><small id="construction-entity-types-help">{t('Separate types with commas. Only entities in these categories will be used as graph nodes. Leave blank to extract all types.', '用逗号或顿号分隔；图中只保留这些类型的实体。留空则不限类型。')}</small><label className="construction-check"><input type="checkbox" role="switch" checked={textRefineEnabled} onChange={event => setTextRefineEnabled(event.target.checked)} aria-describedby="construction-text-refine-help" />{t('Use Agent to refine the TXT graph', '使用 Agent refine TXT 构图')}</label><small id="construction-text-refine-help">{textRefineEnabled ? t('Agent creates questions from the source text, checks their answers on the graph, and repairs missing facts in the draft.', 'Agent 会从原文提出查询，在图上核对答案，并修正草稿中的缺失事实。') : t('Extraction generates a draft without query-based refinement. Save the result to use it for analysis.', '抽取完成后生成草稿，不进行查询与修正；点击保存构图结果后可用于分析。')}</small>{textRefineEnabled && <label>{t('Validation queries', '验证查询数量')}<input type="number" min={1} max={100} step={1} value={queryCount} onChange={event => setQueryCount(event.target.value)} /></label>}</>}
+            {!semanticTextMode && constructionMode === 'llm' && <><label className="construction-check"><input type="checkbox" checked={experienceEnabled} onChange={event => setExperienceEnabled(event.target.checked)} aria-describedby="construction-experience-help" />{t('Reuse domain experience', '复用领域经验')}</label>
             <small id="construction-experience-help">{t('Experience is reused only within graph construction for the same user and domain. New graphs still require validation. When disabled, this build neither reads nor writes experience.', '仅在构图模块内复用同一用户、同一领域的经验。新图仍需验收；关闭后，本次构图不读取或写入经验。')}</small></>}
           </fieldset>
-          <button className="primary-command" onClick={build} disabled={editingBusy || !state || state.algorithm_available === false}>{isBuilding ? t('Building graph…', '正在构图…') : state?.algorithm_available === false ? t('Construction algorithm unavailable', '构图算法待接入') : state?.status === 'failed' ? t('Rebuild graph', '重新构图') : t('Start construction', '开始构图')}</button>
+          <button className="primary-command" onClick={build} disabled={editingBusy || modelSettingsDirty || !state || state.algorithm_available === false}>{isBuilding ? t('Building graph…', '正在构图…') : state?.algorithm_available === false ? t('Construction algorithm unavailable', '构图算法待接入') : state?.status === 'failed' ? t('Rebuild graph', '重新构图') : t('Start construction', '开始构图')}</button>
           {(isBuilding || state?.algorithm_available === false || semanticTextMode) && <small>{isBuilding ? t('Construction continues on the server and its status is checked every 3 seconds. You can close this window and reopen it to view progress and results.', '构图在服务器持续运行，每 3 秒查询一次状态。关闭窗口后，可重新打开查看进度与结果。') : state?.algorithm_available === false ? t('Graph construction is not available for this file type yet. The source file is preserved.', '此文件类型的构图算法暂不可用，源文件已保留。') : t('The LLM extracts entities and relationships from line-based text to build the graph. Review semantic results manually.', '依据 LLM 从逐行文本中抽取实体与关系并构图；语义结果需要人工核对。')}</small>}
         </>}</div>
         <div className="construction-rule-heading"><strong>{t('Graph data optimization', '图数据优化')}</strong><span>{t('6 operations', '6 项操作')}</span></div>
@@ -672,18 +725,22 @@ export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChang
           <button className="primary-command construction-preview-button" type="submit">{busy === 'preview' ? t('Generating preview…', '正在预览…') : t('Apply and preview', '应用并预览')}</button>
         </fieldset></form>}
       </aside>
-      <main className="construction-visual"><div className="construction-visual-head"><div><strong>{showTableSchema ? t('Table relationships', '表关联模式') : preview ? t('Graph Schema · Change Preview', 'Graph Schema · 修改预览') : 'Graph Schema'}</strong><span>{showTableSchema ? preview ? t('Source PK/FK schema; inspect pending changes in Optimized structure.', '源表主外键关系；待保存的优化请切换“优化后结构”查看。') : t('Nodes are tables; links are foreign keys.', '节点为表，连线为外键') : preview ? t('The preview is not saved. Type and relationship statistics reflect the preview.', '预览尚未保存；类型与关系统计已按预览实时更新') : graph ? t('Nodes represent node types; links represent relationship types.', '节点代表节点类型，连线代表关系类型') : t('Node and relationship types appear here after construction.', '构图完成后展示节点类型与关系类型')}</span>{schemaWarningText && !preview && <span className="construction-schema-warning">{schemaWarningText}</span>}</div>{graph && <div className="construction-counts"><span><b>{formatNumber(showTableSchema ? sourceTables.length : schemaNodeTypeCount)}</b> {showTableSchema ? t('tables', '张表') : t(schemaNodeTypeCount === 1 ? 'node type' : 'node types', '节点类型')}</span><span><b>{formatNumber(showTableSchema ? tableGraph!.edges.length : schemaEdgeTypeCount)}</b> {showTableSchema ? t('foreign keys', '外键关系') : t(schemaEdgeTypeCount === 1 ? 'relationship type' : 'relationship types', '关系类型')}</span></div>}</div>
+      <main className="construction-visual"><div className="construction-visual-head"><div><strong>{showInstanceGraph ? t('Entities and relationships', '实体关系图') : showTableSchema ? t('Table relationships', '表关联模式') : preview ? t('Graph Schema · Change Preview', 'Graph Schema · 修改预览') : 'Graph Schema'}</strong><span>{showInstanceGraph ? t('Nodes show entity names; links show their relationships.', '节点显示人物等实体的真实名称，连线表示实体间关系') : showTableSchema ? preview ? t('Source PK/FK schema; inspect pending changes in Optimized structure.', '源表主外键关系；待保存的优化请切换“优化后结构”查看。') : t('Nodes are tables; links are foreign keys.', '节点为表，连线为外键') : preview ? t('The preview is not saved. Type and relationship statistics reflect the preview.', '预览尚未保存；类型与关系统计已按预览实时更新') : graph ? t('Nodes represent node types; links represent relationship types.', '节点代表节点类型，连线代表关系类型') : t('Node and relationship types appear here after construction.', '构图完成后展示节点类型与关系类型')}</span>{schemaWarningText && !preview && <span className="construction-schema-warning">{schemaWarningText}</span>}</div>{graph && <div className="construction-counts"><span><b>{formatNumber(showInstanceGraph ? nodes.length : showTableSchema ? sourceTables.length : schemaNodeTypeCount)}</b> {showInstanceGraph ? t('nodes', '个节点') : showTableSchema ? t('tables', '张表') : t(schemaNodeTypeCount === 1 ? 'node type' : 'node types', '节点类型')}</span><span><b>{formatNumber(showInstanceGraph ? edges.length : showTableSchema ? tableGraph!.edges.length : schemaEdgeTypeCount)}</b> {showInstanceGraph ? t('relationships', '条关系') : showTableSchema ? t('foreign keys', '外键关系') : t(schemaEdgeTypeCount === 1 ? 'relationship type' : 'relationship types', '关系类型')}</span></div>}</div>
         <SourceDataPreview key={`${dataset.project_id || 'personal'}:${dataset.dataset_id}`} dataset={dataset} delimiter={sourceType === 'csv' ? delimiter : undefined} graphReady={Boolean(graph)} />
         {graph && tableGraph && <div className="construction-schema-switch" role="group" aria-label={t('Preview mode', '预览模式')}>
           <button type="button" aria-pressed={showTableSchema} onClick={() => setSchemaView('tables')}>{t('Table relationships', '表关联模式')}</button>
           <button type="button" aria-pressed={!showTableSchema} onClick={() => setSchemaView('optimized')}>{t('Optimized structure', '优化后结构')}</button>
         </div>}
-        {busy === 'loading' ? <div className="construction-empty"><span className="loader" /><strong>{t('Loading construction status', '正在读取构图状态')}</strong></div> : graph && showTableSchema && tableGraph ? <TableSchemaPreview key={dataset.dataset_id} tables={sourceTables} graph={tableGraph} /> : graph && localizedCanvasGraph ? <><div className="construction-graph"><GraphWorkspace data={localizedCanvasGraph} tab={tab} onTab={setTab} selected={schemaSelected} onSelect={setSchemaSelected} collapsed={false} onToggle={() => undefined} embedded /></div><div className="construction-canvas-note">{preview
+        {graph && sourceType === 'txt' && <div className="construction-schema-switch" role="group" aria-label={t('Preview mode', '预览模式')}>
+          <button type="button" aria-pressed={showInstanceGraph} onClick={() => { setSchemaView('instances'); setSchemaSelected(null); }}>{t('Entities and relationships', '实体关系图')}</button>
+          <button type="button" aria-pressed={!showInstanceGraph} onClick={() => { setSchemaView('optimized'); setSelected(null); }}>{t('Type structure', '类型结构')}</button>
+        </div>}
+        {busy === 'loading' ? <div className="construction-empty"><span className="loader" /><strong>{t('Loading construction status', '正在读取构图状态')}</strong></div> : graph && showTableSchema && tableGraph ? <TableSchemaPreview key={dataset.dataset_id} tables={sourceTables} graph={tableGraph} /> : graph && localizedCanvasGraph ? <><div className="construction-graph"><GraphWorkspace data={localizedCanvasGraph} tab={tab} onTab={setTab} selected={showInstanceGraph ? selected : schemaSelected} onSelect={showInstanceGraph ? setSelected : setSchemaSelected} collapsed={false} onToggle={() => undefined} embedded /></div><div className="construction-canvas-note">{showInstanceGraph ? t(`Showing ${formatNumber(nodes.length)} entities and ${formatNumber(edges.length)} relationships. Select a node to inspect its name and properties.`, `共 ${formatNumber(nodes.length)} 个实体、${formatNumber(edges.length)} 条关系；点击节点查看姓名与属性。`) : preview
           ? t(`Graph Schema has aggregated the complete preview graph with ${formatNumber(Number(activeSchema?.schema.node_count ?? nodes.length))} nodes and ${formatNumber(Number(activeSchema?.schema.edge_count ?? edges.length))} edges.`, `Graph Schema 预览已聚合完整预览图中的 ${formatNumber(Number(activeSchema?.schema.node_count ?? nodes.length))} 个节点和 ${formatNumber(Number(activeSchema?.schema.edge_count ?? edges.length))} 条边。`)
-          : t(`Graph Schema has aggregated the complete graph with ${formatNumber(Number(activeSchema?.schema.node_count ?? nodes.length))} nodes and ${formatNumber(Number(activeSchema?.schema.edge_count ?? edges.length))} edges.`, `Graph Schema 已聚合完整图中的 ${formatNumber(Number(activeSchema?.schema.node_count ?? nodes.length))} 个节点和 ${formatNumber(Number(activeSchema?.schema.edge_count ?? edges.length))} 条边。`)}</div><div className="construction-inspection">{schemaSelected && <div className="construction-properties construction-schema-properties"><strong>{t(`Node type ${selectedSchemaTypeName}`, `节点类型 ${selectedSchemaTypeName}`)}</strong><span>{t(`${formatNumber(Number(selectedSchemaProperties.instance_count || 0))} instances · ${formatNumber(selectedSchemaPaths.length)} property paths`, `${formatNumber(Number(selectedSchemaProperties.instance_count || 0))} 个实例 · ${formatNumber(selectedSchemaPaths.length)} 个属性路径`)}</span>{selectedSchemaPaths.length ? <div className="construction-schema-paths">{selectedSchemaPaths.slice(0, 24).map(item => <span key={item.path} title={item.types?.join(' / ')}>{item.path}<small>{item.types?.join(' / ') || t('unknown', '未知')}</small></span>)}{selectedSchemaPaths.length > 24 && <em>{t(`${formatNumber(selectedSchemaPaths.length - 24)} more property paths`, `另有 ${formatNumber(selectedSchemaPaths.length - 24)} 个属性路径`)}</em>}</div> : <span>{t('This node type has no property paths.', '该节点类型没有属性路径')}</span>}</div>}{currentSelection && <div className="construction-properties"><strong>{t(`Properties of instance node ${instanceNodeName(currentSelection, t)}`, `实例节点 ${instanceNodeName(currentSelection, t)} 的属性`)}</strong>{Object.keys(properties(currentSelection)).length ? <dl>{Object.entries(properties(currentSelection)).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{display(value)}</dd></div>)}</dl> : <span>{t('This node has no properties.', '此节点暂无属性')}</span>}</div>}{inspectedEdges.map(edge => <div className="construction-properties" key={String(edge.id)}><strong>{t(`Instance edge ${String(edge.id)} · ${endpointName(edge.source)} → ${endpointName(edge.target)}`, `实例边 ${String(edge.id)} · ${endpointName(edge.source)} → ${endpointName(edge.target)}`)}</strong><span>{t(`Type: ${String(edge.type)}`, `类型：${String(edge.type)}`)}</span>{Object.keys(properties(edge)).length ? <dl>{Object.entries(properties(edge)).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{display(value)}</dd></div>)}</dl> : <span>{t('This edge has no properties.', '此边暂无属性')}</span>}</div>)}</div></> : <div className={`construction-empty ${isBuilding ? 'with-agent-stream' : ''}`}><span className="construction-empty-icon"><Icon name="graph" size={42} /></span><strong>{isBuilding ? t('Building and validating graph data', '正在构建并验证图数据') : state?.algorithm_available === false ? t('Source file ready; waiting for a construction algorithm', '源文件已就绪，等待构图算法') : t('Turn a file into analysis-ready graph data', '从文件到可分析的图数据')}</strong>{isBuilding && <p>{t('The server is generating and validating graph data.', '服务器正在生成和验证图数据。')}<br />{t('You can close this window and reopen it later to view the result.', '可以关闭窗口，稍后重新打开查看结果。')}</p>}{isBuilding ? <ConstructionAgentStream state={state} /> : <div className="construction-flow"><span>SQL / CSV / TXT</span><Icon name="arrow-right" size={17} /><span>{t('Construct', '构图')}</span><Icon name="arrow-right" size={17} /><span>Graph Schema</span></div>}</div>}
-        {!showTableSchema && <ConstructionSchemaFields dataset={dataset} schema={savedSchema} graph={graph} selectedType={String(selectedSchemaProperties.type_name || schemaSelected?.id || '')} />}
+          : t(`Graph Schema has aggregated the complete graph with ${formatNumber(Number(activeSchema?.schema.node_count ?? nodes.length))} nodes and ${formatNumber(Number(activeSchema?.schema.edge_count ?? edges.length))} edges.`, `Graph Schema 已聚合完整图中的 ${formatNumber(Number(activeSchema?.schema.node_count ?? nodes.length))} 个节点和 ${formatNumber(Number(activeSchema?.schema.edge_count ?? edges.length))} 条边。`)}</div><div className="construction-inspection">{!showInstanceGraph && schemaSelected && <div className="construction-properties construction-schema-properties"><strong>{t(`Node type ${selectedSchemaTypeName}`, `节点类型 ${selectedSchemaTypeName}`)}</strong><span>{t(`${formatNumber(Number(selectedSchemaProperties.instance_count || 0))} instances · ${formatNumber(selectedSchemaPaths.length)} property paths`, `${formatNumber(Number(selectedSchemaProperties.instance_count || 0))} 个实例 · ${formatNumber(selectedSchemaPaths.length)} 个属性路径`)}</span>{selectedSchemaPaths.length ? <div className="construction-schema-paths">{selectedSchemaPaths.slice(0, 24).map(item => <span key={item.path} title={item.types?.join(' / ')}>{item.path}<small>{item.types?.join(' / ') || t('unknown', '未知')}</small></span>)}{selectedSchemaPaths.length > 24 && <em>{t(`${formatNumber(selectedSchemaPaths.length - 24)} more property paths`, `另有 ${formatNumber(selectedSchemaPaths.length - 24)} 个属性路径`)}</em>}</div> : <span>{t('This node type has no property paths.', '该节点类型没有属性路径')}</span>}</div>}{currentSelection && <div className="construction-properties"><strong>{t(`Properties of instance node ${instanceNodeName(currentSelection, t)}`, `实例节点 ${instanceNodeName(currentSelection, t)} 的属性`)}</strong>{Object.keys(properties(currentSelection)).length ? <dl>{Object.entries(properties(currentSelection)).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{display(value)}</dd></div>)}</dl> : <span>{t('This node has no properties.', '此节点暂无属性')}</span>}</div>}{inspectedEdges.map(edge => <div className="construction-properties" key={String(edge.id)}><strong>{t(`Instance edge ${String(edge.id)} · ${endpointName(edge.source)} → ${endpointName(edge.target)}`, `实例边 ${String(edge.id)} · ${endpointName(edge.source)} → ${endpointName(edge.target)}`)}</strong><span>{t(`Type: ${String(edge.type)}`, `类型：${String(edge.type)}`)}</span>{Object.keys(properties(edge)).length ? <dl>{Object.entries(properties(edge)).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{display(value)}</dd></div>)}</dl> : <span>{t('This edge has no properties.', '此边暂无属性')}</span>}</div>)}</div></> : <div className={`construction-empty ${isBuilding ? 'with-agent-stream' : ''}`}><span className="construction-empty-icon"><Icon name="graph" size={42} /></span><strong>{isBuilding ? t('Building and validating graph data', '正在构建并验证图数据') : state?.algorithm_available === false ? t('Source file ready; waiting for a construction algorithm', '源文件已就绪，等待构图算法') : t('Turn a file into analysis-ready graph data', '从文件到可分析的图数据')}</strong>{isBuilding && <p>{t('The server is generating and validating graph data.', '服务器正在生成和验证图数据。')}<br />{t('You can close this window and reopen it later to view the result.', '可以关闭窗口，稍后重新打开查看结果。')}</p>}{isBuilding ? <ConstructionAgentStream state={state} mode={semanticTextMode ? 'llm' : constructionMode} /> : <div className="construction-flow"><span>SQL / CSV / TXT</span><Icon name="arrow-right" size={17} /><span>{t('Construct', '构图')}</span><Icon name="arrow-right" size={17} /><span>Graph Schema</span></div>}</div>}
+        {!showTableSchema && !showInstanceGraph && <ConstructionSchemaFields dataset={dataset} schema={savedSchema} graph={graph} selectedType={String(selectedSchemaProperties.type_name || schemaSelected?.id || '')} />}
       </main>
     </div>
-    <footer className="construction-footer"><div className="construction-save-info">{preview ? <><strong>{t(`${operations.length} ${operations.length === 1 ? 'change' : 'changes'} waiting to be saved`, `${operations.length} 项修改待保存`)}</strong><span>{t(`Nodes ${preview.summary.before.node_count} → ${preview.summary.after.node_count} · Edges ${preview.summary.before.edge_count} → ${preview.summary.after.edge_count}`, `节点 ${preview.summary.before.node_count} → ${preview.summary.after.node_count} · 边 ${preview.summary.before.edge_count} → ${preview.summary.after.edge_count}`)}</span><details><summary>{t('View change list', '查看修改清单')}</summary><ol>{operations.map((operation, index) => <li key={index}>{operationLabel(operation, t)}</li>)}</ol></details></> : <><strong>{graph ? t('Graph construction result saved', '构图结果已保存') : t('Source file saved', '源文件已保存')}</strong><span>{graph ? t('Use this dataset now or continue optimizing the graph.', '可直接使用此数据集，或继续优化图数据。') : isBuilding ? t('Construction continues on the server. You can close this window and check again later.', '构图在服务器继续运行，可关闭窗口后再查看。') : state?.algorithm_available === false ? t('This file type cannot be constructed yet. You do not need to upload it again.', '此文件类型暂不可构图，无需重复上传。') : t('Set the query count and domain information, then start construction.', '设置查询数量和领域信息后即可开始构图。')}</span></>}</div><div className="construction-footer-actions">{operations.length > 0 && <><button className="secondary-command" disabled={editingBusy} onClick={() => void updatePreview(operations.slice(0, -1))}>{t('Undo last step', '撤销上一步')}</button><button className="secondary-command" disabled={editingBusy} onClick={() => void updatePreview([])}>{t('Restore all', '还原全部')}</button></>}{onUse && graph && !operations.length && <button className="secondary-command" disabled={editingBusy} onClick={() => void useDataset()}>{busy === 'use' ? t('Applying…', '正在使用…') : t('Use in current conversation', '在当前会话使用')}</button>}<button className="primary-command" disabled={editingBusy || !operations.length || conflict} onClick={() => void save()}><Icon name="check" size={15} />{busy === 'save' ? t('Saving…', '正在保存…') : t('Save to dataset', '保存到数据集')}</button></div></footer>
+    <footer className="construction-footer"><div className="construction-save-info">{preview ? <><strong>{t(`${operations.length} ${operations.length === 1 ? 'change' : 'changes'} waiting to be saved`, `${operations.length} 项修改待保存`)}</strong><span>{t(`Nodes ${preview.summary.before.node_count} → ${preview.summary.after.node_count} · Edges ${preview.summary.before.edge_count} → ${preview.summary.after.edge_count}`, `节点 ${preview.summary.before.node_count} → ${preview.summary.after.node_count} · 边 ${preview.summary.before.edge_count} → ${preview.summary.after.edge_count}`)}</span><details><summary>{t('View change list', '查看修改清单')}</summary><ol>{operations.map((operation, index) => <li key={index}>{operationLabel(operation, t)}</li>)}</ol></details></> : <><strong>{state?.status === 'draft' ? t('Graph draft ready · Unsaved', '构图草稿已生成 · 待保存') : graph ? t('Graph construction result saved', '构图结果已保存') : t('Source file saved', '源文件已保存')}</strong><span>{state?.status === 'draft' ? t('Save the construction result before using this graph for analysis.', '点击保存构图结果后，即可使用此图进行分析。') : graph ? t('Use this dataset now or continue optimizing the graph.', '可直接使用此数据集，或继续优化图数据。') : isBuilding ? t('Construction continues on the server. You can close this window and check again later.', '构图在服务器继续运行，可关闭窗口后再查看。') : state?.algorithm_available === false ? t('This file type cannot be constructed yet. You do not need to upload it again.', '此文件类型暂不可构图，无需重复上传。') : t('Review the source data and construction mode, then start construction.', '确认源数据与构图方式后即可开始构图。')}</span></>}</div><div className="construction-footer-actions">{operations.length > 0 && <><button className="secondary-command" disabled={editingBusy} onClick={() => void updatePreview(operations.slice(0, -1))}>{t('Undo last step', '撤销上一步')}</button><button className="secondary-command" disabled={editingBusy} onClick={() => void updatePreview([])}>{t('Restore all', '还原全部')}</button></>}{onUse && graph && state?.status === 'ready' && !operations.length && <button className="secondary-command" disabled={editingBusy} onClick={() => void useDataset()}>{busy === 'use' ? t('Applying…', '正在使用…') : t('Use in current conversation', '在当前会话使用')}</button>}<button className="primary-command" disabled={editingBusy || (!operations.length && state?.status !== 'draft') || conflict} onClick={() => void save()}><Icon name="check" size={15} />{busy === 'save' ? t('Saving…', '正在保存…') : state?.status === 'draft' ? t('Save construction result', '保存构图结果') : t('Save to dataset', '保存到数据集')}</button></div></footer>
   </Panel></Backdrop>;
 }

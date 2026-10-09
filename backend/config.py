@@ -24,8 +24,6 @@ class BackendConfig:
     default_user_model: str
     custom_models_file: Path | None = None
     stream_heartbeat_seconds: float = 15.0
-    auth_database_file: Path | None = None
-    auth_session_ttl_seconds: int = 604800
     auth_trusted_proxies: tuple[str, ...] = ("127.0.0.1", "::1")
     auth_allowed_origins: tuple[str, ...] = ()
 
@@ -55,8 +53,6 @@ class BackendConfig:
                 1.0,
                 float(os.getenv("BACKEND_STREAM_HEARTBEAT_SECONDS", "15")),
             ),
-            auth_database_file=Path(os.getenv("BACKEND_AUTH_DATABASE_FILE", str(data_root / "backend" / "authentication.sqlite3"))).resolve(),
-            auth_session_ttl_seconds=int(os.getenv("BACKEND_AUTH_SESSION_TTL_SECONDS", "604800")),
             auth_trusted_proxies=tuple(value.strip() for value in os.getenv("BACKEND_AUTH_TRUSTED_PROXIES", "127.0.0.1,::1").split(",") if value.strip()),
             auth_allowed_origins=tuple(value.strip() for value in os.getenv("BACKEND_AUTH_ALLOWED_ORIGINS", "").split(",") if value.strip()),
         )

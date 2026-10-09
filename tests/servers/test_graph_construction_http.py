@@ -46,12 +46,29 @@ def construction_http(tmp_path, monkeypatch):
         yield client, service, store, source, headers
 
 
+def test_construction_settings_are_private_and_separate_from_dataset_options(construction_http):
+    client, _, _, _, headers = construction_http
+    path = '/construction/model-settings'
+    assert client.get(path).status_code in (401, 403)
+    result = client.post(path, headers=headers, json={'model': 'team/extractor', 'base_url': 'https://gateway.test', 'api_key': 'private-secret'})
+    assert result.status_code == 200
+    assert result.json()['has_api_key'] is True
+    assert 'private-secret' not in result.text and 'gateway.test' not in result.text
+    listing = client.get('/construction/models', headers=headers).json()
+    assert listing['default_model'] == 'team/extractor'
+    assert 'team/extractor' in listing['models']
+    assert client.post(path, headers=headers, json={'model': 'm', 'base_url': 'file:///secret'}).status_code == 422
+    assert client.get(path, headers=headers).json()['model'] == 'team/extractor'
+
+
 def build_ready(client, store, source, headers):
     store.register_algorithm("csv", lambda _source, _options: copy.deepcopy(GRAPH))
     response = client.post("/construction/ds-people/build", headers=headers,
                            json={"source_path": str(source), "source_filename": "people.csv", "options": {}})
     assert response.status_code == 200
-    assert response.json()["status"] == "ready"
+    assert response.json()["status"] == "draft"
+    saved = client.post("/construction/ds-people/commit", headers=headers, json={"base_revision": 1, "operations": []})
+    assert saved.status_code == 200 and saved.json()["status"] == "ready"
 
 
 def test_source_preview_is_available_before_build_and_authorized(construction_http):
@@ -93,14 +110,14 @@ def test_construction_http_preview_commit_reload_properties_and_session_snapshot
     schema_response = client.get("/construction/ds-people/schema", headers=headers)
     assert schema_response.status_code == 200, schema_response.text
     schema = schema_response.json()
-    assert schema["dataset_id"] == "ds-people" and schema["revision"] == 1
+    assert schema["dataset_id"] == "ds-people" and schema["revision"] == 2
     assert schema["schema"]["graph"]["visualization_kind"] == "schema"
     assert schema["schema"]["node_type_count"] == 1
     assert schema["schema"]["edge_type_count"] == 1
     assert "123" not in schema_response.text and "Bob" not in schema_response.text
     loaded = client.post("/sessions/session-one/graph/load_construction", headers=headers, json={"dataset_id": "ds-people"})
     assert loaded.status_code == 200, loaded.text
-    assert loaded.json()["construction_revision"] == 1
+    assert loaded.json()["construction_revision"] == 2
     session = service.get_required("session-one", "alice")
     assert session.get_graph().graph_metadata["construction_graph"] == GRAPH
     snapshot = GraphData.load(str(session._snapshots_dir / "v001.npz"))
@@ -110,39 +127,40 @@ def test_construction_http_preview_commit_reload_properties_and_session_snapshot
     assert network.edges["alice", "bob"]["properties"]["since"] == 2020
     info = client.get("/sessions/session-one/graph/info", headers=headers).json()
     assert info["construction_dataset_id"] == "ds-people"
-    assert info["graph_info"]["construction_revision"] == 1
+    assert info["construction_applicable"] is True
+    assert info["graph_info"]["construction_revision"] == 2
     visual = client.post("/sessions/session-one/graph/visualize", headers=headers, json={"arguments": {}}).json()
     assert next(node for node in visual["nodes"] if node["id"] == "alice")["attrs"]["properties"]["phone"] == "123"
     assert visual["edges"][0]["properties"]["since"] == 2020
-    operation = {"base_revision": 1, "operations": [{"op": "reverse_edges", "edge_ids": ["knows-1"]}]}
+    operation = {"base_revision": 2, "operations": [{"op": "reverse_edges", "edge_ids": ["knows-1"]}]}
     preview = client.post("/construction/ds-people/preview", headers=headers, json=operation)
     assert preview.status_code == 200
-    assert preview.json()["revision"] == 2
-    assert store.graph("alice", "ds-people")["revision"] == 1
+    assert preview.json()["revision"] == 3
+    assert store.graph("alice", "ds-people")["revision"] == 2
     committed = client.post("/construction/ds-people/commit", headers=headers, json=operation)
     assert committed.status_code == 200
     assert committed.json()["graph"] == preview.json()["graph"]
     # Dataset commits do not replace the graph underneath an existing session.
-    assert client.get("/sessions/session-one/graph/info", headers=headers).json()["construction_revision"] == 1
+    assert client.get("/sessions/session-one/graph/info", headers=headers).json()["construction_revision"] == 2
     conflict = client.post("/construction/ds-people/commit", headers=headers, json=operation)
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["code"] == "revision_conflict"
-    assert client.post("/sessions/session-one/graph/load_construction", headers=headers, json={"dataset_id": "ds-people"}).json()["construction_revision"] == 2
-    assert client.get("/sessions/session-one/graph/info", headers=headers).json()["construction_revision"] == 2
+    assert client.post("/sessions/session-one/graph/load_construction", headers=headers, json={"dataset_id": "ds-people"}).json()["construction_revision"] == 3
+    assert client.get("/sessions/session-one/graph/info", headers=headers).json()["construction_revision"] == 3
     restored = GraphSession("session-one", "alice")
     assert restored.load_snapshot()
-    assert restored.get_graph().graph_metadata["construction_revision"] == 2
-    assert ConstructionStore(tmp_path).graph("alice", "ds-people")["revision"] == 2
+    assert restored.get_graph().graph_metadata["construction_revision"] == 3
+    assert ConstructionStore(tmp_path).graph("alice", "ds-people")["revision"] == 3
     assert any(row["dataset_id"] == "ds-people" for row in client.get("/datasets", headers=headers).json()["datasets"])
     assert client.post("/sessions/session-two/tools/load_dataset", headers=headers,
         json={"arguments": {"dataset_id": "ds-people"}}).json()["code"] == "USE_CONSTRUCTED_GRAPH_LOADER"
-    assert service.do_load_constructed_graph("session-two", "ds-people", user_id="alice")["construction_revision"] == 2
+    assert service.do_load_constructed_graph("session-two", "ds-people", user_id="alice")["construction_revision"] == 3
 
 
 def test_construction_http_invalid_batch_is_atomic_and_cross_user_isolated(construction_http, monkeypatch):
     client, service, store, source, headers = construction_http
     build_ready(client, store, source, headers)
-    invalid = {"base_revision": 1, "operations": [{"op": "reverse_edges", "edge_ids": ["knows-1"]},
+    invalid = {"base_revision": 2, "operations": [{"op": "reverse_edges", "edge_ids": ["knows-1"]},
                 {"op": "delete", "target": "node", "ids": ["missing"]}]}
     response = client.post("/construction/ds-people/commit", headers=headers, json=invalid)
     assert response.status_code == 422
@@ -229,7 +247,8 @@ def test_append_to_constructed_graph_preserves_properties_versions_and_analysis(
     store.register_algorithm("csv", lambda _source, _options: copy.deepcopy(document))
     built = client.post("/construction/ds-people/build", headers=headers,
                         json={"source_path": str(source), "source_filename": "people.csv"})
-    assert built.status_code == 200 and built.json()["status"] == "ready"
+    assert built.status_code == 200 and built.json()["status"] == "draft"
+    store.optimize("alice", "ds-people", built.json()["revision"], [], commit=True)
     loaded = client.post("/sessions/session-one/graph/load_construction", headers=headers,
                          json={"dataset_id": "ds-people"})
     assert loaded.status_code == 200 and loaded.json()["success"]
@@ -369,7 +388,8 @@ def test_property_analysis_http_uses_same_relationships_after_conversion_and_rel
     store.register_algorithm('csv', lambda _source, _options: copy.deepcopy(document))
     built = client.post('/construction/ds-analysis/build', headers=headers,
                         json={'source_path': str(source), 'source_filename': 'people.csv'})
-    assert built.json()['status'] == 'ready'
+    assert built.json()['status'] == 'draft'
+    store.optimize("alice", "ds-analysis", built.json()["revision"], [], commit=True)
     loaded = client.post('/sessions/analysis/graph/load_construction', headers=headers, json={'dataset_id': 'ds-analysis'})
     assert loaded.status_code == 200 and loaded.json()['success']
 
@@ -428,8 +448,36 @@ def test_build_without_path_reuses_authorized_registered_source(construction_htt
     assert unavailable.json()['status'] == 'algorithm_unavailable'
     store.register_algorithm('csv', lambda _source, _options: copy.deepcopy(GRAPH))
     built = client.post('/construction/ds-people/build', headers=headers, json={})
-    assert built.status_code == 200 and built.json()['status'] == 'ready'
+    assert built.status_code == 200 and built.json()['status'] == 'draft'
     reused = client.post('/construction/ds-people/build', headers=headers, json={})
     assert reused.status_code == 200 and reused.json()['reused']
     for body in ({'source_path': '\u0000'}, {'source_filename': 'other.csv'}):
         assert client.post('/construction/ds-people/build', headers=headers, json=body).status_code == 403
+
+@pytest.mark.parametrize("preset", ["finance", "novel"])
+def test_imported_example_does_not_advertise_snapshot_id_as_current_construction(construction_http, preset):
+    from graph_engine import finance_preset, novel_preset
+    module = finance_preset if preset == "finance" else novel_preset
+    client, service, _store, _source, headers = construction_http
+    session = service.get_or_create("session-one", user_id="alice")
+    path = module.RESOURCES / module.FILENAME
+    original = GraphData.load(str(path)).graph_metadata
+    session.register_upload(file_token="example", original_filename=path.name, saved_path=str(path))
+    # A historical binding must not make an imported snapshot a live construction.
+    session.bind_dataset(original["construction_dataset_id"], str(original["construction_revision"]))
+    loaded = client.post("/sessions/session-one/graph/load_upload", headers=headers,
+                         json={"filename": path.name, "append": False})
+    assert loaded.status_code == 200 and loaded.json()["success"], loaded.text
+    for restored in (False, True):
+        if restored:
+            snapshot = GraphSession("session-one", "alice")
+            assert snapshot.load_snapshot()
+            service._sessions[service._session_key("session-one", "alice")] = snapshot
+        info = client.get("/sessions/session-one/graph/info", headers=headers).json()
+        assert info["loaded"] is True
+        for scope in (info, info["graph_info"]):
+            assert scope["construction_dataset_id"] is None
+            assert scope["construction_revision"] is None
+            assert scope["construction_applicable"] is False
+        # Properties remain available through normal analysis tools.
+        assert service.get_required("session-one", "alice").get_graph().graph_metadata == original

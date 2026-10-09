@@ -11,13 +11,8 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import backend.app as backend_app
-from backend.authentication import AUTH_COOKIE
 from backend.config import BackendConfig
 from backend.projects import ProjectDirectory
-
-
-_AUTH_TOKENS: dict[str, str] = {}
-_TEST_PASSWORD = "TestPassword123!"
 
 
 class FakeServiceClient:
@@ -289,31 +284,12 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setenv("IGRAPH_CONTROL_SERVICE_KEY", "test-project-key")
     monkeypatch.setattr(backend_app, "ServiceClient", FakeServiceClient)
-    _AUTH_TOKENS.clear()
-    app = backend_app.create_app(config)
-    for user_id in ("admin", "alice"):
-        assert app.state.auth.bootstrap(user_id, _TEST_PASSWORD)
-    with TestClient(app) as test_client:
-        try:
-            for user_id in ("admin", "alice"):
-                response = test_client.post(
-                    "/api/auth/login",
-                    json={"username": user_id, "password": _TEST_PASSWORD},
-                )
-                assert response.status_code == 200, response.text
-                _AUTH_TOKENS[user_id] = response.cookies[AUTH_COOKIE]
-                # Requests without an explicit Cookie must remain unauthenticated.
-                # Also avoid revoking the previous account's token on the next login.
-                test_client.cookies.clear()
-            yield test_client
-        finally:
-            test_client.cookies.clear()
-            _AUTH_TOKENS.clear()
+    with TestClient(backend_app.create_app(config)) as test_client:
+        yield test_client
 
 
 def headers(user_id: str = "admin") -> dict[str, str]:
-    token = _AUTH_TOKENS.get(user_id, "invalid-session")
-    return {"Cookie": f"{AUTH_COOKIE}={token}"}
+    return {"X-User-ID": user_id}
 
 
 def test_project_directory_reads_do_not_create_general(tmp_path: Path):
@@ -355,7 +331,7 @@ def test_custom_model_api_validates_isolates_syncs_updates_and_deletes(client: T
 
     listed = client.get("/api/models/custom", headers=headers()).json()["models"]
     assert [item["model_id"] for item in listed] == ["team/model-v1"]
-    assert client.get("/api/models/custom", headers=headers("alice")).json()["models"] == []
+    assert client.get("/api/models/custom", headers=headers("alice")).json()["models"] == listed
     assert "team/model-v1" in client.post("/api/auth/validate", headers=headers()).json()["available_models"]
 
     updated = client.post(
@@ -453,10 +429,10 @@ def test_project_training_runs_aggregate_sessions_and_persist_job_status(client:
     assert FakeServiceClient.graph_status_calls == ["job-gcn"]
 
 
-def test_project_training_runs_enforce_project_ownership(client: TestClient):
+def test_project_training_runs_ignore_legacy_account_selection(client: TestClient):
     project = client.post("/api/projects", headers=headers(), json={"name": "Private experiments"}).json()["project"]
     response = client.get(f"/api/projects/{project['project_id']}/training-runs", headers=headers("alice"))
-    assert response.status_code == 404
+    assert response.status_code == 200
 
 
 def test_new_session_chat_receives_cross_session_training_summary(client: TestClient):
@@ -498,7 +474,7 @@ def test_new_session_chat_receives_cross_session_training_summary(client: TestCl
     }]
 
 
-def test_project_delete_conversations_and_cross_user_isolation(client: TestClient):
+def test_project_delete_conversations_in_single_workspace(client: TestClient):
     project = client.post("/api/projects", headers=headers(), json={"name": "Temporary"}).json()["project"]
     session_id = client.post(
         "/api/sessions",
@@ -511,7 +487,7 @@ def test_project_delete_conversations_and_cross_user_isolation(client: TestClien
         headers=headers("alice"),
         json={"project_id": project["project_id"]},
     )
-    assert forbidden.status_code == 404
+    assert forbidden.status_code == 200
 
     deleted = client.request(
         "DELETE",
@@ -1102,7 +1078,7 @@ def test_recovery_snapshot_is_complete_only_at_a_persisted_phase(client: TestCli
     assert complete['active_run']['run_id'] == 'new'
     assert next(message for message in complete['messages'] if message['id'] == 'assistant:r')['content'] == 'ABC'
     assert client.get(f'/api/sessions/{sid}/runs/wrong/snapshot', headers=headers()).status_code == 404
-    assert client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers('other-user')).status_code in {401, 403, 404}
+    assert client.get(f'/api/sessions/{sid}/runs/r/snapshot', headers=headers('other-user')).status_code == 200
 
 
 def test_resume_propagates_structured_error_before_sse_headers(client: TestClient):
@@ -1138,7 +1114,7 @@ def test_personal_datasets_are_reusable_explicit_and_scope_isolated(client):
     selected = client.post('/api/sessions', headers=headers(), json={'active_dataset_id': dataset['dataset_id']}).json()
     assert selected['active_dataset_id'] == dataset['dataset_id']
     assert [row['dataset_id'] for row in client.get('/api/personal-datasets', headers=headers()).json()['datasets']] == [dataset['dataset_id']]
-    assert client.get('/api/personal-datasets', headers=headers('alice')).json()['datasets'] == []
+    assert [row['dataset_id'] for row in client.get('/api/personal-datasets', headers=headers('alice')).json()['datasets']] == [dataset['dataset_id']]
     project = client.post('/api/projects', headers=headers(), json={'name': 'Scoped'}).json()['project']
     assert client.post('/api/sessions', headers=headers(), json={'project_id': project['project_id'], 'active_dataset_id': dataset['dataset_id']}).status_code == 409
     foreign = client.post(f"/api/projects/{project['project_id']}/datasets", headers=headers(), files={'file': ('other.csv', b'X,Y', 'text/csv')}).json()['dataset']
@@ -1313,8 +1289,8 @@ def test_workspace_upload_preserves_dataset_registration_and_download_ownership(
     (root / "Ephemeral/private.txt").write_text("private intermediate")
     listed = client.get(f"/api/sessions/{sid}/workspace/files", headers=headers())
     assert len(listed.json()["files"]) == 3
-    assert client.get(f"/api/sessions/{sid}/workspace/files", headers=headers("alice")).status_code == 404
-    assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt").status_code == 401
+    assert client.get(f"/api/sessions/{sid}/workspace/files", headers=headers("alice")).status_code == 200
+    assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt").content == b"public report"
     assert client.get(f"/api/sessions/{sid}/workspace/derived/report.txt", headers=headers()).content == b"public report"
     assert client.get(f"/api/sessions/{sid}/workspace/derived/%2E%2E%2FEphemeral%2Fprivate.txt", headers=headers()).status_code == 404
 

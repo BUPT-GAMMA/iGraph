@@ -93,6 +93,22 @@ class ProjectDirectory:
             self._write(records)
             return project
 
+    def ensure_user_case(self, user_id: str, case_id: str, name: str, description: str) -> ProjectRecord:
+        project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"igraph:user-case:{case_id}:{user_id}"))
+        with self._lock:
+            records = self._load()
+            project = records.get(project_id)
+            if project is not None:
+                if project.user_id != user_id or project.delete_status:
+                    raise ValueError("示例项目当前不可用")
+                return project
+            now = time.time()
+            project = ProjectRecord(project_id=project_id, user_id=user_id, name=name,
+                                    description=description, created_at=now, updated_at=now)
+            records[project_id] = project
+            self._write(records)
+            return project
+
     def update(self, project_id: str, user_id: str, *, name: str | None = None, description: str | None = None) -> ProjectRecord | None:
         with self._lock:
             records = self._load()

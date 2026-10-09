@@ -107,8 +107,6 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         users.save(UserRecord(user_id='admin', roles=['admin']))
         users.save(UserRecord(user_id='alice', roles=[]))
         bff = backend_app(config)
-        bff.state.auth.bootstrap("admin", "cancellation-test-password")
-        bff.state.auth.bootstrap("alice", "cancellation-test-password")
         metrics = {'calls': {}, 'closed': {}, 'tool_calls': {}, 'contexts': {}}
         model = FastAPI()
 

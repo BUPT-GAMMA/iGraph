@@ -15,7 +15,9 @@ def test_import_snapshot_is_independent_and_preserves_properties(tmp_path):
     store = ConstructionStore(tmp_path)
     store.register_algorithm("csv", lambda *_: {"directed": True,
         "nodes": [{"id": "1", "type": "Person", "properties": {"id": 1, "name": "A"}}], "edges": []})
-    store.build("alice", "personal", source, source.name)
+    draft = store.build("alice", "personal", source, source.name)
+    # Only saved construction results can be imported.
+    store.optimize("alice", "personal", draft["revision"], [], commit=True)
     source_dir = store._directory("alice", "personal")
     report = {"source_schema": {"tables": [{
         "name": "people", "columns": ["id", "manager_id", "name"], "primary_key": ["id"],
@@ -26,7 +28,8 @@ def test_import_snapshot_is_independent_and_preserves_properties(tmp_path):
     (source_dir / "evolution-report.json").write_text(json.dumps(report), encoding="utf-8")
     expected_schema = store.schema("alice", "personal")["schema"]["source_tables"]
     result = copy_constructed_graph(store, "alice", "personal", "project-copy", source, source.name)
-    assert result["source_revision"] == result["revision"] == 1
+    # Saving the draft publishes revision 2; the independent copy starts again at 1.
+    assert (result["source_revision"], result["revision"]) == (2, 1)
     assert store.graph("alice", "project-copy")["graph"] == store.graph("alice", "personal")["graph"]
     store.delete("alice", "personal")
     assert store.graph("alice", "project-copy")["graph"]["nodes"][0]["properties"]["name"] == "A"
@@ -55,7 +58,6 @@ def test_import_api_filters_ownership_and_rolls_back_failure(client, monkeypatch
     # An unbuilt source must never be offered or accepted.
     assert client.get(f"/api/projects/{pid}/constructed-datasets", headers=headers()).json()["datasets"] == []
     assert client.post(f"/api/projects/{pid}/datasets/import-constructed", headers=headers(), json={"source_dataset_id": source_id}).status_code == 409
-    assert client.get(f"/api/projects/{pid}/constructed-datasets", headers=headers("alice")).status_code == 404
     directory = ProjectDatasetDirectory(tmp_path / "project_datasets.json", tmp_path / "projects")
     directory.update(source_id, "admin", status="ready", metadata={"construction": {"status": "ready", "revision": 2}, "csv_bundle": {"tables": []}})
     assert len(client.get(f"/api/projects/{pid}/constructed-datasets", headers=headers()).json()["datasets"]) == 1
@@ -83,9 +85,6 @@ def test_import_api_filters_ownership_and_rolls_back_failure(client, monkeypatch
     original_path = Path(directory.get(source_id, "admin").storage_path)
     copied_path = Path(directory.get(copied["dataset_id"], "admin", pid).storage_path)
     assert copied_path != original_path and copied_path.read_bytes() == original_path.read_bytes()
-    other = client.post("/api/personal-datasets", headers=headers("alice"), files={"file": ("other.csv", b"id\n2\n", "text/csv")}).json()["dataset"]
-    directory.update(other["dataset_id"], "alice", status="ready", metadata={"construction": {"status": "ready", "revision": 1}})
-    assert client.post(f"/api/projects/{pid}/datasets/import-constructed", headers=headers(), json={"source_dataset_id": other["dataset_id"]}).status_code == 404
 
 
 def test_failed_engine_cleanup_keeps_recoverable_metadata(client, monkeypatch, tmp_path):

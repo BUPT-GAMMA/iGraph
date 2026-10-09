@@ -16,6 +16,7 @@ GraphData 计算层
 from __future__ import annotations
 
 import heapq
+import json
 import math
 import os
 import statistics
@@ -27,6 +28,10 @@ import networkx as nx
 from graph_data_service.graph_data import GraphData
 from graph_data_service.analysis_contract import analysis_contract
 from graph_data_service.smart_overview import SmartOverviewSelection, select_smart_overview
+from graph_data_service.highlight_connections import complete_ownership_connections
+from graph_engine.finance_catalog import (
+    FINANCE_MAX_RESULT_BYTES, FINANCE_OPERATIONS, validate_finance_arguments,
+)
 
 # ── 全局输出规模上限 ─────────────────────────────────────────────
 _MAX_LIST_ITEMS = 20        # 节点/边列表最大条数
@@ -106,6 +111,44 @@ class GraphCompute:
 
     def invalidate(self, session_id: str) -> None:
         self._cache.pop(session_id, None)
+
+    @staticmethod
+    def finance_analysis(gd: GraphData | None, tool_name: str, arguments: dict) -> dict:
+        """Analyze original records without materializing or returning topology.
+
+        The caller has already resolved the authorized session/version. No
+        source lookup, guessed ownership edge, or graph write occurs here.
+        """
+        operation = FINANCE_OPERATIONS[tool_name]
+
+        def failed(code, message):
+            return {"success": False, "status": code, "code": code,
+                    "operation": operation, "complete": False, "error": message}
+
+        try:
+            normalized = validate_finance_arguments(tool_name, arguments)
+        except ValueError as exc:
+            return failed("INVALID_ARGUMENT", str(exc))
+        metadata = gd.graph_metadata if gd is not None else {}
+        graph = metadata.get("construction_graph") if isinstance(metadata, dict) else None
+        if not isinstance(graph, dict):
+            return failed("FINANCE_SCHEMA_REQUIRED",
+                          "金融分析需要当前会话已加载的原始机构、个人、持股三表构图；普通拓扑边不能推造持股事实。")
+        from graph_data_service.finance import analyze_finance
+        result = analyze_finance(graph, operation, **normalized)
+        # Identity is supplied from the selected GraphData, never tool args.
+        result = {**result, "graph_source": {
+            "dataset_id": metadata.get("construction_dataset_id"),
+            "construction_revision": metadata.get("construction_revision"),
+        }}
+        # Count incrementally rather than allocating a second full response.
+        size = 0
+        for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(result):
+            size += len(chunk.encode("utf-8"))
+            if size > FINANCE_MAX_RESULT_BYTES:
+                return failed("FINANCE_RESULT_TOO_LARGE",
+                              "结果超过有界工具响应上限；降低 display_limit/evidence_top_k 后重试，不得把未返回结果当作完整结论。")
+        return result
 
     def resolve_graph(
         self,
@@ -2092,6 +2135,19 @@ class GraphCompute:
         all_nodes = visible_nodes if visible_nodes is not None else set(g.nodes())
         result = {"nodes": [], "paths": [], "subgraphs": []}
 
+        def valid_edges(pairs):
+            found = []
+            for pair in pairs:
+                if isinstance(pair, dict):
+                    left, right = pair.get("src", pair.get("source")), pair.get("dst", pair.get("target"))
+                elif isinstance(pair, (list, tuple)) and len(pair) == 2:
+                    left, right = pair
+                else:
+                    continue
+                if left in all_nodes and right in all_nodes and g.has_edge(left, right) and [left, right] not in found:
+                    found.append([left, right])
+            return found
+
         # Process node highlights
         for item in highlights.get("nodes", []):
             if not isinstance(item, dict):
@@ -2112,13 +2168,8 @@ class GraphCompute:
                 continue
             seq = item.get("node_sequence", [])
             valid_seq = [n for n in seq if n in all_nodes]
-            if len(valid_seq) >= 2:
-                # Derive edges from node sequence
-                path_edges = []
-                for i in range(len(valid_seq) - 1):
-                    u, v = valid_seq[i], valid_seq[i + 1]
-                    if g.has_edge(u, v) or g.has_edge(v, u):
-                        path_edges.append([u, v])
+            path_edges = valid_edges([*zip(seq, seq[1:]), *(item.get("edges") or [])])
+            if len(valid_seq) >= 2 or path_edges:
                 result["paths"].append({
                     "node_sequence": valid_seq,
                     "edges": path_edges,
@@ -2132,10 +2183,11 @@ class GraphCompute:
                 continue
             node_list = item.get("nodes", [])
             valid_nodes = [n for n in node_list if n in all_nodes]
-            if valid_nodes:
+            explicit_edges = valid_edges(item.get("edges") or [])
+            if valid_nodes or explicit_edges:
                 # Derive edges within the subgraph
                 valid_set = set(valid_nodes)
-                sub_edges = [
+                sub_edges = explicit_edges if "edges" in item else [
                     [u, v]
                     for u, v in g.subgraph(valid_set).edges()
                 ]
@@ -2201,6 +2253,11 @@ class GraphCompute:
         else:
             target_nodes = set(g.nodes())
 
+        # Business subjects in a row/FK graph need their intervening ownership
+        # records. Do this before sampling so an SCC cannot lose those records.
+        highlights, connection_nodes = complete_ownership_connections(g, highlights)
+        target_nodes.update(connection_nodes)
+
         # Keep source-scope totals before replacing the node set with the smart
         # overview.  For an explicitly requested subset these totals must refer
         # to that subset, not to the unrelated remainder of the session graph.
@@ -2224,6 +2281,13 @@ class GraphCompute:
                     required_nodes.update(item.get("node_sequence", []))
                 for item in highlights.get("subgraphs", []):
                     required_nodes.update(item.get("nodes", []))
+                for kind in ("paths", "subgraphs"):
+                    for item in highlights.get(kind, []):
+                        for edge in item.get("edges", []):
+                            if isinstance(edge, dict):
+                                required_nodes.update([edge.get("src", edge.get("source")), edge.get("dst", edge.get("target"))])
+                            elif isinstance(edge, (list, tuple)) and len(edge) == 2:
+                                required_nodes.update(edge)
 
             node_types: dict = {}
             for node in target_nodes:
@@ -2307,6 +2371,11 @@ class GraphCompute:
                     and type(row_index) is int and row_index >= 0
                     and row_properties.get("table")):
                 display_label = f"{attrs.get('type') or row_properties['table']} · #{row_index + 1}"
+            entity_name = row_properties.get("data", {}).get("name") if isinstance(row_properties.get("data"), dict) else None
+            if (gd.graph_metadata.get("construction_dataset_id")
+                    and str(node).startswith("entity_")
+                    and isinstance(entity_name, str) and entity_name.strip()):
+                display_label = entity_name.strip()
             nodes.append({
                 "id": node,
                 "label": display_label,
@@ -2322,6 +2391,9 @@ class GraphCompute:
         display_graph = g.subgraph(target_nodes)
         available_display_edges = display_graph.number_of_edges()
         display_degrees = {node: int(g.degree(node)) for node in target_nodes}
+        normalized_highlights = self._normalize_highlights(highlights, g, target_nodes)
+        highlighted_pairs = {tuple(edge) for kind in ("paths", "subgraphs")
+                             for item in (normalized_highlights or {}).get(kind, []) for edge in item.get("edges", [])}
 
         def undirected_pair(left, right):
             left_key = (f"{type(left).__module__}.{type(left).__qualname__}", repr(left))
@@ -2386,7 +2458,18 @@ class GraphCompute:
                 previous = protected_best.get(pair)
                 if previous is None or edge_stable_key(record) < edge_stable_key(previous):
                     protected_best[pair] = record
-        protected_records = sorted(protected_best.values(), key=edge_stable_key)[:edge_cap]
+        # Preserve every highlighted relationship (including reciprocal and
+        # parallel edges) before background spanning-tree/overview reservations.
+        highlighted_records = heapq.nsmallest(edge_cap, (
+            record for record in iter_edge_records()
+            if (record[0], record[1]) in highlighted_pairs
+            or (not g.is_directed() and (record[1], record[0]) in highlighted_pairs)
+        ), key=edge_stable_key) if available_display_edges > edge_cap and highlighted_pairs else []
+        highlighted_keys = {edge_stable_key(record) for record in highlighted_records}
+        protected_records = highlighted_records + sorted(
+            (record for record in protected_best.values() if edge_stable_key(record) not in highlighted_keys),
+            key=edge_stable_key,
+        )[:edge_cap - len(highlighted_records)]
         protected_keys = {edge_stable_key(record) for record in protected_records}
         remaining_edge_slots = edge_cap - len(protected_records)
         if available_display_edges <= edge_cap:
@@ -2438,9 +2521,6 @@ class GraphCompute:
                 }
             except Exception:
                 pass
-
-        # 标准化高亮信息
-        normalized_highlights = self._normalize_highlights(highlights, g, target_nodes)
 
         result = {
             "degree_scope": "full_graph",

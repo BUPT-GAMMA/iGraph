@@ -128,24 +128,25 @@ async def test_cancellation_stops_pagination_before_publication(export_service, 
     assert len(e.calls) == 1 and not list((e.root / 'Derived').rglob('*.csv'))
 
 @pytest.mark.anyio
-async def test_export_is_listed_and_downloadable_only_by_session_owner(export_service, project_client):
+async def test_export_is_listed_and_downloadable_by_workspace_owner(export_service, project_client):
     e = export_service
     client = project_client
-    sid = client.post('/api/sessions', headers=headers('alice'), json={}).json()['session_id']
-    context = RunContext(run_id='r', session_id=sid, user_id='alice')
-    result = await tools(e.service, e.service.binding)['export_remote_graph'](
+    sid = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
+    context = RunContext(run_id='r', session_id=sid, user_id='admin')
+    # The workspace owner needs its own connection; the shared fixture belongs to alice.
+    from agent_runtime.remote_graph.contracts import RemoteBinding
+    binding = RemoteBinding(**e.service.catalog.save('admin', e.service.form).model_dump())
+    result = await tools(e.service, binding)['export_remote_graph'](
         'MATCH (n) RETURN n.id AS id, n.name AS name ORDER BY id', paginate=True, run_context=context)
     assert result['success'] and result['export_complete']
     path = result['artifact']['path']
-    listed = client.get(f'/api/sessions/{sid}/workspace/files', headers=headers('alice'))
+    listed = client.get(f'/api/sessions/{sid}/workspace/files', headers=headers())
     assert path in [item['path'] for item in listed.json()['files']]
     endpoint = f'/api/sessions/{sid}/workspace/derived/' + path.removeprefix('Derived/')
-    downloaded = client.get(endpoint, headers=headers('alice'))
+    downloaded = client.get(endpoint, headers=headers())
     assert downloaded.status_code == 200
     rows = list(csv.reader(io.StringIO(downloaded.content.decode('utf-8-sig'))))
     assert len(rows) == 2709 and rows[-1] == ['2707', '中文']
-    assert client.get(endpoint, headers=headers('admin')).status_code == 404
-    assert client.get(endpoint).status_code == 401
 
 
 @pytest.mark.anyio

@@ -6,7 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from graph_data_service.construction import ConstructionStore
 from graph_engine.construction import register_builtin_algorithms
@@ -163,10 +163,11 @@ class DomainLearningIntegrationTest(unittest.TestCase):
 
     def test_registered_workers_derive_user_scope_and_ignore_option_paths(self):
         store = register_builtin_algorithms(ConstructionStore(self.root))
-        options = {"mode": "rules", "domain_category": "finance", "experience_path": str(self.root / "forged"), "user_id": "bob"}
+        options = {"mode": "llm", "domain_category": "finance", "experience_path": str(self.root / "forged"), "user_id": "bob"}
         for user, dataset in (("alice", "first"), ("alice", "second"), ("bob", "first")):
-            result = store.build(user, dataset, self.source, "source.sql", options)
-            self.assertEqual(result["status"], "ready")
+            with patch("graph_engine.construction.agent.ToolCallingLLM", return_value=CurrentSchemaPlanner()):
+                result = store.build(user, dataset, self.source, "source.sql", options)
+            self.assertEqual(result["status"], "draft")
         def report(user, dataset):
             return json.loads((self.root / "users" / user / "datasets" / dataset / "construction/evolution-report.json").read_text(encoding="utf-8"))
         self.assertTrue(report("alice", "second")["experience"]["retrieved"])

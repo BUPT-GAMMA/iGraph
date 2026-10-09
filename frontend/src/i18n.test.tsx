@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { apiFetch } from './api';
 import { TopBar } from './components/TopBar';
 import { I18nProvider, LANGUAGE_STORAGE_KEY, resolveLanguage, useI18n } from './i18n';
 
@@ -14,6 +15,7 @@ describe('interface language', () => {
     localStorage.removeItem(LANGUAGE_STORAGE_KEY);
     document.documentElement.lang = 'zh-CN';
     document.title = '';
+    vi.unstubAllGlobals();
   });
 
   it('uses English for a new production browser', () => {
@@ -47,5 +49,19 @@ describe('interface language', () => {
     expect(screen.getByText('中文界面')).toBeTruthy();
     await waitFor(() => expect(document.documentElement.lang).toBe('zh-CN'));
     expect(document.title).toBe('iGraph · 图分析工作台');
+  });
+
+  it('sends the newly selected UI language on every model request', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}'));
+    vi.stubGlobal('fetch', fetcher);
+    render(<I18nProvider initialLanguage="en"><TopBar onMenu={() => undefined} onHome={() => undefined} /></I18nProvider>);
+    await apiFetch('/api/sessions/A/chat/stream');
+    expect(fetcher.mock.calls[0][1].headers.get('Accept-Language')).toContain('en-US');
+    fireEvent.click(screen.getByRole('button', { name: '中文' }));
+    await apiFetch('/api/sessions/A/chat/stream');
+    expect(fetcher.mock.calls[1][1].headers.get('Accept-Language')).toContain('zh-CN');
+    fireEvent.click(screen.getByRole('button', { name: 'EN' }));
+    await apiFetch('/api/sessions/A/chat/stream');
+    expect(fetcher.mock.calls[2][1].headers.get('Accept-Language')).toContain('en-US');
   });
 });

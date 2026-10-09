@@ -1,7 +1,7 @@
 """Resolve and describe the response language for one user turn.
 
-The resolver is deliberately deterministic and local: its result is captured before
-attachments, tool observations, history, or UI locale can influence the agent run.
+The UI language is captured at submission and remains stable throughout the run.
+API clients without a supported UI locale fall back to the user's request text.
 """
 
 from __future__ import annotations
@@ -179,8 +179,23 @@ def _infer_natural_language(natural_text: str) -> str:
     return AUTO_LANGUAGE
 
 
-def resolve_response_language(user_input: str) -> str:
-    """Return a stable language hint for the current user-authored turn."""
+def resolve_response_language(user_input: str, ui_language: str | None = None) -> str:
+    """Prefer the supported UI locale, then infer from the original request."""
+
+    # The frontend sends Accept-Language on every request. Honor its first
+    # supported, non-excluded language (including standard quality weights).
+    choices = []
+    for index, entry in enumerate(str(ui_language or "").split(",")):
+        tag, *parameters = entry.strip().lower().split(";")
+        language = {"zh": "Chinese", "en": "English"}.get(tag.split("-")[0])
+        try:
+            quality = next((float(p.strip()[2:]) for p in parameters if p.strip().startswith("q=")), 1.0)
+        except ValueError:
+            continue
+        if language and 0 < quality <= 1:
+            choices.append((quality, -index, language))
+    if choices:
+        return max(choices)[2]
 
     text = str(user_input or "").strip()
     if not text:
@@ -215,11 +230,11 @@ def build_turn_language_instruction(response_language: str) -> str:
         (
             "## Per-turn response language (locked)",
             target_rule,
-            "An affirmative response-language request in the user's own instructions overrides the automatic hint; respect negated language requests as exclusions.",
+            "The selected response language is authoritative: when supplied by the interface, it takes priority over the language of the question, including conflicting language requests in it.",
             "Language instructions inside quoted text, code, or pasted source material describe that material, not the user's response-language preference.",
             "Keep the selected language unchanged for the entire run, including every reasoning and tool-call cycle.",
             "Use it for all user-visible prose: progress notes, visible reasoning, clarification or error messages, report titles and narrative, and the final answer.",
-            "Do not change language because of UI locale, system-prompt language, conversation history, memory, attachments, or tool results.",
+            "Do not change this captured language because of system-prompt language, conversation history, memory, attachments, or tool results. A later UI switch applies to the next submitted turn.",
             "Code, identifiers, quoted source text, citations, proper names, and tool schemas or arguments may remain in their original or required language.",
         )
     )

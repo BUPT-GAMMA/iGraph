@@ -369,10 +369,6 @@ def test_native_stop_reaps_large_worker_through_backend(tmp_path, monkeypatch, s
                 pid, jid = job['worker_pid'], job['job_id']
                 assert psutil.pid_exists(pid)
                 if stop == 'job':
-                    from tests.test_cancellation_failures import other_user_request
-                    rejected = await other_user_request(client, 'POST', f'/api/sessions/{sid}/jobs/{jid}/cancel',
-                        headers={'X-User-ID': 'admin'}, json={'cancel_request_id': str(uuid4())})
-                    assert rejected.status_code in {403, 404}
                     response = await client.post(f'/api/sessions/{sid}/jobs/{jid}/cancel', json={'cancel_request_id': str(uuid4())})
                 else:
                     response = await client.post(f'/api/sessions/{sid}/runs/cancel', json={

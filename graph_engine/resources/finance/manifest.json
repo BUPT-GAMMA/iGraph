@@ -1,0 +1,162 @@
+{
+  "version": 1,
+  "filename": "finance-ownership.npz",
+  "dataset": {
+    "dataset_id": "ds_finance_ownership_v1",
+    "name": "金融股权三表（预置图）",
+    "description": "机构、个人和原始持股三表构成的有向属性图；股东指向被投资机构。保留原始字段和证据，可直接使用金融分析工具。",
+    "source_type": "finance_preset",
+    "node_count": 6000,
+    "edge_count": 13436,
+    "is_directed": true,
+    "created_at": "2026-10-08T02:28:04+00:00",
+    "updated_at": "2026-10-08T02:28:04+00:00",
+    "versions": [
+      "v001"
+    ],
+    "edge_entry_count": 13436,
+    "unique_edge_count": 13436,
+    "num_unique_directed_edges": 13436,
+    "num_unique_undirected_edges": 13436,
+    "semantic_type": "directed",
+    "storage_type": "directed",
+    "is_symmetric": false,
+    "has_self_loops": false,
+    "has_duplicate_entries": false,
+    "storage_backend": "local",
+    "graph_ref": null
+  },
+  "sources": {
+    "institution_main.csv": {
+      "sha256": "32f45bc436a8dd4d9adb162b44eef3919b6754de1a36e1e865b48720d68367f9",
+      "rows": 5000
+    },
+    "individual_info.csv": {
+      "sha256": "42488b995e05eb3e0ba99e7ea1961518246c4de4e81abafc1dd04ad35c04fa0a",
+      "rows": 1000
+    },
+    "institution_shareholder_relationship.csv": {
+      "sha256": "30fcd35b17e4e31010721d4438875cfe421bf0e87c66ce1aeec942ac48c39855",
+      "rows": 13436
+    }
+  },
+  "sha256": "0b0147dc4c03e3ef73359ab6c820694276dd418dc81d7f154688bcb0e6529117",
+  "inspection": {
+    "entity_count": 6000,
+    "ownership_fact_count": 13436,
+    "quality_issue_counts": {
+      "OWNERSHIP_TOTAL_EXCEEDED": 13
+    }
+  },
+  "construction_source": {
+    "asset": "source.gz",
+    "filename": "finance.csv",
+    "sha256": "e5586dc777ed4861c0da4ec7688ef0cef3136baad13b5afcb8e76a4378edde0e",
+    "metadata": {
+      "csv_bundle": {
+        "version": "csv_bundle.v1",
+        "source_files": [
+          "institution_main.csv",
+          "individual_info.csv",
+          "institution_shareholder_relationship.csv"
+        ],
+        "tables": [
+          {
+            "name": "institution_main",
+            "columns": [
+              "UUID",
+              "GCID",
+              "REFR_UUID",
+              "CHN_NM",
+              "ENG_NM",
+              "LCL_NM",
+              "CNSLD_SOC_CR_CODE",
+              "RGST_NAT",
+              "OFFC_NAT",
+              "FN_DT",
+              "APRV_DT",
+              "RGST_CPTL",
+              "RGST_CPTL_CCY_CODE",
+              "OPR_SCOP",
+              "RGST_ADR",
+              "OFFC_ADR",
+              "PROV_CODE",
+              "URB_CODE",
+              "ENTP_OPR_ST",
+              "LGL_RPRT",
+              "IDY_FRST_LVL_CODE",
+              "IDY_SCD_CODE",
+              "IDY_FRST_LVL_NAME",
+              "IDY_SCD_NAME",
+              "CHN_SHRT_NM",
+              "RCRD_ST",
+              "CUST_CRDBL",
+              "ENTP_CHAR_CL",
+              "LIST_ST_CODE",
+              "IS_STE_OWN_BKGD",
+              "IS_IVS_INST",
+              "AFFL_RGON",
+              "IS_GRP_CO",
+              "IS_LTD_CO",
+              "STATC_DT"
+            ],
+            "primary_key": [
+              "UUID"
+            ],
+            "foreign_keys": []
+          },
+          {
+            "name": "individual_info",
+            "columns": [
+              "IDV_ID",
+              "IDV_NM",
+              "IDV_MD5",
+              "STATC_DT",
+              "IS_IN_LIST_CO_POS",
+              "IS_BRK_FAH_EXEC",
+              "IS_IDV_GRP_TOP_PNT"
+            ],
+            "primary_key": [
+              "IDV_ID"
+            ],
+            "foreign_keys": []
+          },
+          {
+            "name": "institution_shareholder_relationship",
+            "columns": [
+              "UUID",
+              "INST_CHN_NM",
+              "INST_ENG_NM",
+              "INST_CNSLD_SOC_CR_CODE",
+              "INST_RGST_CTY",
+              "REL_SHRHLR_CUST_ID",
+              "REL_SHRHLR_TP_CODE",
+              "REL_SHRHLR_HOLD_SHR_RTO",
+              "REL_SHRHLR_HOLD_SHR_RANK",
+              "REL_INST_SHRHLR_CHN_NM",
+              "REL_INST_SHRHLR_ENG_NM",
+              "REL_INST_SHRHLR_CNSLD_SOC_CR_CODE",
+              "REL_INST_SHRHLR_RGST_CTY",
+              "REL_IDV_SHRHLR_MD5_INF",
+              "REL_IDV_SHRHLR_NM",
+              "STATC_DT"
+            ],
+            "primary_key": [],
+            "foreign_keys": [
+              {
+                "columns": [
+                  "UUID"
+                ],
+                "ref_table": "institution_main",
+                "ref_columns": [
+                  "UUID"
+                ]
+              }
+            ]
+          }
+        ],
+        "total_bytes": 6427044
+      }
+    }
+  }
+}

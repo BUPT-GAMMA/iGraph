@@ -2,6 +2,30 @@ import { describe, it, expect } from 'vitest';
 import { graphIndex, previewGraph, degreeRadius, NODE_LIMIT, EDGE_LIMIT } from './graphPreview';
 
 describe('graph preview', () => {
+  it('retains complete highlighted SCC evidence beyond the ordinary node and edge budgets', () => {
+    const size = 220;
+    const members = Array.from({ length: size }, (_, i) => `member-${i}`);
+    const records = Array.from({ length: size }, (_, i) => `holding-${i}`);
+    const ordinary = Array.from({ length: 100 }, (_, i) => `ordinary-${i}`);
+    const internalEdges = records.flatMap((record, i) => [
+      { source: record, target: members[i] }, { source: record, target: members[(i + 1) % size] },
+    ]);
+    const graph = graphIndex({ directed: true, nodes: [...ordinary, ...members, ...records].map(id => ({ id })),
+      edges: [...ordinary.slice(1).map(id => ({ source: ordinary[0], target: id })), ...internalEdges] });
+    const highlights = [{ type: 'node', nodes: [...members, ...records] },
+      { type: 'path', edges: internalEdges.map(edge => [edge.source, edge.target]) }];
+    const preview = previewGraph(graph, highlights, '', false, false, '', 0);
+    const displayed = new Set(preview.nodes.map(node => node.id));
+    [...members, ...records].forEach(id => expect(displayed.has(id)).toBe(true));
+    expect(preview.edges.filter(edge => edge.source.startsWith('holding-'))).toHaveLength(size * 2);
+    expect(preview.omittedHighlights).toBe(0);
+    expect(preview.nodes.some(node => node.id.startsWith('ordinary-'))).toBe(true);
+    expect(preview.edges.some(edge => edge.source.startsWith('ordinary-'))).toBe(true);
+    const isolated = previewGraph(graph, highlights, '', false, false, '', 0, true);
+    expect(isolated.nodes).toHaveLength(size * 2);
+    expect(isolated.edges).toHaveLength(size * 2);
+  });
+
   it('uses authoritative degrees without confusing preview connections or counting invalid edges', () => {
     const index = graphIndex({ degree_scope: 'full_graph', nodes: [{ id: 'a', total_degree: 100 }, { id: 'b' }, { id: 'c' }], edges: [{ src: 'a', dst: 'b' }, { src: 'b', dst: 'b' }, { src: 'b', dst: 'missing' }] });
     expect(index.nodes.get('a')?.degree).toBe(100);
@@ -35,5 +59,15 @@ describe('graph preview', () => {
     expect(preview.nodes.map(node => node.id)).toEqual(['a', 'b']);
     expect(preview.edges.map(edge => [edge.source, edge.target])).toEqual([['a', 'b']]);
     expect(preview.omittedHighlights).toBe(1);
+  });
+  it('reserves ordinary neighbors of highlighted subjects before filling a large overview', () => {
+    const ordinary = Array.from({ length: 300 }, (_, i) => `ordinary-${i}`);
+    const index = graphIndex({ nodes: [...ordinary, 'subject', 'neighbor'].map(id => ({ id })),
+      edges: [...ordinary.slice(1).map(id => ({ source: ordinary[0], target: id })), { source: 'subject', target: 'neighbor' }] });
+    const result = previewGraph(index, [{ type: 'node', nodes: ['subject'] }], '', false, false, '', 0);
+    expect(result.nodes).toHaveLength(NODE_LIMIT);
+    expect(result.nodes.map(node => node.id)).toEqual(expect.arrayContaining(['subject', 'neighbor']));
+    expect(result.edges.some(edge => edge.source === 'subject' && edge.target === 'neighbor')).toBe(true);
+    expect(result.nodes.some(node => node.id.startsWith('ordinary-'))).toBe(true);
   });
 });

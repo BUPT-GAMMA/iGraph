@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { listRemoteGraphs, listRemoteGraphTypes, saveRemoteGraph, testRemoteGraph, deleteRemoteGraph, selectRemoteGraph, USER_KEY } from './api';
 
 afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); });
-it('uses authenticated remote graph endpoints and revision without saving a test', async () => {
+it('uses workspace remote graph endpoints and revision without saving a test', async () => {
   localStorage.setItem(USER_KEY, 'alice');
   const fetcher = vi.fn().mockImplementation(async () => new Response('{}'));
   vi.stubGlobal('fetch', fetcher);
@@ -15,15 +15,13 @@ it('uses authenticated remote graph endpoints and revision without saving a test
   ]);
   expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual(form);
   expect(JSON.parse(fetcher.mock.calls[5][1].body)).toEqual({ connection_id: null });
-  expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBeNull();
-  expect(fetcher.mock.calls[0][1].credentials).toBe('include');
+  expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('admin');
 });
-it('loads product types through the authenticated API', async () => {
+it('loads product types through the workspace API', async () => {
   localStorage.setItem(USER_KEY, 'alice');
   const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ types: [] }), { status: 200 }));
   vi.stubGlobal('fetch', fetcher);
   expect(await listRemoteGraphTypes()).toEqual({ types: [] });
   expect(fetcher.mock.calls[0][0]).toBe('/api/remote-graph-types');
-  expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBeNull();
-  expect(fetcher.mock.calls[0][1].credentials).toBe('include');
+  expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('admin');
 });

@@ -27,7 +27,6 @@ async def running_stack(root, *, learning=False):
         try:
             async with httpx.AsyncClient(base_url=url, headers={'X-User-ID': 'admin', 'X-iGraph-Stream-Version': '2'},
                                          timeout=30, trust_env=False) as client:
-                (await client.post('/api/auth/login', json={'username': 'admin', 'password': 'cancellation-test-password'})).raise_for_status()
                 response = await client.post('/api/sessions', json={'model': 'qwen3.6-plus'})
                 sid = response.json()['session_id']
                 graph.get_required(sid, user_id='admin').set_graph(_legacy_graph())
@@ -40,12 +39,6 @@ async def running_stack(root, *, learning=False):
             server.should_exit = True
             await serve
             sock.close()
-
-
-async def other_user_request(client, method, path, **kwargs):
-    async with httpx.AsyncClient(base_url=client.base_url, timeout=30, trust_env=False) as other:
-        (await other.post('/api/auth/login', json={'username': 'alice', 'password': 'cancellation-test-password'})).raise_for_status()
-        return await other.request(method, path, **kwargs)
 
 
 def test_native_handoff_failure_releases_admission_without_replaying_question(tmp_path):
@@ -220,8 +213,6 @@ def test_upgrade_keeps_pre_control_run_history_readable_without_creating_executi
             assert value['messages'][-1]['run_id'] == rid
             assert controller.store.get('admin', sid, run_id=rid) is None
             assert metrics['calls'] == {} and not graph._job_manager._jobs
-            wrong = await other_user_request(client, 'GET', f'/api/sessions/{sid}/runs/{rid}/snapshot')
-            assert wrong.status_code == 404
     asyncio.run(scenario())
 
 
@@ -327,8 +318,6 @@ def test_disconnect_and_new_run_stop_leave_previous_background_training_alive(tm
                 row = controller.store.get('admin', sid, job_id=job.job_id)
                 import psutil
                 assert psutil.pid_exists(row['state']['worker']['pid'])
-                wrong = await other_user_request(client, 'POST', f'/api/sessions/{sid}/jobs/{job.job_id}/cancel', json={'cancel_request_id': str(uuid4())})
-                assert wrong.status_code == 404
                 response = await client.post(f'/api/sessions/{sid}/jobs/{job.job_id}/cancel', json={'cancel_request_id': str(uuid4())})
                 assert response.status_code in {200, 202}
                 async def job_completed():

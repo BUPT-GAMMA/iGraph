@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AUTH_ACCOUNT_CHANGED_EVENT, AUTH_EXPIRED_EVENT, ApiError, authenticateUser, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser } from './api';
+import { ApiError, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser, saveConstructionModelSettings } from './api';
 
 let unbindAccount = () => {};
 
@@ -19,91 +19,35 @@ function responseFromChunks(chunks: string[]) {
   }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-describe('authentication headers', () => {
-  it.each([
-    ['session creation', () => createSession({ initialMessagePreview: 'private draft' })],
-    ['chat', () => streamChat('A', 'private draft', [], {}, new AbortController().signal)],
-    ['session upload', () => uploadFile('A', new File(['private'], 'private.csv'))],
-    ['dataset upload', () => uploadProjectDataset(null, new File(['private'], 'private.csv'))],
-  ])('blocks %s before storage synchronization can run', async (_name, send) => {
-    unbindAccount = bindRequestAccount('account-a');
-    localStorage.setItem(USER_KEY, 'account-b');
-    const fetcher = vi.fn();
+describe('single-user workspace requests', () => {
+  it('sends construction settings as a JSON object accepted by FastAPI', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ model: 'deepseek-v4-pro', has_api_key: true })));
     vi.stubGlobal('fetch', fetcher);
-
-    await expect(send()).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
-    expect(fetcher).not.toHaveBeenCalled();
+    const settings = { model: 'deepseek-v4-pro', base_url: 'https://gateway.test/v1', api_key: 'test-key', clear_api_key: false };
+    await saveConstructionModelSettings(settings);
+    expect(fetcher.mock.calls[0][0]).toBe('/api/construction-model-settings');
+    const request = fetcher.mock.calls[0][1];
+    expect(request.method).toBe('POST');
+    expect(new Headers(request.headers).get('Content-Type')).toBe('application/json');
+    expect(JSON.parse(request.body)).toEqual(settings);
   });
-
-  it('blocks requests when another tab clears the account', async () => {
-    unbindAccount = bindRequestAccount('account-a');
-    const fetcher = vi.fn();
+  it.each(['', 'old-user', 'another-user'])('ignores a cached account (%s)', async cached => {
+    localStorage.setItem(USER_KEY, cached);
+    unbindAccount = bindRequestAccount('stale-rendered-user');
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ session_id: 'A' })));
     vi.stubGlobal('fetch', fetcher);
-    await expect(createSession()).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
-    expect(fetcher).not.toHaveBeenCalled();
+    await createSession({ initialMessagePreview: 'draft' });
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('admin');
   });
 
-  it('uses a session cookie and pins the expected workspace account', async () => {
-    localStorage.setItem(USER_KEY, 'account-b');
-    unbindAccount = bindRequestAccount('account-b');
-    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ session_id: 'B' })));
+  it('loads the workspace directly without a login request', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ valid: true })));
     vi.stubGlobal('fetch', fetcher);
-    await createSession({ initialMessagePreview: 'B draft' });
-    const headers = new Headers(fetcher.mock.calls[0][1].headers);
-    expect(headers.get('X-User-ID')).toBeNull();
-    expect(headers.get('X-iGraph-Account')).toBe('account-b');
-    expect(fetcher.mock.calls[0][1].credentials).toBe('include');
-  });
-
-  it('validates the session cookie without accepting a caller supplied user ID', async () => {
-    localStorage.setItem(USER_KEY, 'cached-user');
-    unbindAccount = bindRequestAccount('rendered-user');
-    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ valid: true }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }));
-    vi.stubGlobal('fetch', fetcher);
-
-    await validateUser('next-user');
-
-    expect(fetcher).toHaveBeenCalledOnce();
-    const headers = new Headers(fetcher.mock.calls[0][1]?.headers);
-    expect(headers.get('X-User-ID')).toBeNull();
-    expect(headers.get('X-iGraph-Account')).toBeNull();
-    expect(fetcher.mock.calls[0][1].credentials).toBe('include');
-  });
-
-  it('expires the workspace when cookie validation returns unauthorized', async () => {
-    localStorage.setItem(USER_KEY, 'alice');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 401 })));
-    const expired = vi.fn(); window.addEventListener(AUTH_EXPIRED_EVENT, expired);
-    try {
-      await expect(validateUser('alice')).rejects.toMatchObject({ status: 401 });
-      expect(expired).toHaveBeenCalledOnce();
-      expect(localStorage.getItem(USER_KEY)).toBe('');
-    } finally { window.removeEventListener(AUTH_EXPIRED_EVENT, expired); }
-  });
-
-  it('does not globally expire a workspace for an incorrect login password', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 401 })));
-    const expired = vi.fn(); window.addEventListener(AUTH_EXPIRED_EVENT, expired);
-    try {
-      await expect(authenticateUser('login', 'alice', 'wrong-password')).rejects.toMatchObject({ status: 401 });
-      expect(expired).not.toHaveBeenCalled();
-    } finally { window.removeEventListener(AUTH_EXPIRED_EVENT, expired); }
-  });
-
-  it('requests authoritative identity synchronization for cookie account races', async () => {
-    localStorage.setItem(USER_KEY, 'alice'); unbindAccount = bindRequestAccount('alice');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: { code: 'ACCOUNT_CHANGED', message: 'Account changed' } }), { status: 409 })));
-    const changed = vi.fn(); window.addEventListener(AUTH_ACCOUNT_CHANGED_EVENT, changed);
-    try {
-      await expect(createSession()).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
-      expect(changed).toHaveBeenCalledOnce();
-    } finally { window.removeEventListener(AUTH_ACCOUNT_CHANGED_EVENT, changed); }
+    await validateUser();
+    expect(fetcher.mock.calls[0][0]).toBe('/api/workspace');
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('Accept-Language')).toContain('zh');
   });
 });
-
 describe('SSE parser', () => {
   it('handles UTF-8 byte splits, CRLF across chunks, comments and multiline data', async () => {
     const bytes = new TextEncoder().encode(': heartbeat\r\ndata: {"type":"token",\r\ndata: "content":"中文🙂"}\r\n\r\n');

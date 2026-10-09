@@ -563,6 +563,8 @@ def _read_public_progress(directory: Path, record: dict):
     if stage not in PUBLIC_PROGRESS_STAGES:
         return None
     result = {"version": "construction_progress.v1", "stage": stage}
+    if value.get("mode") in ("rules", "llm"):
+        result["mode"] = value["mode"]
     if value.get("status") in {"running", "ready", "failed"}:
         result["status"] = value["status"]
     for key in ("current_message", "updated_at"):
@@ -690,7 +692,7 @@ class ConstructionStore:
         return record
 
     def _status(self, record, directory=None):
-        graph = record.get("graph")
+        graph = record.get("draft_graph") or record.get("graph")
         algorithm_available = record.get("source_type") in self._algorithms
         status = record["status"]
         message = record.get("message", "")
@@ -731,7 +733,7 @@ class ConstructionStore:
                     record = self._read(claimed, dataset_id)
                     if record["status"] == "building":
                         previous_graph = record.get("graph") is not None
-                        record.update(status="ready" if previous_graph else "failed", last_build_status="interrupted",
+                        record.update(status="draft" if record.get("draft_graph") is not None else "ready" if previous_graph else "failed", last_build_status="interrupted",
                                       message="上次构图已中断；已有图数据仍可使用。" if previous_graph else "上次构图已中断；源文件已保留，可重新开始构图。",
                                       updated_at=datetime.now(timezone.utc).isoformat())
                         _atomic_json(claimed / "record.json", record)
@@ -770,7 +772,7 @@ class ConstructionStore:
                 dst.flush()
                 os.fsync(dst.fileno())
             checksum = digest.hexdigest()
-            if record.get("graph") and (record.get("source_sha256") != checksum or record.get("source_type") != kind):
+            if (record.get("graph") or record.get("draft_graph")) and (record.get("source_sha256") != checksum or record.get("source_type") != kind):
                 _fail("An already constructed dataset cannot be rebound to a different source.", "source_conflict", 409)
             retained = directory / f"source-{checksum}.{kind}"
             os.replace(temporary, retained)
@@ -788,11 +790,12 @@ class ConstructionStore:
 
     def reuse_ready(self, user_id, dataset_id, source_path=None, source_filename=None):
         """Fast reuse cannot claim compute capacity or change a running source."""
-        if self._read(self._directory(user_id, dataset_id), dataset_id).get("graph") is None:
+        existing = self._read(self._directory(user_id, dataset_id), dataset_id)
+        if existing.get("graph") is None and existing.get("draft_graph") is None:
             return None
         with self._write_lock(user_id, dataset_id) as directory:
             record = self._read(directory, dataset_id)
-            if record.get("graph") is None:
+            if record.get("graph") is None and record.get("draft_graph") is None:
                 return None
             if source_path is not None:
                 record = self._register(directory, record, source_path, source_filename)
@@ -803,7 +806,7 @@ class ConstructionStore:
         with self._write_lock(user_id, dataset_id, recovering=True) as directory:
             record = self._read(directory, dataset_id)
             if record.get("build_id") == build_id and record["status"] == "building":
-                record.update(status="ready" if record.get("graph") is not None else "failed",
+                record.update(status="draft" if record.get("draft_graph") is not None else "ready" if record.get("graph") is not None else "failed",
                               last_build_status="interrupted", failure_code="construction_interrupted",
                               message="上次构图已中断；源文件和已有图数据已保留，可重新开始构图。",
                               updated_at=datetime.now(timezone.utc).isoformat())
@@ -828,7 +831,7 @@ class ConstructionStore:
                 _fail("Register the dataset source before building.", "source_not_registered", 409)
             # Reusing a ready dataset is intentionally idempotent. Rebuild semantics
             # can be added with their own revision contract when algorithms exist.
-            if record.get("graph") is not None:
+            if record.get("graph") is not None or record.get("draft_graph") is not None:
                 return {"success": True, **self._status(record, directory), "reused": True}
             algorithm = self._algorithms.get(record["source_type"])
             if algorithm is None:
@@ -870,26 +873,28 @@ class ConstructionStore:
                               updated_at=datetime.now(timezone.utc).isoformat())
                 _atomic_json(directory / "record.json", record)
                 return {"success": False, **self._status(record, directory)}
-            record.update(graph=graph, revision=record["revision"] + 1, status="ready", last_build_status="ready",
-                          message="构图完成，结果已保存到数据集。", updated_at=datetime.now(timezone.utc).isoformat())
+            record.update(draft_graph=graph, revision=record["revision"] + 1, status="draft", last_build_status="draft",
+                          message="构图完成，结果待保存。点击保存构图结果后可用于分析。", updated_at=datetime.now(timezone.utc).isoformat())
             _atomic_json(directory / "record.json", record)
             return {"success": True, **self._status(record, directory)}
 
-    def graph(self, user_id, dataset_id):
+    def graph(self, user_id, dataset_id, *, saved_only=False):
         directory = self._directory(user_id, dataset_id)
         record = self._read(directory, dataset_id)
-        if record.get("graph") is None:
+        graph = record.get("graph") if saved_only else record.get("draft_graph") or record.get("graph")
+        if graph is None:
             _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
-        return {"dataset_id": dataset_id, "revision": record["revision"], "graph": copy.deepcopy(record["graph"])}
+        return {"dataset_id": dataset_id, "revision": record["revision"], "graph": copy.deepcopy(graph)}
 
     def schema(self, user_id, dataset_id):
         """Return a freshly aggregated schema; the persisted instance graph is untouched."""
         directory = self._directory(user_id, dataset_id)
         record = self._read(directory, dataset_id)
-        if record.get("graph") is None:
+        graph = record.get("draft_graph") or record.get("graph")
+        if graph is None:
             _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
         return {"dataset_id": dataset_id, "revision": record["revision"],
-                "schema": {**graph_schema(record["graph"]),
+                "schema": {**graph_schema(graph),
                            "source_tables": source_schema_tables(directory, record.get("source_tables"))}}
 
     def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None):
@@ -900,13 +905,20 @@ class ConstructionStore:
             if record["revision"] != base_revision:
                 _fail("The dataset has changed. Reload it and preview your edits again.", "revision_conflict", 409,
                       revision=record["revision"], current_revision=record["revision"])
-            if record.get("graph") is None:
+            original = record.get("draft_graph") or record.get("graph")
+            if original is None:
                 _fail("This dataset has no constructed graph.", "graph_not_ready", 409)
-            graph, summary = optimize_graph(record["graph"], operations)
+            if operations == [] and commit and record.get("draft_graph") is not None:
+                graph = copy.deepcopy(original)
+                counts = {"node_count": len(graph["nodes"]), "edge_count": len(graph["edges"])}
+                summary = {"before": counts, "after": counts.copy(), "changed_nodes": 0, "changed_edges": 0}
+            else:
+                graph, summary = optimize_graph(original, operations)
             result = {"success": True, "dataset_id": dataset_id, "status": "ready" if commit else "preview",
                       "base_revision": base_revision, "revision": base_revision + 1, "graph": graph, "summary": summary}
             if commit:
-                record.update(graph=graph, revision=base_revision + 1, updated_at=datetime.now(timezone.utc).isoformat())
+                record.pop("draft_graph", None)
+                record.update(graph=graph, status="ready", last_build_status="ready", message="构图结果已保存，可用于分析。", revision=base_revision + 1, updated_at=datetime.now(timezone.utc).isoformat())
                 if receipt is not None:
                     record["commit_receipt"] = {**receipt, "result": result}
                 _atomic_json(directory / "record.json", record, before_replace=before_commit)
