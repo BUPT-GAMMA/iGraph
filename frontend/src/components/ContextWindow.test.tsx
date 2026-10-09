@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { getContextWindow, type ContextWindowUsage } from '../api';
@@ -14,8 +14,10 @@ afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); });
 it.each(['zh', 'en'] as const)('shows reserved-space-aware usage in %s', async language => {
   vi.mocked(getContextWindow).mockResolvedValue({ context_window_usage: usage });
   render(<I18nProvider initialLanguage={language}><ContextWindow sessionId="A" model={model} loading={false} /></I18nProvider>);
-  await waitFor(() => expect(screen.getByRole('meter').getAttribute('value')).toBe('2000'));
-  expect(screen.getByText(language === 'zh' ? '约剩 2,000 tokens（20.0%）' : '≈ 2,000 tokens left (20.0%)')).toBeTruthy();
+  const trigger = await screen.findByRole('button', { name: language === 'zh' ? '上下文用量：剩余 20.0%' : 'Context usage: 20.0% left' });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  fireEvent.click(trigger);
+  expect(screen.getByRole('meter').getAttribute('value')).toBe('2000');
   expect(screen.getByText(language === 'zh' ? '回复预留' : 'Reserved for reply')).toBeTruthy();
 });
 
@@ -38,6 +40,7 @@ it('polls during a run and discards stale results when the session changes', asy
   const view = render(<I18nProvider initialLanguage="zh"><ContextWindow sessionId="A" model={model} loading /></I18nProvider>);
   view.rerender(<I18nProvider initialLanguage="zh"><ContextWindow sessionId="B" model={model} loading /></I18nProvider>);
   await act(async () => { finishOld({ context_window_usage: usage }); });
+  fireEvent.click(screen.getByRole('button', { name: '上下文用量：剩余 4.0%' }));
   expect(screen.getByRole('meter').getAttribute('value')).toBe('400');
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   expect(getContextWindow).toHaveBeenCalledTimes(3);
@@ -54,7 +57,26 @@ it('does not show zero or an old value after a request failure', async () => {
 it.each(['zh', 'en'] as const)('identifies provider-reported input in %s', async language => {
   vi.mocked(getContextWindow).mockResolvedValue({ context_window_usage: { ...usage, basis: 'provider_usage', input_tokens: 7500, remaining_tokens: 500 } });
   render(<I18nProvider initialLanguage={language}><ContextWindow sessionId="A" model={model} loading={false} /></I18nProvider>);
-  await waitFor(() => expect(screen.getByRole('meter').getAttribute('value')).toBe('500'));
-  expect(screen.getByText(language === 'zh' ? /按接口返回的最近一次请求输入用量计算/ : /Calculated from the provider/)).toBeTruthy();
-  expect(screen.getByText(language === 'zh' ? '工具定义（估算）' : 'Tool definitions (estimated)')).toBeTruthy();
+  fireEvent.click(await screen.findByRole('button', { name: language === 'zh' ? '上下文用量：剩余 5.0%' : 'Context usage: 5.0% left' }));
+  expect(screen.getByRole('meter').getAttribute('value')).toBe('500');
+  expect(screen.getByText(language === 'zh' ? /按接口最近一次输入统计/ : /Based on the latest input reported/)).toBeTruthy();
+  expect(screen.getByText(language === 'zh' ? '其中工具定义 · 估算' : 'Tool definitions · estimated')).toBeTruthy();
+});
+
+it('dismisses the details with Escape or an outside click and resets on a different session', async () => {
+  vi.mocked(getContextWindow).mockResolvedValue({ context_window_usage: usage });
+  const view = render(<I18nProvider initialLanguage="zh"><ContextWindow sessionId="A" model={model} loading={false} /></I18nProvider>);
+  const trigger = await screen.findByRole('button', { name: '上下文用量：剩余 20.0%' });
+  fireEvent.click(trigger);
+  expect(document.activeElement).toBe(screen.getByRole('dialog'));
+  fireEvent.keyDown(document, { key: 'Escape' });
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  fireEvent.click(trigger);
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  fireEvent.click(trigger);
+  view.rerender(<I18nProvider initialLanguage="zh"><ContextWindow sessionId="B" model={model} loading={false} /></I18nProvider>);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await waitFor(() => expect(getContextWindow).toHaveBeenCalledTimes(2));
 });
