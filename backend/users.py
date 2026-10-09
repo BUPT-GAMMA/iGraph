@@ -1,7 +1,7 @@
 """Backend-owned user directory.
 
 Legacy IDs are retained only to preserve old resource ownership. All accounts
-have the same role and model defaults; browser access requires password login.
+have the same role and model defaults; the public Backend serves one workspace owner.
 """
 
 from __future__ import annotations
@@ -173,3 +173,36 @@ class UserDirectory:
             del records[user_id]
             self._write(records)
             return True
+
+
+class SingleUserDirectory(UserDirectory):
+    """One workspace owner; old multi-user files remain intact for rollback."""
+
+    def __init__(
+        self,
+        path: Path,
+        seed_path: Path,
+        admin_user_id: str,
+        default_admin_model: str = "qwen3.6-plus",
+        default_user_model: str = "qwen3.6-plus",
+    ) -> None:
+        super().__init__(path, seed_path, admin_user_id, default_admin_model, default_user_model)
+        self.admin_user_id = admin_user_id
+        self.default_admin_model = default_admin_model
+
+    def _load(self) -> dict[str, UserRecord]:
+        records = super()._load()
+        owner = records.get(self.admin_user_id) or UserRecord(user_id=self.admin_user_id)
+        owner.enabled = True
+        owner.roles = ["admin", "user"]
+        owner.allowed_models = self._ordered_models(self.default_admin_model, SUPPORTED_MODELS)
+        return {self.admin_user_id: owner}
+
+    def create(self, record: UserRecord) -> UserRecord:
+        raise ValueError("Single-user workspaces do not support account management")
+
+    def save(self, record: UserRecord) -> UserRecord:
+        raise ValueError("Single-user workspaces do not support account management")
+
+    def delete(self, user_id: str) -> bool:
+        raise ValueError("The workspace owner cannot be deleted")

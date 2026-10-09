@@ -466,7 +466,11 @@ def _infer_txt_delimiter(content: str, max_rows: int) -> str | None:
 
 
 def _load_txt(data: bytes, path: Path, options: dict, limits: ResourceLimits) -> RelationalSource:
-    content = _decode_text(data, "TXT")
+    from graph_data_service.text_encoding import decode_txt
+    try:
+        content = decode_txt(data)
+    except ValueError as exc:
+        raise SourceError(str(exc)) from exc
     if not content.strip():
         raise SourceError("TXT is empty and has no records.")
     txt_mode = options.get("txt_mode", "auto")

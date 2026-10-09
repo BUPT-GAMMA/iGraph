@@ -65,13 +65,13 @@ class EntitySearchIndex:
         query = str(req.query or "").strip()
         top_k = self._top_k(req.top_k)
         filters = req.filters or {}
-        exact_id = self._exact_node_id(query)
-        exact = exact_id is not None
+        exact_ids = self._exact_node_ids(query)
+        exact = bool(exact_ids)
 
         if exact:
-            indices = [exact_id] if self._node_matches_filters(self._node_docs[exact_id], filters) else []
+            indices = [idx for idx in exact_ids if self._node_matches_filters(self._node_docs[idx], filters)]
             rows = [
-                self._node_candidate(self._node_docs[idx], 1.0, ["exact node_name match"])
+                self._node_candidate(self._node_docs[idx], 1.0, ["exact node identity or display_name match"])
                 for idx in indices
             ]
         else:
@@ -92,6 +92,8 @@ class EntitySearchIndex:
             exact,
             has_filters=bool(filters),
         )
+        if exact and len(indices) > 1:
+            confidence, ambiguous = "medium", True
         best = self._best_node(rows[0], confidence) if rows else None
         return self._result(
             query=query,
@@ -169,6 +171,22 @@ class EntitySearchIndex:
         )
 
     def _build(self) -> None:
+        # Construction graphs retain stable internal IDs; human names live in
+        # properties. Index them once without treating distinct aliases or
+        # entities with the same name as one node.
+        self._display_names: dict[str, str] = {}
+        self._name_to_ids: dict[str, list[int]] = {}
+        property_graph = self._gd.graph_metadata.get("construction_graph") or {}
+        for node in property_graph.get("nodes", []):
+            properties = node.get("properties") or {}
+            data = properties.get("data")
+            name = properties.get("name") or (data.get("name") if isinstance(data, dict) else None)
+            if isinstance(name, str) and name.strip():
+                self._display_names[str(node["id"])] = name.strip()
+        for node_id in range(self._gd.num_nodes):
+            name = self._display_names.get(self._node_name(node_id))
+            if name:
+                self._name_to_ids.setdefault(name, []).append(node_id)
         self._node_docs = [self._build_node_doc(node_id) for node_id in range(self._gd.num_nodes)]
         self._edge_docs = [self._build_edge_doc(edge_idx) for edge_idx in range(self._gd.num_edges)]
 
@@ -203,6 +221,7 @@ class EntitySearchIndex:
     def _build_node_doc(self, node_id: int) -> dict[str, Any]:
         gd = self._gd
         name = self._node_name(node_id)
+        display_name = self._display_names.get(name, name)
         node_type = gd.get_node_type_by_id(node_id) if gd.has_node_type else None
         label = self._jsonable_label(gd.get_node_label_by_id(node_id)) if gd.has_node_label else None
         in_degree = gd.in_degree(node_id)
@@ -218,10 +237,13 @@ class EntitySearchIndex:
             document = f"{name} type={node_type} label={label}"
         else:
             document = name
+        if display_name != name:
+            document = f"{display_name} {document}"
         return {
             "entity": "node",
             "node_id": node_id,
             "node_name": name,
+            "display_name": display_name,
             "node_type": node_type,
             "label": label,
             "in_degree": in_degree,
@@ -272,7 +294,7 @@ class EntitySearchIndex:
 
     def _node_summary(self, node_id: int) -> str:
         doc = self._node_docs[node_id] if node_id < len(self._node_docs) else self._build_node_doc(node_id)
-        parts = [str(doc["node_name"])]
+        parts = [str(doc["display_name"]), str(doc["node_name"])]
         if doc.get("node_type") is not None:
             parts.append(f"type={doc['node_type']}")
         if doc.get("label") is not None:
@@ -328,9 +350,9 @@ class EntitySearchIndex:
     def _endpoint_scores(self, query: str, limit: int | None = None) -> dict[int, float]:
         if limit is None:
             limit = min(50, max(20, max(1, self._gd.num_nodes // 10)))
-        exact_id = self._exact_node_id(query)
-        if exact_id is not None:
-            return {exact_id: 1.0}
+        exact_ids = self._exact_node_ids(query)
+        if exact_ids:
+            return {node_id: 1.0 for node_id in exact_ids}
         if not query:
             return {}
         indices = [doc["node_id"] for doc in self._node_docs]
@@ -372,19 +394,25 @@ class EntitySearchIndex:
             self._query_vec_cache[query] = vec
             return vec
 
-    def _exact_node_id(self, query: str) -> int | None:
+    def _exact_node_ids(self, query: str) -> list[int]:
         if not query:
-            return None
+            return []
         node2id = self._gd.node2id
         if query in node2id:
-            return int(node2id[query])
+            return [int(node2id[query])]
+        if query in self._name_to_ids:
+            return self._name_to_ids[query]
         try:
             node_id = int(query)
         except ValueError:
-            return None
+            return []
         if 0 <= node_id < self._gd.num_nodes:
-            return node_id
-        return None
+            return [node_id]
+        return []
+
+    def _exact_node_id(self, query: str) -> int | None:
+        matches = self._exact_node_ids(query)
+        return matches[0] if len(matches) == 1 else None
 
     def _exact_edge_indices(self, query: str, src_query: str, dst_query: str) -> list[int]:
         indices: list[int] = []
@@ -445,6 +473,7 @@ class EntitySearchIndex:
     ) -> dict[str, Any]:
         return {
             "node_name": doc["node_name"],
+            "display_name": doc["display_name"],
             "node_id": doc["node_id"],
             "score": round(float(score), 4),
             "node_type": doc.get("node_type"),
@@ -486,6 +515,7 @@ class EntitySearchIndex:
     def _best_node(row: dict[str, Any], confidence: str) -> dict[str, Any]:
         return {
             "node_name": row["node_name"],
+            "display_name": row["display_name"],
             "node_id": row["node_id"],
             "score": row["score"],
             "confidence": confidence,

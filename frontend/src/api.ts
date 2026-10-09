@@ -1,3 +1,4 @@
+import type { UserCase } from './userCases';
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionSourcePreview, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
@@ -7,16 +8,7 @@ import type { RemoteBinding, RemoteConnection, RemoteConnectionWrite, RemoteData
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const SESSION_STATE_V2 = import.meta.env.VITE_SESSION_STATE_V2 !== 'false';
 export const USER_KEY = 'igraph_user_id';
-export const AUTH_EXPIRED_EVENT = 'igraph-auth-expired';
-export const AUTH_ACCOUNT_CHANGED_EVENT = 'igraph-auth-account-changed';
-
-export type AuthUser = {
-  user_id: string;
-  username?: string;
-  is_admin?: boolean;
-  roles?: string[];
-  allowed_models?: string[];
-};
+export const WORKSPACE_USER_ID = 'admin';
 
 export type CustomModel = {
   model_id: string;
@@ -46,6 +38,15 @@ export type ModelConfiguration = CustomModel & {
 };
 export type ModelCatalog = { models: ModelConfiguration[]; default_model: string };
 export const listModels = () => json<ModelCatalog>('/api/models');
+
+export type ContextWindowUsage = {
+  basis: 'last_request_estimate' | 'provider_usage'; config_id: string; model_revision?: number | null;
+  context_window: number; input_tokens: number; tool_tokens: number;
+  output_reserve: number; safety_reserve: number; remaining_tokens: number;
+  remaining_ratio: number; history_compacted: boolean; updated_at: number;
+};
+export const getContextWindow = (id: string, signal?: AbortSignal) =>
+  json<{ context_window_usage: ContextWindowUsage | null; run_id?: string | null }>(`/api/sessions/${encodeURIComponent(id)}/context-window`, { signal, cache: 'no-store' });
 
 export type ModelProtocol = 'openai-compatible' | 'openai-responses' | 'anthropic' | 'gemini';
 export type ModelProviderConnection = {
@@ -119,19 +120,16 @@ export function modelErrorMessage(code?: string | null) {
   return code ? messages[code] || code : '';
 }
 
-export function getUserId() { return localStorage.getItem(USER_KEY) || ''; }
-export function setUserId(value: string) { localStorage.setItem(USER_KEY, value); }
-
-function authExpired() {
-  setUserId('');
-  window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
-}
+// A stable browser-storage namespace. The backend independently binds every
+// public request to the deployment owner; stale account selections are ignored.
+export function getUserId() { return WORKSPACE_USER_ID; }
+export function setUserId(_value: string) { /* Account selection is unavailable. */ }
 
 let requestAccount: { userId: string } | undefined;
 
 /** Bind requests to the account rendered by the mounted workspace. */
 export function bindRequestAccount(userId: string) {
-  const account = { userId };
+  const account = { userId: WORKSPACE_USER_ID };
   requestAccount = account;
   return () => { if (requestAccount === account) requestAccount = undefined; };
 }
@@ -139,25 +137,8 @@ export function bindRequestAccount(userId: string) {
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
-  if (!path.startsWith('/api/auth/')) {
-    const storedUserId = getUserId();
-    const userId = requestAccount?.userId ?? storedUserId;
-    // The header declares the workspace's expected account. Authentication
-    // comes only from the HttpOnly cookie; the server rejects account races.
-    if (userId !== storedUserId) {
-      window.dispatchEvent(new Event(AUTH_ACCOUNT_CHANGED_EVENT));
-      throw new ApiError(409, tr('The account changed in another tab. Wait for it to sync, then try again.', '账户已在其他标签页切换，请等待同步后重试'), null, null, null, 'ACCOUNT_CHANGED');
-    }
-    if (userId) headers.set('X-iGraph-Account', userId);
-  }
-  headers.delete('X-User-ID');
-  const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'include', headers });
-  if (response.status === 401 && !/^\/api\/auth\/(?:me|login|register|logout)$/.test(path)) authExpired();
-  if (response.status === 409 && !path.startsWith('/api/auth/')) {
-    const error = await response.clone().json().catch(() => ({}));
-    if ((error?.detail?.code || error?.code) === 'ACCOUNT_CHANGED') window.dispatchEvent(new Event(AUTH_ACCOUNT_CHANGED_EVENT));
-  }
-  return response;
+  headers.set('X-User-ID', WORKSPACE_USER_ID);
+  return fetch(`${API_BASE}${path}`, { ...options, headers });
 }
 
 async function json<T>(path: string, options?: RequestInit): Promise<T> {
@@ -214,29 +195,8 @@ export class ApiError extends Error {
   }
 }
 
-export function getCurrentUser() {
-  return json<AuthUser>('/api/auth/me', { cache: 'no-store' });
-}
-
-export function authenticateUser(mode: 'login' | 'register', username: string, password: string) {
-  return json<AuthUser>(`/api/auth/${mode}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: username.trim().toLowerCase(), password }),
-  });
-}
-
-export async function logoutUser() {
-  const response = await apiFetch('/api/auth/logout', { method: 'POST' });
-  if (!response.ok && response.status !== 401) {
-    const data = await response.json().catch(() => ({}));
-    throw ApiError.fromResponse(response.status, data);
-  }
-}
-
-export async function validateUser(_userId: string) {
-  const data = await json<{ valid?: boolean; available_models?: string[]; default_model?: string }>('/api/auth/validate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-  });
+export async function validateUser(_userId?: string) {
+  const data = await json<{ valid?: boolean; available_models?: string[]; default_model?: string }>('/api/workspace');
   return data;
 }
 
@@ -415,24 +375,18 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
         if (error) reject(error); else resolve(data!);
       }
       xhr.open('POST', `${API_BASE}${path}`);
-      xhr.withCredentials = true;
-      if (identity) xhr.setRequestHeader('X-iGraph-Account', identity);
+      if (identity) xhr.setRequestHeader('X-User-ID', identity);
       xhr.setRequestHeader('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
       xhr.upload.onprogress = event => {
         if (accountChanged()) { finish(accountError()); xhr.abort(); return; }
         if (!settled && event.lengthComputable && event.total > 0) onProgress(Math.min(100, Math.round(event.loaded / event.total * 100)));
       };
       xhr.onload = () => {
-        if (xhr.status === 401) authExpired();
         if (accountChanged()) { finish(accountError()); return; }
         let data: UploadResult;
         try { data = JSON.parse(xhr.responseText); }
         catch { finish(new ApiError(xhr.status, tr('The upload response was invalid. Try again.', '上传响应无效，请重试'))); return; }
-        if (xhr.status < 200 || xhr.status >= 300) {
-          const error = ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'));
-          if (error.code === 'ACCOUNT_CHANGED') window.dispatchEvent(new Event(AUTH_ACCOUNT_CHANGED_EVENT));
-          finish(error); return;
-        }
+        if (xhr.status < 200 || xhr.status >= 300) { finish(ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'))); return; }
         if (data?.success !== true || typeof data.file_token !== 'string' || !data.file_token) { finish(new ApiError(xhr.status, tr('The upload did not complete. Try again.', '上传未成功，请重试'))); return; }
         finish(undefined, data);
       };
@@ -450,6 +404,16 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
 
 function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
   return `${datasetScopeUrl(dataset.project_id)}/${encodeURIComponent(dataset.dataset_id)}/construction`;
+}
+export function getConstructionModels(signal?: AbortSignal) {
+  return json<{ models: string[]; default_model: string }>('/api/construction-models', { signal });
+}
+export type ConstructionModelSettings = { model: string; has_base_url: boolean; has_api_key: boolean; has_server_config: boolean };
+export function getConstructionModelSettings(signal?: AbortSignal) {
+  return json<ConstructionModelSettings>('/api/construction-model-settings', { signal });
+}
+export function saveConstructionModelSettings(settings: { model: string; base_url: string; api_key: string; clear_api_key: boolean }) {
+  return json<ConstructionModelSettings>('/api/construction-model-settings', modelJson('POST', settings));
 }
 export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionState>(constructionUrl(dataset), { signal });
@@ -652,4 +616,11 @@ export async function resumeRun(sessionId: string, runId: string, lastEventIndex
     headers,
   });
   await consumeSseResponse(response, sessionId, handlers);
+}
+
+export function getUserCases(signal?: AbortSignal) {
+  return json<{ cases: UserCase[] }>('/api/user-cases', { signal });
+}
+export function openUserCase(caseId: string) {
+  return json<{ project: Project; dataset: Dataset; case: UserCase }>(`/api/user-cases/${encodeURIComponent(caseId)}/project`, { method: 'POST' });
 }

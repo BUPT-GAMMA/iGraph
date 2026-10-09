@@ -1,0 +1,484 @@
+iGraph 单用户版部署与运维说明
+适用分支：codex/single-user-language
+更新日期：2026-10-09
+
+一、部署目标与当前环境
+
+本说明把应用、数据库、构图计算、模型请求全部放在 Linux 服务器的 rootless Docker 中运行。
+Windows 电脑只运行 SSH 客户端并打开浏览器，不需要安装 Node.js、Python 或 Docker Desktop。
+本版打开网页即进入固定工作区，无登录、注册或账户切换。默认工作区 ID 为 admin。
+
+代码仓库：https://github.com/BUPT-GAMMA/iGraph
+分支：https://github.com/BUPT-GAMMA/iGraph/tree/codex/single-user-language
+服务器：<服务器地址>
+SSH 用户：<部署用户>
+SSH 端口：<SSH端口>
+本机私钥：C:\Users\<Windows用户名>\.ssh\id_ed25519
+当前服务器代码目录：/home/<部署用户>/apps/igraph-bank-edition/verification/single-user-language
+当前 Compose 项目名：igraph-single-user
+当前服务器 Web 监听：127.0.0.1:21120
+本机浏览器入口：http://127.0.0.1:21130/?new=1
+当前数据卷：igraph-single-user-data
+当前数据库卷：igraph-single-user-postgres
+当前内部网络：igraph-single-user-network
+已验证的 Docker Engine：29.8.1；Docker Compose：v5.5.1。
+
+本机 21130 经 SSH 转发到服务器 21120。这两个端口的作用不同。
+本版只面向默认单用户，保持 Web 绑定 127.0.0.1，通过 SSH 隧道访问。
+真实 API Key、服务密钥不写入本说明，不提交到 Git；目前服务器已配置的值继续有效。
+
+阅读顺序：只想打开现有系统看第二节；更新现有系统看第八节；全新服务器按第三至七节操作。
+
+二、连接当前服务器并打开网页
+
+2.1 在 Windows PowerShell 中检查私钥是否存在：
+
+  Test-Path 'C:\Users\<Windows用户名>\.ssh\id_ed25519'
+
+结果应为 True。需要使用无 .pub 后缀的私钥文件。
+
+2.2 需要登录服务器执行命令时，在 Windows PowerShell 中运行：
+
+  ssh -p <SSH端口> -i 'C:\Users\<Windows用户名>\.ssh\id_ed25519' <部署用户>@<服务器地址>
+
+首次连接须核对服务器主机指纹。进入后执行 whoami，应输出 <部署用户>。
+后文标为“服务器 Bash”的命令均在这个 SSH 会话中执行。
+
+2.3 另开一个 Windows PowerShell 窗口，只建立隧道：
+
+  ssh -N -T -p <SSH端口> -i 'C:\Users\<Windows用户名>\.ssh\id_ed25519' -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 127.0.0.1:21130:127.0.0.1:21120 <部署用户>@<服务器地址>
+
+这个窗口没有输出、一直等待是正常现象。保持窗口打开，在浏览器输入：
+
+  http://127.0.0.1:21130/?new=1
+
+关闭隧道窗口或按 Ctrl+C 会断开转发，但不会停止服务器上的应用。
+若已经能正常打开网页，不必重复创建同端口隧道。
+若本机 21130 已被其他程序占用，可以把命令中左侧的 21130 改为 21131，浏览器也改用 21131。
+右侧 21120 必须与服务器 FRONTEND_PORT 一致。
+
+三、全新 Linux 服务器准备
+
+本节用于新服务器；目前 <部署用户> 的服务器已完成 Docker 配置，不需要重新安装。
+
+3.1 基础工具与 rootless 前提
+
+服务器需能访问 GitHub、镜像仓库、Python/Node 包仓库，以及用户填写的模型 API。
+CPU 版本即可运行两个示例，不要求 GPU。磁盘需容纳依赖镜像、原始文件、图与数据库；
+数据和构图规模决定实际资源需求，应监测 df -h、free -h 和 docker stats。
+
+服务器 Bash：
+
+  git --version
+  python3 --version
+  docker version
+  docker compose version
+  docker context show
+  docker info --format '{{json .SecurityOptions}}'
+
+最后一行必须包含 name=rootless。使用 <部署用户> 自己的 Docker daemon，不用 sudo docker，
+否则可能连接到另一个 daemon，看不到同一批镜像、容器和数据卷。
+
+3.2 如果 Docker 尚未安装
+
+按服务器发行版安装 Docker Engine/CLI、rootless extras 和 Compose 插件。
+rootless 需要 newuidmap/newgidmap，且 /etc/subuid、/etc/subgid 为部署用户分配足够子 ID。
+这些系统级前置项由管理员配置，已有的系统 Docker 不要直接停止或删除。
+安装了 rootless extras 后，以部署用户执行：
+
+  dockerd-rootless-setuptool.sh install
+  systemctl --user enable --now docker
+  docker context use rootless
+  docker info --format '{{json .SecurityOptions}}'
+
+若希望退出 SSH/服务器重启后用户服务继续运行，请由管理员执行：
+
+  sudo loginctl enable-linger <部署用户>
+
+Debian/Ubuntu 已配置 Docker 官方软件源时，Compose 插件可由管理员安装：
+
+  sudo apt-get install docker-compose-plugin
+
+不同发行版按官方说明操作，不要把上述 apt 命令用于其他发行版。
+官方 rootless 步骤：https://docs.docker.com/engine/security/rootless/
+官方 Compose 安装：https://docs.docker.com/compose/install/linux/
+
+四、全新部署：拉取代码与生成配置
+
+以下用于新环境。当前已有部署请跳到第八节，避免创建重复项目或占用相同端口。
+
+4.1 服务器 Bash：
+
+  mkdir -p ~/apps
+  git clone --branch codex/single-user-language --single-branch https://github.com/BUPT-GAMMA/iGraph.git ~/apps/igraph-single-user
+  cd ~/apps/igraph-single-user
+  git branch --show-current
+  git log -1 --oneline
+
+分支输出应为 codex/single-user-language。
+仓库包含金融、天龙八部的预构图资源，不需要把 F:\mypaper 整个目录上传到服务器。
+
+4.2 只在新环境复制配置模板：
+
+  cp .env.example .env
+  chmod 600 .env
+
+下面的服务器 Python 命令为新部署生成随机内部服务密钥与数据库密码，并固定卷、网络和端口。
+不要对已有数据库重复生成 POSTGRES_PASSWORD；数据库已有账户不会因修改 .env 自动改密码。
+
+python3 - <<'PY'
+from pathlib import Path
+import secrets
+path = Path('.env')
+values = {
+    'IGRAPH_CONTROL_SERVICE_KEY': secrets.token_hex(32),
+    'POSTGRES_PASSWORD': secrets.token_hex(24),
+    'POSTGRES_USER': 'igraph',
+    'POSTGRES_DB': 'igraph',
+    'IGRAPH_ADMIN_USER_ID': 'admin',
+    'FRONTEND_BIND_ADDRESS': '127.0.0.1',
+    'FRONTEND_PORT': '21120',
+    'IGRAPH_DATA_VOLUME': 'igraph-single-user-data',
+    'IGRAPH_POSTGRES_VOLUME': 'igraph-single-user-postgres',
+    'IGRAPH_BACKPLANE_NETWORK': 'igraph-single-user-network',
+    'BACKEND_SERVER_DATASETS_DIR': '/data/server_datasets',
+    'AGENT_TOOL_MAX_CONCURRENCY': '3',
+    'IGRAPH_GRAPH_ENGINE_IMAGE': 'igraph-graph-engine:single-user-language',
+    'IGRAPH_GRAPH_ENGINE_MCP_IMAGE': 'igraph-graph-engine-mcp:single-user-language',
+    'IGRAPH_AGENT_RUNTIME_IMAGE': 'igraph-agent-runtime:single-user-language',
+    'IGRAPH_BACKEND_IMAGE': 'igraph-backend:single-user-language',
+    'IGRAPH_FRONTEND_IMAGE': 'igraph-frontend:single-user-language',
+}
+lines = [line for line in path.read_text().splitlines() if line.split('=', 1)[0] not in values]
+path.write_text('\n'.join(lines + [f'{k}={v}' for k, v in values.items()]) + '\n')
+PY
+
+IGRAPH_CONTROL_SERVICE_KEY 是服务之间的身份校验密钥，不是模型 API Key。
+Compose 会把同一个值传给相关容器。不要给各服务配置互不相同的服务密钥。
+
+4.3 模型配置方式
+
+推荐启动后在网页里填写，步骤见第六节。新部署不需要把真实 API Key 写到代码或模板中。
+分析模型服务与构图模型配置是两个入口，可以使用同一服务商，也可以各自配置。
+当前测试环境使用既有服务商地址 https://api.zhizengzeng.com/v1，分析模型为 claude-opus-5-5，
+构图默认模型为 deepseek-v4-pro。请填写用户自己的有效 Key；本说明不附带真实 Key。
+
+如需部署时通过环境变量提供构图默认连接，可用编辑器修改 .env，加入实际值：
+
+  GRAPH_CONSTRUCTION_MODEL=deepseek-v4-pro
+  GRAPH_CONSTRUCTION_BASE_URL=<实际 OpenAI 兼容 API 基础地址，通常以 /v1 结尾>
+  GRAPH_CONSTRUCTION_API_KEY=<实际 API Key>
+
+以上尖括号内容是说明性占位符，必须替换，不要原样复制为生产配置。
+页面保存的构图连接优先于这些环境变量；没有页面保存连接时才回退到环境变量。
+修改 .env 后须重新执行 compose up -d，让容器重建后读取新值；仅 restart 不更新容器环境。
+
+五、构建、启动和健康检查
+
+5.1 在新部署代码目录内运行（服务器 Bash）：
+
+  docker compose -p igraph-single-user config --quiet
+  docker compose -p igraph-single-user build
+  docker compose -p igraph-single-user up -d --wait --wait-timeout 180
+  docker compose -p igraph-single-user ps
+  curl -fsS http://127.0.0.1:21120/health
+  curl -fsS http://127.0.0.1:21120/api/workspace
+
+config --quiet 成功表示配置能解析；不要把含密钥的完整 compose config 输出发到公开位置。
+首次构建会下载 Python、图计算、机器学习和前端依赖，耗时取决于网络及缓存。
+应出现 7 个运行中的服务：postgres、graph-engine-api、graph-engine-worker、graph-engine-mcp、
+agent-runtime、backend、frontend。有健康检查的服务应为 healthy。
+graph-engine-worker 没有 HTTP 健康检查，显示 running 即符合当前配置。
+workspace 应包含 single_user=true 和 user_id=admin。
+
+5.2 若镜像仓库无法连通
+
+当前测试服务器使用 compose.server.yaml 为基础镜像设置了可用镜像源。
+这个文件是服务器部署覆盖配置，不属于必须依赖的源代码文件。
+可先测试官方镜像源；需要覆盖时，在代码目录创建 compose.server.yaml：
+
+  services:
+    postgres:
+      image: docker.m.daocloud.io/pgvector/pgvector:pg17
+    graph-engine-api:
+      build:
+        args:
+          PYTHON_IMAGE: docker.m.daocloud.io/library/python:3.12-slim
+    graph-engine-worker:
+      build:
+        args:
+          PYTHON_IMAGE: docker.m.daocloud.io/library/python:3.12-slim
+    graph-engine-mcp:
+      build:
+        args:
+          PYTHON_IMAGE: docker.m.daocloud.io/library/python:3.12-slim
+    agent-runtime:
+      build:
+        args:
+          PYTHON_IMAGE: docker.m.daocloud.io/library/python:3.12-slim
+    backend:
+      build:
+        args:
+          PYTHON_IMAGE: docker.m.daocloud.io/library/python:3.12-slim
+    frontend:
+      build:
+        args:
+          NODE_IMAGE: docker.m.daocloud.io/library/node:22-alpine
+          NGINX_IMAGE: docker.m.daocloud.io/library/nginx:1.27-alpine
+
+之后所有命令均使用同一组 Compose 文件，例如：
+
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml build
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml up -d --wait --wait-timeout 180
+
+此镜像源仅是当前服务器已验证的配置，其他网络环境可改用组织允许的镜像源。
+
+六、在网页配置分析模型与构图模型
+
+按第二节打开 SSH 隧道，再打开网页。右上角 EN / 中文 可切换界面语言。
+
+6.1 分析模型服务
+
+  1. 点击右上角“模型服务”。英文界面为 Model services。
+  2. 点击“添加提供商”，填写名称，选择提供商与接口类型。
+     使用当前测试网关时，接口类型选 OpenAI Compatible；不要因为模型叫 Claude 就误选原生 Anthropic。
+  3. 点击“添加”，进入该提供商的连接配置。
+  4. 手动填写 API URL 和 API Key，再点击“保存”。URL 和 Key 默认都为空。
+     当前测试地址的完整基础路径为 https://api.zhizengzeng.com/v1。
+  5. 点击模型列表旁的“添加”，模型 ID 填 claude-opus-5-5，显示名称可用同名。
+     保持工具调用能力开启，按服务商支持能力设置上下文窗口和最大输出，点击“保存”。
+  6. 点击该模型行的“检测”。通过后设为默认，关闭模型服务窗口。
+  7. 在聊天输入框的模型选择器中确认当前选择该模型，发送问题验证。
+
+“管理”可以向提供商查询模型列表；如果服务商不支持模型列表发现，可直接手动添加模型 ID。
+保存后重新打开，URL 和 Key 输入框仍为空，只显示已配置提示。
+留空表示保留已有值；填写新值表示替换；清除密钥须勾选“清除已保存的 API Key”并保存。
+“显示 API 密钥”只显示本次手动输入的内容，不会从服务器加载已保存的 Key。
+
+6.2 构图模型配置
+
+  1. 点击“创建你的图”，上传 CSV、SQL 或 TXT，或打开“我的构图数据源”中的已有文件。
+  2. 进入数据源构图页面，在左侧找到“构图模型配置”。
+  3. 在“构图大模型”中选择 deepseek-v4-pro 或 claude-opus-5-5。
+     需要其他模型时选择“自定义模型…”，填写服务商实际提供的模型 ID。
+  4. 首次配置同时填写“构图 API URL”和“构图 API Key”，点击“保存模型配置”。
+     URL 接受完整 /v1 基础路径；只填网关域名时，本模块自动补 /v1。
+     此入口使用 OpenAI 兼容 chat/completions 协议。
+  5. 等待“模型配置已保存”提示。输入框会重新留空，不回显 URL 和 Key。
+     有未保存的连接修改时，“开始构图”不可用，先保存或清空本次输入。
+  6. TXT 在“TXT 处理方式”中选择“智能抽取实体与关系（LLM）”，按需填写人物等实体类型。
+     可启用 TXT refine，由 Agent 生成查询、核对原文并修正草稿。
+  7. 表格默认按规则构图；启用“使用 Agent 优化构图”后才会使用构图大模型。
+     模型配置对 TXT 抽取、TXT refine 和表格智能构图统一生效。
+  8. 点击“开始构图”，等待服务器完成。可关闭页面，稍后重新进入查看进度。
+  9. 完成后得到“草稿 · 待保存”。检查图结果，点击“保存构图结果”才发布为可分析图。
+ 10. 回到项目或分析页面，选择已经保存的图，开始提问。
+
+分析模型与构图模型互相独立：只配置其中一个，不代表另一个也已经配置。
+构图连接是当前单用户工作区的公共构图配置，不是某个数据集私有设置。
+URL/Key 留空时沿用保存值；若从未在页面保存过完整连接，则使用服务器环境配置。
+更换模型只影响新启动的构图，已发布示例图和历史分析不会重新生成。
+新环境未配置任何模型连接时，可以浏览预置图，但 LLM 问答与智能构图需要先完成配置。
+
+七、验收示例数据、语言与保存行为
+
+7.1 初次部署应直接出现两个示例
+
+  1. 点击“新建任务”，进入“使用预置图开始分析”。
+  2. 应能看到金融股权和天龙八部人物关系两张示例卡片。
+  3. 金融图预置规模为 6,000 节点 / 13,436 边；天龙八部图为 304 节点 / 791 边。
+  4. 分别点击“使用示例图”，在输入区选用推荐问题进行分析。
+  5. 点击“新建任务”，应回到含两个示例卡片的初始页。
+  6. 在“创建你的图 → 我的构图数据源”中，应能看到两个示例的源数据及已构好的图。
+
+构图快照和压缩源数据已经包含在仓库 graph_engine/resources/finance 与 tianlongbabu 中。
+首次启动会安装到持久卷，重启不覆盖用户已经保存的数据。无需再次上传原始金融 CSV 或整本小说。
+使用已有示例不发生重新抽取；用户自行上传同名文件会作为新的数据源处理。
+
+7.2 语言验收
+
+  1. 在中文界面检查两个卡片标题、介绍和推荐问题。
+  2. 点击 EN，同一页面上的这些内容应立即切为英文。
+  3. 英文界面点击任一推荐问题，提交的问题和模型回复应为英文。
+  4. 切回中文，提交新问题，回复应为中文。
+  5. 也可用与界面相反的语言提问，验证回复仍优先遵循界面语言。
+  6. 回复在工具活动结束后先给一句话 Conclusion: / 结论：，随后是分析，末尾保留 Summary: / 总结：。
+
+历史消息不会因为切换界面语言而自动翻译。用户自己重命名的数据集和项目名称保留原样。
+
+7.3 持久化验收
+
+保存一份新构图、一个聊天会话和构图模型配置，然后执行：
+
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml up -d --force-recreate --wait --wait-timeout 180
+
+刷新页面：示例仍可用，已保存图和会话仍在，构图连接仍显示已配置，但 URL/Key 输入框保持空白。
+若未使用覆盖文件，去掉上述两组 -f 参数。不要通过删除数据卷来验证“重启”。
+
+八、更新当前服务器上的已部署系统
+
+当前服务器代码目录由 Git 归档包部署，通常没有 .git，不能直接在该目录执行 git pull。
+使用单独 Git 源码目录拉取，再导出归档覆盖应用源文件；运行数据位于 Docker 卷中。
+
+8.1 先按第九节备份，然后服务器 Bash 执行：
+
+  mkdir -p /home/<部署用户>/apps/igraph-source
+  git clone --branch codex/single-user-language --single-branch https://github.com/BUPT-GAMMA/iGraph.git /home/<部署用户>/apps/igraph-source/single-user
+
+如果上述 Git 目录已经存在且属于本项目，不要再次 clone，改用：
+
+  git -C /home/<部署用户>/apps/igraph-source/single-user fetch origin
+  git -C /home/<部署用户>/apps/igraph-source/single-user switch codex/single-user-language
+  git -C /home/<部署用户>/apps/igraph-source/single-user pull --ff-only origin codex/single-user-language
+
+拉取前检查 git status；有本地修改时先保存为提交，不要使用 reset --hard 覆盖修改。
+
+8.2 导出并重建（服务器 Bash）：
+
+  git -C /home/<部署用户>/apps/igraph-source/single-user archive --format=tar.gz -o /home/<部署用户>/apps/igraph-bank-edition/single-user-update.tar.gz HEAD
+  tar -xzf /home/<部署用户>/apps/igraph-bank-edition/single-user-update.tar.gz -C /home/<部署用户>/apps/igraph-bank-edition/verification/single-user-language
+  cd /home/<部署用户>/apps/igraph-bank-edition/verification/single-user-language
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml config --quiet
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml build
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml up -d --wait --wait-timeout 180
+  git -C /home/<部署用户>/apps/igraph-source/single-user rev-parse HEAD > DEPLOYED_COMMIT
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml ps
+
+归档不包含 .env、私钥和运行数据，原服务器 .env、compose.server.yaml 会保留。
+只有 build 和 up 都成功后才写 DEPLOYED_COMMIT；任一步失败先处理，不继续宣称部署成功。
+如未来更新删除了旧源码文件，建议改用新的干净发布目录，复制原 .env 与覆盖配置，
+继续使用同一项目名、卷名和网络名再启动，避免旧归档目录残留已删除文件。
+
+浏览器用 Ctrl+F5 加载新前端；核对第七节验收项目。
+不要混用当前环境与另外的 igraph 或旧的 clean-test Compose 项目。
+多个环境必须分别配置项目名、数据卷、数据库卷、IGRAPH_BACKPLANE_NETWORK、宿主机端口。
+仅更改 Compose -p 项目名不足以隔离显式命名的卷和网络。
+
+九、备份、恢复与回滚
+
+数据卷包含图、原始文件、构图配置、工作区文件等；PostgreSQL 保存会话、消息和模型服务配置。
+两个存储都要备份，同时保留 .env、Compose 覆盖文件以及对应代码版本。
+备份包含密钥，使用只对部署用户开放的目录保存。
+
+9.1 备份当前环境（服务器 Bash）
+
+  cd /home/<部署用户>/apps/igraph-bank-edition/verification/single-user-language
+  dc() { docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml "$@"; }
+  backup_dir="$HOME/backups/igraph-single-user/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$backup_dir"
+  chmod 700 "$backup_dir"
+  cp .env compose.yaml compose.server.yaml "$backup_dir/"
+  if [ -f DEPLOYED_COMMIT ]; then cp DEPLOYED_COMMIT "$backup_dir/"; fi
+  dc stop frontend backend agent-runtime graph-engine-mcp graph-engine-worker graph-engine-api
+  dc exec -T postgres pg_dump -U igraph -d igraph -Fc > "$backup_dir/postgres.dump"
+  docker run --rm --user root --entrypoint sh -v igraph-single-user-data:/source:ro -v "$backup_dir:/backup" igraph-graph-engine:single-user-language -c 'tar -czf /backup/data.tar.gz -C /source .'
+  chmod 600 "$backup_dir"/*
+  dc up -d --wait --wait-timeout 180
+  test -s "$backup_dir/postgres.dump"
+  tar -tzf "$backup_dir/data.tar.gz" > /dev/null
+
+先等待正在构图/分析的任务结束再停服。备份期间 Web 暂不可用。
+如数据库名或用户曾修改，把 pg_dump 参数换为 .env 中的实际值。
+若 dump 或打包失败，先恢复服务并修复失败原因，不要把不完整备份作为可恢复副本。
+
+9.2 恢复到隔离环境
+
+优先恢复到新的目录、项目名、空数据卷和空数据库卷，确认成功后再切换访问入口。
+例如使用项目 igraph-restore、卷 igraph-restore-data / igraph-restore-postgres、
+网络 igraph-restore-network 和服务器端口 21121，避免覆盖正在使用的数据。
+
+  1. 检出备份记录的代码版本，复制备份 .env 与覆盖配置到新目录。
+  2. 修改 .env 中两个卷名、网络名和 FRONTEND_PORT=21121。
+  3. docker volume create igraph-restore-data
+  4. 使用 graph-engine 镜像的 root 身份，把 data.tar.gz 解压到新数据卷：
+
+     docker run --rm --user root --entrypoint sh -v igraph-restore-data:/restore -v "$backup_dir:/backup:ro" igraph-graph-engine:single-user-language -c 'tar -xzf /backup/data.tar.gz -C /restore'
+
+  5. 只启动新环境数据库，数据库卷必须为空：
+
+     docker compose -p igraph-restore -f compose.yaml -f compose.server.yaml up -d --wait postgres
+
+  6. 恢复数据库到这个隔离环境：
+
+     docker compose -p igraph-restore -f compose.yaml -f compose.server.yaml exec -T postgres pg_restore -U igraph -d igraph --no-owner < "$backup_dir/postgres.dump"
+
+  7. 启动其余服务，检查 healthy；通过新的 SSH 隧道把本机 21131 转发到服务器 21121。
+  8. 按第七节核对示例、已保存图、会话和模型连接，再决定切换到恢复实例。
+
+不要在尚未确认目标的新旧数据库之间混用 pg_restore。不要对现用部署执行 down -v 或 volume rm。
+
+9.3 代码回滚
+
+在独立 Git 源码目录检出之前记录的提交，导出到干净发布目录，复用现有 .env/覆盖配置并重建启动。
+本次模型配置和示例文案修改不需要数据库 schema 迁移。若后续版本涉及数据库迁移，
+须同时遵循该版本的迁移说明，不能默认仅回滚代码就足够。
+
+十、故障排查
+
+10.1 网页打不开 / SSH 隧道断开
+
+先确认隧道窗口仍在，然后在服务器检查：
+
+  cd /home/<部署用户>/apps/igraph-bank-edition/verification/single-user-language
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml ps
+  curl -fsS http://127.0.0.1:21120/health
+
+服务器返回正常而本机打不开，通常是本机转发没启动、端口被占用或访问了错误本机端口。
+若服务器也不通，先检查 frontend、backend 的容器日志。
+
+10.2 Docker 命令显示无权限 / 看不到容器
+
+确认 whoami 为 <部署用户>，docker context show 指向 rootless，避免 sudo docker。
+检查 systemctl --user status docker。若通过环境变量选择 daemon，DOCKER_HOST 应指向
+当前用户的 /run/user/<用户 UID>/docker.sock，而不是其他用户的 socket。
+
+10.3 容器 unhealthy 或启动失败
+
+  docker compose -p igraph-single-user -f compose.yaml -f compose.server.yaml logs --tail 100 backend agent-runtime graph-engine-api graph-engine-mcp frontend
+
+检查内部服务密钥是否一致、数据库用户名密码是否匹配已有卷、镜像是否构建成功。
+默认服务仅在 Docker 网络内部通信；前端通过 nginx 转发 /api，浏览器不需要直接访问后端 21109。
+
+10.4 模型 401 / 403 / 404 / 无工具调用
+
+401/403：检查用户自己填写的 Key 是否有效、额度与访问权限是否满足模型要求。
+404：检查模型 ID、API 基础路径及接口类型。分析模型 URL 通常应包含 /v1，
+不要把完整 /chat/completions 请求路径误填成基础 URL。
+工具调用失败：分析和智能构图需要兼容的工具能力；TXT 抽取还需要服务商支持普通聊天输出。
+仅对话能成功不能证明构图、工具协议也被支持，应分别测试。
+如修改了提供商配置，已有会话可能需要重新选择模型，使下一轮使用最新配置版本。
+
+10.5 构图失败 / 等待时间长
+
+检查构图页是否已保存模型配置、是否启用了需要 LLM 的模式、原始文件是否包含有效内容。
+全文 TXT 会分块请求模型，耗时随文本大小及服务商响应时间增加。
+刷新或关闭网页不会主动取消后台构图。不要因一次请求超时而反复启动同一任务。
+页面可重新打开查询状态；失败后先看明确错误，再调整参数或模型重试。
+检查 graph-engine-api 日志；不要把包含业务源文本的私有报告上传到公共位置。
+
+10.6 示例不出现 / 提示当前会话不可用
+
+确认当前运行的是 codex/single-user-language 的完整镜像，仓库 resources 下两个 manifest 与 npz 均存在。
+检查 graph-engine-api、backend 健康状态，以及 BACKEND_SERVER_DATASETS_DIR=/data/server_datasets。
+点击“新建任务 → 使用示例图”进入该示例自己的项目，确保当前会话加载的是该项目的数据集。
+如果误改了卷名、网络名或工作区 ID，先恢复原配置，不要删除卷后重试。
+
+10.7 英文界面仍看到中文
+
+刷新最新前端后点击 EN，两个示例卡片和问题应立即切换。
+历史模型回答、用户自行命名的数据源和项目不会被自动翻译。
+如果新回复仍语言错误，检查浏览器请求头 Accept-Language 是否为 en；
+若中间另接反向代理，确认其没有覆盖该请求头。
+
+十一、完成部署的核对清单
+
+[ ] 使用目标分支的完整源码构建，没有把本地 .env 或私钥放进仓库/镜像。
+[ ] Docker 的 SecurityOptions 包含 rootless，7 个服务运行正常。
+[ ] Web 绑定服务器 127.0.0.1，Windows 通过 SSH 隧道打开。
+[ ] 打开网页无需登录；没有头像、用户名或切换用户入口。
+[ ] 模型设置 URL/Key 默认空白；手动保存后能调用模型；重新打开不回显 Key。
+[ ] 构图页能选模型并保存 URL/Key，TXT 与表格智能构图使用该配置。
+[ ] 构图结果先生成草稿，点击保存后才可分析。
+[ ] 两个内置示例首次部署即出现，重建容器后仍可直接使用。
+[ ] 示例卡片、推荐问题和新回复均跟随页面语言；历史消息保持原文。
+[ ] 已完成数据卷、数据库、部署配置及代码版本的备份。

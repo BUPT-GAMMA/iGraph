@@ -373,3 +373,26 @@ def test_native_agent_pause_continue_replans_blocked_child(tmp_path):
         finally:
             db.close()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("configured", [None, "3", "4", "32", "invalid"])
+def test_parallel_tools_never_exceed_three(monkeypatch, configured):
+    if configured is None:
+        monkeypatch.delenv("AGENT_TOOL_MAX_CONCURRENCY", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_TOOL_MAX_CONCURRENCY", configured)
+    async def scenario():
+        active, peak = 0, 0
+        async def read():
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            try:
+                await asyncio.sleep(.01)
+                return "ok"
+            finally:
+                active -= 1
+        results, _ = await run_batch([call("get_graph_info", read, i) for i in range(8)])
+        assert peak == 3 and active == 0 and len(results) == 8
+        assert not any(result.tool_call_error for result in results)
+    asyncio.run(scenario())

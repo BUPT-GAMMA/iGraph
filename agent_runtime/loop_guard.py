@@ -21,7 +21,7 @@ from graph_engine.tool_execution import resources_overlap, tool_execution_policy
 _LOG = logging.getLogger("igraph.agent_loop")
 
 
-TOOL_CALL_LIMIT = 32
+TOOL_CALL_LIMIT = 100
 MAX_SAME_CALL = 3
 MAX_CONSECUTIVE_FAILURES = 5
 _RUN_GUARD_ATTRIBUTE = "_igraph_tool_loop_guard"

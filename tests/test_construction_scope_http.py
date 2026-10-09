@@ -41,7 +41,7 @@ def test_uploaded_txt_runs_the_builtin_constructor_over_the_full_http_stack(tmp_
             )
             assert response.status_code == 200, response.text
             state = response.json()
-            assert state['status'] == 'ready'
+            assert state['status'] == 'draft'
             assert state['source_type'] == 'txt' and state['algorithm_available'] is True
             assert state['node_count'] == 2 and state['edge_count'] == 0
 
@@ -67,7 +67,7 @@ def test_uploaded_txt_runs_the_builtin_constructor_over_the_full_http_stack(tmp_
                 }},
             )
             assert response.status_code == 200, response.text
-            assert response.json()['status'] == 'ready', response.text
+            assert response.json()['status'] == 'draft', response.text
             assert response.json()['node_count'] == 2 and response.json()['edge_count'] == 0
             response = await client.get(
                 f"/api/personal-datasets/{notes['dataset_id']}/construction/graph"
@@ -91,7 +91,7 @@ def test_uploaded_txt_runs_the_builtin_constructor_over_the_full_http_stack(tmp_
                 }},
             )
             assert response.status_code == 200, response.text
-            assert response.json()['status'] == 'ready', response.text
+            assert response.json()['status'] == 'draft', response.text
             assert response.json()['node_count'] == 3 and response.json()['edge_count'] == 3
             response = await client.get(
                 f"/api/personal-datasets/{facts['dataset_id']}/construction/graph"
@@ -127,6 +127,9 @@ def test_native_session_scope_mcp_reads_restore_and_project_cleanup(tmp_path):
                 # The browser's injected scope/session headers are not forwarded.
                 response = await client.post(f'{path}/{did}/construction/build', json={},
                     headers={**scope_headers('forged'), 'X-Session-ID': 'forged'})
+                assert response.status_code == 200 and response.json()['status'] == 'draft', response.text
+                response = await client.post(f'{path}/{did}/construction/commit',
+                    json={'base_revision': response.json()['revision'], 'operations': []})
                 assert response.status_code == 200 and response.json()['status'] == 'ready', response.text
                 scopes[label] = (pid, sid, path, did)
             # No service key means the internal authority remains inaccessible.

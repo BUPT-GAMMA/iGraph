@@ -83,7 +83,7 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     base_app.include_router(create_skill_router(settings))
     base_app.include_router(create_memory_router(db))
     base_app.include_router(create_recovery_router(db))
-    base_app.include_router(create_model_router(catalog, db))
+    base_app.include_router(create_model_router(catalog, db, controller))
     base_app.include_router(create_remote_graph_router(remote_catalog, controller or RemoteGraphSessions(db), remote_executor))
 
     @base_app.get("/internal/health")

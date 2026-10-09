@@ -28,18 +28,6 @@ def test_attachment_dataset_identity_is_scoped_and_does_not_survive_unrelated_me
     assert FakeServiceClient.runtime_sessions[session]['session_state']['data_state']['construction_sources'] == []
 
 
-def test_attachment_tokens_do_not_reveal_other_users_datasets(client, engine):
-    alice = client.post('/api/sessions', headers=headers('alice'), json={}).json()['session_id']
-    admin = client.post('/api/sessions', headers=headers(), json={}).json()['session_id']
-    uploaded = client.post(f'/api/sessions/{alice}/upload', headers=headers('alice'),
-                           files={'file': ('private.txt', b'private source')}).json()
-    response = client.post(f'/api/sessions/{admin}/chat/stream', headers=headers(), json={
-        'message': '检查附件', 'attachments': [{'file_token': uploaded['file_token'], 'filename': 'private.txt'}],
-    })
-    assert response.status_code == 200
-    assert FakeServiceClient.runtime_sessions[admin]['session_state']['data_state']['construction_sources'] == []
-
-
 def test_clearing_dataset_selection_removes_stale_construction_state(client, engine):
     states, _ = engine
     dataset = client.post('/api/personal-datasets', headers=headers(),

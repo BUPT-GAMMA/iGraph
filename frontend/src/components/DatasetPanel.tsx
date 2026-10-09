@@ -1,3 +1,4 @@
+import { useExampleLabels } from '../userCases';
 import { useRef } from 'react';
 import type { Dataset, ServerDataset } from '../types';
 import { constructionLabel, supportsConstruction } from '../construction';
@@ -62,6 +63,7 @@ function fileSize(size: number) {
 
 export function DatasetPanel({ datasets, serverDatasets = [], projectName, activeDatasetId, busy, onSelect, onUpload, onUseServer, onRename, onDelete, onConstruct, onLoadConstructed, onDatasetUpdated, onClose, onRemoteGraph }: Props) {
   const { language, t } = useI18n();
+  const labels = useExampleLabels();
   const title = projectName ? t('Project datasets', '项目数据集') : t('Personal datasets', '个人数据集');
   const inputRef = useRef<HTMLInputElement>(null);
   const importedServerIds = new Set(datasets.map(dataset => dataset.source_id).filter(Boolean));
@@ -78,12 +80,12 @@ export function DatasetPanel({ datasets, serverDatasets = [], projectName, activ
         {datasets.length ? datasets.map(dataset => <div key={dataset.dataset_id}><div className={`dataset-row ${activeDatasetId === dataset.dataset_id ? 'active' : ''}`}>
           <button className="dataset-row-main" onClick={() => onSelect(dataset)} disabled={busy || dataset.status !== 'ready'} aria-current={activeDatasetId === dataset.dataset_id ? 'true' : undefined}>
             <span className="dataset-state"><Icon name={activeDatasetId === dataset.dataset_id ? 'check' : 'database'} size={15} /></span>
-            <span className="dataset-copy"><span className="dataset-title-line"><strong>{dataset.name}</strong>{activeDatasetId === dataset.dataset_id && <span className="dataset-badges"><b>{t('Current', '当前')}</b></span>}</span><small>{datasetSummary(dataset, language, t)}</small></span>
+            <span className="dataset-copy"><span className="dataset-title-line"><strong>{labels.name(dataset.name)}</strong>{activeDatasetId === dataset.dataset_id && <span className="dataset-badges"><b>{t('Current', '当前')}</b></span>}</span><small>{datasetSummary(dataset, language, t)}</small></span>
           </button>
           <div className="dataset-row-actions">
-            {onConstruct && supportsConstruction(dataset) && <button className="dataset-construction-button" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${displayConstructionLabel(dataset, t)} ${dataset.name}`}><Icon name="graph" size={14} />{displayConstructionLabel(dataset, t)}</button>}
-            <button onClick={() => onRename(dataset)} disabled={busy} title={t('Rename', '重命名')} aria-label={t(`Rename ${dataset.name}`, `重命名 ${dataset.name}`)}><Icon name="edit" size={14} /></button>
-            <button className="danger" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete', '删除')} aria-label={t(`Delete ${dataset.name}`, `删除 ${dataset.name}`)}><Icon name="trash" size={14} /></button>
+            {onConstruct && supportsConstruction(dataset) && <button className="dataset-construction-button" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${displayConstructionLabel(dataset, t)} ${labels.name(dataset.name)}`}><Icon name="graph" size={14} />{displayConstructionLabel(dataset, t)}</button>}
+            <button onClick={() => onRename(dataset)} disabled={busy} title={t('Rename', '重命名')} aria-label={t(`Rename ${labels.name(dataset.name)}`, `重命名 ${labels.name(dataset.name)}`)}><Icon name="edit" size={14} /></button>
+            <button className="danger" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete', '删除')} aria-label={t(`Delete ${labels.name(dataset.name)}`, `删除 ${labels.name(dataset.name)}`)}><Icon name="trash" size={14} /></button>
           </div>
         </div><details className="dataset-description"><summary>{t('Dataset description', '数据集描述')}</summary><DatasetDescriptionEditor dataset={dataset} disabled={busy} onSaved={onDatasetUpdated} /></details></div>) : <div className="drawer-empty"><Icon name="database" size={24} /><strong>{t('No datasets', '暂无数据集')}</strong></div>}
       </div>
@@ -92,7 +94,7 @@ export function DatasetPanel({ datasets, serverDatasets = [], projectName, activ
         <div className="server-dataset-list">
           {availableServerDatasets.length ? availableServerDatasets.map(dataset => <div className="server-dataset-row" key={dataset.server_dataset_id}>
             <span className="project-dataset-icon"><Icon name="database" size={15} /></span>
-            <span className="server-dataset-copy"><strong>{dataset.name}</strong><small>{dataset.relative_path} · {fileSize(dataset.size_bytes)} · {dataset.directed === false ? t('Undirected', '无向图') : t('Directed', '有向图')}</small>{serverDatasetPreparationLabel(dataset, t) && <em className={`server-preparation ${dataset.preparation?.status || ''}`} title={dataset.preparation?.error || dataset.metadata_error || undefined}>{serverDatasetPreparationLabel(dataset, t)}</em>}</span>
+            <span className="server-dataset-copy"><strong>{labels.name(dataset.name)}</strong><small>{dataset.relative_path} · {fileSize(dataset.size_bytes)} · {dataset.directed === false ? t('Undirected', '无向图') : t('Directed', '有向图')}</small>{serverDatasetPreparationLabel(dataset, t) && <em className={`server-preparation ${dataset.preparation?.status || ''}`} title={dataset.preparation?.error || dataset.metadata_error || undefined}>{serverDatasetPreparationLabel(dataset, t)}</em>}</span>
             <button className="text-button" onClick={() => onUseServer?.(dataset)} disabled={busy || !onUseServer || !serverDatasetReady(dataset)}>{onUseServer ? serverDatasetActionLabel(dataset, t('Use', '使用'), t) : t('Select a project first', '选择项目后使用')}</button>
           </div>) : <div className="server-dataset-empty">{onUseServer ? t('No server datasets available to add', '暂无可添加的服务器数据源') : t('No server datasets', '暂无服务器数据源')}</div>}
         </div>

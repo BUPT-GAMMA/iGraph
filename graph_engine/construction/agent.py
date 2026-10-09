@@ -6,6 +6,9 @@ Workload, reflection, tools and reports remain in the construction module.
 from __future__ import annotations
 
 import copy
+import contextvars
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import math
@@ -21,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from graph_data_service.construction import _atomic_json, validate_graph
-from graph_engine.construction.llm import ConstructionLLMError, ToolCallingLLM
+from graph_engine.construction.llm import ConstructionLLMError, ToolCallingLLM, selected_model
 from graph_engine.construction.sources import initial_graph, load_source
 from graph_engine.construction.tools import TRANSFORM_NAMES, fidelity_errors, graph_schema, tool_specs, transform
 from graph_engine.construction.workload import evaluate_workload, generate_workload, validate_queries
@@ -37,7 +40,7 @@ from graph_engine.ingestion.text_graph_extractor import (
 
 TYPED_TEXT_EXTRACTION_SYSTEM_PROMPT = TEXT_GRAPH_EXTRACTION_SYSTEM_PROMPT.replace(
     "主体 | 关系 | 客体", "主体 | 主体类型 | 关系 | 客体 | 客体类型"
-)
+) + "\n另用 <entities> 块逐行列出所有符合指定类型的实体，格式：原文名称 | 类型。即使没有关系也要保留实体；不要为孤立实体编造关系。无实体时该块留空。"
 
 
 SYSTEM_PROMPT = """You are iGraph's private tabular graph construction subagent.
@@ -163,6 +166,14 @@ _PUBLIC_REJECTION_MESSAGES = {
 
 
 def _public_stage_message(stage, report):
+    if report.get("config", {}).get("mode") == "rules":
+        messages = {
+            "starting": "正在读取数据源，按主键和外键构图。",
+            "validating_final": "正在校验 PK/FK 图的结构与源数据一致性。",
+            "ready": "PK/FK 构图完成，已通过结构与源数据一致性校验。",
+        }
+        if stage in messages:
+            return messages[stage]
     if report.get("construction_kind") == "text_entities":
         if stage == "refining_text_graph":
             return _PUBLIC_STAGE_MESSAGES[stage]
@@ -212,11 +223,14 @@ class EvolutionConfig:
     experience_enabled: bool = True
     text_refine_enabled: bool = False
     experience_top_k: int = 8
+    text_parallelism: int = 1
     text_chunk_tokens: int = 1000
     text_overlap_tokens: int = 150
-    text_max_chunks: int = 64
-    text_max_calls: int = 96
-    text_max_characters: int = 1_000_000
+    # Allow complete long Chinese novels, including overlap and paragraph boundaries.
+    text_max_chunks: int = 4096
+    text_max_calls: int = 12288
+    text_max_characters: int = 2_000_000
+    text_max_seconds: float = 43_200
 
     @classmethod
     def from_options(cls, options):
@@ -234,22 +248,28 @@ class EvolutionConfig:
                         values[field.name] = raw.lower() in {"true", "1"}
                         continue
                     values[field.name] = str(raw) if field.name in {"mode", "domain_category", "resource_profile"} else (
-                        float(raw) if field.name in {"llm_timeout_seconds", "max_seconds", "min_speedup", "max_graph_growth", "min_query_seconds"} else int(raw))
+                        float(raw) if field.name in {"llm_timeout_seconds", "max_seconds", "text_max_seconds", "min_speedup", "max_graph_growth", "min_query_seconds"} else int(raw))
                 except ValueError:
                     raise ValueError(f"Invalid {key}") from None
+        semantic_text = options.get("txt_mode") == "entities"
+        if semantic_text and "max_seconds" not in options:
+            # Both the agent and process supervisor use this resolved timeout.
+            # The legacy SQL/CSV environment timeout must not cut long TXT jobs short.
+            values["max_seconds"] = values.get("text_max_seconds", cls.text_max_seconds)
         config = cls(**values)
         bounds = {"query_count": (1, 100), "max_iterations": (1, 30), "max_tool_calls": (1, 100),
                   "workload_attempts": (1, 5), "benchmark_repeats": (1, 15), "sample_rows": (1, 10),
                   "expected_query_runs": (1, 100000), "experience_top_k": (1, 32), "comparison_rounds": (2, 9),
-                  "text_chunk_tokens": (128, 4000), "text_overlap_tokens": (0, 1000),
-                  "text_max_chunks": (1, 512), "text_max_calls": (1, 1536),
+                  "text_parallelism": (1, 3), "text_chunk_tokens": (128, 16000), "text_overlap_tokens": (0, 1000),
+                  "text_max_chunks": (1, 4096), "text_max_calls": (1, 12288),
                   "text_max_characters": (1, 4_000_000)}
         for name, (low, high) in bounds.items():
             value = getattr(config, name)
             if type(value) is not int or not low <= value <= high:
                 raise ValueError(f"{name} must be an integer between {low} and {high}")
-        max_overall_seconds = 43_200 if config.resource_profile == "full_scale" else 3_600
+        max_overall_seconds = 43_200 if semantic_text or config.resource_profile == "full_scale" else 3_600
         for name, low, high in (("llm_timeout_seconds", 1, 600), ("max_seconds", 1, max_overall_seconds),
+                                 ("text_max_seconds", 1, 43_200),
                                  ("min_speedup", 0, 0.9), ("max_graph_growth", 1, 10), ("min_query_seconds", 0, 0.1)):
             value = getattr(config, name)
             if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -334,7 +354,7 @@ def _retryable_text_error(exc):
 def _text_completion(llm, messages, timeout):
     complete_text = getattr(llm, "complete_text", None)
     if callable(complete_text):
-        message = complete_text(copy.deepcopy(messages), timeout=timeout, max_tokens=4096)
+        message = complete_text(copy.deepcopy(messages), timeout=timeout, max_tokens=14000)
     else:
         complete = getattr(llm, "complete", None)
         if not callable(complete):
@@ -397,6 +417,32 @@ def _parse_typed_semantic_response(response, entity_types):
     return rows
 
 
+def _parse_typed_entities(response, entity_types, text):
+    if "<entities>" not in response and "</entities>" not in response:
+        return []  # Accept existing providers that return only triples.
+    blocks = re.findall(r"<entities>(.*?)</entities>", response, flags=re.S)
+    if len(blocks) != 1 or response.count("<entities>") != 1 or response.count("</entities>") != 1:
+        raise _SemanticTextError("text_extraction_response_invalid")
+    entities = []
+    ungrounded = False
+    for line in blocks[0].splitlines():
+        if not line.strip():
+            continue
+        parts = [part.strip() for part in re.split(r"[|｜]", line)]
+        if len(parts) != 2 or parts[1] not in entity_types:
+            raise _SemanticTextError("text_extraction_response_invalid")
+        name = TripleAccumulator.clean_entity(parts[0])
+        if not name or len(name) > 512:
+            raise _SemanticTextError("text_extraction_response_invalid")
+        if not _grounded_entity(name, text):
+            ungrounded = True
+            continue
+        entities.append({"name": name, "type": parts[1]})
+    if ungrounded and not entities:
+        raise _SemanticTextError("text_extraction_response_invalid")
+    return entities
+
+
 def _extract_semantic_triples(text, llm, config, extraction_goal, progress, entity_types=()):
     if len(text) > config.text_max_characters:
         raise _SemanticTextError("text_extraction_input_too_large")
@@ -408,24 +454,27 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
     if len(chunks) > config.text_max_chunks:
         raise _SemanticTextError("text_extraction_chunk_limit_exceeded")
     if any(TextChunker.count_tokens(chunk.text) > config.text_chunk_tokens for chunk in chunks):
-        # TextChunker deliberately keeps an oversized sentence intact. Refuse
-        # it here rather than sending an unbounded prompt to the provider.
+        # Guard the provider context even if a future chunker emits an oversized chunk.
         raise _SemanticTextError("text_extraction_chunk_too_large")
 
     # Keep the existing normalization and mention accounting, but deduplicate
     # independently for each endpoint-type pair so typed homonyms stay distinct.
     accumulators = {}
     entity_keys = set()
+    standalone_entities = {}
     ungrounded = 0
     rejected = 0
     total_calls = 0
-    for completed, chunk in enumerate(chunks, 1):
+    def extract_chunk(chunk):
+        nonlocal total_calls
+        rejected = ungrounded = 0
         if entity_types:
             prompt = (
                 f"chunk_id: {chunk.chunk_id}\n抽取目标: {extraction_goal}\n"
                 f"只提取以下实体类型：{'、'.join(entity_types)}。主体和客体都必须属于这些类型。"
                 "类型必须与列表完全一致。关系按原文语义方向输出。"
                 "每行五列：主体 | 主体类型 | 关系 | 客体 | 客体类型。"
+                "另在 <entities> 块列出所有指定类型的实体，每行：原文名称 | 类型；没有关系的实体也必须列出。"
                 "原文中无符合条件的关系时，在 <triples> 块中输出无实体。\n"
                 f"原文：\n<<<TEXT\n{chunk.text}\nTEXT>>>"
             )
@@ -438,10 +487,10 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
         last_error_type = None
         for attempt in range(3):
             check_deadline()
-            if total_calls >= config.text_max_calls:
-                raise _SemanticTextError("text_extraction_call_limit_exceeded",
-                                         chunk_id=chunk.chunk_id)
-            total_calls += 1
+            with call_lock:
+                if total_calls >= config.text_max_calls:
+                    raise _SemanticTextError("text_extraction_call_limit_exceeded", chunk_id=chunk.chunk_id)
+                total_calls += 1
             try:
                 remaining = current_deadline()
                 timeout = config.llm_timeout_seconds if remaining is None else min(
@@ -453,6 +502,7 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
                 ], timeout)
                 parsed = (_parse_typed_semantic_response(response, entity_types) if entity_types
                           else _parse_semantic_response(response))
+                parsed_entities = _parse_typed_entities(response, entity_types, chunk.text) if entity_types else []
             except ConstructionBudgetExceeded:
                 raise
             except _SemanticTextError as exc:
@@ -496,26 +546,51 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
         if accepted is None:
             raise _SemanticTextError("text_extraction_response_invalid",
                                      chunk_id=chunk.chunk_id, error_type=last_error_type)
-        for triple in accepted:
-            pair = (triple["source_type"], triple["target_type"])
-            if pair not in accumulators:
-                accumulators[pair] = TripleAccumulator()
-            accumulators[pair].add_triples([triple], chunk_id=chunk.chunk_id)
-            for field in ("source", "target"):
-                entity_keys.add((TripleAccumulator.normalize_entity(triple[field]),
-                                 triple[field + "_type"]))
-        progress({
-            "chunks_completed": completed, "chunks_total": len(chunks),
-            "extracted_nodes": len(entity_keys),
-            "extracted_edges": sum(acc.deduped_count for acc in accumulators.values()),
-        })
+        return chunk, accepted, parsed_entities, rejected, ungrounded
+
+    progress({"chunks_completed": 0, "chunks_total": len(chunks), "extracted_nodes": 0, "extracted_edges": 0})
+    call_lock = threading.Lock()
+    context = contextvars.copy_context()
+    def in_context(chunk):
+        return context.copy().run(extract_chunk, chunk)
+
+    pool = ThreadPoolExecutor(max_workers=config.text_parallelism) if config.text_parallelism > 1 else None
+    results = pool.map(in_context, chunks) if pool else map(extract_chunk, chunks)
+    try:
+        for completed, (chunk, accepted, parsed_entities, rejected_count, ungrounded_count) in enumerate(results, 1):
+            rejected += rejected_count
+            ungrounded += ungrounded_count
+            for entity in parsed_entities:
+                key = (TripleAccumulator.normalize_entity(entity["name"]), entity["type"])
+                metadata = standalone_entities.setdefault(key, {**entity, "chunk_ids": [], "mentions": 0})
+                if chunk.chunk_id not in metadata["chunk_ids"]:
+                    metadata["chunk_ids"].append(chunk.chunk_id)
+                    metadata["mentions"] += 1
+                entity_keys.add(key)
+            for triple in accepted:
+                pair = (triple["source_type"], triple["target_type"])
+                if pair not in accumulators:
+                    accumulators[pair] = TripleAccumulator()
+                accumulators[pair].add_triples([triple], chunk_id=chunk.chunk_id)
+                for field in ("source", "target"):
+                    entity_keys.add((TripleAccumulator.normalize_entity(triple[field]),
+                                     triple[field + "_type"]))
+            progress({
+                "chunks_completed": completed, "chunks_total": len(chunks),
+                "extracted_nodes": len(entity_keys),
+                "extracted_edges": sum(acc.deduped_count for acc in accumulators.values()),
+            })
+    finally:
+        if pool:
+            pool.shutdown(wait=True, cancel_futures=True)
     triples = [dict(triple, source_type=source_type, target_type=target_type)
                for (source_type, target_type), acc in accumulators.items()
                for triple in acc.triples()]
-    if not triples:
+    if not triples and not standalone_entities:
         raise _SemanticTextError("text_extraction_empty")
     return {
-        "triples": triples, "chunk_count": len(chunks), "llm_calls": total_calls,
+        "triples": triples, "entities": list(standalone_entities.values()),
+        "chunk_count": len(chunks), "llm_calls": total_calls,
         "raw_triple_count": sum(acc.raw_count for acc in accumulators.values()),
         "deduped_triple_count": len(triples),
         "skipped_count": sum(acc.skipped_count for acc in accumulators.values()) + rejected,
@@ -523,7 +598,7 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
     }
 
 
-def _semantic_graph(triples, *, max_nodes, max_edges):
+def _semantic_graph(triples, *, max_nodes, max_edges, entities=()):
     def node_id(key):
         # Preserve IDs of existing unrestricted TXT graphs; explicit categories
         # participate in identity just as they do in refinement query matching.
@@ -560,6 +635,14 @@ def _semantic_graph(triples, *, max_nodes, max_edges):
         edges.append({"id": edge_id, "type": relation, "source": endpoints[0],
                       "target": endpoints[1], "properties": properties})
         if len(edges) > max_edges:
+            raise _SemanticTextError("text_extraction_graph_too_large")
+    for entity in checked(entities):
+        key = (TripleAccumulator.normalize_entity(entity["name"]), entity["type"])
+        metadata = nodes.setdefault(key, {"name": entity["name"], "type": entity["type"],
+                                          "chunk_ids": set(), "mentions": 0})
+        metadata["chunk_ids"].update(entity.get("chunk_ids", []))
+        metadata["mentions"] = max(metadata["mentions"], int(entity.get("mentions", 1)))
+        if len(nodes) > max_nodes:
             raise _SemanticTextError("text_extraction_graph_too_large")
     graph_nodes = []
     for key in sorted(nodes):
@@ -703,7 +786,8 @@ def _refine_semantic_graph(text, llm, config, entity_types, extracted, graph,
                             "relation": query["relation"], "target": match["target"],
                             "target_type": query["target_type"], "chunk_ids": [chunk.chunk_id],
                             "mentions": 1})
-            graph = validate_graph(_semantic_graph(triples, max_nodes=max_nodes, max_edges=max_edges),
+            graph = validate_graph(_semantic_graph(triples, max_nodes=max_nodes, max_edges=max_edges,
+                                                   entities=extracted.get("entities", [])),
                                    max_nodes=max_nodes, max_edges=max_edges, copy_graph=False)
             if not _text_query_answered(graph, query):
                 metrics["queries_unresolved"] += 1
@@ -998,7 +1082,9 @@ class TabularConstructionSubAgent:
             memory_path = user_directory / "construction-experience" / "strategies.sqlite3"
             if not memory_path.resolve().is_relative_to(user_directory.resolve()):
                 raise ValueError("Experience path escapes the construction user's storage")
-            experience_store = DomainExperienceStore(memory_path)
+            config = EvolutionConfig.from_options(options)
+            if config.mode == "llm" and config.experience_enabled:
+                experience_store = DomainExperienceStore(memory_path)
         return self.run(source_path, options, report_path=source_path.parent / "evolution-report.json",
                         progress_path=source_path.parent / "construction-progress.json",
                         build_id=record.get("build_id"), experience_store=experience_store).graph
@@ -1046,7 +1132,7 @@ class TabularConstructionSubAgent:
                                       "outcome": terminal, "timestamp": timestamp})
             config = report.get("config", {})
             metrics = {}
-            if report.get("construction_kind") != "text_entities":
+            if report.get("construction_kind") != "text_entities" and config.get("mode") == "llm":
                 metrics = {key: value for key, value in {
                     "query_count": config.get("query_count"), "max_iterations": config.get("max_iterations"),
                     "iterations": report.get("iterations", 0), "tool_calls": report.get("tool_calls", 0),
@@ -1067,6 +1153,7 @@ class TabularConstructionSubAgent:
                     and type(initial_size.get("nodes")) is int and type(initial_size.get("edges")) is int):
                 metrics.update(initial_nodes=initial_size["nodes"], initial_edges=initial_size["edges"])
             progress = {"version": "construction_progress.v1", "build_id": build_id,
+                        "mode": config.get("mode"),
                         "status": report.get("status", "running"), "stage": stage,
                         "current_message": _public_stage_message(stage, report),
                         "elapsed_seconds": round(now - started, 3), "updated_at": timestamp,
@@ -1146,7 +1233,7 @@ class TabularConstructionSubAgent:
 
                 try:
                     llm = self._llm_factory(config) if self._llm_factory else ToolCallingLLM(
-                        timeout=config.llm_timeout_seconds
+                        model=selected_model(options.get("construction_model")), timeout=config.llm_timeout_seconds
                     )
                 except ConstructionLLMError as exc:
                     report.update(llm_used=False, model=None, llm_tool_choice=None,
@@ -1195,14 +1282,14 @@ class TabularConstructionSubAgent:
                     report["llm_api"] = audit_metadata()
                 report["semantic_extraction"].update({
                     key: copy.deepcopy(value) for key, value in extracted.items()
-                    if key != "triples"
+                    if key not in {"triples", "entities"}
                 })
                 report["stage"] = "materializing_graph"
                 save()
                 try:
                     graph = validate_graph(
                         _semantic_graph(extracted["triples"], max_nodes=max_graph_nodes,
-                                        max_edges=max_graph_edges),
+                                        max_edges=max_graph_edges, entities=extracted["entities"]),
                         max_nodes=max_graph_nodes, max_edges=max_graph_edges,
                         copy_graph=False,
                     )
@@ -1253,14 +1340,6 @@ class TabularConstructionSubAgent:
                 return ConstructionResult(graph, copy.deepcopy(report))
 
             report["construction_kind"] = "relational"
-            profile = domain_profile(source, config.domain_category)
-            report["domain_profile"] = copy.deepcopy(profile)
-            if not config.experience_enabled:
-                memory = None
-            report["experience"] = {"enabled": config.experience_enabled,
-                "status": "pending" if memory is not None else "disabled" if not config.experience_enabled else "no_store",
-                "domain_key": profile["key"], "retrieved": [], "recorded_observations": 0}
-            experience_source_key = _experience_source_key(source) if memory is not None else None
             with Path(source_path).open("rb") as stream:
                 report["source_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
             graph = validate_graph(initial_graph(source), max_nodes=max_graph_nodes,
@@ -1271,10 +1350,40 @@ class TabularConstructionSubAgent:
             report["initial_size"] = {"nodes": len(graph["nodes"]), "edges": len(graph["edges"])}
             report["stage"] = "source_profiled"
             save()
+            # Rules mode publishes the PK/FK graph unchanged. Workload generation,
+            # candidate transforms and experience belong exclusively to Agent mode.
+            if config.mode == "rules":
+                report.update(llm_used=False, model=None, tool_calls=0, iterations=0,
+                              accepted_candidates=0, workload_origin="not_applicable",
+                              assurance="The unchanged PK/FK graph passes structural and source fidelity validation.",
+                              papers=[], experience={"enabled": False, "status": "disabled",
+                                                     "retrieved": [], "recorded_observations": 0},
+                              stage="validating_final")
+                save()
+                budget()
+                if fidelity_errors(source, graph):
+                    fail("final_source_or_workload_integrity_failed")
+                budget()
+                report["final"] = {"validation": "construction_graph.v1", "valid": True,
+                                   "source_fidelity": True}
+                report["final_schema"] = graph_schema(graph)
+                report["final_size"] = dict(report["initial_size"])
+                report["final_graph_sha256"] = _stream_fingerprint(graph)
+                report.update(status="ready", stage="ready", stop_reason="pk_fk_complete")
+                save()
+                return ConstructionResult(graph, copy.deepcopy(report))
+
+            profile = domain_profile(source, config.domain_category)
+            report["domain_profile"] = copy.deepcopy(profile)
+            if not config.experience_enabled:
+                memory = None
+            report["experience"] = {"enabled": config.experience_enabled,
+                "status": "pending" if memory is not None else "disabled" if not config.experience_enabled else "no_store",
+                "domain_key": profile["key"], "retrieved": [], "recorded_observations": 0}
+            experience_source_key = _experience_source_key(source) if memory is not None else None
             initial_size = max(1, len(graph["nodes"]) + len(graph["edges"]))
-            llm = None
-            if config.mode == "llm":
-                llm = self._llm_factory(config) if self._llm_factory else ToolCallingLLM(timeout=config.llm_timeout_seconds)
+            llm = self._llm_factory(config) if self._llm_factory else ToolCallingLLM(
+                model=selected_model(options.get("construction_model")), timeout=config.llm_timeout_seconds)
             report["llm_used"] = llm is not None
             report["model"] = getattr(llm, "model", "injected-client" if llm else None)
             report["llm_tool_choice"] = getattr(llm, "tool_choice", None)
@@ -1327,73 +1436,69 @@ class TabularConstructionSubAgent:
                 report["workload_origin"] = "provided"
             else:
                 seeds = generate_workload(source, count=config.query_count)
-                if llm is None:
-                    queries = seeds
-                    report["workload_origin"] = "deterministic_rules"
-                else:
-                    report["stage"] = "generating_workload"
+                report["stage"] = "generating_workload"
+                save()
+                messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": _json({"task": "Generate and freeze the production workload with set_workload. The seed plans are already executable and validated: you may reuse their plans while refining question wording for concrete domain scenarios. Use only the documented DSL; do not invent operators or expressions. Retain every required coverage category.",
+                                "query_count": config.query_count, "query_dsl": QUERY_DSL, "context": inspection(),
+                                "required_coverage": sorted(_coverage(seeds)), "seed_plans": seeds})}]
+                queries = None
+                required_coverage = _coverage(seeds)
+                for workload_attempt in range(config.workload_attempts):
+                    message = complete(messages, "workload")
+                    calls = message.get("tool_calls") or []
+                    if not calls:
+                        report.setdefault("workload_validation_errors", []).append({"attempt": workload_attempt + 1, "error": "No workload tool call returned"})
+                        messages.append({"role": "user", "content": "Call set_workload with valid queries; plain text cannot freeze a workload."})
+                    if len(calls) > 10:
+                        fail("too_many_parallel_tool_calls")
+                    for call in calls:
+                        count_tool()
+                        try:
+                            name, args = parse_call(call)
+                            report.setdefault("tool_trace", []).append({"stage": "workload", "attempt": workload_attempt + 1,
+                                                                        "name": name, "call_id": call["id"]})
+                            if name == "inspect_schema" and not args:
+                                payload = inspection()
+                            elif name == "set_workload" and set(args) == {"queries"} and queries is None:
+                                candidate = validate_queries(source, args["queries"], count=config.query_count)
+                                missing = required_coverage - _coverage(candidate)
+                                if missing:
+                                    raise ValueError("Keep seed workload coverage; missing query categories: " + ", ".join(sorted(missing)))
+                                # Freeze before measuring graph answers. A hard query
+                                # cannot be swapped out merely because baseline fails.
+                                queries = candidate
+                                payload = {"success": True, "frozen": True, "count": len(queries)}
+                            else:
+                                raise ValueError("Only inspect_schema and one set_workload are allowed before freezing")
+                        except (ValueError, KeyError, TypeError) as exc:
+                            payload = {"success": False, "error": str(exc)[:4000]}
+                            if str(exc).startswith(("Invalid column reference:", "Unknown column reference:")):
+                                payload["repair_hint"] = (
+                                    "projection, filters, group_by and aggregation inputs require real "
+                                    "alias.column source references, not output aliases. An aggregate's "
+                                    "'as' alias (for example cnt) is already an output; reference it only "
+                                    "in order_by. A count-only plan has projection=[] and group_by=[], "
+                                    "with aggregations=[{function:'count',column:'*',as:'cnt'}]. "
+                                    "There is no HAVING support. Preserve the requested semantics and "
+                                    "required coverage; you may reuse the supplied validated seed plans "
+                                    "unchanged and refine only their question wording."
+                                )
+                            elif str(exc) in ("Join tables disagree with foreign-key direction",
+                                              "Joins must use an explicitly declared source foreign key"):
+                                payload["repair_hint"] = JOIN_DIRECTION_RULES + (
+                                    "Preserve the requested semantics and required coverage. You may "
+                                    "reuse the supplied validated seed plans unchanged and refine only "
+                                    "their question wording. Do not invent or reverse the declared key."
+                                )
+                            report.setdefault("workload_validation_errors", []).append({"attempt": workload_attempt + 1, "error": payload["error"]})
+                        respond(messages, call, payload)
                     save()
-                    messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                                {"role": "user", "content": _json({"task": "Generate and freeze the production workload with set_workload. The seed plans are already executable and validated: you may reuse their plans while refining question wording for concrete domain scenarios. Use only the documented DSL; do not invent operators or expressions. Retain every required coverage category.",
-                                    "query_count": config.query_count, "query_dsl": QUERY_DSL, "context": inspection(),
-                                    "required_coverage": sorted(_coverage(seeds)), "seed_plans": seeds})}]
-                    queries = None
-                    required_coverage = _coverage(seeds)
-                    for workload_attempt in range(config.workload_attempts):
-                        message = complete(messages, "workload")
-                        calls = message.get("tool_calls") or []
-                        if not calls:
-                            report.setdefault("workload_validation_errors", []).append({"attempt": workload_attempt + 1, "error": "No workload tool call returned"})
-                            messages.append({"role": "user", "content": "Call set_workload with valid queries; plain text cannot freeze a workload."})
-                        if len(calls) > 10:
-                            fail("too_many_parallel_tool_calls")
-                        for call in calls:
-                            count_tool()
-                            try:
-                                name, args = parse_call(call)
-                                report.setdefault("tool_trace", []).append({"stage": "workload", "attempt": workload_attempt + 1,
-                                                                            "name": name, "call_id": call["id"]})
-                                if name == "inspect_schema" and not args:
-                                    payload = inspection()
-                                elif name == "set_workload" and set(args) == {"queries"} and queries is None:
-                                    candidate = validate_queries(source, args["queries"], count=config.query_count)
-                                    missing = required_coverage - _coverage(candidate)
-                                    if missing:
-                                        raise ValueError("Keep seed workload coverage; missing query categories: " + ", ".join(sorted(missing)))
-                                    # Freeze before measuring graph answers. A hard query
-                                    # cannot be swapped out merely because baseline fails.
-                                    queries = candidate
-                                    payload = {"success": True, "frozen": True, "count": len(queries)}
-                                else:
-                                    raise ValueError("Only inspect_schema and one set_workload are allowed before freezing")
-                            except (ValueError, KeyError, TypeError) as exc:
-                                payload = {"success": False, "error": str(exc)[:4000]}
-                                if str(exc).startswith(("Invalid column reference:", "Unknown column reference:")):
-                                    payload["repair_hint"] = (
-                                        "projection, filters, group_by and aggregation inputs require real "
-                                        "alias.column source references, not output aliases. An aggregate's "
-                                        "'as' alias (for example cnt) is already an output; reference it only "
-                                        "in order_by. A count-only plan has projection=[] and group_by=[], "
-                                        "with aggregations=[{function:'count',column:'*',as:'cnt'}]. "
-                                        "There is no HAVING support. Preserve the requested semantics and "
-                                        "required coverage; you may reuse the supplied validated seed plans "
-                                        "unchanged and refine only their question wording."
-                                    )
-                                elif str(exc) in ("Join tables disagree with foreign-key direction",
-                                                  "Joins must use an explicitly declared source foreign key"):
-                                    payload["repair_hint"] = JOIN_DIRECTION_RULES + (
-                                        "Preserve the requested semantics and required coverage. You may "
-                                        "reuse the supplied validated seed plans unchanged and refine only "
-                                        "their question wording. Do not invent or reverse the declared key."
-                                    )
-                                report.setdefault("workload_validation_errors", []).append({"attempt": workload_attempt + 1, "error": payload["error"]})
-                            respond(messages, call, payload)
-                        save()
-                        if queries is not None:
-                            break
-                    if queries is None:
-                        fail("workload_generation_failed")
-                    report["workload_origin"] = "llm"
+                    if queries is not None:
+                        break
+                if queries is None:
+                    fail("workload_generation_failed")
+                report["workload_origin"] = "llm"
 
             frozen = _json(queries)
             report.update(queries=copy.deepcopy(queries), workload_sha256=hashlib.sha256(frozen.encode()).hexdigest())
@@ -1502,78 +1607,68 @@ class TabularConstructionSubAgent:
                         "candidate": _feedback(event["evaluation"]) if "evaluation" in event else None,
                         "current": _feedback(evaluation)}
 
-            if llm is None:
-                # Explicit offline mode is useful for reproducibility and CI;
-                # it never claims that an LLM was exercised.
-                for example in examples():
-                    if example["tool"] in {"materialize_join", "generate_entity_table", "transform_batch"}:
-                        evaluate_candidate(example["tool"], example["arguments"])
-                        if len(report["history"]) >= config.max_iterations:
-                            break
-                report["stop_reason"] = "rules_baseline_complete"
-            else:
-                report["stage"] = "evolving"
-                save()
-                messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": _json({"task": "Optimize this graph. The workload is frozen. Try relevant specialized transformations; learn from tool feedback, then finish.",
-                                "context": inspection(), "queries": queries, "evaluation": _feedback(evaluation),
-                                "candidate_examples": examples(), "domain_strategies": profile.get("prior_strategies", []),
-                                "learned_strategies": learned,
-                                "constraints": asdict(config), "objective": "correctness first; then latency_ms + preparation_ms / expected_query_runs"})}]
-                finished = False
-                for iteration in range(config.max_iterations):
-                    message = complete(messages, "evolve")
-                    calls = message.get("tool_calls") or []
-                    if len(calls) > 10:
-                        fail("too_many_parallel_tool_calls")
-                    if not calls:
-                        messages.append({"role": "user", "content": "Use construction tools, including finish when done."})
-                    for call in calls:
-                        count_tool()
-                        budget()
-                        try:
-                            name, args = parse_call(call)
-                            report.setdefault("tool_trace", []).append({"stage": "evolve", "iteration": iteration + 1,
-                                                                        "name": name, "call_id": call["id"]})
-                            if name in TRANSFORM_NAMES:
-                                payload = evaluate_candidate(name, args)
-                                if payload.get("reason") in ("invalid_candidate", "no_change", "duplicate_candidate"):
-                                    payload["candidate_examples"] = examples()
-                            elif name == "inspect_schema" and not args:
-                                payload = inspection()
-                            elif name == "evaluate_queries" and not args:
-                                measured = evaluate(graph, queries, config.benchmark_repeats)
-                                valid = measured["correct"] == measured["total"] == len(queries)
-                                # Report an observed failure, but do not replace
-                                # the incumbent quality with a transient oracle
-                                # or execution failure that could let the next
-                                # slow candidate bypass the speed gate as repair.
-                                if valid:
-                                    evaluation = measured
-                                payload = {**_feedback(measured), "quality_preserved": not valid}
-                            elif name == "finish" and set(args) == {"reason"} and isinstance(args["reason"], str):
-                                if not any("evaluation" in event for event in report["history"]):
-                                    payload = {"success": False, "reason": "At least one valid candidate must reach oracle evaluation before finishing.",
-                                               "candidate_examples": examples()}
-                                elif evaluation["correct"] != len(queries):
-                                    payload = {"success": False, "reason": "All frozen queries must pass before finish.", "evaluation": _feedback(evaluation)}
-                                else:
-                                    finished = True
-                                    report["stop_reason"] = "llm_finished"
-                                    payload = {"success": True, "final_validation_pending": True}
+            report["stage"] = "evolving"
+            save()
+            messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": _json({"task": "Optimize this graph. The workload is frozen. Try relevant specialized transformations; learn from tool feedback, then finish.",
+                            "context": inspection(), "queries": queries, "evaluation": _feedback(evaluation),
+                            "candidate_examples": examples(), "domain_strategies": profile.get("prior_strategies", []),
+                            "learned_strategies": learned,
+                            "constraints": asdict(config), "objective": "correctness first; then latency_ms + preparation_ms / expected_query_runs"})}]
+            finished = False
+            for iteration in range(config.max_iterations):
+                message = complete(messages, "evolve")
+                calls = message.get("tool_calls") or []
+                if len(calls) > 10:
+                    fail("too_many_parallel_tool_calls")
+                if not calls:
+                    messages.append({"role": "user", "content": "Use construction tools, including finish when done."})
+                for call in calls:
+                    count_tool()
+                    budget()
+                    try:
+                        name, args = parse_call(call)
+                        report.setdefault("tool_trace", []).append({"stage": "evolve", "iteration": iteration + 1,
+                                                                    "name": name, "call_id": call["id"]})
+                        if name in TRANSFORM_NAMES:
+                            payload = evaluate_candidate(name, args)
+                            if payload.get("reason") in ("invalid_candidate", "no_change", "duplicate_candidate"):
+                                payload["candidate_examples"] = examples()
+                        elif name == "inspect_schema" and not args:
+                            payload = inspection()
+                        elif name == "evaluate_queries" and not args:
+                            measured = evaluate(graph, queries, config.benchmark_repeats)
+                            valid = measured["correct"] == measured["total"] == len(queries)
+                            # Report an observed failure, but do not replace
+                            # the incumbent quality with a transient oracle
+                            # or execution failure that could let the next
+                            # slow candidate bypass the speed gate as repair.
+                            if valid:
+                                evaluation = measured
+                            payload = {**_feedback(measured), "quality_preserved": not valid}
+                        elif name == "finish" and set(args) == {"reason"} and isinstance(args["reason"], str):
+                            if not any("evaluation" in event for event in report["history"]):
+                                payload = {"success": False, "reason": "At least one valid candidate must reach oracle evaluation before finishing.",
+                                           "candidate_examples": examples()}
+                            elif evaluation["correct"] != len(queries):
+                                payload = {"success": False, "reason": "All frozen queries must pass before finish.", "evaluation": _feedback(evaluation)}
                             else:
-                                payload = {"success": False, "error": "Unknown tool/arguments or workload is immutable"}
-                        except (ValueError, KeyError, TypeError) as exc:
-                            payload = {"success": False, "error": str(exc)[:2000]}
-                        respond(messages, call, payload)
-                    report.update(iterations=iteration + 1, tool_calls=tool_calls)
-                    save()
-                    if finished:
-                        break
-                if not finished:
-                    report["stop_reason"] = "iteration_budget_reached"
-                if not any("evaluation" in event for event in report["history"]):
-                    fail("no_evolution_candidate_evaluated")
+                                finished = True
+                                report["stop_reason"] = "llm_finished"
+                                payload = {"success": True, "final_validation_pending": True}
+                        else:
+                            payload = {"success": False, "error": "Unknown tool/arguments or workload is immutable"}
+                    except (ValueError, KeyError, TypeError) as exc:
+                        payload = {"success": False, "error": str(exc)[:2000]}
+                    respond(messages, call, payload)
+                report.update(iterations=iteration + 1, tool_calls=tool_calls)
+                save()
+                if finished:
+                    break
+            if not finished:
+                report["stop_reason"] = "iteration_budget_reached"
+            if not any("evaluation" in event for event in report["history"]):
+                fail("no_evolution_candidate_evaluated")
 
             budget()
             if _json(queries) != frozen or fidelity_errors(source, graph):

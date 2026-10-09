@@ -17,6 +17,7 @@ EXPECTED_BUNDLED_SKILLS = (
     "data_ingestion_text",
     "dataset_management",
     "experiment_reporting",
+    "finance-ownership-workflow",
     "gnn_node_classification_training",
     "graph_analysis_centrality",
     "graph_analysis_community",

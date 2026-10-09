@@ -86,3 +86,26 @@ class SearchConcurrencyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_duplicate_property_names_remain_ambiguous_even_when_top_k_is_one():
+    from graph_data_service.embedding import LexicalProvider
+    graph = GraphData(
+        num_nodes=3, edge_index=np.array([[0, 1], [2, 2]]),
+        id2node={0: "a", 1: "b", 2: "c"}, node2id={"a": 0, "b": 1, "c": 2},
+        node_type=["Person", "Organization", "Person"],
+        graph_metadata={"construction_graph": {"nodes": [
+            {"id": "a", "properties": {"data": {"name": "同名"}}},
+            {"id": "b", "properties": {"name": "同名"}},
+            {"id": "c", "properties": {"name": "目标"}},
+        ]}},
+    )
+    index = EntitySearchIndex(graph, 1, LexicalProvider())
+    result = index.search_nodes(NodeSearchRequest(query="同名", top_k=1))
+    assert result["ambiguous"] and result["best"]["confidence"] == "medium"
+    filtered = index.search_nodes(NodeSearchRequest(query="同名", filters={"node_type": "Person"}))
+    assert not filtered["ambiguous"] and filtered["best"]["node_name"] == "a"
+    # Internal IDs still take precedence and remain valid tool arguments.
+    assert index.search_nodes(NodeSearchRequest(query="b"))["best"]["node_id"] == 1
+    from graph_data_service.search import EdgeSearchRequest
+    edges = index.search_edges(EdgeSearchRequest(src_query="同名", dst_query="目标"))
+    assert {(row["src_name"], row["dst_name"]) for row in edges["candidates"]} == {("a", "c"), ("b", "c")}

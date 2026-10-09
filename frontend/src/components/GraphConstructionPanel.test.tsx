@@ -4,14 +4,14 @@ import { ApiError } from '../api';
 import type { ConstructionOperation, Dataset } from '../types';
 import { GraphConstructionPanel } from './GraphConstructionPanel';
 
-const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn(), rename: vi.fn(), settings: vi.fn(), saveSettings: vi.fn(), models: vi.fn() }));
 vi.mock('../api', async importOriginal => ({
   ...await importOriginal<typeof import('../api')>(),
-  getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
+  getConstructionModelSettings: mocks.settings, saveConstructionModelSettings: mocks.saveSettings, getConstructionModels: mocks.models, renameProjectDataset: mocks.rename, getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
   getConstructionSourcePreview: mocks.source,
   previewConstruction: mocks.preview, commitConstruction: mocks.commit,
 }));
-vi.mock('./GraphWorkspace', () => ({ GraphWorkspace: ({ data, onSelect }: any) => <div aria-label="测试图画布">{data.nodes.map((node: any) => <button key={node.id} onClick={() => onSelect(node)}>图节点 {node.id}</button>)}<span>{data.edges.map((edge: any) => `${edge.source} → ${edge.target}`).join(', ')}</span></div> }));
+vi.mock('./GraphWorkspace', () => ({ GraphWorkspace: ({ data, onSelect }: any) => <div aria-label="测试图画布">{data.nodes.map((node: any) => <button key={node.id} data-node-id={node.id} onClick={() => onSelect(node)}>图节点 {node.label ?? node.id}</button>)}<span>{data.edges.map((edge: any) => `${edge.source} → ${edge.target}`).join(', ')}</span></div> }));
 
 const dataset: Dataset = { dataset_id: 'd1', project_id: null, name: '客户关系', original_filename: 'customers.csv', file_type: 'csv', status: 'ready' };
 const graph = { directed: true, nodes: [{ id: 'a', type: 'Person', properties: { phone: '123', age: 29 } }, { id: 'b', type: 'Link', properties: { phone: '123' } }, { id: 'c', type: 'Person', properties: {} }], edges: [{ id: 'e1', source: 'a', target: 'b', type: 'Knows', properties: { weight: 1 } }, { id: 'e2', source: 'b', target: 'c', type: 'Knows', properties: {} }] };
@@ -33,6 +33,8 @@ async function openPanel(onSaved = vi.fn(), onClose = vi.fn()) {
 }
 
 beforeEach(() => {
+  mocks.settings.mockResolvedValue({ model: 'deepseek-v4-pro', has_base_url: false, has_api_key: false, has_server_config: true });
+  mocks.models.mockResolvedValue({ models: ['deepseek-v4-pro', 'claude-opus-5-5'], default_model: 'deepseek-v4-pro' });
   mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'ready', revision: 2, algorithm_available: false });
   mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph });
   mocks.schema.mockResolvedValue(schema);
@@ -112,6 +114,32 @@ describe('graph construction workflow', () => {
     expect(screen.queryByRole('button', { name: '图节点 a' })).toBeNull();
     expect(mocks.graph).toHaveBeenCalledWith(dataset, expect.any(AbortSignal));
     expect(mocks.schema).toHaveBeenCalledWith(dataset, expect.any(AbortSignal));
+  });
+
+  it('shows named TXT entities by default and keeps type aggregation as an explicit alternative', async () => {
+    const novel = { directed: true, nodes: [
+      { id: 'entity_shi', type: '人物', properties: { data: { name: '史强' } } },
+      { id: 'entity_luo', type: '人物', properties: { data: { name: '罗辑' } } },
+      { id: 'entity_ye', type: '人物', properties: { data: { name: '叶文洁' } } },
+    ], edges: [{ id: 'relation_1', source: 'entity_shi', target: 'entity_luo', type: '保护', properties: {} }] };
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', source_type: 'txt', status: 'ready', revision: 2 });
+    mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph: novel });
+    mocks.schema.mockRejectedValue(new ApiError(503, 'offline'));
+    render(<GraphConstructionPanel dataset={{ ...dataset, file_type: 'txt', original_filename: '2.txt' }} onClose={vi.fn()} onSaved={vi.fn()} />);
+    const shi = await screen.findByRole('button', { name: '图节点 史强' });
+    expect(shi.getAttribute('data-node-id')).toBe('entity_shi');
+    expect(screen.getByRole('button', { name: '图节点 罗辑' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '图节点 叶文洁' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '图节点 人物' })).toBeNull();
+    fireEvent.click(shi);
+    expect(screen.getByText('实例节点 史强 的属性')).toBeTruthy();
+    choose('查找对象', '史强');
+    expect(Array.from((screen.getByLabelText('选择节点') as HTMLSelectElement).options, option => option.value)).toEqual(['', 'entity_shi']);
+    fireEvent.click(screen.getByRole('button', { name: '类型结构' }));
+    expect(screen.getByRole('button', { name: '图节点 人物' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '图节点 史强' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '实体关系图' }));
+    expect(screen.getByRole('button', { name: '图节点 史强' })).toBeTruthy();
   });
 
   it('falls back to a local schema without blocking graph optimization when the schema endpoint fails', async () => {
@@ -370,7 +398,7 @@ describe('long-running graph construction', () => {
 
   it('renders the audited Agent progress stream and updates it through status polling', async () => {
     const first = { ...building, build_id: 'build-1', progress: {
-      version: 'construction_progress.v1', status: 'running', stage: 'evaluating_baseline',
+      version: 'construction_progress.v1', mode: 'llm', status: 'running', stage: 'evaluating_baseline',
       current_message: '正在用源数据答案校验初始图，并测量基线。', elapsed_seconds: 12,
       metrics: { query_count: 15, iterations: 0, evaluated_candidates: 0, accepted_candidates: 0 },
       events: [
@@ -418,15 +446,16 @@ describe('long-running graph construction', () => {
     expect(stream.textContent).not.toContain('候选');
   });
 
-  it('restores the active build query count from progress when the panel is reopened', async () => {
+  it('restores the active Agent mode and query count when the panel is reopened', async () => {
     mocks.state.mockResolvedValue({ ...building, build_id: 'build-1', progress: {
-      version: 'construction_progress.v1', status: 'running', stage: 'evaluating_baseline',
+      version: 'construction_progress.v1', mode: 'llm', status: 'running', stage: 'evaluating_baseline',
       current_message: '正在校验初始图。', metrics: { query_count: 1 }, events: [],
     } });
 
     await show();
 
     const queryCount = screen.getByLabelText('验证查询数量') as HTMLInputElement;
+    expect((screen.getByRole('switch', { name: '使用 Agent 优化构图' }) as HTMLInputElement).checked).toBe(true);
     expect(queryCount.value).toBe('1');
     expect(queryCount.matches(':disabled')).toBe(true);
     expect(mocks.build).not.toHaveBeenCalled();
@@ -478,6 +507,7 @@ describe('long-running graph construction', () => {
     mocks.build.mockResolvedValue(ready);
     const saved = vi.fn();
     await show(saved);
+    fireEvent.click(screen.getByRole('switch', { name: '使用 Agent 优化构图' }));
     expect((screen.getByLabelText('验证查询数量') as HTMLInputElement).value).toBe('15');
     const category = screen.getByLabelText('领域类别') as HTMLSelectElement;
     expect(category.value).toBe('auto');
@@ -486,19 +516,36 @@ describe('long-running graph construction', () => {
       ['healthcare', '医疗'], ['social', '社区'], ['general', '通用'],
     ]);
     expect((screen.getByLabelText('复用领域经验') as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByRole('switch', { name: '使用 Agent 优化构图' }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('switch', { name: '使用 Agent 优化构图' }) as HTMLInputElement).checked).toBe(true);
     if (count !== 15) fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: String(count) } });
     fireEvent.change(screen.getByLabelText('领域描述（选填）'), { target: { value: '  电商订单履约  ' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      mode: 'rules', query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
+      mode: 'llm', construction_model: 'deepseek-v4-pro', query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
     });
     expect(saved).toHaveBeenCalledTimes(1);
     expect(saved).toHaveBeenCalledWith(sourceDataset, graph, 3);
     await tick(9000);
     expect(saved).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables all automatic optimization after switching Agent back off', async () => {
+    mocks.build.mockResolvedValue(ready);
+    await show();
+    const agentSwitch = screen.getByRole('switch', { name: '使用 Agent 优化构图' });
+    fireEvent.click(agentSwitch);
+    fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: '' } });
+    fireEvent.click(agentSwitch);
+    expect(screen.queryByLabelText('验证查询数量')).toBeNull();
+    expect(screen.queryByLabelText('领域类别')).toBeNull();
+    expect(screen.queryByLabelText('复用领域经验')).toBeNull();
+    expect(screen.getByText('仅按主键和外键（PK/FK）构图，不进行自动优化。')).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledExactlyOnceWith(sourceDataset, {
+      mode: 'rules', domain: '', experience_enabled: false,
+    });
   });
 
   it('uses Agent optimization only when the user enables the switch', async () => {
@@ -531,7 +578,7 @@ describe('long-running graph construction', () => {
     fireEvent.change(select, { target: { value: '|' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      mode: 'rules', query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true, delimiter: '|',
+      mode: 'rules', domain: '', experience_enabled: false, delimiter: '|',
     });
   });
 
@@ -547,7 +594,7 @@ describe('long-running graph construction', () => {
     fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__lines__' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      mode: 'rules', query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true, txt_mode: 'lines',
+      mode: 'rules', domain: '', experience_enabled: false, txt_mode: 'lines',
     });
   });
 
@@ -572,8 +619,25 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
 
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      domain: '', txt_mode: 'entities', mode: 'llm', entity_types: [], text_refine_enabled: false,
+      domain: '', txt_mode: 'entities', mode: 'llm', construction_model: 'deepseek-v4-pro', entity_types: [], text_refine_enabled: false,
     });
+  });
+
+  it('offers a novel preset that submits people as nodes and their relationships as edges', async () => {
+    const txtDataset: Dataset = { ...sourceDataset, original_filename: 'novel.txt', file_type: 'txt' };
+    mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
+    mocks.build.mockResolvedValue(ready);
+    await act(async () => {
+      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+    });
+    fireEvent.click(screen.getByRole('button', { name: '小说人物关系' }));
+    expect((screen.getByLabelText('TXT 处理方式') as HTMLSelectElement).value).toBe('__entities__');
+    expect((screen.getByLabelText('提取的实体类型（选填）') as HTMLInputElement).value).toBe('人物');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
+    expect(mocks.build).toHaveBeenCalledWith(txtDataset, expect.objectContaining({
+      txt_mode: 'entities', mode: 'llm', entity_types: ['人物'],
+      domain: expect.stringContaining('保留没有明确关系的人物'),
+    }));
   });
 
   it('sends selected TXT entity categories and enables query refinement only when requested', async () => {
@@ -589,7 +653,7 @@ describe('long-running graph construction', () => {
     fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: '4' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      domain: '', txt_mode: 'entities', mode: 'llm',
+      domain: '', txt_mode: 'entities', mode: 'llm', construction_model: 'deepseek-v4-pro',
       entity_types: ['人物', '事件', '组织'], text_refine_enabled: true, query_count: 4,
     });
   });
@@ -610,6 +674,7 @@ describe('long-running graph construction', () => {
   it('submits the selected domain and explicit experience opt-out without losing the business description', async () => {
     mocks.build.mockResolvedValue(ready);
     await show();
+    fireEvent.click(screen.getByRole('switch', { name: '使用 Agent 优化构图' }));
     fireEvent.change(screen.getByLabelText('领域类别'), { target: { value: 'finance' } });
     fireEvent.change(screen.getByLabelText('领域描述（选填）'), { target: { value: '  贷款与担保关系  ' } });
     fireEvent.click(screen.getByLabelText('复用领域经验'));
@@ -617,7 +682,7 @@ describe('long-running graph construction', () => {
     expect(screen.getByText(/关闭后，本次构图不读取或写入经验/).textContent).toContain('新图仍需验收');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      mode: 'rules', query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
+      mode: 'llm', construction_model: 'deepseek-v4-pro', query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
     });
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });
@@ -633,30 +698,31 @@ describe('long-running graph construction', () => {
 
   it('resets domain and experience controls when switching to another dataset', async () => {
     const view = await show();
+    fireEvent.click(screen.getByRole('switch', { name: '使用 Agent 优化构图' }));
     fireEvent.change(screen.getByLabelText('领域类别'), { target: { value: 'healthcare' } });
     fireEvent.change(screen.getByLabelText('领域描述（选填）'), { target: { value: '门诊业务' } });
     fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: '23' } });
     fireEvent.click(screen.getByLabelText('复用领域经验'));
-    fireEvent.click(screen.getByRole('switch', { name: '使用 Agent 优化构图' }));
     const nextDataset = { ...sourceDataset, dataset_id: 'd2', name: '另一份数据' };
     mocks.state.mockResolvedValue({ ...notBuilt, dataset_id: 'd2' });
     mocks.build.mockResolvedValue({ ...ready, dataset_id: 'd2' });
     mocks.graph.mockResolvedValue({ dataset_id: 'd2', revision: 3, graph });
     await act(async () => { view.rerender(<GraphConstructionPanel dataset={nextDataset} onClose={vi.fn()} onSaved={vi.fn()} />); });
-    expect((screen.getByLabelText('领域类别') as HTMLSelectElement).value).toBe('auto');
-    expect((screen.getByLabelText('复用领域经验') as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByLabelText('领域类别')).toBeNull();
+    expect(screen.queryByLabelText('复用领域经验')).toBeNull();
+    expect(screen.queryByLabelText('验证查询数量')).toBeNull();
     expect((screen.getByRole('switch', { name: '使用 Agent 优化构图' }) as HTMLInputElement).checked).toBe(false);
     expect((screen.getByLabelText('领域描述（选填）') as HTMLTextAreaElement).value).toBe('');
-    expect((screen.getByLabelText('验证查询数量') as HTMLInputElement).value).toBe('15');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(nextDataset, {
-      mode: 'rules', query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true,
+      mode: 'rules', domain: '', experience_enabled: false,
     });
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });
 
   it('rejects invalid query counts without sending a build request', async () => {
     await show();
+    fireEvent.click(screen.getByRole('switch', { name: '使用 Agent 优化构图' }));
     for (const value of ['0', '101', '1.5', '']) {
       fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value } });
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
@@ -673,7 +739,7 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(onStateChange.mock.calls[onStateChange.mock.calls.length - 1]?.[1].status).toBe('building');
     expect((screen.getByRole('button', { name: '正在构图…' }) as HTMLButtonElement).disabled).toBe(true);
-    for (const label of ['验证查询数量', '领域类别', '领域描述（选填）', '复用领域经验', '使用 Agent 优化构图']) {
+    for (const label of ['领域描述（选填）', '使用 Agent 优化构图']) {
       expect(screen.getByLabelText(label).matches(':disabled')).toBe(true);
     }
     expect((screen.getByRole('button', { name: '关闭构图工作台' }) as HTMLButtonElement).disabled).toBe(false);
@@ -684,7 +750,7 @@ describe('long-running graph construction', () => {
     await act(async () => { finishBuild(ready); });
     expect(mocks.build).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      mode: 'rules', query_count: 15, domain: '', domain_category: 'auto', experience_enabled: true,
+      mode: 'rules', domain: '', experience_enabled: false,
     });
     expect(mocks.state).toHaveBeenCalledTimes(1);
     expect(mocks.graph).not.toHaveBeenCalled();
@@ -692,7 +758,9 @@ describe('long-running graph construction', () => {
   });
 
   it('reopens an existing build, polls GET every three seconds, and loads the saved graph once', async () => {
-    mocks.state.mockResolvedValueOnce(building).mockResolvedValue(ready);
+    mocks.state.mockResolvedValueOnce({ ...building, progress: {
+      version: 'construction_progress.v1', mode: 'llm', stage: 'starting', events: [],
+    } }).mockResolvedValue(ready);
     const saved = vi.fn();
     await show(saved);
     expect(screen.getByText('构图进行中')).toBeTruthy();
@@ -749,5 +817,47 @@ describe('long-running graph construction', () => {
     expect(saved).toHaveBeenCalledTimes(1);
     expect(mocks.graph).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('explicit construction publishing', () => {
+  it('renames the dataset inside the construction page', async () => {
+    const updated = vi.fn();
+    mocks.rename.mockResolvedValue({ dataset: { ...dataset, name: '人物关系图' } });
+    render(<GraphConstructionPanel dataset={dataset} onClose={vi.fn()} onSaved={vi.fn()} onDatasetUpdated={updated} />);
+    await screen.findByLabelText('测试图画布');
+    fireEvent.click(screen.getByRole('button', { name: '重命名数据集' }));
+    choose('数据集名称', '人物关系图');
+    fireEvent.click(screen.getByRole('button', { name: '保存名称' }));
+    expect(await screen.findByRole('heading', { name: '人物关系图' })).toBeTruthy();
+    expect(mocks.rename).toHaveBeenCalledWith(dataset.project_id, dataset.dataset_id, '人物关系图');
+    expect(updated).toHaveBeenCalledWith(expect.objectContaining({ name: '人物关系图' }));
+  });
+  it('keeps a completed build unpublished until the save button is clicked', async () => {
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true });
+    mocks.build.mockResolvedValue({ dataset_id: 'd1', status: 'draft', revision: 2 });
+    const saved = vi.fn(), use = vi.fn();
+    render(<GraphConstructionPanel dataset={{ ...dataset, status: 'source_ready' }} onClose={vi.fn()} onSaved={saved} onUse={use} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '开始构图' }).matches(':disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: '开始构图' }));
+    expect(await screen.findByText('草稿 · 待保存')).toBeTruthy();
+    expect(saved).not.toHaveBeenCalled();
+    expect(mocks.commit).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '在当前会话使用' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '保存构图结果' }));
+    await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
+    expect(mocks.commit).toHaveBeenCalledWith(expect.objectContaining({ dataset_id: 'd1' }), 2, []);
+    expect(screen.getByRole('button', { name: '在当前会话使用' })).toBeTruthy();
+  });
+  it('submits the chosen construction model for semantic TXT', async () => {
+    const txt = { ...dataset, file_type: 'txt', original_filename: 'novel.txt', status: 'source_ready' };
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true });
+    mocks.build.mockResolvedValue({ dataset_id: 'd1', status: 'building', revision: 0 });
+    render(<GraphConstructionPanel dataset={txt} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '开始构图' }).matches(':disabled')).toBe(false));
+    expect((screen.getByLabelText('构图大模型') as HTMLSelectElement).value).toBe('deepseek-v4-pro');
+    choose('TXT 处理方式', '__entities__'); choose('构图大模型', 'claude-opus-5-5');
+    fireEvent.click(screen.getByRole('button', { name: '开始构图' }));
+    await waitFor(() => expect(mocks.build).toHaveBeenCalledWith(txt, expect.objectContaining({ construction_model: 'claude-opus-5-5' })));
   });
 });

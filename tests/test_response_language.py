@@ -91,7 +91,19 @@ def test_instruction_locks_language_across_the_whole_run() -> None:
     assert "Use English for this turn" in instruction
     assert "entire run" in instruction
     assert "tool-call cycle" in instruction
-    assert "UI locale" in instruction
+    assert "later UI switch applies to the next submitted turn" in instruction
+
+
+@pytest.mark.parametrize(("message", "locale", "expected"), [
+    ("Please analyse the graph.", "zh-CN,zh;q=0.9,en;q=0.7", "Chinese"),
+    ("请用中文回答并分析图。", "en-US,en;q=0.9", "English"),
+    ("Please reply in English.", "zh", "Chinese"),
+    ("请分析图。", "zh;q=0,en;q=0.8", "English"),
+    ("Please analyse the graph.", "fr;q=1,en;q=0.9,zh;q=0.5", "English"),
+    ("请分析图。", None, "Chinese"),
+])
+def test_interface_language_takes_priority(message, locale, expected):
+    assert resolve_response_language(message, locale) == expected
 
 
 def test_agent_instructions_no_longer_force_chinese() -> None:

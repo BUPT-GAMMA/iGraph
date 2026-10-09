@@ -44,6 +44,7 @@ from graph_data_service.codec import (
 )
 import concurrent.futures
 from graph_data_service.compute import GraphCompute, NX_TOOL_NAMES, run_nx_tool
+from graph_engine.finance_catalog import FINANCE_TOOL_NAMES
 from graph_data_service.embedding import default_provider
 from graph_data_service.graph_data import GraphData
 from graph_data_service.graph_ml import GraphMLModule
@@ -149,6 +150,17 @@ class ConstructionOptimizeReq(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base_revision: int = Field(strict=True, ge=1)
     operations: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+
+
+class ConstructionSaveReq(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_revision: int = Field(strict=True, ge=1)
+    operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
+class ConstructionPresetReq(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: Literal["finance", "tianlongbabu"]
 
 
 class ConstructionImportReq(BaseModel):
@@ -2123,7 +2135,7 @@ class GraphDataService:
         """
         from graph_data_service.graph_snapshot import snapshot_summary
 
-        document = self._construction.graph(user_id, dataset_id)
+        document = self._construction.graph(user_id, dataset_id, saved_only=True)
         graph = to_graph_data(document)
         session = self.get_or_create(session_id, user_id=user_id)
         context = job_context.get()
@@ -3015,9 +3027,19 @@ class GraphDataService:
         edge_types = edge_type_values_for_graph(gd)
         preview_payload = self._graph_preview(gd)
         ml_readiness = graph_ml_readiness_for_graph(gd)
+        # An imported NPZ/JSON may contain the ID used to create its snapshot.
+        # That provenance is not a construction dataset in the current project.
+        # Use the persisted version source so restored sessions behave the same.
+        imported_snapshot = session.version_source(summary.graph_version).get("kind") == "upload"
+        construction_dataset_id = None if imported_snapshot else gd.graph_metadata.get("construction_dataset_id")
+        construction_revision = None if imported_snapshot else gd.graph_metadata.get("construction_revision")
+        construction_state = {
+            "construction_dataset_id": construction_dataset_id,
+            "construction_revision": construction_revision,
+            "construction_applicable": bool(construction_dataset_id),
+        }
         graph_info_payload = {
-            "construction_dataset_id": gd.graph_metadata.get("construction_dataset_id"),
-            "construction_revision": gd.graph_metadata.get("construction_revision"),
+            **construction_state,
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
             "num_edge_entries": summary.num_edge_entries,
@@ -3059,8 +3081,7 @@ class GraphDataService:
             "loaded": True,
             "session_id": session_id,
             "graph_version": summary.graph_version,
-            "construction_dataset_id": gd.graph_metadata.get("construction_dataset_id"),
-            "construction_revision": gd.graph_metadata.get("construction_revision"),
+            **construction_state,
             "num_nodes": summary.num_nodes,
             "num_edges": summary.num_edges,
             "num_edge_entries": summary.num_edge_entries,
@@ -3389,6 +3410,10 @@ class GraphDataService:
 
     def _dispatch_graph_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
         """图数据/图计算工具分发。"""
+        if tool_name in FINANCE_TOOL_NAMES:
+            session = self.get_required(session_id, user_id=user_id)
+            result = self._compute.finance_analysis(session.get_graph(), tool_name, arguments)
+            return {**result, "graph_version": session.graph_version}
         if tool_name == "load_graph":
             edge_text = _required_str(arguments, "edge_text")
             append = _optional_bool(arguments, "append", False)
@@ -4512,6 +4537,10 @@ class GraphDataService:
             if scope_meta and isinstance(result, dict):
                 result.update(scope_meta)
             return result
+        if tool_name in FINANCE_TOOL_NAMES:
+            return await self._run_with_compute_limits(
+                user_id, lambda: run_sync(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id),
+            )
         return await run_sync(self._dispatch_graph_tool, session_id, tool_name, arguments, user_id)
 
 
@@ -4521,6 +4550,10 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         validate_service_configuration()
+        from graph_engine.finance_preset import install_finance_preset
+        await run_sync(install_finance_preset, _dp.data_root())
+        from graph_engine.novel_preset import install_novel_preset
+        await run_sync(install_novel_preset, _dp.data_root())
         await svc._construction_coordinator.restore()
         if svc._execution_host:
             await svc._execution_host.restore()
@@ -4628,6 +4661,32 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         if invalid:
             raise HTTPException(403, {"code": "invalid_source", "message": "数据源与已授权数据集不匹配。"})
 
+    @app.get("/construction/models")
+    async def construction_models_route(request: Request):
+        construction_user(request)
+        from graph_engine.construction.llm import construction_models, selected_model
+        return {"models": construction_models(), "default_model": selected_model()}
+
+    @app.get("/construction/model-settings")
+    async def construction_model_settings(request: Request):
+        require_service(request)
+        construction_user(request)
+        from graph_engine.construction.settings import public_settings
+        return await run_sync(public_settings)
+
+    @app.post("/construction/model-settings")
+    async def save_construction_model_settings(request: Request):
+        require_service(request)
+        construction_user(request)
+        from graph_engine.construction.settings import ConstructionSettingsWrite, save_settings
+        from pydantic import ValidationError
+        try:
+            body = ConstructionSettingsWrite.model_validate(await request.json())
+            return await run_sync(save_settings, body)
+        except (ValidationError, ValueError):
+            raise HTTPException(422, {"code": "invalid_construction_model_settings",
+                "message": "请检查模型 ID、HTTP(S) API URL 和 API Key；首次配置请同时填写 URL 和 Key。"}) from None
+
     @app.get("/construction/capabilities")
     def construction_capabilities(request: Request):
         construction_user(request)
@@ -4657,6 +4716,17 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         # An omitted path keeps the registered source/ready-result reuse contract.
         source_path = grant.source.source_path if req.source_path is not None else None
         return await svc._construction_coordinator.build(uid, dataset_id, source_path, grant.source.source_filename, req.options)
+
+    @app.post("/construction/{dataset_id}/preset")
+    async def construction_preset(dataset_id: str, req: ConstructionPresetReq, request: Request):
+        require_service(request)
+        uid, grant = await construction_grant(request, dataset_id)
+        if grant.scope != "personal" or grant.source is None:
+            raise HTTPException(403, "示例数据源必须为已授权个人数据集")
+        svc._construction_coordinator.ensure_writable(uid, dataset_id)
+        from graph_engine.user_case_sources import seed_construction
+        return await run_sync(seed_construction, svc._construction, uid, dataset_id,
+            grant.source.source_path, grant.source.source_filename, req.case_id)
 
     @app.post("/construction/{dataset_id}/import")
     async def construction_import(dataset_id: str, req: ConstructionImportReq, request: Request):
@@ -4697,7 +4767,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         return await run_sync(svc.do_preview_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
 
     @app.post("/construction/{dataset_id}/commit")
-    async def construction_commit(dataset_id: str, req: ConstructionOptimizeReq, request: Request):
+    async def construction_commit(dataset_id: str, req: ConstructionSaveReq, request: Request):
         uid = construction_user(request)
         if request.headers.get("X-Run-ID") and svc._execution_host:
             sid = request.headers.get("X-Session-ID", "")

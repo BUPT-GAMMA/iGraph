@@ -239,9 +239,7 @@ def test_real_factory_background_run_replays_through_public_backend(database, tm
         UserDirectory(config.users_file, config.supported_ids_file, 'admin').save(UserRecord(user_id='admin', roles=['admin']))
         monkeypatch.setattr(backend_app, 'ServiceClient', LoopbackServiceClient)
         bff = backend_app.create_app(config)
-        bff.state.auth.bootstrap('admin', 'recovery-test-password')
         with TestClient(bff) as client:
-            client.post('/api/auth/login', json={'username': 'admin', 'password': 'recovery-test-password'}).raise_for_status()
             if approval:
                 assert any(item.get('event') == 'RunPaused' for item in native)
                 assert effects == []

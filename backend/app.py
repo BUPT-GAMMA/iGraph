@@ -39,14 +39,13 @@ from backend.construction import install_construction_routes, sync_record as syn
 from backend.constructed_import import install_constructed_import_routes
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, project_run, translate_sse
-from backend.identity import current_user, public_user
+from backend.identity import current_user, SingleUserMiddleware
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
 from backend.projects import ProjectDirectory, ProjectRecord
 from backend.server_datasets import ServerDatasetDirectory, ServerDatasetRecord
 from backend.service_client import ServiceClient, forwarded_headers
 from backend.stream_recovery import close_observation, observation_events, wait_for_native_start
-from backend.users import UserDirectory, UserRecord
-from backend.authentication import AuthenticationStore, install_authentication
+from backend.users import SingleUserDirectory, UserRecord
 from execution_protocol import (CancelRequest, JobCancelRequest, Target, controls_enabled,
                                 execution_headers, require_service, service_headers,
                                 validate_service_configuration)
@@ -1358,16 +1357,12 @@ def _sse(payload: dict[str, Any]) -> str:
 
 def create_app(config: BackendConfig | None = None) -> FastAPI:
     settings = config or BackendConfig.from_env()
-    users = UserDirectory(
+    users = SingleUserDirectory(
         settings.users_file,
         settings.supported_ids_file,
         settings.admin_user_id,
         settings.default_admin_model,
         settings.default_user_model,
-    )
-    auth = AuthenticationStore(
-        settings.auth_database_file or settings.users_file.with_name("authentication.sqlite3"),
-        users, session_ttl_seconds=settings.auth_session_ttl_seconds,
     )
     custom_models = CustomModelDirectory(settings.custom_models_file or Path("data/backend/custom_models.json").resolve())
     projects = ProjectDirectory(settings.projects_file)
@@ -1606,9 +1601,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             headers=forwarded_headers(request, user.user_id),
             json_body={"user_id": user.user_id, **payload},
         )
-    install_authentication(app, auth, trusted_proxies=settings.auth_trusted_proxies,
-                           allowed_origins=settings.auth_allowed_origins)
+    app.state.users = users
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(SingleUserMiddleware, user_id=settings.admin_user_id,
+                       trusted_proxies=settings.auth_trusted_proxies,
+                       allowed_origins=settings.auth_allowed_origins)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.auth_allowed_origins),
@@ -1622,13 +1619,15 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     def health():
         return {"status": "ok", "module": "backend"}
 
-    @app.post("/api/auth/validate")
+    @app.get("/api/workspace")
+    @app.post("/api/auth/validate", include_in_schema=False)
     async def validate(request: Request):
         record = current_user(request, users)
         models = await available_models_for(record)
         default = (await model_catalog_for(record))['default_model'] if controls_enabled() else (models[0] if models else '')
         return {
             "valid": True,
+            "single_user": True,
             "user_id": record.user_id,
             "is_admin": False,
             "available_models": models,
@@ -3174,11 +3173,27 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         count = sum(session_project_id(session, user.user_id) == project_id for session in rows)
         return {"success": True, "project": _project_row(project, count)}
 
+    async def ensure_personal_user_case_sources(request, user_id):
+        from backend.user_cases import USER_CASES, installed_source
+        for case in USER_CASES:
+            source = installed_source(server_datasets.root, case)
+            if source is None:
+                continue
+            dataset = project_datasets.ensure_user_case_source(user_id=user_id, case=case,
+                source_path=source[0], source=source[1])
+            if dataset is None or dataset.metadata.get("construction", {}).get("revision", 0):
+                continue
+            state = await graph.request("POST", f"/construction/{dataset.dataset_id}/preset",
+                headers={**service_headers(user_id), **scope_headers(None)}, json_body={"case_id": case["id"]})
+            sync_construction_record(project_datasets, dataset, state)
+
     @app.get("/api/projects/{project_id}/datasets")
     async def list_project_datasets(request: Request, project_id: str | None = None):
         user = current_user(request, users)
         project = project_or_404(project_id, user.user_id) if project_id else None
         default_dataset_id = project.default_dataset_id if project else None
+        if project_id is None:
+            await ensure_personal_user_case_sources(request, user.user_id)
         rows = project_datasets.list(project_id, user.user_id)
         return {
             "success": True,
@@ -3323,6 +3338,28 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "activated_session_id": activated_session_id,
             "dataset_view": dataset_view,
         }
+
+    @app.get("/api/user-cases")
+    async def list_user_cases(request: Request):
+        current_user(request, users)
+        from backend.user_cases import USER_CASES
+        sources = {item.relative_path for item in server_datasets.list()}
+        return {"cases": [{**item, "available": item["filename"] in sources} for item in USER_CASES]}
+
+    @app.post("/api/user-cases/{case_id}/project")
+    async def open_user_case(case_id: str, request: Request):
+        user = current_user(request, users)
+        from backend.user_cases import USER_CASES
+        case = next((item for item in USER_CASES if item["id"] == case_id), None)
+        if case is None:
+            raise HTTPException(404, "示例不存在")
+        source = next((item for item in server_datasets.list() if item.relative_path == case["filename"]), None)
+        if source is None:
+            raise HTTPException(409, "示例图尚未安装")
+        project = projects.ensure_user_case(user.user_id, case_id, case["name"], case["description"])
+        result = await create_project_dataset_from_server(project.project_id,
+            ServerDatasetImportReq(server_dataset_id=source.server_dataset_id, name=case["name"], set_as_default=True), request)
+        return {"project": _project_row(projects.get(project.project_id, user.user_id)), "dataset": result["dataset"], "case": case}
 
     @app.post("/api/projects/{project_id}/datasets")
     async def create_project_dataset(
@@ -4126,6 +4163,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         session = await get_session(session_id, request, user.user_id)
         return {"success": True, "session_id": session_id, "context_usage": session.get("metrics") or {}}
 
+    @app.get('/api/sessions/{session_id}/context-window')
+    async def session_context_window(session_id: str, request: Request):
+        user = current_user(request, users)
+        return await runtime.request('GET', f'/internal/sessions/{session_id}/context-window',
+                                     headers=service_headers(user.user_id))
+
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, request: Request):
         user = current_user(request, users)
@@ -4300,7 +4343,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         }
         factory_options = {
             **options,
-            "response_language": resolve_response_language(req.message),
+            "response_language": resolve_response_language(req.message, request.headers.get("Accept-Language")),
         }
         project_id = session_project_id(session, user.user_id)
         training_payload = await project_training_runs(project_id, request, current_session_id=session_id)
@@ -5171,6 +5214,26 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             "POST", f"/sessions/{session_id}/tools/{tool_name}", headers={**forwarded_headers(request, user.user_id), **service_headers(user.user_id)},
             json_body={"arguments": arguments},
         )
+
+    @app.post("/api/sessions/{session_id}/finance/{operation}")
+    async def finance_analysis(session_id: str, operation: str, request: Request):
+        """Use the same owned session, active graph and tools as Agent analysis."""
+        names = {
+            "inspect": "finance_inspect_ownership",
+            "first-holder": "finance_first_holder",
+            "control-chain": "finance_control_chain",
+            "group-tree": "finance_group_tree",
+            "economic-interest": "finance_economic_interest",
+        }
+        if operation not in names:
+            raise HTTPException(404, detail="Unknown finance operation")
+        try:
+            arguments = await request.json()
+        except (ValueError, UnicodeError):
+            raise HTTPException(422, detail="Finance arguments must be a JSON object")
+        if not isinstance(arguments, dict):
+            raise HTTPException(422, detail="Finance arguments must be a JSON object")
+        return await graph_tool(session_id, names[operation], arguments, request)
 
     @app.get(MIGRATION_GUIDE_PATH)
     async def dataset_api_migration(request: Request):

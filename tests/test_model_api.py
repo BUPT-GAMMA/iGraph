@@ -31,12 +31,36 @@ def api(tmp_path, monkeypatch):
     @app.exception_handler(ControlError)
     async def error(request, exc):
         return JSONResponse({'detail': {'code': exc.code}}, status_code=exc.status)
-    app.include_router(create_model_router(catalog, db))
+    app.state.runtime_db = db
+    app.state.manager = SimpleNamespace(scopes={})
+    app.include_router(create_model_router(catalog, db, SimpleNamespace(manager=app.state.manager)))
     with TestClient(app) as client:
         client.headers.update({'X-User-ID': 'alice', 'X-iGraph-Service-Key': 'model-api-test-only'})
         assert client.post('/internal/model-catalog/bootstrap', json={'allowed': ['qwen3.6-plus']}).status_code == 200
         yield client, catalog
     db.close()
+
+
+def test_context_window_is_session_scoped_live_and_survives_reload(api):
+    client, _ = api
+    path = '/internal/sessions/A/context-window'
+    assert client.get(path).json()['context_window_usage'] is None
+    assert client.get(path, headers={'X-User-ID': 'bob'}).status_code == 404
+    assert client.get(path, headers={'X-iGraph-Service-Key': ''}).status_code == 403
+    usage = {'basis': 'last_request_estimate', 'config_id': 'model-a', 'remaining_tokens': 900}
+    db = client.app.state.runtime_db
+    record = db.get_session(session_id='A', user_id='alice')
+    record.runs = [RunOutput(run_id='old', agent_id='igraph-agent', created_at=1, metadata={'context_window_usage': usage}),
+                   RunOutput(run_id='latest', agent_id='igraph-agent', created_at=2, metadata={'context_window_usage': {**usage, 'remaining_tokens': 800}})]
+    db.upsert_session(session=record)
+    assert client.get(path).json()['context_window_usage']['remaining_tokens'] == 800
+    scopes = client.app.state.manager.scopes
+    scopes['foreign'] = SimpleNamespace(user_id='bob', session_id='A', generation=9, context_window_usage={'remaining_tokens': 1})
+    assert client.get(path).json()['context_window_usage']['remaining_tokens'] == 800
+    scopes['live'] = SimpleNamespace(user_id='alice', session_id='A', generation=3, run_id='live', context_window_usage={**usage, 'remaining_tokens': 700})
+    assert client.get(path).json()['context_window_usage']['remaining_tokens'] == 700
+    scopes['live'].context_window_usage = None
+    assert client.get(path).json()['context_window_usage'] is None
 
 
 def add(client, **extra):

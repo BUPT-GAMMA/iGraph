@@ -79,24 +79,17 @@ describe('docked panel controls', () => {
     expect(screen.getByText('新建任务').closest('.sidebar-content')?.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('does not expose the legacy user ID login form in the sidebar', () => {
-    render(<Sidebar {...sidebarProps} userId="" collapsed={false} onCollapse={noop} />);
-    fireEvent.click(screen.getByRole('button', { name: '账户' }));
-    expect(screen.getByRole('dialog', { name: '账户' })).toBeTruthy();
+  it('opens tasks without login and has no account or avatar controls', () => {
+    const onNew = vi.fn();
+    const { container } = render(<Sidebar {...sidebarProps} onNew={onNew} collapsed={false} onCollapse={noop} />);
+    expect(container.querySelector('.account-area, .avatar')).toBeNull();
+    expect(screen.queryByRole('button', { name: /登录|账户|Sign in|Account/ })).toBeNull();
     expect(screen.queryByLabelText('用户 ID')).toBeNull();
-    expect(screen.queryByRole('button', { name: '登录' })).toBeNull();
+    expect(screen.queryByText('tester')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    expect(onNew).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: '切换到英文' })).toBeTruthy();
   });
-
-  it('lets a signed-in user sign out from the avatar menu', async () => {
-    const onSignOut = vi.fn().mockResolvedValue(undefined);
-    render(<Sidebar {...sidebarProps} userId="tester" onSignOut={onSignOut} collapsed={false} onCollapse={noop} />);
-    fireEvent.click(screen.getByRole('button', { name: '账户：tester' }));
-    expect(screen.getByText('当前账户')).toBeTruthy();
-    expect(screen.queryByLabelText('用户 ID')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
-    await waitFor(() => expect(onSignOut).toHaveBeenCalledOnce());
-  });
-
   it('highlights a selected conversation without highlighting its parent project', () => {
     const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
     const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '会话一' }];
@@ -175,7 +168,7 @@ describe('docked panel controls', () => {
     expect(screen.queryByLabelText('回复已完成')).toBeNull();
   });
 
-  it('creates tasks in the focused project and keeps the recent-task action independent', () => {
+  it('opens standalone tasks from the main action and project tasks only from the project action', () => {
     const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
     const projectSession = { session_id: 'session-1', project_id: 'project-1', title: '项目会话' };
     const independentSession = { session_id: 'standalone', project_id: null, title: '独立会话' };
@@ -192,15 +185,17 @@ describe('docked panel controls', () => {
 
     rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[projectSession]} activeProjectId="project-1" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNewInProject).toHaveBeenLastCalledWith('project-1');
+    expect(onNewInProject).not.toHaveBeenCalled();
 
     rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[projectSession]} activeId="session-1" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNewInProject).toHaveBeenLastCalledWith('project-1');
+    expect(onNewInProject).not.toHaveBeenCalled();
 
     rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[independentSession]} activeId="standalone" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNew).toHaveBeenCalledTimes(3);
+    expect(onNew).toHaveBeenCalledTimes(5);
+    fireEvent.click(screen.getByRole('button', { name: '在 项目一 中新建会话' }));
+    expect(onNewInProject).toHaveBeenCalledExactlyOnceWith('project-1');
   });
 
   it('uses one right panel toggle for both expanded and collapsed states', () => {

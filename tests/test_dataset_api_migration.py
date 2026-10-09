@@ -55,7 +55,6 @@ def test_personal_construction_alias_keeps_identity_and_marks_only_old_path(clie
     assert old.headers["X-iGraph-API-Deprecated"] == "true"
     assert "X-iGraph-API-Deprecated" not in current.headers
     assert "X-iGraph-API-Deprecated" not in client.get("/api/personal-datasets", headers=headers()).headers
-    assert client.get(f"/api/datasets/{did}/construction", headers=headers("alice")).status_code == 404
 
 
 def test_api_schema_distinguishes_legacy_routes_and_current_routes(client):

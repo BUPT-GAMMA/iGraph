@@ -409,12 +409,12 @@ def _sandbox_mode() -> str:
 
     configured = os.getenv(_SANDBOX_MODE_ENV, "auto").strip().lower() or "auto"
     available = shutil.which("bwrap") is not None
+    if configured in {"unavailable", "disabled", "none"}:
+        return "unavailable"
     if _sandbox_required_environment():
         return "bwrap" if available else "unavailable"
     if configured in {"fallback", "development", "dev"}:
         return "fallback"
-    if configured in {"unavailable", "disabled", "none"}:
-        return "unavailable"
     if configured == "bwrap":
         return "bwrap" if available else "unavailable"
     # Compatibility execution must be an explicit local-development choice.
@@ -428,6 +428,10 @@ def workspace_sandbox_startup_check() -> None:
     """Fail startup unless the selected non-fallback sandbox can run as this user."""
 
     mode = _sandbox_mode()
+    if mode == "unavailable" and os.getenv(_SANDBOX_MODE_ENV, "").strip().lower() in {"unavailable", "disabled", "none"}:
+        # Managed containers may forbid namespaces. Explicitly disabling shell
+        # execution must still allow chat and graph services to start safely.
+        return
     if mode == "fallback":
         return
     bwrap = shutil.which("bwrap")

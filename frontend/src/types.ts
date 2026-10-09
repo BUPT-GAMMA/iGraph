@@ -193,7 +193,7 @@ export type DatasetView =
 export type GraphViewState =
   | { status: 'empty'; data: null }
   | { status: 'loading'; data: null }
-  | { status: 'ready'; data: GraphData }
+  | { status: 'ready'; data: GraphData; source?: 'analysis'; context?: GraphData | null; analysis?: GraphData }
   | { status: 'unsupported'; data: null; code: 'NON_SINGLE_GRAPH'; summary: GraphCollectionSummary }
   | { status: 'unsupported'; data: null; code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE'; summary: PartitionedGraphSummary }
   | { status: 'failed'; data: null; error: string };
@@ -241,7 +241,7 @@ export type ConstructionState = {
   dataset_id: string;
   build_id?: string | null;
   failure_code?: string | null;
-  status: 'not_built' | 'algorithm_unavailable' | 'building' | 'ready' | 'failed';
+  status: 'not_built' | 'algorithm_unavailable' | 'building' | 'draft' | 'ready' | 'failed';
   revision: number;
   node_count?: number;
   edge_count?: number;
@@ -264,6 +264,7 @@ export type ConstructionProgressEvent = {
 };
 export type ConstructionProgress = {
   version: 'construction_progress.v1';
+  mode?: 'rules' | 'llm';
   status?: string;
   stage: string;
   current_message?: string;
@@ -297,6 +298,7 @@ export type ConstructionBuildOptions = {
   domain_category?: ConstructionDomainCategory;
   experience_enabled?: boolean;
   delimiter?: string;
+  construction_model?: string;
   txt_mode?: 'auto' | 'lines' | 'entities';
   entity_types?: string[];
   text_refine_enabled?: boolean;

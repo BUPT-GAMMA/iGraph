@@ -71,7 +71,7 @@ def test_duplicate_builds_do_not_starve_default_executor(tmp_path):
             release.set()
             built = await first
             await owner.close()
-        assert built["status"] == "ready" and built["revision"] == 1
+        assert built["status"] == "draft" and built["revision"] == 1
         assert not owner.active
     asyncio.run(scenario())
 
@@ -122,7 +122,7 @@ def test_active_status_reads_the_small_public_progress_sidecar(tmp_path):
             directory = store._directory("alice", "progress")
             atomic_json(directory / "construction-progress.json", {
                 "version": "construction_progress.v1", "build_id": attempt.build_id,
-                "status": "running", "stage": "evolving", "current_message": "Agent 正在验收候选。",
+                "status": "running", "mode": "llm", "stage": "evolving", "current_message": "Agent 正在验收候选。",
                 "elapsed_seconds": 8, "metrics": {"iterations": 2, "evaluated_candidates": 1},
                 "events": [{"id": "stage:evolving", "kind": "stage", "stage": "evolving",
                             "message": "Agent 正在尝试候选图结构。"}],
@@ -132,6 +132,7 @@ def test_active_status_reads_the_small_public_progress_sidecar(tmp_path):
             assert status["status"] == "building"
             assert status["message"] == "Agent 正在验收候选。"
             assert status["progress"]["metrics"] == {"iterations": 2, "evaluated_candidates": 1}
+            assert status["progress"]["mode"] == "llm"
             assert "queries" not in status["progress"]
             (directory / "construction-progress.json").write_text("{", encoding="utf-8")
             fallback = await owner.status("alice", "progress")
@@ -195,7 +196,7 @@ def test_process_start_failure_releases_capacity(tmp_path, monkeypatch):
             assert result["status"] == "failed" and not owner.active
             assert not list((owner.root / "attempts").glob("*.json"))
             store.register_algorithm("csv", lambda *_: GRAPH)
-            assert (await owner.build("alice", "spawn"))["status"] == "ready"
+            assert (await owner.build("alice", "spawn"))["status"] == "draft"
         finally:
             await owner.close()
     asyncio.run(scenario())
@@ -244,6 +245,7 @@ def test_recovery_does_not_downgrade_a_committed_graph(tmp_path):
         store = ConstructionStore(tmp_path)
         store.register_algorithm("csv", lambda *_: GRAPH)
         store.build("alice", "committed", source_file(tmp_path), "people.csv")
+        store.optimize("alice", "committed", 1, [], commit=True)
         root = tmp_path / ".construction_runtime"
         old = ProcessLease(root / "services")
         build_id = str(uuid.uuid4())
@@ -259,7 +261,7 @@ def test_recovery_does_not_downgrade_a_committed_graph(tmp_path):
             await owner.restore()
             await asyncio.gather(*owner.recoveries.values())
             assert store.status("alice", "committed")["status"] == "ready"
-            assert store.graph("alice", "committed")["revision"] == 1
+            assert store.graph("alice", "committed")["revision"] == 2
             assert store.graph("alice", "committed")["graph"] == GRAPH
         finally:
             await owner.close()
@@ -273,7 +275,7 @@ def test_builtin_csv_uses_managed_process_and_preserves_source_name(tmp_path):
         try:
             result = await owner.build("alice", "csv", source_file(tmp_path), "people.csv",
                                        {"mode": "rules", "query_count": 1, "benchmark_repeats": 1, "experience_enabled": False})
-            assert result["status"] == "ready", result
+            assert result["status"] == "draft", result
             graph = store.graph("alice", "csv")["graph"]
             assert graph["nodes"][0]["type"] == "people"
             assert graph["nodes"][0]["properties"]["data"]["name"] == "Alice"
@@ -300,7 +302,7 @@ def test_builtin_txt_uses_managed_process_and_preserves_source_name(tmp_path):
                 "alice", "txt", source, "people.txt",
                 {"mode": "rules", "query_count": 1, "benchmark_repeats": 1, "experience_enabled": False},
             )
-            assert result["status"] == "ready", result
+            assert result["status"] == "draft", result
             assert result["source_type"] == "txt" and result["algorithm_available"] is True
             graph = store.graph("alice", "txt")["graph"]
             assert len(graph["nodes"]) == 2 and graph["edges"] == []
@@ -337,7 +339,7 @@ def test_hard_deadline_reaps_uncooperative_worker_before_retry(tmp_path, monkeyp
             assert (tmp_path / "users/alice/datasets/timeout/construction/evolution-report.json").exists()
             monkeypatch.setattr(WorkerProcess, "run", original)
             retry = await owner.build("alice", "timeout", options={"mode": "rules", "query_count": 1, "experience_enabled": False})
-            assert retry["status"] == "ready" and retry["build_id"] != result["build_id"]
+            assert retry["status"] == "draft" and retry["build_id"] != result["build_id"]
         finally:
             await owner.close()
     asyncio.run(scenario())
@@ -377,7 +379,7 @@ def test_publication_failure_does_not_leave_unrecoverable_build(tmp_path, monkey
     from graph_data_service import construction
     original = construction._atomic_json
     def fail_ready(path, record, **kwargs):
-        if record.get("status") == "ready":
+        if record.get("status") == "draft":
             raise OSError("injected publication failure")
         return original(path, record, **kwargs)
     async def scenario():
@@ -391,7 +393,7 @@ def test_publication_failure_does_not_leave_unrecoverable_build(tmp_path, monkey
             assert store.status("alice", "failure")["status"] == "failed"
             assert not owner.active
             monkeypatch.setattr(construction, "_atomic_json", original)
-            assert (await owner.build("alice", "failure"))["status"] == "ready"
+            assert (await owner.build("alice", "failure"))["status"] == "draft"
         finally:
             await owner.close()
     asyncio.run(scenario())
@@ -507,7 +509,7 @@ asyncio.run(main())
                     assert not member.is_running() or member.status() == psutil.STATUS_ZOMBIE
                 assert not list((tmp_path / "users/alice/datasets/orphan/construction/.builds").iterdir())
                 store.register_algorithm("csv", lambda *_: GRAPH)
-                assert (await owner.build("alice", "orphan"))["status"] == "ready"
+                assert (await owner.build("alice", "orphan"))["status"] == "draft"
             finally:
                 await owner.close()
         asyncio.run(scenario())

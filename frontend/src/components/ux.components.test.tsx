@@ -37,20 +37,20 @@ it('shows confirming at 100%, allows removal, and exposes failed-file retry', ()
   rerender(<Composer {...composer} attachments={[{ ...attachment, status: 'failed' }]} onRetryAttachment={onRetryAttachment} />);
   fireEvent.click(screen.getByRole('button', { name: '重试 x.csv' })); expect(onRetryAttachment).toHaveBeenCalledWith('x');
 });
-const sidebar = { projects: [], sessions: [{ session_id: '1', title: 'One' }, { session_id: '2', title: 'Two' }], userId: 'a', dark: false,
+const sidebar = { projects: [], sessions: [{ session_id: '1', title: 'One' }, { session_id: '2', title: 'Two' }], userId: 'admin', dark: false,
   onTheme: noop, onMemory: noop, onSkills: noop, onCreateGraph: noop, mobileOpen: false, onCloseMobile: noop, onNew: noop, onNewProject: noop,
   onNewInProject: noop, onProjectDatasets: noop, onEditProject: noop, onDeleteProject: noop, onSelect: noop, onDelete: noop, collapsed: false, onCollapse: noop };
-it('pins inside the existing group, persists, and separates accounts', () => {
+it('pins inside the existing group and persists in the single workspace', () => {
   const { container, rerender } = render(<Sidebar {...sidebar} />);
   fireEvent.click(screen.getByRole('button', { name: '置顶 Two' }));
   expect(container.querySelector('.recent-session-name')?.textContent).toBe('Two');
-  setUserId('b'); rerender(<Sidebar {...sidebar} userId="b" />);
-  expect(container.querySelector('.recent-session-name')?.textContent).toBe('One');
+  setUserId('b'); rerender(<Sidebar {...sidebar} />);
+  expect(container.querySelector('.recent-session-name')?.textContent).toBe('Two');
   setUserId('a'); rerender(<Sidebar {...sidebar} />);
   expect(container.querySelector('.recent-session-name')?.textContent).toBe('Two');
 });
 it('ignores damaged pin data and does not move project sessions into recents', () => {
-  localStorage.setItem('igraph-pinned-sessions:v1:a', '{invalid');
+  localStorage.setItem('igraph-pinned-sessions:v1:admin', '{invalid');
   const { container } = render(<Sidebar {...sidebar} activeProjectId="p" projects={[{ project_id: 'p', user_id: 'a', name: 'Project' }]}
     sessions={[...sidebar.sessions, { session_id: '3', title: 'Project task', project_id: 'p' }]} />);
   fireEvent.click(screen.getByRole('button', { name: '置顶 Project task' }));

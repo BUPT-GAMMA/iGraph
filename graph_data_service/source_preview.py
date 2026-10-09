@@ -503,7 +503,11 @@ def source_preview(source_path: str, source_filename: str, dataset_id: str, deli
                   "limits": {"sample_rows": SAMPLE_ROWS, "cell_chars": CELL_CHARS, "text_chars": TEXT_CHARS}}
         if source_type == "txt":
             partial = len(data) < size
-            text = _decode(data, partial=partial)
+            from graph_data_service.text_encoding import decode_txt
+            try:
+                text = decode_txt(data, partial=partial)
+            except ValueError as exc:
+                _fail(str(exc))
             result["text"] = {"excerpt": text[:TEXT_CHARS], "truncated": partial or len(text) > TEXT_CHARS,
                               "total_lines": None if partial else len(text.splitlines())}
             result["truncated"] = result["text"]["truncated"]

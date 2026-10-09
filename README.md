@@ -1,5 +1,19 @@
 # iGraph
 
+当前为单用户版：打开网页即进入默认工作区，不提供登录、注册、头像或切换用户入口。
+所有公开 API 请求统一归属 `IGRAPH_ADMIN_USER_ID`（默认 `admin`），忽略客户端遗留的用户选择；
+部署仍应通过回环地址和 SSH 隧道访问。内部服务密钥校验保持启用。
+复用已有数据卷时继续使用该工作区的数据，其他旧用户的数据不删除、不自动合并。
+
+聊天回复跟随发送时的界面语言（中文/英文）；切换语言影响下一轮回复，不翻译历史消息。
+工具分析后的回答先给一句话结论，再展开依据和建议，末尾保留总结。
+
+示例卡片、推荐问题和默认示例项目名称随界面语言即时切换，已生成的历史消息保留原文。
+模型服务中的 URL 和 API Key 输入框默认留空，不自动加载已保存密钥；留空保留服务器连接。
+构图页面提供模型选择、自定义模型 ID、URL 和 API Key 配置，供 TXT 抽取和表格智能构图使用。
+构图配置保存至持久卷 `/data/configuration/construction-model.json`，不会写入数据集构图参数或报告。
+完整的服务器部署、SSH 隧道、备份及故障排查步骤见 [单用户版部署说明](docs/SINGLE_USER_DEPLOYMENT.zh-CN.txt)。
+
 iGraph 采用四个一级业务模块：Frontend、Backend、Agent Runtime 和 Graph Engine。
 Agent Runtime 使用开源 Agno AgentOS；Session、Run、Memory、Learning、Skills、Approval
 和 Trace 不再由 Backend 的进程内对象维护。
@@ -117,12 +131,12 @@ docs/                     设计、迁移和部署文档
 `backend/api_gateway`、`backend/agent` 和旧 `agent_runtime/agent` 仅作为迁移期兼容代码保留，
 默认 Compose 和默认入口不再使用进程内 Runtime。
 
-## 登录与注册
+## 工作区身份
 
-前端先显示登录/注册页，验证服务端会话后才加载工作区。用户名为 3–32 位英文字母、数字、
-下划线或连字符，统一按小写识别；注册密码为 6–128 位。注册成功后自动进入个人工作区。
-退出登录会撤销当前会话；项目、对话、数据集、个人技能、记忆和远程数据库连接继续按
-原有 `user_id` 归属保存。
+单用户版不提供登录、注册或退出入口。Backend 的公开 `/api/*` 请求统一归属
+`IGRAPH_ADMIN_USER_ID`（默认 `admin`），客户端传入的 `X-User-ID` 会被覆盖；
+服务间的 `X-User-ID` 与服务密钥契约保留。旧版多用户注册表和
+`authentication.sqlite3` 不会被删除，但不再参与访问控制。
 
 对话回答保存完成后即可继续发送消息。用户记忆与会话摘要由 Agent Runtime 的后台队列整理，
 不会延长聊天的“思考中”状态。同一用户的整理任务跨服务实例按顺序执行；连续对话中，只有
@@ -130,27 +144,11 @@ docs/                     设计、迁移和部署文档
 单次整理最长 120 秒，失败最多尝试 3 次。取消、失败和等待确认的回答不会用于后台整理。
 后台摘要可能短暂落后于聊天记录，后续回答以最近对话及已确认的工具结果为准。
 
-Backend 提供 `POST /api/auth/register`、`POST /api/auth/login`、`GET /api/auth/me` 和
-`POST /api/auth/logout`。登录与注册接收 JSON `{ "username": "...", "password": "..." }`。
-公开 `/api/*` 请求使用 HttpOnly 会话 cookie，不接受客户端声明的 `X-User-ID` 作为身份。
-服务间的 `X-User-ID` 与服务密钥契约保留，由 Backend 从登录会话派生用户身份。
+工作区初次加载模型服务时会获得智增增默认配置，可以查看和修改密钥、地址及模型。
+默认密钥来自部署配置（已有部署先读取原共享连接）；这只是初始副本，后续修改、停用、删除不影响部署配置。
 
-所有账户权限相同，包括用户名为 `admin` 的账户；不提供用户列表、修改他人角色或删除他人的接口。
-每个账户初次加载模型服务时都会获得独立的智增增默认配置，可以查看和修改自己的密钥、地址及模型。
-默认密钥来自部署配置（已有部署先读取原共享连接）；这只是初始副本，后续修改、停用、删除均只影响本人。
-初始副本可能使用相同的上游 API 密钥，并不代表自动创建了独立的智增增计费账户。
-
-已有密码的账户继续使用原密码和数据。旧管理员角色及模型授权差异不再生效；原共享连接按用户迁移，
-保留会话选择、模型 ID 和运行历史快照，删除过的个人配置不会在重启后恢复。
-新注册账户使用独立内部 ID，页面仍显示注册用户名，避免注册同名账户继承旧版无密码账户的历史数据。
-旧版无密码账户的数据会保留；如需恢复访问，可在受信任的 Backend 主机通过
-`backend.authentication.bootstrap_password(旧用户ID, 新密码)` 初始化尚未被注册占用的登录名。
-该维护函数对所有旧账户相同，不授予管理员权限，也不覆盖现有密码。
-
-密码哈希和会话 token 哈希默认存于 `${IGRAPH_DATA_ROOT}/backend/authentication.sqlite3`；
-该文件与 `users.json` 均应持久化。仓库不提供默认登录密码或部署账户的真实凭据。
-
-前端默认与 Backend 同源，Nginx 保留浏览器请求的 Host 以校验写请求来源。
+没有登录 cookie 保护时，Backend 仍拒绝跨站写请求：带 `Origin` 的写请求必须与当前 Host 同源，
+或位于 `BACKEND_AUTH_ALLOWED_ORIGINS` 列表中。前端默认与 Backend 同源，Nginx 保留浏览器请求的 Host。
 HTTPS 反向代理部署时，通过 `BACKEND_AUTH_TRUSTED_PROXIES` 配置真实代理地址/CIDR；
 显式跨源前端使用 `BACKEND_AUTH_ALLOWED_ORIGINS`，禁止使用 `*`。
 相关配置示例见 `.env.example`。
@@ -325,7 +323,7 @@ Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
 
 远程查询依赖既有运行控制来保存可信连接快照：本地部署需在各服务共享 `.env` 设置 `IGRAPH_RUN_CANCEL_ENABLED=true`，按 `docs/RUN_CANCELLATION.md` 迁移后重启相关服务，并核实 `/api/capabilities` 的 `run_cancel_v1` 为 true。
 
-Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置独立的 Fernet 凭据密钥和明确允许的目标主机/CIDR；默认拒绝网络目标。密钥缺失不影响普通聊天，不能保存或解析远程凭据。密钥更换后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。Backend 的公开接口现使用登录会话认证；历史[交接记录](docs/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于登录改造之前的版本。
+Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置独立的 Fernet 凭据密钥和明确允许的目标主机/CIDR；默认拒绝网络目标。密钥缺失不影响普通聊天，不能保存或解析远程凭据。密钥更换后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。单用户版中 Backend 的公开接口统一归属工作区所有者，忽略客户端传入的 `X-User-ID`；历史[交接记录](docs/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于更早的版本。
 
 离线回归：
 
@@ -345,3 +343,20 @@ Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置�
 真实测试还需要环境变量：`IGRAPH_TEST_NEO4J_READER_USER/PASSWORD`、`IGRAPH_TEST_NEO4J_DEDICATED=1`、`IGRAPH_TEST_CORA_INPUT`、`IGRAPH_TEST_CORA_MANIFEST`、`IGRAPH_TEST_EVIDENCE_DIR`；私网目标需 `IGRAPH_TEST_NEO4J_ALLOWED_CIDRS`。Agent/浏览器使用 `IGRAPH_E2E_BASE_URL`、专用 `remote-graph-test-*` 测试账号的 `IGRAPH_E2E_USER_ID` 和平台已有真实模型的 `IGRAPH_TEST_MODEL_ID`，可通过 `IGRAPH_E2E_AUTHORIZATION` 或浏览器 `IGRAPH_E2E_STORAGE_STATE` 提供网关登录状态。不要把凭据写入仓库。浏览器测试禁用 trace、视频和截图以防表单泄密。
 
 `--require-live` 在缺少前置条件时失败；普通离线运行会跳过真实测试，跳过不能作为验收通过。测试会保留专用会话、导入数据和成果以便复核，应用写入拒绝测试检查源数据未变，诱导文本测试会恢复原属性。
+
+
+## 银行版预置金融图
+
+`feature/user_case` 随镜像包含 `finance-ownership.npz`，无需挂载开发机的 CSV 目录或调用 LLM 构图。Graph Engine 启动时会校验预置资源并首次安装到持久数据卷的公共 Registry 和服务器数据源库；重启不会覆盖已有数据。
+
+部署后新建或打开项目，在项目的数据集面板的服务器数据源库中选择 `finance-ownership`，添加到项目并在会话中选择，即可进行图分析及第一大股东、控制链、集团树、经济权益分析。Agent 也可通过 `list_datasets` 和 `load_dataset` 加载公共数据集 `ds_finance_ownership_v1`。
+
+预置图由 `institution_main.csv`（5,000 行）、`individual_info.csv`（1,000 行）和 `institution_shareholder_relationship.csv`（13,436 行）生成，共 6,000 个节点和 13,436 条有向持股边，方向为股东 → 被投资机构。节点使用 `I:` / `P:` 区分机构和个人；所有原始字段、统计日期和关系行证据均保留。源数据有 13 处持股合计超限，金融工具会继续报告这些质量问题。源文件 SHA-256 和行数见 `graph_engine/resources/finance/manifest.json`。
+
+需要更新预置图时，在仓库根目录执行：
+
+```powershell
+python scripts/prepare_finance_preset.py F:\mypaper\data\finance\finance_csv
+```
+
+更新预置数据时应同步更新数据集版本／标识，再重新构建镜像；已有部署的持久副本不会自动覆盖。`GRAPH_ENGINE_SERVER_DATASETS_DIR` 和 `BACKEND_SERVER_DATASETS_DIR` 如有自定义，须指向同一共享目录。工具 DAG 默认并发 3，`AGENT_TOOL_MAX_CONCURRENCY` 可设为 1–3，更大的值仍封顶 3。
