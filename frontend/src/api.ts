@@ -38,6 +38,15 @@ export type ModelConfiguration = CustomModel & {
 export type ModelCatalog = { models: ModelConfiguration[]; default_model: string };
 export const listModels = () => json<ModelCatalog>('/api/models');
 
+export type ContextWindowUsage = {
+  basis: 'last_request_estimate'; config_id: string; model_revision?: number | null;
+  context_window: number; input_tokens: number; tool_tokens: number;
+  output_reserve: number; safety_reserve: number; remaining_tokens: number;
+  remaining_ratio: number; history_compacted: boolean; updated_at: number;
+};
+export const getContextWindow = (id: string, signal?: AbortSignal) =>
+  json<{ context_window_usage: ContextWindowUsage | null; run_id?: string | null }>(`/api/sessions/${encodeURIComponent(id)}/context-window`, { signal, cache: 'no-store' });
+
 export type ModelProtocol = 'openai-compatible' | 'openai-responses' | 'anthropic' | 'gemini';
 export type ModelProviderConnection = {
   provider_id: string; revision: number; name: string; preset_id: string;

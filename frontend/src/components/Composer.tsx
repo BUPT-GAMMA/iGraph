@@ -9,6 +9,7 @@ import { FileTypeIcon } from './FileTypeIcon';
 import { ModelProviderIcon } from './ModelProviderIcon';
 import { selectRepresentativeModels } from './modelProviders';
 import { useI18n, type Translate } from '../i18n';
+import { ContextWindow, type ContextModel } from './ContextWindow';
 
 export type ComposerAttachment = AttachmentRef | DraftAttachment;
 
@@ -44,6 +45,8 @@ function attachmentStatus(attachment: ComposerAttachment, t: Translate) {
 }
 
 export type ComposerProps = {
+  contextSessionId?: string;
+  contextModel?: ContextModel;
   value: string;
   model: string;
   models: string[];
@@ -72,7 +75,7 @@ export type ComposerProps = {
   onDeleteCustomModel?: (modelId: string) => Promise<void>;
 };
 
-export function Composer({ value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
+export function Composer({ contextSessionId, contextModel, value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const { t } = useI18n();
   const { askConfirm, actionDialog } = useActionDialog();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -205,6 +208,7 @@ export function Composer({ value, model, models, customModels = [], activeDatase
     event.preventDefault();
     if (!disabled && !runtimeControlsDisabled) onUpload(event.dataTransfer.files[0]);
   }}>
+      <ContextWindow sessionId={contextSessionId} model={contextModel} loading={loading} />
       {attachments.length ? <div className="attachment-list">{attachments.map(attachment => {
         const status = attachmentStatus(attachment, t);
         const id = attachmentId(attachment);

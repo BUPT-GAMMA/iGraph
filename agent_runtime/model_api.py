@@ -76,7 +76,7 @@ class ModelSelection(BaseModel):
     model_revision: int = Field(ge=0)
 
 
-def create_model_router(catalog, db):
+def create_model_router(catalog, db, controller=None):
     router = APIRouter()
 
     def identity(request):
@@ -182,6 +182,21 @@ def create_model_router(catalog, db):
         return {'runs': {run.run_id: {key: (run.metadata or {}).get(key)
                 for key in ('model_snapshot', 'history_compacted')}
                 for run in record.runs or []}}
+
+    @router.get('/internal/sessions/{sid}/context-window')
+    async def context_window(sid: str, request: Request):
+        uid = identity(request)
+        record = await session(uid, sid)
+        if controller:
+            scopes = [scope for scope in controller.manager.scopes.values()
+                      if scope.user_id == uid and scope.session_id == sid]
+            if scopes:
+                scope = max(scopes, key=lambda item: item.generation)
+                return {'context_window_usage': scope.context_window_usage, 'run_id': scope.run_id}
+        runs = sorted(record.runs or [], key=lambda run: getattr(run, 'created_at', 0) or 0, reverse=True)
+        latest = runs[0] if runs else None
+        return {'context_window_usage': (latest.metadata or {}).get('context_window_usage') if latest else None,
+                'run_id': latest.run_id if latest else None}
 
     @router.get('/internal/sessions/{sid}/runs/{rid}/model-config')
     async def run_model(sid: str, rid: str, request: Request):
