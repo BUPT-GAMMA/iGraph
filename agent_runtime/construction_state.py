@@ -88,6 +88,9 @@ async def construction_tool_hook(function_name, function_call, arguments, run_co
             return result
         row = allowed[dataset_id]
         data = dict(state["data_state"])
+        # A loaded construction is a different graph, even in the same session.
+        # Its background will be resolved by the BFF on the next user turn.
+        data["graph_background"] = None
         data.update(
             active_dataset_id=dataset_id,
             construction_status="ready",
