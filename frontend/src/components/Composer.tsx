@@ -209,7 +209,6 @@ export function Composer({ contextSessionId, contextModel, value, model, models,
     event.preventDefault();
     if (!disabled && !runtimeControlsDisabled) onUpload(event.dataTransfer.files[0]);
   }}>
-      <ContextWindow sessionId={contextSessionId} model={contextModel} loading={loading} />
       {attachments.length ? <div className="attachment-list">{attachments.map(attachment => {
         const status = attachmentStatus(attachment, t);
         const id = attachmentId(attachment);
@@ -261,6 +260,7 @@ export function Composer({ contextSessionId, contextModel, value, model, models,
           aria-label={runControl ? runControlLabel : sendBlocked ? sendBlockedReason || t('Cannot send right now', '当前不可发送') : t('Send', '发送')}
         >{runControl ? <span className="stop-square" /> : <Icon name="send" size={18} />}</button>
       </div>
+      <ContextWindow sessionId={contextSessionId} model={contextModel} loading={loading} />
     </div>
     {actionDialog}
     <PopupPresence>{configOpen ? <PopupBackdrop className="modal-backdrop custom-model-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeCustomModelDialog(); }}>

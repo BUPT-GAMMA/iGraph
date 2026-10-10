@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { getContextWindow, type ContextWindowUsage, type ModelConfiguration } from '../api';
 import { useI18n } from '../i18n';
+import { Icon } from './Icon';
 import './ContextWindow.css';
 
 export type ContextModel = Pick<ModelConfiguration, 'config_id' | 'revision' | 'context_window' | 'max_output_tokens'>;
@@ -8,6 +9,33 @@ export type ContextModel = Pick<ModelConfiguration, 'config_id' | 'revision' | '
 export function ContextWindow({ sessionId, model, loading }: { sessionId?: string; model?: ContextModel; loading: boolean }) {
   const { t } = useI18n();
   const identity = `${sessionId || 'draft'}:${model?.config_id}:${model?.revision}`;
+  const panelId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [openIdentity, setOpenIdentity] = useState<string | null>(null);
+  const open = openIdentity === identity;
+  useEffect(() => {
+    if (!open) return;
+    panelRef.current?.focus({ preventScroll: true });
+    const closeOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpenIdentity(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setOpenIdentity(null); triggerRef.current?.focus(); }
+    };
+    const closeOnBlur = (event: FocusEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpenIdentity(null);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    document.addEventListener('focusin', closeOnBlur);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+      document.removeEventListener('focusin', closeOnBlur);
+    };
+  }, [open]);
   const [state, setState] = useState<{ identity: string; usage: ContextWindowUsage | null; error?: boolean }>({ identity, usage: null });
   useEffect(() => {
     if (!sessionId || !model) return;
@@ -37,26 +65,45 @@ export function ContextWindow({ sessionId, model, loading }: { sessionId?: strin
   const remaining = usage ? Math.min(usage.remaining_tokens, usage.context_window) : 0;
   const percent = usage ? remaining / usage.context_window * 100 : 0;
   const unavailable = state.identity === identity && state.error;
-  return <details className={`context-window ${usage && percent < 10 ? 'context-window-low' : ''}`}>
-    <summary>
-      <span>{t('LLM context', 'LLM 上下文')}</span>
-      <strong>{usage ? t(`≈ ${format(remaining)} tokens left (${percent.toFixed(1)}%)`, `约剩 ${format(remaining)} tokens（${percent.toFixed(1)}%）`)
-        : unavailable ? t('Usage unavailable', '用量暂不可用') : t('Awaiting estimate', '等待估算')}</strong>
-      {usage && <meter min={0} max={usage.context_window} value={remaining} aria-label={t('Remaining context tokens', '剩余上下文 Token')} />}
-    </summary>
-    <div className="context-window-details">
-      <p>{usage?.basis === 'provider_usage'
-        ? t('Calculated from the provider’s reported input for the latest request, including conversation, system instructions and tools. Output space and a safety margin are reserved. This is not cumulative billing usage; the unsent draft is not included.', '按接口返回的最近一次请求输入用量计算，包含对话、系统指令及工具，已预留回复空间和安全余量。此值不是累计计费用量，也不包含尚未发送的草稿。')
-        : t('Estimated from the latest model request, including conversation, system instructions and tools. Output space and a safety margin are reserved. This is not cumulative billing usage; the unsent draft is not included.', '按最近一次模型请求估算，包含对话、系统指令及工具，已预留回复空间和安全余量。此值不是累计计费用量，也不包含尚未发送的草稿。')}</p>
-      {model && <p>{t('Configured window', '配置的窗口')}：{format(model.context_window)} tokens</p>}
-      {usage ? <dl>
+  const status = usage ? t(`${percent.toFixed(1)}% left`, `剩余 ${percent.toFixed(1)}%`)
+    : unavailable ? t('Usage unavailable', '用量暂不可用') : t('Awaiting estimate', '等待估算');
+  const closePanel = () => { setOpenIdentity(null); triggerRef.current?.focus(); };
+  return <div ref={rootRef} className={`context-window ${usage && percent < 10 ? 'context-window-low' : ''}`}>
+    <button ref={triggerRef} type="button" className="context-window-trigger" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog"
+      aria-label={t(`Context usage: ${status}`, `上下文用量：${status}`)}
+      title={usage ? t(`${format(remaining)} tokens available · View usage`, `可用 ${format(remaining)} tokens · 查看用量`) : t('View context usage', '查看上下文用量')}
+      onClick={() => setOpenIdentity(open ? null : identity)}>
+      <span className="context-window-label"><Icon name="pulse" size={13} />{t('Context', '上下文')}</span>
+      {usage && <span className="context-window-track" aria-hidden="true"><span style={{ width: `${percent}%` }} /></span>}
+      <span className="context-window-status">{status}</span>
+      <span className={`context-window-chevron ${open ? 'is-open' : ''}`}><Icon name="chevron" size={12} /></span>
+    </button>
+    {open && <div ref={panelRef} id={panelId} className="context-window-details" role="dialog" aria-label={t('Context usage details', '上下文用量明细')} tabIndex={-1}>
+      <div className="context-window-head">
+        <strong>{t('Context window', '上下文窗口')}</strong>
+        {usage && <span className="context-window-source">{usage.basis === 'provider_usage' ? t('Reported', '接口统计') : t('Estimated', '估算')}</span>}
+        <button type="button" className="context-window-close" onClick={closePanel} aria-label={t('Close context details', '关闭上下文明细')}><Icon name="close" size={14} /></button>
+      </div>
+      {usage ? <>
+        <div className="context-window-amount"><strong>{format(remaining)}</strong><span>{t('tokens available', 'tokens 可用')}</span></div>
+        <meter min={0} max={usage.context_window} value={remaining} aria-label={t('Remaining context tokens', '剩余上下文 Token')} />
+        <div className="context-window-capacity"><span>{t('Total capacity', '总窗口')} {format(usage.context_window)}</span><span>{status}</span></div>
+        <dl>
         <div><dt>{t('Request input (includes tools)', '请求输入（含工具）')}</dt><dd>{format(usage.input_tokens)}</dd></div>
-        <div><dt>{t('Tool definitions (estimated)', '工具定义（估算）')}</dt><dd>{format(usage.tool_tokens)}</dd></div>
+        <div className="context-window-tool-count"><dt>{t('Tool definitions · estimated', '其中工具定义 · 估算')}</dt><dd>{format(usage.tool_tokens)}</dd></div>
         <div><dt>{t('Reserved for reply', '回复预留')}</dt><dd>{format(usage.output_reserve)}</dd></div>
         <div><dt>{t('Safety margin', '安全余量')}</dt><dd>{format(usage.safety_reserve)}</dd></div>
-      </dl> : <p>{t('Send a message to measure the selected model’s request. Older conversations may not have a saved estimate.', '发送消息后会统计所选模型的请求。旧会话可能没有已保存的估算值。')}</p>}
-      {usage?.history_compacted && <p>{t('Earlier history was compacted for this request.', '本次请求已压缩较早的会话历史。')}</p>}
-      {usage && percent < 10 && <p>{t('Little context remains. Consider a new task or a model with a larger window.', '可用上下文较少，可新建任务或选择更大窗口的模型。')}</p>}
-    </div>
-  </details>;
+        </dl>
+        <p className="context-window-note">{usage.basis === 'provider_usage'
+          ? t('Based on the latest input reported by the provider, with reply space reserved. Excludes the unsent draft; not cumulative usage.', '按接口最近一次输入统计，已预留回复空间。不含未发送内容，非累计用量。')
+          : t('Estimated from the latest request, with reply space reserved. Excludes the unsent draft; not cumulative usage.', '按最近一次请求估算，已预留回复空间。不含未发送内容，非累计用量。')}</p>
+      </> : <>
+        {model && <p className="context-window-empty-capacity">{t('Total capacity', '总窗口')} <strong>{format(model.context_window)}</strong> tokens</p>}
+        <p className="context-window-note">{unavailable ? t('Usage could not be loaded. It will refresh on your next message.', '暂时无法读取用量，发送下一条消息时会重新更新。')
+          : t('Usage appears after a message is sent. Older conversations may not have a saved estimate.', '发送消息后显示用量，旧会话可能没有已保存的统计。')}</p>
+      </>}
+      {usage?.history_compacted && <p className="context-window-compacted"><Icon name="check" size={12} />{t('Earlier history compacted', '较早历史已压缩')}</p>}
+      {usage && percent < 10 && <p className="context-window-warning">{t('Little context remains. Start a new task or choose a larger window.', '可用上下文较少，建议新建任务或选择更大窗口。')}</p>}
+    </div>}
+  </div>;
 }
