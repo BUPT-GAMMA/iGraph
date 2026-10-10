@@ -11,6 +11,14 @@ import { contextHighlights, mergeGraphContext } from './graphContext';
 export const PERSONAL_DRAFT_KEY = 'personal';
 export function draftScopeKey(projectId: string | null | undefined) { return projectId || PERSONAL_DRAFT_KEY; }
 
+export function refreshEmptyDraftModel(draft: NewConversationDraft, preferredModel?: string): NewConversationDraft {
+  // Empty automatic drafts must not revive a stale provider when changing tasks.
+  // Explicit choices and unfinished work keep their original model.
+  if (!preferredModel || draft.model === preferredModel || draft.modelSelectedByUser
+    || draft.phase !== 'editing' || draft.text.trim() || draft.attachments.length) return draft;
+  return { ...draft, model: preferredModel };
+}
+
 export type ReceptionStatus = 'connecting' | 'receiving' | 'retrying' | 'user_paused' | 'capacity_suspended' | 'snapshot_sync' | 'idle';
 
 export type RunStatus =
@@ -100,8 +108,8 @@ export type ConversationAction =
   | { type: 'RESTORE_SESSION_ACTIVITY'; activity: SavedSessionActivity }
   | { type: 'ENSURE_SESSION'; sessionId: string; model?: string; accessedAt?: number }
   | { type: 'SET_ACTIVE_SESSION'; sessionId: string | null; model?: string; accessedAt?: number }
-  | { type: 'OPEN_DRAFT'; draft: NewConversationDraft }
-  | { type: 'PATCH_DRAFT'; projectId: string | null; draftId: string; patch: Partial<Pick<NewConversationDraft, 'phase' | 'text' | 'model' | 'activeDatasetId' | 'attachments' | 'error'>> }
+  | { type: 'OPEN_DRAFT'; draft: NewConversationDraft; preferredModel?: string }
+  | { type: 'PATCH_DRAFT'; projectId: string | null; draftId: string; patch: Partial<Pick<NewConversationDraft, 'phase' | 'text' | 'model' | 'modelSelectedByUser' | 'activeDatasetId' | 'attachments' | 'error'>> }
   | { type: 'REMOVE_DRAFT'; projectId: string | null; draftId?: string }
   | { type: 'MATERIALIZE_DRAFT'; prepareRun?: boolean; projectId: string | null; draftId: string; sessionId: string; generation: string; model: string; activeDatasetId?: string | null; datasetView?: DatasetView | null; accessedAt?: number }
   | { type: 'HYDRATE_START'; sessionId: string; requestVersion: number }
@@ -704,12 +712,12 @@ export function conversationReducer(state: ConversationState, action: Conversati
   if (action.type === 'RESET') return initialConversationState;
   if (action.type === 'OPEN_DRAFT') {
     const current = state.draftsByScope[draftScopeKey(action.draft.projectId)];
-    const draft = current || action.draft;
+    const draft = refreshEmptyDraftModel(current || action.draft, action.preferredModel);
     return {
       ...state,
       activeSessionId: null,
       activeDraftKey: draftScopeKey(draft.projectId),
-      draftsByScope: current ? state.draftsByScope : { ...state.draftsByScope, [draftScopeKey(draft.projectId)]: draft },
+      draftsByScope: draft === current ? state.draftsByScope : { ...state.draftsByScope, [draftScopeKey(draft.projectId)]: draft },
     };
   }
   if (action.type === 'PATCH_DRAFT') {

@@ -20,7 +20,7 @@ import { RunRecovery } from './RunRecovery';
 import { RunCancellation } from './RunCancellation';
 import { editableLatestTurn } from './latestTurn';
 import { getCapabilities } from './api';
-import { draftScopeKey, conversationReducer, createSessionView, initialConversationState, latestMessageGraph, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
+import { refreshEmptyDraftModel, draftScopeKey, conversationReducer, createSessionView, initialConversationState, latestMessageGraph, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import { contextHighlights } from './graphContext';
 import { DatasetPanel } from './components/DatasetPanel';
 import { ConstructedDatasetPicker } from './components/ConstructedDatasetPicker';
@@ -1129,12 +1129,13 @@ function App() {
       return;
     }
     const existing = conversationRef.current.draftsByScope[draftScopeKey(projectId)] || readStoredDraft(userId, projectId);
-    const draft: NewConversationDraft = existing || {
+    const preferredModel = activeSession?.model || defaultModel;
+    const draft = refreshEmptyDraftModel(existing || {
       draftId: crypto.randomUUID(), projectId, phase: 'editing', text: '',
-      model: activeSession?.model || defaultModel,
+      model: preferredModel,
       activeDatasetId: project?.default_dataset_id || null, attachments: [],
-    };
-    dispatchConversation({ type: 'OPEN_DRAFT', draft });
+    }, preferredModel);
+    dispatchConversation({ type: 'OPEN_DRAFT', draft, preferredModel });
     setCreateGraphOpen(false);
     setHelpOpen(false);
     setConstructionDataset(null);
@@ -1716,7 +1717,7 @@ function App() {
     const currentDraft = draftProjectId ? conversationRef.current.draftsByScope[draftProjectId] : null;
     if (currentDraft) {
       if (!['editing', 'failed'].includes(currentDraft.phase) || nextModel === currentDraft.model) return;
-      dispatchConversation({ type: 'PATCH_DRAFT', projectId: currentDraft.projectId, draftId: currentDraft.draftId, patch: { model: nextModel, phase: 'editing', error: undefined } });
+      dispatchConversation({ type: 'PATCH_DRAFT', projectId: currentDraft.projectId, draftId: currentDraft.draftId, patch: { model: nextModel, modelSelectedByUser: true, phase: 'editing', error: undefined } });
       return;
     }
     if (!activeSession || busy || nextModel === model) return;

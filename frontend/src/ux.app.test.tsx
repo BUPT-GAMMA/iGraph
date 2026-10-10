@@ -280,3 +280,42 @@ it('the composer dataset button still loads the current conversation scope', asy
   await screen.findByRole('dialog', { name: '个人数据集' });
   expect(listProjectDatasets).toHaveBeenLastCalledWith(null);
 });
+
+
+it.each([false, true])('uses the current model for an old empty draft unless explicitly chosen (explicit: %s)', async explicit => {
+  vi.mocked(validateUser).mockResolvedValue({ valid: true, default_model: 'claude-opus-5-5', available_models: ['claude-opus-5-5', 'qwen3.6-plus'] });
+  vi.mocked(listSessions).mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Finance task', model: 'claude-opus-5-5' }] });
+  vi.mocked(activateSession).mockResolvedValue({ model: 'claude-opus-5-5', available_models: ['claude-opus-5-5', 'qwen3.6-plus'], has_graph: false, messages: [], active_run: null });
+  localStorage.setItem('igraph-new-session-draft:v1:admin:personal', JSON.stringify({
+    draftId: 'old-empty', projectId: null, phase: 'editing', text: '', model: 'qwen3.6-plus',
+    ...(explicit ? { modelSelectedByUser: true } : {}), activeDatasetId: null, attachments: [],
+  }));
+  await mount();
+  fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+  const input = await screen.findByPlaceholderText(placeholder);
+  fireEvent.change(input, { target: { value: 'Check the next graph' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(createSession).toHaveBeenCalledOnce());
+  expect(vi.mocked(createSession).mock.calls[0][0]?.model).toBe(explicit ? 'qwen3.6-plus' : 'claude-opus-5-5');
+});
+
+
+it('remembers an explicit model choice when returning from another task', async () => {
+  vi.mocked(validateUser).mockResolvedValue({ valid: true, default_model: 'claude-opus-5-5', available_models: ['claude-opus-5-5', 'qwen3.6-plus'] });
+  vi.mocked(listSessions).mockResolvedValue({ sessions: [{ session_id: 'A', title: 'Finance task', model: 'claude-opus-5-5' }] });
+  vi.mocked(activateSession).mockResolvedValue({ model: 'claude-opus-5-5', available_models: ['claude-opus-5-5', 'qwen3.6-plus'], has_graph: false, messages: [], active_run: null });
+  await mount();
+  fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+  fireEvent.click(screen.getByRole('button', { name: '选择模型' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'qwen3.6-plus' }));
+  await waitFor(() => expect(JSON.parse(localStorage.getItem('igraph-new-session-draft:v1:admin:personal')!).modelSelectedByUser).toBe(true));
+  fireEvent.click(screen.getByText('Finance task'));
+  await waitFor(() => expect(window.location.search).toBe('?session=A'));
+  await screen.findByPlaceholderText(placeholder);
+  fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+  const input = await screen.findByPlaceholderText(placeholder);
+  fireEvent.change(input, { target: { value: 'Use my chosen model' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(createSession).toHaveBeenCalledOnce());
+  expect(vi.mocked(createSession).mock.calls[0][0]?.model).toBe('qwen3.6-plus');
+});

@@ -627,3 +627,28 @@ it('honors an authoritative unsupported graph response during a background refre
       code: 'PARTITIONED_GRAPH_NOT_DIRECTLY_VISUALIZABLE', summary: {} } });
   expect(state.viewsBySessionId.A.graph.status).toBe('unsupported');
 });
+
+
+describe('empty draft model selection across graph tasks', () => {
+  const blank = { draftId: 'cached', projectId: null, phase: 'editing' as const,
+    text: '', model: 'old-provider', activeDatasetId: 'cora', attachments: [] };
+
+  it.each([false, true])('refreshes an automatic model from storage or memory (memory: %s)', inMemory => {
+    let state = inMemory ? conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft: blank }) : initialConversationState;
+    state = conversationReducer(state, { type: 'OPEN_DRAFT', draft: blank, preferredModel: 'working-provider' });
+    expect(state.draftsByScope.personal).toEqual({ ...blank, model: 'working-provider' });
+    expect(state.activeDraftKey).toBe('personal');
+  });
+
+  it.each([
+    { text: 'Unsent question' },
+    { modelSelectedByUser: true },
+    { phase: 'failed' as const },
+    { phase: 'creating_session' as const },
+    { attachments: [{ localId: 'file', filename: 'data.pt', status: 'staged' as const }] },
+  ])('preserves explicit choices and unfinished work: %j', patch => {
+    const draft = { ...blank, ...patch };
+    const state = conversationReducer(initialConversationState, { type: 'OPEN_DRAFT', draft, preferredModel: 'working-provider' });
+    expect(state.draftsByScope.personal).toEqual(draft);
+  });
+});

@@ -2089,11 +2089,14 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return state
 
     def dataset_runtime_state(dataset: ProjectDatasetRecord | None) -> dict:
+        from backend.user_cases import background_for_dataset
+
         construction = dataset.metadata.get("construction", {}) if dataset else {}
         return {"active_dataset_id": dataset.dataset_id if dataset else None,
             "construction_status": construction.get("status"),
             "construction_revision": construction.get("revision"),
-            "source_format": dataset.file_type if dataset else None}
+            "source_format": dataset.file_type if dataset else None,
+            "graph_background": background_for_dataset(dataset)}
 
     async def reset_graph_runtime(
         session_id: str,

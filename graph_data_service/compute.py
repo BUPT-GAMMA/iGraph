@@ -260,18 +260,47 @@ class GraphCompute:
             return list(label)
         return label
 
+    @staticmethod
+    def _resolve_node_name(gd: GraphData, value: str) -> str | dict:
+        """Resolve only an exact identity, numeric index or unique stored name.
+
+        Names are local to this graph. Never merge aliases or guess among
+        duplicate names, and return canonical IDs to downstream edge lookups.
+        """
+        if gd.has_node_name(value):
+            return value
+        try:
+            node_id = int(value)
+        except ValueError:
+            node_id = None
+        if node_id is not None and 0 <= node_id < gd.num_nodes:
+            return gd.id2node.get(node_id, value)
+        matches = []
+        graph = gd.graph_metadata.get("construction_graph") or {}
+        for row in graph.get("nodes", []):
+            properties = row.get("properties") or {}
+            data = properties.get("data")
+            name = properties.get("name") or (data.get("name") if isinstance(data, dict) else None)
+            canonical = str(row["id"])
+            if isinstance(name, str) and name.strip() == value and gd.has_node_name(canonical):
+                matches.append(canonical)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            preview, truncated = _truncate(matches)
+            return {"success": False, "code": "AMBIGUOUS_NODE", "query": value,
+                    "error": f"节点名称 '{value}' 对应多个节点，请使用 search_node 返回的 node_name 或 node_id",
+                    "candidates": [{"node_name": name, "node_id": gd.name_to_id(name)} for name in preview],
+                    "candidates_total": len(matches), "candidates_truncated": truncated}
+        if node_id is not None:
+            return {"success": False, "error": f"节点 ID {node_id} 超出范围 [0, {gd.num_nodes})"}
+        return GraphCompute._node_not_found(value, gd)
+
     def get_node_info(self, gd: GraphData, node_name: str) -> dict:
-        if gd.has_node_name(node_name):
-            nid = gd.name_to_id(node_name)
-            display_name = node_name
-        else:
-            try:
-                nid = int(node_name)
-            except ValueError:
-                return self._node_not_found(node_name, gd)
-            if not (0 <= nid < gd.num_nodes):
-                return {"success": False, "error": f"节点 ID {nid} 超出范围 [0, {gd.num_nodes})"}
-            display_name = gd.id2node.get(nid, node_name)
+        display_name = self._resolve_node_name(gd, node_name)
+        if isinstance(display_name, dict):
+            return display_name
+        nid = gd.name_to_id(display_name) if gd.has_node_name(display_name) else int(display_name)
 
         in_deg = gd.in_degree(nid)
         out_deg = gd.out_degree(nid)
@@ -329,9 +358,12 @@ class GraphCompute:
         }
 
     def get_edge_info(self, gd: GraphData, src_name: str, dst_name: str) -> dict:
-        for name in (src_name, dst_name):
-            if not gd.has_node_name(name):
-                return self._node_not_found(name, gd)
+        src_name = self._resolve_node_name(gd, src_name)
+        if isinstance(src_name, dict):
+            return src_name
+        dst_name = self._resolve_node_name(gd, dst_name)
+        if isinstance(dst_name, dict):
+            return dst_name
         edge = gd.get_edge_by_node_names(src_name, dst_name)
         if edge is None:
             return {
@@ -363,7 +395,16 @@ class GraphCompute:
 
     @staticmethod
     def check_edge_exists(gd: GraphData, src_name: str, dst_name: str) -> dict:
-        exists = gd.has_edge_by_node_names(src_name, dst_name)
+        source = GraphCompute._resolve_node_name(gd, src_name)
+        target = GraphCompute._resolve_node_name(gd, dst_name)
+        for resolved in (source, target):
+            if isinstance(resolved, dict) and resolved.get("code") == "AMBIGUOUS_NODE":
+                return resolved
+        if isinstance(source, dict) or isinstance(target, dict):
+            exists = False
+        else:
+            src_name, dst_name = source, target
+            exists = gd.has_edge_by_node_names(src_name, dst_name)
         return {
             "success": True,
             "src": src_name,

@@ -1,6 +1,7 @@
 """User-facing questions for the bundled example graphs."""
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 
@@ -41,3 +42,36 @@ def installed_source(server_root: Path, case: dict):
     if hashlib.sha256(path.read_bytes()).hexdigest() != source["sha256"]:
         raise ValueError("Bundled source checksum mismatch")
     return path, source
+
+
+# Only administrator-bundled snapshots can select a background document.
+# Names and descriptions are user editable and must not determine graph identity.
+_BACKGROUND_RESOURCES = Path(__file__).resolve().parents[1] / "graph_engine" / "resources"
+
+
+def background_for_dataset(dataset):
+    """Read the matching, packaged Markdown afresh for each turn/dataset change."""
+    if dataset is None or dataset.status != "ready" or dataset.source_kind != "server":
+        return None
+    case = next((item for item in USER_CASES
+                 if item["id"] == "tianlongbabu"
+                 and dataset.metadata.get("source_relative_path") == item["filename"]), None)
+    if case is None or dataset.file_type != "npz":
+        return None
+    resources = _BACKGROUND_RESOURCES / case["id"]
+    try:
+        manifest = json.loads((resources / "manifest.json").read_text(encoding="utf-8"))
+        if manifest["filename"] != case["filename"]:
+            return None
+        with Path(dataset.storage_path).open("rb") as handle:
+            checksum = hashlib.file_digest(handle, "sha256").hexdigest()
+        if checksum != manifest["sha256"]:
+            return None
+        content = (resources / "background.md").read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+    except (OSError, ValueError, KeyError):
+        logging.getLogger(__name__).warning("Bundled graph background unavailable for %s", case["id"])
+        return None
+    return {"case_id": case["id"], "dataset_id": dataset.dataset_id,
+            "title": case["name"], "content": content}
