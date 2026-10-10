@@ -410,6 +410,7 @@ export type NewConversationDraft = {
   phase: DraftPhase;
   text: string;
   model: string;
+  modelSelectedByUser?: boolean;
   activeDatasetId: string | null;
   attachments: DraftAttachment[];
   error?: string;
