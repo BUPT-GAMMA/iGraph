@@ -9,6 +9,8 @@ WORKDIR /app
 COPY deploy/requirements/backend.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 COPY backend /app/backend
+# Small example documentation is read into the active graph's per-turn context.
+COPY graph_engine/resources/tianlongbabu/manifest.json graph_engine/resources/tianlongbabu/background.md /app/graph_engine/resources/tianlongbabu/
 COPY response_language.py /app/
 COPY execution_protocol.py construction_access.py /app/
 COPY execution_lifecycle.py workspace_storage.py runtime_observability.py /app/
