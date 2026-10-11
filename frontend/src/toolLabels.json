@@ -11,6 +11,7 @@
   "get_graph_info": "读取图信息",
   "get_node_info": "查看节点信息",
   "get_edge_info": "查看边信息",
+  "inspect_kinship": "核验亲缘关系",
   "check_edge_exists": "检查边是否存在",
   "get_neighbors": "查询邻居节点",
   "search_node": "搜索节点",
