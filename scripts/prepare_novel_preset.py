@@ -72,7 +72,7 @@ with np.load(plain, allow_pickle=True) as doc:
     np.savez_compressed(asset, **{key:doc[key] for key in doc.files})
 from datetime import datetime, timezone
 now=datetime.now(timezone.utc).isoformat(timespec='seconds')
-meta=DatasetMeta(dataset_id='ds_tianlongbabu_v1',name='天龙八部人物关系（预置图）',
+meta=DatasetMeta(dataset_id='ds_tianlongbabu_v1',name='天龙八部',
  description='完整《天龙八部》文本经 deepseek-v4-pro 分块抽取的人物关系图；人物和关系保留来源分块，支持邻居、路径、中心性与社区分析。模型抽取关系需结合原文复核。',
  source_type='novel_preset',node_count=data.num_nodes,edge_count=data.num_edges,is_directed=True,
  created_at=now,updated_at=now,versions=['v001'],edge_entry_count=data.num_edge_entries,

@@ -116,7 +116,7 @@ export function HelpPipeline() {
     </ol>
     <aside className="help-pipeline-shortcut">
       <h3>{t('Try a ready-made example first', '也可以先体验预置示例')}</h3>
-      <p>{t('“New task” shows the financial ownership and Demi-Gods and Semi-Devils examples. Click “Use example graph” to load one, or select an example question to start immediately. No upload or reconstruction is needed.', '“新建任务”页面提供金融股权和《天龙八部》人物关系两个示例。点击“使用示例图”载入，或点击示例问题直接开始，无需重新上传或构图。')}</p>
+      <p>{t('“New task” shows the financial ownership and Demi-Gods and Semi-Devils examples. Click “Use example graph” to load one, or select an example question to start immediately. No upload or reconstruction is needed.', '“新建任务”页面提供金融股权和“天龙八部”两个示例。点击“使用示例图”载入，或点击示例问题直接开始，无需重新上传或构图。')}</p>
     </aside>
     <details className="help-pipeline-troubleshooting">
       <summary>{t('If you get stuck', '遇到问题时')}</summary>

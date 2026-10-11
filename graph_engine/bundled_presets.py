@@ -37,6 +37,15 @@ def install_bundled_preset(data_root: Path, *, resources: Path, server_root: Pat
         finally:
             if stage.exists():
                 shutil.rmtree(stage)
+    # Change only an old default label; saved graph versions remain untouched.
+    previous_names = manifest.get("previous_names", [])
+    meta_path = target / "meta.json"
+    if previous_names and meta_path.is_file():
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        if metadata.get("dataset_id") == dataset_id and metadata.get("name") in previous_names:
+            from graph_data_service.construction import _atomic_json
+            metadata["name"] = manifest["dataset"]["name"]
+            _atomic_json(meta_path, metadata)
     server_root = server_root or Path(os.getenv("GRAPH_ENGINE_SERVER_DATASETS_DIR") or data_root / "server_datasets")
     server_root.mkdir(parents=True, exist_ok=True)
     public_asset = server_root / filename
