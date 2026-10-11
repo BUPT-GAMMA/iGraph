@@ -37,7 +37,7 @@ import { I18nProvider } from './i18n';
 const source: Dataset = { dataset_id: 'source-1', project_id: null, name: '订单关系', original_filename: 'orders.csv', file_type: 'csv', status: 'source_ready' };
 
 it('keeps example questions and default project names localized after entering a project', async () => {
-  const example = { id: 'tianlongbabu', name: '天龙八部人物关系示例', filename: 'tianlongbabu-characters.npz', description: '已构好的小说图',
+  const example = { id: 'tianlongbabu', name: '天龙八部', filename: 'tianlongbabu-characters.npz', description: '已构好的小说图',
     questions: ['检查人物关系'], available: true, translations: { en: { name: 'Character graph example', description: 'A ready-made character graph', questions: ['Inspect character relationships'] } } };
   mocks.getUserCases.mockResolvedValue({ cases: [example] });
   const dataset: Dataset = { ...source, project_id: 'novel-project', dataset_id: 'novel-dataset', name: example.name,
@@ -53,20 +53,20 @@ it('keeps example questions and default project names localized after entering a
   expect(screen.getByRole('button', { name: 'Create a conversation in Character graph example' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '中文' }));
   expect(screen.getByRole('button', { name: '检查人物关系' })).toBeTruthy();
-  expect(screen.getByRole('heading', { name: '开始在 天龙八部人物关系示例 中图分析' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: '开始在 天龙八部 中图分析' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'EN' }));
   fireEvent.click(screen.getByRole('button', { name: 'Create your graph' }));
   expect(await screen.findByRole('button', { name: 'View graph build Character graph example' })).toBeTruthy();
   expect(screen.getByText('A ready-made character graph')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '中文' }));
-  expect(screen.getByRole('button', { name: '查看构图 天龙八部人物关系示例' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '查看构图 天龙八部' })).toBeTruthy();
 });
 
 beforeEach(() => {
   localStorage.clear(); sessionStorage.clear(); window.history.replaceState({}, '', '/');
   mocks.getUserCases.mockReset().mockResolvedValue({ cases: [
     { id: 'finance', name: '金融股权示例', filename: 'finance-ownership.npz', description: '已构好的金融图', questions: ['检查股权数据质量'], available: true },
-    { id: 'tianlongbabu', name: '天龙八部人物关系示例', filename: 'tianlongbabu-characters.npz', description: '已构好的人物图', questions: ['展示主要人物关系'], available: true },
+    { id: 'tianlongbabu', name: '天龙八部', filename: 'tianlongbabu-characters.npz', description: '已构好的人物图', questions: ['展示主要人物关系'], available: true },
   ] });
   mocks.openUserCase.mockReset();
   mocks.listDatasets.mockReset().mockResolvedValue({ datasets: [source], default_dataset_id: null });
@@ -99,59 +99,59 @@ describe('actual App graph creation destination', () => {
   });
 
   it('returns from an example project to both examples when New task is clicked', async () => {
-    const dataset: Dataset = { dataset_id: 'novel-graph', project_id: 'novel-project', name: '天龙八部人物关系示例', original_filename: 'tianlongbabu-characters.npz', file_type: 'npz', status: 'ready' };
-    mocks.openUserCase.mockResolvedValue({ project: { project_id: 'novel-project', user_id: 'graph-user', name: '天龙八部人物关系示例', default_dataset_id: dataset.dataset_id }, dataset });
+    const dataset: Dataset = { dataset_id: 'novel-graph', project_id: 'novel-project', name: '天龙八部', original_filename: 'tianlongbabu-characters.npz', file_type: 'npz', status: 'ready' };
+    mocks.openUserCase.mockResolvedValue({ project: { project_id: 'novel-project', user_id: 'graph-user', name: '天龙八部', default_dataset_id: dataset.dataset_id }, dataset });
     mocks.listDatasets.mockImplementation((projectId: string | null) => Promise.resolve({ datasets: projectId ? [dataset] : [source] }));
     render(<App />);
     const gallery = await screen.findByRole('region', { name: '示例图分析' });
     fireEvent.click(within(gallery).getAllByRole('button', { name: '使用示例图' })[1]);
-    await screen.findByRole('heading', { name: '开始在 天龙八部人物关系示例 中图分析' });
+    await screen.findByRole('heading', { name: '开始在 天龙八部 中图分析' });
     expect(window.location.search).toContain('project=novel-project');
     fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
     await screen.findByRole('heading', { name: '开始图分析' });
     expect(window.location.search).toBe('?new=1');
     expect(screen.getByRole('heading', { name: '金融股权示例' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: '天龙八部人物关系示例' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '在 天龙八部人物关系示例 中新建会话' }));
-    await screen.findByRole('heading', { name: '开始在 天龙八部人物关系示例 中图分析' });
+    expect(screen.getByRole('heading', { name: '天龙八部' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '在 天龙八部 中新建会话' }));
+    await screen.findByRole('heading', { name: '开始在 天龙八部 中图分析' });
     fireEvent.click(screen.getByRole('button', { name: '创建你的图' }));
     await screen.findByRole('button', { name: '构图 订单关系' });
-    expect(screen.queryByRole('button', { name: '查看构图 天龙八部人物关系示例' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '查看构图 天龙八部' })).toBeNull();
   });
 
   it('lists both bundled source datasets and opens their saved construction', async () => {
     const examples: Dataset[] = [
       { dataset_id: 'finance-source', project_id: null, name: '金融股权示例', original_filename: 'finance.csv', file_type: 'csv', status: 'ready', metadata: { user_case_id: 'finance', construction: { status: 'ready', revision: 1 }, num_nodes: 6000, num_edges: 13436 } },
-      { dataset_id: 'novel-source', project_id: null, name: '天龙八部人物关系示例', original_filename: '天龙八部.txt', file_type: 'txt', status: 'ready', metadata: { user_case_id: 'tianlongbabu', construction: { status: 'ready', revision: 1 }, num_nodes: 304, num_edges: 791 } },
+      { dataset_id: 'novel-source', project_id: null, name: '天龙八部', original_filename: '天龙八部.txt', file_type: 'txt', status: 'ready', metadata: { user_case_id: 'tianlongbabu', construction: { status: 'ready', revision: 1 }, num_nodes: 304, num_edges: 791 } },
     ];
     mocks.listDatasets.mockResolvedValue({ datasets: [source, ...examples] });
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
-    await screen.findByRole('button', { name: '查看构图 天龙八部人物关系示例' });
+    await screen.findByRole('button', { name: '查看构图 天龙八部' });
     expect(screen.getByRole('button', { name: '查看构图 金融股权示例' })).toBeTruthy();
     expect(screen.getByText('3 个可用')).toBeTruthy();
     expect(screen.queryByRole('region', { name: '示例图分析' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '查看构图 天龙八部人物关系示例' }));
-    expect(screen.getByRole('region', { name: '构图编辑器' }).textContent).toContain('天龙八部人物关系示例');
+    fireEvent.click(screen.getByRole('button', { name: '查看构图 天龙八部' }));
+    expect(screen.getByRole('region', { name: '构图编辑器' }).textContent).toContain('天龙八部');
   });
 
   it('shows examples on the home and new-task pages while keeping My graph sources for datasets only', async () => {
     render(<App />);
     await screen.findByRole('heading', { name: '金融股权示例' });
-    expect(screen.getByRole('heading', { name: '天龙八部人物关系示例' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '天龙八部' })).toBeTruthy();
 
     fireEvent.click(within(screen.getByRole('complementary')).getByRole('button', { name: '新建任务' }));
     await screen.findByRole('heading', { name: '开始图分析' });
     expect(window.location.search).toBe('?new=1');
     expect(screen.getByRole('heading', { name: '金融股权示例' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: '天龙八部人物关系示例' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '天龙八部' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '展示主要人物关系' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '创建你的图' }));
     await screen.findByRole('button', { name: '构图 订单关系' });
     expect(screen.getByText('1 个可用')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '金融股权示例' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: '天龙八部人物关系示例' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '天龙八部' })).toBeNull();
     expect(screen.queryByRole('region', { name: '示例图分析' })).toBeNull();
   });
 
