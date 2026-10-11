@@ -1,6 +1,6 @@
 import { useActionDialog } from './useActionDialog';
 import { Popup, PopupBackdrop, PopupPresence } from './PopupMotion';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { modelErrorMessage, type CustomModel } from '../api';
 import type { AttachmentRef, DraftAttachment } from '../types';
@@ -10,6 +10,7 @@ import { ModelProviderIcon } from './ModelProviderIcon';
 import { selectRepresentativeModels } from './modelProviders';
 import { useI18n, type Translate } from '../i18n';
 import { ContextWindow, type ContextModel } from './ContextWindow';
+import type { ExampleQuestionSuggestion } from '../userCases';
 
 export type ComposerAttachment = AttachmentRef | DraftAttachment;
 
@@ -25,7 +26,7 @@ function resizeComposerInput(textarea: HTMLTextAreaElement | null) {
   // Measure wrapped content at the current width, including pasted text.
   textarea.style.overflowY = 'hidden';
   textarea.style.height = 'auto';
-  const contentHeight = textarea.value ? textarea.scrollHeight + border : minimum;
+  const contentHeight = textarea.value || textarea.dataset.exampleSuggestion ? textarea.scrollHeight + border : minimum;
   textarea.style.height = `${Math.min(maximum, Math.max(minimum, contentHeight))}px`;
   textarea.style.overflowY = contentHeight > maximum ? 'auto' : 'hidden';
   textarea.scrollTop = scrollTop;
@@ -52,6 +53,7 @@ export type ComposerProps = {
   models: string[];
   customModels?: CustomModel[];
   activeDatasetName?: string;
+  exampleSuggestion?: ExampleQuestionSuggestion;
   onChange: (value: string) => void;
   onModelChange: (model: string) => void;
   onDataset: () => void;
@@ -75,7 +77,7 @@ export type ComposerProps = {
   onDeleteCustomModel?: (modelId: string) => Promise<void>;
 };
 
-export function Composer({ contextSessionId, contextModel, value, model, models, customModels = [], activeDatasetName, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
+export function Composer({ contextSessionId, contextModel, value, model, models, customModels = [], activeDatasetName, exampleSuggestion, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const { t } = useI18n();
   const { askConfirm, actionDialog } = useActionDialog();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -102,7 +104,15 @@ export function Composer({ contextSessionId, contextModel, value, model, models,
   const runControlLabel = t('Stop current task', '终止当前任务');
   const cancellationLabel = cancellation === 'unconfirmed' ? t('Stop is not confirmed; click the square to retry', '停止请求尚未确认，可点击方块重试')
     : cancellation === 'saving' ? t('Stopped · saving results', '已停止，正在保存结果') : stopping ? t('Stopping…', '正在停止…') : cancellation === 'confirmed' ? t('Task ended', '任务已结束') : '';
-  useLayoutEffect(() => { resizeComposerInput(textareaRef.current); }, [value]);
+  const suggestionHintId = useId();
+  const visibleSuggestion = !value && !loading && !cannotSend && !runControl && !runtimeControlsDisabled && !attachments.length
+    ? exampleSuggestion : undefined;
+  function acceptExampleSuggestion() {
+    if (!visibleSuggestion) return;
+    onChange(visibleSuggestion.question);
+    textareaRef.current?.focus();
+  }
+  useLayoutEffect(() => { resizeComposerInput(textareaRef.current); }, [value, visibleSuggestion?.question]);
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -222,12 +232,27 @@ export function Composer({ contextSessionId, contextModel, value, model, models,
         </div>;
       })}</div> : null}
     <div ref={composerRef} className="composer">
-      <textarea ref={textareaRef} value={value} disabled={disabled} rows={2} placeholder={t('What would you like to analyze? Paste an edge list or ask in natural language', '今天帮你分析什么？粘贴边列表，或直接用自然语言提问')} onChange={event => onChange(event.target.value)}
+      <textarea ref={textareaRef} value={value} disabled={disabled} rows={2}
+        aria-label={t('Message', '消息')}
+        aria-describedby={visibleSuggestion ? suggestionHintId : undefined}
+        data-example-suggestion={visibleSuggestion ? 'true' : undefined}
+        placeholder={visibleSuggestion?.question || t('What would you like to analyze? Paste an edge list or ask in natural language', '今天帮你分析什么？粘贴边列表，或直接用自然语言提问')} onChange={event => onChange(event.target.value)}
         onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }}
         onKeyDown={event => {
           if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+          if (event.key === 'Tab' && visibleSuggestion && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+            event.preventDefault();
+            acceptExampleSuggestion();
+            return;
+          }
           if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (!cannotSend && !runControl) onSend(); }
         }} />
+      {visibleSuggestion && <button type="button" className="composer-example-hint" id={suggestionHintId}
+        onClick={acceptExampleSuggestion}
+        aria-label={t('Fill in the next example question', '填入下一示例问题')}>
+        <span>{t('Next example', '下一示例')} <span className="composer-example-step">{visibleSuggestion.number} / {visibleSuggestion.total}</span></span>
+        <span className="composer-example-shortcut"><kbd>Tab</kbd>{t('to fill', '填入')}</span>
+      </button>}
       <div className="composer-toolbar">
         <input ref={inputRef} type="file" hidden accept=".sql,.txt,.csv,.edgelist,.dat,.json,.xlsx,.pdf,.pt,.npz,.py,.md,.zip,.yaml,.yml,.js,.tsv" onChange={event => { const file = event.target.files?.[0]; if (file) onUpload(file); event.currentTarget.value = ''; }} />
         <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title={t('Upload graph file', '上传图文件')} aria-label={t('Upload graph file', '上传图文件')} disabled={disabled || runtimeControlsDisabled}><Icon name="plus" size={20} /></button>
