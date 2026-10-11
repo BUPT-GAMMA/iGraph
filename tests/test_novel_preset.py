@@ -57,13 +57,13 @@ def test_manual_lineage_is_packaged_and_survives_fresh_install(tmp_path):
     names = {n["id"]: n["properties"]["data"]["name"] for n in graph["nodes"]}
     manual = [e for e in graph["edges"] if e["properties"].get("provenance", {}).get("origin") == "manual"]
     assert {(names[e["source"]], names[e["target"]], e["type"]) for e in manual} == {
-        ("无崖子", "王夫人", "父亲"), ("李秋水", "王夫人", "母亲"),
+        ("无崖子", "王夫人", "生父"), ("李秋水", "王夫人", "生母"),
         ("李秋水", "梦姑", "祖母"), ("虚竹", "梦姑", "丈夫")}
     assert all("https://" in e["properties"]["provenance"]["evidence"] for e in manual)
-    assert len(graph["nodes"]) == 304 and len(graph["edges"]) == 795
+    assert len(graph["nodes"]) == 304 and len(graph["edges"]) == 715
     manifest = json.loads((RESOURCES / "manifest.json").read_text())
     source = manifest["construction_source"]
     source_path = tmp_path / "server_datasets" / ".user-case-sources" / Path(FILENAME).stem / source["sha256"] / source["filename"]
     store = ConstructionStore(tmp_path)
     seed_construction(store, "u", "new-novel", source_path, source["filename"], "tianlongbabu")
-    assert len(store.graph("u", "new-novel")["graph"]["edges"]) == 795
+    assert len(store.graph("u", "new-novel")["graph"]["edges"]) == 715

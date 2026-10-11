@@ -43,7 +43,7 @@ def _policy(*, reads=(), writes=(), barrier=False, background=False):
 # and visualization returns a view; neither publishes a new graph version.
 GRAPH_READ_TOOLS = FINANCE_TOOL_NAMES | frozenset({
     "get_graph_info", "list_graph_versions", "get_node_info", "get_edge_info",
-    "check_edge_exists", "get_neighbors", "search_node", "search_edge",
+    "inspect_kinship", "check_edge_exists", "get_neighbors", "search_node", "search_edge",
     "shortest_path", "all_shortest_paths", "maximum_flow", "minimum_cut",
     "global_minimum_cut", "minimum_spanning_tree", "community_detection",
     "node_centrality", "graph_connectivity", "find_cycles", "maximum_cycle",
