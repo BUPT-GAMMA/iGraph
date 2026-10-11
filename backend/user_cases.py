@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+import uuid
 from pathlib import Path
 
 
@@ -14,14 +15,12 @@ USER_CASES = [
              "Find the largest shareholder of SYN-ENT-000040, distinguishing direct ownership from cumulative economic interest.",
              "Analyze the strict control group of SYN-ENT-000001, listing its members, control chains, and original ownership evidence."]}},
      "questions": ["请检查这张金融股权图的数据规模、持股方向和数据质量问题。", "请计算 SYN-ENT-000040 的第一大股东，并区分直接持股和累计经济权益。", "请分析 SYN-ENT-000001 的严格控制集团，列出成员、控制链和原始持股证据。"]},
-    {"id": "tianlongbabu", "name": "天龙八部人物关系示例", "filename": "tianlongbabu-characters.npz",
+    {"id": "tianlongbabu", "name": "天龙八部", "filename": "tianlongbabu-characters.npz",
      "description": "完整小说经 deepseek-v4-pro 构成人物关系图，可直接探索人物联系和网络结构。",
-     "translations": {"en": {"name": "Demi-Gods and Semi-Devils character example",
+     "translations": {"en": {"name": "Demi-Gods and Semi-Devils",
          "description": "The full novel was processed with deepseek-v4-pro into a character relationship graph, ready for exploring connections and network structure.",
-         "questions": ["Find the nodes for Xiao Feng (萧峰), Qiao Feng (乔峰), Duan Yu (段誉), and Xuzhu (虚竹), then show their direct relationships. Distinguish aliases using graph evidence.",
-             "Find the ten most connected characters, explain the calculation, and display the relevant subgraph.",
-             "Run community detection on the character graph and summarize each community's representative characters and connections, using only graph evidence."]}},
-     "questions": ["请先查找萧峰、乔峰、段誉和虚竹对应的节点，再展示他们的直接人物关系；别名需按图中证据区分。", "请找出人物关系图中连接最多的十个人物，说明计算方法并展示相关子图。", "请对人物关系图进行社区检测，概括各社区的代表人物与相互联系，只依据图中关系作答。"]},
+         "questions": ["In Demi-Gods and Semi-Devils, what major social circles form around sects, families, and everyday interactions, and who is the most important figure in each?", "What kinship, marriage, or master–disciple relationships connect the seemingly distant Duan family of Dali, Wang family of Gusu, Xiaoyao Sect, and Western Xia royal family?", "Tracing these connections through Wang Yuyan’s (王语嫣) parentage, how do her parents and grandparents link her to the Duan family of Dali, the Xiaoyao Sect, and the Western Xia royal family?", "What easily overlooked relationships connect Wang Yuyan (王语嫣) and Xuzhu (虚竹)? Trace the connections through Xuzhu’s master Wuyazi (无崖子) and his wife Menggu (梦姑)."]}},
+     "questions": ["《天龙八部》中，人物围绕门派、家族和日常往来，形成了哪些主要的江湖圈子？每个圈子中最重要的人物是谁？", "在这些圈子之间，大理段氏、姑苏王家、逍遥派和西夏皇室，看似相隔甚远，实际上通过哪些亲缘、婚姻或师承关系联系在一起？", "顺着这些联系追查王语嫣的身世，她的父母和祖辈，如何让她同时与大理段氏、逍遥派和西夏皇室产生牵连？", "王语嫣与虚竹之间，究竟藏着哪几层容易被忽略的关系？分别沿着虚竹的师父无崖子和妻子梦姑追溯，两人各有什么联系？"]},
 ]
 
 
@@ -47,6 +46,37 @@ def installed_source(server_root: Path, case: dict):
 # Only administrator-bundled snapshots can select a background document.
 # Names and descriptions are user editable and must not determine graph identity.
 _BACKGROUND_RESOURCES = Path(__file__).resolve().parents[1] / "graph_engine" / "resources"
+
+
+def normalize_novel_example_names(projects, datasets):
+    """Upgrade only published default labels, preserving user names and graph contents."""
+    manifest = json.loads((_BACKGROUND_RESOURCES / "tianlongbabu" / "manifest.json").read_text(encoding="utf-8"))
+    previous = set(manifest.get("previous_names", []))
+    name = manifest["dataset"]["name"]
+    case = next(item for item in USER_CASES if item["id"] == "tianlongbabu")
+    with projects._lock:
+        records = projects._load()
+        changed = False
+        for record in records.values():
+            expected = str(uuid.uuid5(uuid.NAMESPACE_URL, f"igraph:user-case:tianlongbabu:{record.user_id}"))
+            if record.project_id == expected and record.name in previous:
+                record.name = name
+                changed = True
+        if changed:
+            projects._write(records)
+    with datasets._lock:
+        records = datasets._load()
+        changed = False
+        for record in records.values():
+            is_example = record.metadata.get("user_case_id") == case["id"] or (
+                record.source_kind == "server"
+                and record.metadata.get("source_relative_path") == case["filename"]
+            )
+            if is_example and record.name in previous:
+                record.name = name
+                changed = True
+        if changed:
+            datasets._write(records)
 
 
 def background_for_dataset(dataset):

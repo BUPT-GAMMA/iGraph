@@ -92,6 +92,7 @@ export function HelpPipeline() {
         <h3>{t('Review the draft and save the graph', '核对草稿并保存构图结果')}</h3>
         <p>{t('Check node and edge counts, types, direction, and sample properties against the source. Use the graph view and Graph Schema to inspect the result. If needed, apply graph optimization operations and review their previews.', '对照源文件检查节点数、边数、类型、方向和样本属性。可结合图视图与 Graph Schema 检查结果；需要调整时使用图数据优化操作，并检查预览。')}</p>
         <div className="help-pipeline-callout">
+          <p>{t('To fill an extraction gap, choose “Add node” or “Add relationship” under graph data optimization. For a relationship, select its source and target, enter the type, and record the supporting text or source. Read the direction as “source is the [relationship] of target”. Click “Apply and preview”; use “Undo last step” if needed, then “Save to dataset”.', '发现抽取遗漏时，可在图数据优化中选择“添加节点”或“添加关系”。添加关系时选择起点与终点，填写类型和依据；方向按“起点是终点的某种关系”理解。点击“应用并预览”，需要时可“撤销上一步”，确认后点击“保存到数据集”。')}</p>
           <strong>{t('Save explicitly before analysis', '先手动保存，再进行分析')}</strong>
           <p>{t('Click “Save construction result” and wait for “Saved · Version …”. A draft is not yet an analysis-ready dataset. Later edits also need “Save to dataset”; previewing a change does not save it.', '点击“保存构图结果”，等待显示“已保存 · 版本 …”。草稿尚不能作为就绪数据集分析。后续修改也需要点击“保存到数据集”，仅预览不会保存修改。')}</p>
         </div>
@@ -115,7 +116,7 @@ export function HelpPipeline() {
     </ol>
     <aside className="help-pipeline-shortcut">
       <h3>{t('Try a ready-made example first', '也可以先体验预置示例')}</h3>
-      <p>{t('“New task” shows the financial ownership and Demi-Gods and Semi-Devils examples. Click “Use example graph” to load one, or select an example question to start immediately. No upload or reconstruction is needed.', '“新建任务”页面提供金融股权和《天龙八部》人物关系两个示例。点击“使用示例图”载入，或点击示例问题直接开始，无需重新上传或构图。')}</p>
+      <p>{t('“New task” shows the financial ownership and Demi-Gods and Semi-Devils examples. Click “Use example graph” to load one, or select an example question to start immediately. No upload or reconstruction is needed.', '“新建任务”页面提供金融股权和“天龙八部”两个示例。点击“使用示例图”载入，或点击示例问题直接开始，无需重新上传或构图。')}</p>
     </aside>
     <details className="help-pipeline-troubleshooting">
       <summary>{t('If you get stuck', '遇到问题时')}</summary>

@@ -104,6 +104,8 @@ class ServerDatasetDirectory:
     def list(self) -> list[ServerDatasetRecord]:
         if not self.root.is_dir():
             return []
+        from backend.user_cases import USER_CASES
+        example_names = {item["filename"]: item["name"] for item in USER_CASES}
         rows: list[ServerDatasetRecord] = []
         for current_root, directory_names, file_names in os.walk(
             self.root, followlinks=False
@@ -136,7 +138,7 @@ class ServerDatasetDirectory:
                 rows.append(
                     ServerDatasetRecord(
                         server_dataset_id=self._dataset_id(relative_path),
-                        name=path.stem,
+                        name=example_names.get(relative_path, path.stem),
                         original_filename=path.name,
                         relative_path=relative_path,
                         storage_path=str(resolved),

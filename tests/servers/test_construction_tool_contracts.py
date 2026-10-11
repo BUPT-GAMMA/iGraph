@@ -68,6 +68,8 @@ def tool_schema(name):
 class ToolSchemaTest(unittest.TestCase):
     def setUp(self):
         self.operations = [
+            {"op": "add_node", "node_name": "Alice", "node_type": "person"},
+            {"op": "add_edge", "source": "alice", "target": "bob", "edge_type": "parent"},
             {"op": "collapse_node", "node_id": "bridge", "edge_type": "purchase"},
             {"op": "node_property_to_edge", "node_id": "row", "property": "amount", "edge_ids": ["edge"]},
             {"op": "extract_property_node", "node_ids": ["row"], "property": "Name", "node_type": "BadgeName", "edge_type": "has_name"},
@@ -101,8 +103,8 @@ class ToolSchemaTest(unittest.TestCase):
         check_schema({"operations": [{**operation, "node_ids": ["badge-1"]}]}, tool_schema("optimize_graph"))
 
     def test_optional_flags_are_optional_but_have_boolean_types(self):
-        for operation, flag in ((self.operations[1], "remove_from_node"),
-                                (self.operations[2], "remove_from_node"), (self.operations[3], "cascade")):
+        for operation, flag in ((self.operations[3], "remove_from_node"),
+                                (self.operations[4], "remove_from_node"), (self.operations[5], "cascade")):
             for value in (True, False):
                 check_schema([dict(operation, **{flag: value})], _OPERATIONS)
             with self.assertRaises(ValueError):
@@ -114,7 +116,7 @@ class ToolSchemaTest(unittest.TestCase):
                 check_schema(values, _OPERATIONS)
         for values in ([], ["row", "row"], [""], ["   "], ["x" * 1025], [1]):
             with self.subTest(values=values), self.assertRaises(ValueError):
-                check_schema([{**self.operations[2], "node_ids": values}], _OPERATIONS)
+                check_schema([{**self.operations[4], "node_ids": values}], _OPERATIONS)
         properties = _OPERATIONS["items"]["properties"]
         self.assertEqual(properties["node_ids"]["maxItems"], 200_000)
         self.assertEqual(properties["edge_ids"]["maxItems"], 1_000_000)
