@@ -35,6 +35,16 @@ def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monk
             novel = (await client.post("/api/user-cases/tianlongbabu/project")).json()
             assert novel["project"]["default_dataset_id"] == novel["dataset"]["dataset_id"]
             assert novel["project"]["project_id"] != second["project"]["project_id"]
+            # Reopening an upgraded preset must select its new revision, while
+            # retaining the prior reference rather than silently repinning it.
+            (server / "tianlongbabu-characters.npz").write_bytes(b"upgraded-catalog-test-asset")
+            upgraded = (await client.post("/api/user-cases/tianlongbabu/project")).json()
+            assert upgraded["project"]["project_id"] == novel["project"]["project_id"]
+            assert upgraded["dataset"]["dataset_id"] != novel["dataset"]["dataset_id"]
+            assert upgraded["project"]["default_dataset_id"] == upgraded["dataset"]["dataset_id"]
+            assert upgraded["dataset"]["metadata"]["source_revision"] != novel["dataset"]["metadata"]["source_revision"]
+            repeated = (await client.post("/api/user-cases/tianlongbabu/project")).json()
+            assert repeated["dataset"]["dataset_id"] == upgraded["dataset"]["dataset_id"]
             other = await client.post("/api/user-cases/finance/project", headers={"X-User-ID":"reader"})
             assert other.status_code == 200, other.text
             assert other.json()["project"]["project_id"] == second["project"]["project_id"]

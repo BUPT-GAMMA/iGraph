@@ -17,6 +17,8 @@ _DATASET = {
 
 _OPERATION_TEXT = {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": r"\S"}
 _OPERATION_RULES = {
+    "add_node": (("node_name", "node_type"), ("properties",)),
+    "add_edge": (("source", "target", "edge_type"), ("properties",)),
     "collapse_node": (("node_id", "edge_type"), ()),
     "node_property_to_edge": (("node_id", "property", "edge_ids"), ("target_property", "remove_from_node")),
     "extract_property_node": (("node_ids", "property", "node_type", "edge_type"), ("remove_from_node",)),
@@ -27,6 +29,9 @@ _OPERATION_RULES = {
 _OPERATION_PROPERTIES = {
     "op": {"type": "string", "enum": list(_OPERATION_RULES)},
     "node_id": _OPERATION_TEXT,
+    "node_name": _OPERATION_TEXT,
+    "source": _OPERATION_TEXT,
+    "properties": {"type": "object"},
     "node_ids": {"type": "array", "items": _OPERATION_TEXT, "minItems": 1,
                  "maxItems": 200_000, "uniqueItems": True},
     "edge_ids": {"type": "array", "items": _OPERATION_TEXT, "minItems": 1,
@@ -38,7 +43,7 @@ _OPERATION_PROPERTIES = {
     "remove_from_node": {"type": "boolean"},
     "node_type": _OPERATION_TEXT,
     "edge_type": _OPERATION_TEXT,
-    "target": {"type": "string", "enum": ["node", "edge"]},
+    "target": _OPERATION_TEXT,
     "cascade": {"type": "boolean"},
     "old_type": _OPERATION_TEXT,
     "new_type": _OPERATION_TEXT,
@@ -49,7 +54,9 @@ def _operation_schema(name, required, optional):
     return {
         "type": "object",
         "properties": {"op": {"type": "string", "enum": [name]},
-                       **{field: _OPERATION_PROPERTIES[field] for field in (*required, *optional)}},
+                       **{field: ({"type": "string", "enum": ["node", "edge"]}
+                                  if field == "target" and name in {"delete", "rename_type"}
+                                  else _OPERATION_PROPERTIES[field]) for field in (*required, *optional)}},
         "required": ["op", *required],
         "additionalProperties": False,
     }
@@ -73,6 +80,9 @@ _OPERATIONS = {
 
 _OPERATION_HELP = (
     "operations 中每项用 op 指定规则："
+    "add_node(node_name,node_type,properties?) 手动补充实体；"
+    "add_edge(source,target,edge_type,properties?) 在已有实体之间补充关系，source/target 为真实节点 ID；"
+    "新增事实仅用于用户明确要求且有来源核验的补充，在 properties 中保留出处；不得凭推测补边。"
     "collapse_node(node_id,edge_type) 将连接中间节点转为边；"
     "node_property_to_edge(node_id,property,edge_ids,target_property?,remove_from_node?) 将节点属性移到边；"
     "extract_property_node(node_ids,property,node_type,edge_type,remove_from_node?) 将属性提取为节点；"

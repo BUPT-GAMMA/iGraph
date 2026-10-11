@@ -283,6 +283,8 @@ export type ConstructionBuildOptions = {
   text_refine_enabled?: boolean;
 };
 export type ConstructionOperation =
+  | { op: 'add_node'; node_name: string; node_type: string; properties?: Record<string, unknown> }
+  | { op: 'add_edge'; source: string; target: string; edge_type: string; properties?: Record<string, unknown> }
   | { op: 'collapse_node'; node_id: string; edge_type: string }
   | { op: 'node_property_to_edge'; node_id: string; property: string; edge_ids: string[]; target_property?: string; remove_from_node: boolean }
   | { op: 'extract_property_node'; node_ids: string[]; property: string; node_type: string; edge_type: string; remove_from_node: boolean }
