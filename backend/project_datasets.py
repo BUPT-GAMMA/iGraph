@@ -337,6 +337,8 @@ class ProjectDatasetDirectory:
                     and item.user_id == user_id
                     and item.source_kind == "server"
                     and item.source_id == source_id
+                    and str(item.metadata.get("source_revision") or "")
+                    == str((metadata or {}).get("source_revision") or "")
                 ):
                     return item, False
             dataset_id = str(uuid.uuid4())

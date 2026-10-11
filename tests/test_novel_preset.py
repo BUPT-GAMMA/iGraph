@@ -44,3 +44,26 @@ def test_novel_names_are_exactly_searchable_without_embedding_service():
         identities.append(identity)
     # The extracted graph stores these aliases separately; search must not merge them.
     assert len(set(identities)) == 4
+
+def test_manual_lineage_is_packaged_and_survives_fresh_install(tmp_path):
+    from pathlib import Path
+    import json
+    from graph_data_service.graph_data import GraphData
+    from graph_data_service.construction import ConstructionStore
+    from graph_engine.user_case_sources import seed_construction
+    install_novel_preset(tmp_path)
+    data = GraphData.load(str(tmp_path / "server_datasets" / FILENAME))
+    graph = data.graph_metadata["construction_graph"]
+    names = {n["id"]: n["properties"]["data"]["name"] for n in graph["nodes"]}
+    manual = [e for e in graph["edges"] if e["properties"].get("provenance", {}).get("origin") == "manual"]
+    assert {(names[e["source"]], names[e["target"]], e["type"]) for e in manual} == {
+        ("无崖子", "王夫人", "父亲"), ("李秋水", "王夫人", "母亲"),
+        ("李秋水", "梦姑", "祖母"), ("虚竹", "梦姑", "丈夫")}
+    assert all("https://" in e["properties"]["provenance"]["evidence"] for e in manual)
+    assert len(graph["nodes"]) == 304 and len(graph["edges"]) == 795
+    manifest = json.loads((RESOURCES / "manifest.json").read_text())
+    source = manifest["construction_source"]
+    source_path = tmp_path / "server_datasets" / ".user-case-sources" / Path(FILENAME).stem / source["sha256"] / source["filename"]
+    store = ConstructionStore(tmp_path)
+    seed_construction(store, "u", "new-novel", source_path, source["filename"], "tianlongbabu")
+    assert len(store.graph("u", "new-novel")["graph"]["edges"]) == 795
