@@ -2408,6 +2408,8 @@ INTERNAL_TOOLS: List[dict] = [
 ]
 
 
+from graph_data_service.kinship import TOOL as KINSHIP_TOOL
+GRAPH_TOOLS.append(KINSHIP_TOOL)
 GRAPH_TOOLS.extend(FINANCE_TOOLS)
 
 for _tool_spec in [*GRAPH_TOOLS, *GRAPH_ML_TOOLS, *REPORTING_TOOLS, *INTERNAL_TOOLS]:

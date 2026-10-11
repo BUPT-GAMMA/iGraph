@@ -162,3 +162,52 @@ def test_native_connection_switch_does_not_forward_foreign_signed_history(protoc
     assert all(m.provider_data is None and m.reasoning_content is None for m in prepared)
     assert 'foreign-signature' not in str([m.to_dict() for m in prepared])
     assert messages == before
+
+
+def test_canvas_payload_is_bounded_for_model_but_persisted_graph_and_evidence_survive():
+    raw = json.dumps({"success": True, "num_nodes": 304, "num_edges": 715,
+                      "total_nodes": 304, "total_edges": 715, "truncated": False,
+                      "nodes": [{"id": "a", "properties": {"data": "x" * 500000}}],
+                      "edges": [{"relation": "生父", "properties": {"evidence": "novel"}}]})
+    messages = [Message(role="system", content="rules"), Message(role="user", content="analyse"),
+        Message(role="assistant", tool_calls=[{"id":"v1", "function":{"name":"visualize_subgraph", "arguments":"{}"}}]),
+        Message(role="tool", tool_call_id="v1", tool_name="visualize_subgraph", content=raw),
+        Message(role="assistant", tool_calls=[{"id":"k1", "function":{"name":"inspect_kinship", "arguments":"{}"}}]),
+        Message(role="tool", tool_call_id="k1", tool_name="inspect_kinship",
+                content='{"biological_father": "A", "nominal_father": "B", "proof": [1, 2]}')]
+    before = copy.deepcopy(messages)
+    prepared, compacted = prepare_history(messages, context_window=8192, output_tokens=1024)
+    assert compacted and len(prepared[3].content) < 1500
+    receipt = json.loads(prepared[3].content)
+    assert receipt["num_edges"] == 715 and receipt["truncated"] is False
+    assert "edges" not in receipt and receipt["model_view"] == "visualization_receipt"
+    assert prepared[5].content == messages[5].content
+    assert messages == before
+    assert prepared[3].tool_call_id == "v1"
+
+@pytest.mark.parametrize("content", ['{"success": false, "error": "' + "x"*9000 + '"}',
+                                   "invalid-json-" + "x"*9000])
+def test_canvas_errors_and_malformed_results_are_not_disguised_as_success(content):
+    from agent_runtime.model_history import summarize_rendering_results
+    message = Message(role="tool", tool_name="visualize_subgraph", content=content)
+    assert summarize_rendering_results([message]) is False
+    assert message.content == content
+
+def test_other_analysis_payloads_are_not_silently_summarized():
+    from agent_runtime.model_history import summarize_rendering_results
+    message=Message(role="tool", tool_name="get_edge_info", content='{"success":true,"evidence":"'+"x"*9000+'"}')
+    before=copy.deepcopy(message)
+    assert summarize_rendering_results([message]) is False
+    assert message==before
+
+
+def test_kinship_checklist_uses_current_evidence_and_does_not_leak_into_next_dataset():
+    from agent_runtime.model_history import kinship_answer_constraints
+    evidence = Message(role="tool", tool_name="inspect_kinship",
+        content=json.dumps({"success":True,"facts":[{"source_name":"A","target_name":"B"}]}))
+    current=[Message(role="user",content="family"),evidence]
+    assert "不同生父只能" in kinship_answer_constraints(current).content
+    assert "本轮界面语言" in kinship_answer_constraints(current).content
+    assert kinship_answer_constraints(current+[Message(role="user",content="finance")]) is None
+    assert kinship_answer_constraints([Message(role="user",content="family"),
+        Message(role="tool",tool_name="inspect_kinship",content='{"success":false}')]) is None

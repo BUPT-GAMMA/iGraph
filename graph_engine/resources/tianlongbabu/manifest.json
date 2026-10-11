@@ -1,23 +1,24 @@
 {
   "version": 1,
+  "previous_names": ["天龙八部人物关系示例", "天龙八部人物关系（预置图）", "天龙八部人物关系", "天龙八部示例", "Demi-Gods and Semi-Devils character example"],
   "filename": "tianlongbabu-characters.npz",
   "dataset": {
     "dataset_id": "ds_tianlongbabu_v1",
-    "name": "天龙八部人物关系（预置图）",
-    "description": "完整《天龙八部》文本经 deepseek-v4-pro 分块抽取的人物关系图；人物和关系保留来源分块，支持邻居、路径、中心性与社区分析。模型抽取关系需结合原文复核。",
+    "name": "天龙八部",
+    "description": "完整小说经 deepseek-v4-pro 抽取，并人工核实补充关键亲缘与婚姻关系；原抽取记录保留分块来源，人工补录关系保留独立出处。",
     "source_type": "novel_preset",
     "node_count": 304,
-    "edge_count": 791,
+    "edge_count": 715,
     "is_directed": true,
     "created_at": "2026-10-08T03:36:25+00:00",
-    "updated_at": "2026-10-08T03:36:25+00:00",
+    "updated_at": "2026-10-11T03:09:53.458436+00:00",
     "versions": [
       "v001"
     ],
-    "edge_entry_count": 791,
-    "unique_edge_count": 791,
-    "num_unique_directed_edges": 791,
-    "num_unique_undirected_edges": 791,
+    "edge_entry_count": 715,
+    "unique_edge_count": 715,
+    "num_unique_directed_edges": 715,
+    "num_unique_undirected_edges": 715,
     "semantic_type": "directed",
     "storage_type": "directed",
     "is_symmetric": false,
@@ -32,7 +33,7 @@
       "bytes": 2459800
     }
   },
-  "sha256": "0c43425a033a34279fada2733c94155a6c150b23d2a85802613a040f09e12768",
+  "sha256": "ed8061975529b44b6c40709fbd8ce9610c0ad9028127edf59dc00f1eed4d1073",
   "construction": {
     "model": "deepseek-v4-pro",
     "semantic_extraction": {
@@ -61,6 +62,22 @@
         "total_tokens": 10172
       },
       "checkpoint_cache_hits": 105
+    },
+    "manual_corrections": {
+      "updated_at": "2026-10-11T02:40:37+00:00",
+      "base_sha256": "0c43425a033a34279fada2733c94155a6c150b23d2a85802613a040f09e12768",
+      "revision": 2,
+      "edge_count": 4,
+      "note": "四条关系由用户授权，经前端添加关系、预览和保存到数据集补录；出处保存在各边 provenance.evidence。不是原 TXT 自动抽取记录。"
+    },
+    "kinship_corrections": {
+      "schema": "kinship-corrections.v1",
+      "base_sha256": "f909d76443f3fb7b6983f2a538acb8d5c1b23ed7aa510eb01e38f419df7c9b24",
+      "revision": 3,
+      "updated_at": "2026-10-11T03:09:53.458436+00:00",
+      "changed_assertions": 150,
+      "removed_duplicate_assertions": 80,
+      "edge_count": 715
     }
   },
   "construction_source": {

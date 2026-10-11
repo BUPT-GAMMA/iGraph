@@ -3410,6 +3410,13 @@ class GraphDataService:
 
     def _dispatch_graph_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
         """图数据/图计算工具分发。"""
+        if tool_name == "inspect_kinship":
+            from graph_data_service.kinship import inspect_kinship
+            session = self.get_required(session_id, user_id=user_id)
+            gd = session.get_graph()
+            if gd is None:
+                return {"success": False, "error": "No graph loaded"}
+            return {**inspect_kinship(gd, arguments.get("persons")), "graph_version": session.graph_version}
         if tool_name in FINANCE_TOOL_NAMES:
             session = self.get_required(session_id, user_id=user_id)
             result = self._compute.finance_analysis(session.get_graph(), tool_name, arguments)

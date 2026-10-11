@@ -1,0 +1,57 @@
+{
+  "updated_at": "2026-10-11T02:40:37+00:00",
+  "base_sha256": "0c43425a033a34279fada2733c94155a6c150b23d2a85802613a040f09e12768",
+  "revision": 2,
+  "edge_count": 4,
+  "edges": [
+    {
+      "id": "manual_edge_c04ff895ffacb94dc46df2e86d80e66a",
+      "properties": {
+        "provenance": {
+          "evidence": "人工核实补录：王夫人（李青萝）是无崖子与李秋水的女儿。 来源：https://zh.wikipedia.org/wiki/天龙八部角色列表 ; https://jinyongx.com/data/1492.html 。这是外部资料补充，不是原 TXT 自动抽取记录。",
+          "origin": "manual"
+        }
+      },
+      "source": "entity_06fda9f57a51cf0fa0dc116778be0dae7e949d85",
+      "target": "entity_e7b86168dcd54adade8f28eb9995961840cbeec0",
+      "type": "父亲"
+    },
+    {
+      "id": "manual_edge_fbe1e055e1d357601f46c6d770643d67",
+      "properties": {
+        "provenance": {
+          "evidence": "人工核实补录：王夫人（李青萝）是李秋水与无崖子的女儿。 来源：https://zh.wikipedia.org/wiki/天龙八部角色列表 ; https://jinyongx.com/data/1492.html 。这是外部资料补充，不是原 TXT 自动抽取记录。",
+          "origin": "manual"
+        }
+      },
+      "source": "entity_311161f3a41cc519bd6c22b657623e2f8e06e7dc",
+      "target": "entity_e7b86168dcd54adade8f28eb9995961840cbeec0",
+      "type": "母亲"
+    },
+    {
+      "id": "manual_edge_597c71813b060c1197dc06fb8b145691",
+      "properties": {
+        "provenance": {
+          "evidence": "人工核实补录：梦姑即西夏银川公主（李清露）；李秋水是她的祖母，也是西夏皇太妃。 来源：https://zh.wikipedia.org/wiki/天龙八部角色列表 ; https://jinyongx.com/data/1492.html 。这是外部资料补充，不是原 TXT 自动抽取记录。",
+          "origin": "manual"
+        }
+      },
+      "source": "entity_311161f3a41cc519bd6c22b657623e2f8e06e7dc",
+      "target": "entity_d659d4a0b76a79ee02f7ddc2ed232f4bac2a5315",
+      "type": "祖母"
+    },
+    {
+      "id": "manual_edge_8f5d61b15baab674ff7e7e35f7664e0a",
+      "properties": {
+        "provenance": {
+          "evidence": "人工核实补录：虚竹与梦姑（西夏银川公主）成婚。 来源：https://zh.wikipedia.org/wiki/天龙八部角色列表 ; https://jinyongx.com/data/1492.html 。这是外部资料补充，不是原 TXT 自动抽取记录。",
+          "origin": "manual"
+        }
+      },
+      "source": "entity_ad2cafaa0f484476903b9ff59b2812e0fc98a278",
+      "target": "entity_d659d4a0b76a79ee02f7ddc2ed232f4bac2a5315",
+      "type": "丈夫"
+    }
+  ],
+  "note": "四条关系由用户授权，经前端添加关系、预览和保存到数据集补录；出处保存在各边 provenance.evidence。不是原 TXT 自动抽取记录。"
+}

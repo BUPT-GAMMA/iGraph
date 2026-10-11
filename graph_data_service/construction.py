@@ -29,7 +29,7 @@ from graph_data_service.construction_schema import source_schema_tables
 
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
-              "delete", "reverse_edges", "rename_type")
+              "delete", "reverse_edges", "rename_type", "add_node", "add_edge")
 PUBLIC_PROGRESS_STAGES = ("starting", "source_profiled", "extracting_entities", "materializing_graph", "refining_text_graph",
                           "generating_workload", "evaluating_baseline", "evolving",
                           "validating_final", "ready", "failed")
@@ -384,6 +384,8 @@ def optimize_graph(graph: dict, operations: list[dict], *, max_nodes: int = 200_
     original = validate_graph(graph, max_nodes=max_nodes, max_edges=max_edges, copy_graph=False)
     candidate = copy.deepcopy(original)
     fields = {
+        "add_node": {"op", "node_name", "node_type", "properties"},
+        "add_edge": {"op", "source", "target", "edge_type", "properties"},
         "collapse_node": {"op", "node_id", "edge_type"},
         "node_property_to_edge": {"op", "node_id", "property", "edge_ids", "target_property", "remove_from_node"},
         "extract_property_node": {"op", "node_ids", "property", "node_type", "edge_type", "remove_from_node"},
@@ -400,7 +402,38 @@ def optimize_graph(graph: dict, operations: list[dict], *, max_nodes: int = 200_
                 _fail("Unknown operation parameters: " + ", ".join(sorted(set(operation) - fields[kind])))
             nodes = {row["id"]: row for row in candidate["nodes"]}
             edges = {row["id"]: row for row in candidate["edges"]}
-            if kind == "collapse_node":
+            if kind in {"add_node", "add_edge"}:
+                props = copy.deepcopy(operation.get("properties", {}))
+                if not isinstance(props, dict):
+                    _fail("properties must be an object.", "invalid_graph")
+                _json_keys(props)
+                _json(props)
+                if kind == "add_node":
+                    name = _text(operation.get("node_name"), "node_name").strip()
+                    node_type = _text(operation.get("node_type"), "node_type").strip()
+                    identity = _generated_id("entity_manual_", node_type, name)
+                    if identity in nodes:
+                        _fail("This manually added node already exists.", "duplicate_node")
+                    data = props.setdefault("data", {})
+                    if not isinstance(data, dict):
+                        _fail("Node properties.data must be an object.", "invalid_graph")
+                    data["name"] = name
+                    candidate["nodes"].append({"id": identity, "type": node_type, "properties": props})
+                else:
+                    source = _get(nodes, operation.get("source"), "node")["id"]
+                    target = _get(nodes, operation.get("target"), "node")["id"]
+                    edge_type = _text(operation.get("edge_type"), "edge_type").strip()
+                    endpoints = {(source, target)}
+                    if not candidate["directed"]:
+                        endpoints.add((target, source))
+                    if any((e["source"], e["target"]) in endpoints and e["type"] == edge_type for e in edges.values()):
+                        _fail("This relationship already exists; select a different type or edit the existing relationship.", "duplicate_edge")
+                    identity = _generated_id("manual_edge_", source, target, edge_type)
+                    if identity in edges:
+                        _fail("The generated relationship identifier already exists.", "duplicate_edge")
+                    candidate["edges"].append({"id": identity, "source": source, "target": target,
+                                               "type": edge_type, "properties": props})
+            elif kind == "collapse_node":
                 node = _get(nodes, operation.get("node_id"), "node")
                 incident = [e for e in edges.values() if node["id"] in (e["source"], e["target"])]
                 if len(incident) != 2 or any(e["source"] == e["target"] for e in incident):

@@ -45,6 +45,34 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('graph construction workflow', () => {
+  it('previews a manual relationship with named endpoints and saves only on request', async () => {
+    await openPanel();
+    fireEvent.click(screen.getByRole('button', { name: /添加关系/ }));
+    choose('关系起点', 'a');
+    choose('关系终点', 'c');
+    choose('关系类型', '父亲');
+    choose('依据 / 出处（选填）', '原文章节中核实的父女关系');
+    fireEvent.click(screen.getByRole('button', { name: '应用并预览' }));
+    await waitFor(() => expect(mocks.preview).toHaveBeenCalledWith(dataset, 2, [
+      { op: 'add_edge', source: 'a', target: 'c', edge_type: '父亲', properties: { provenance: { origin: 'manual', evidence: '原文章节中核实的父女关系' } } },
+    ]));
+    expect(mocks.commit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '保存到数据集' }));
+    await waitFor(() => expect(mocks.commit).toHaveBeenCalledWith(dataset, 2, expect.arrayContaining([expect.objectContaining({ op: 'add_edge' })])));
+  });
+
+  it('previews a missing entity with its name and source', async () => {
+    await openPanel();
+    fireEvent.click(screen.getByRole('button', { name: /添加节点/ }));
+    choose('实体名称', '李秋水');
+    choose('节点类型', '人物');
+    fireEvent.click(screen.getByRole('button', { name: '应用并预览' }));
+    await waitFor(() => expect(mocks.preview).toHaveBeenCalledWith(dataset, 2, [
+      { op: 'add_node', node_name: '李秋水', node_type: '人物', properties: { provenance: { origin: 'manual' } } },
+    ]));
+    expect(mocks.commit).not.toHaveBeenCalled();
+  });
+
   it('shows source samples before a graph exists and keeps preview failure independent from building', async () => {
     mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true });
     mocks.source.mockResolvedValue({ dataset_id: 'd1', tables: [{ name: 'customers', columns: ['name'], column_types: {}, primary_key: [], foreign_keys: [], sample_rows: [{ name: '源表客户' }], row_count: 1, column_descriptions: {}, sample_truncated: false }], warnings: [] });
