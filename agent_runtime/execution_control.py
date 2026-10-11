@@ -287,6 +287,11 @@ class ExecutionController(ProjectDeletionMixin):
             if scope:
                 scope.cancel()
             await self.manager.acancel_run(rid)
+            if scope:
+                # Cooperative provider/tool cancellation gets a bounded grace
+                # period. AgentOS background producers that lost the request
+                # Context are then interrupted by their owned task identity.
+                scope.escalate_cancel()
             signals = []
             if not row["state"]["preparation_stopped"]:
                 signals.append(asyncio.create_task(self._remote_cancel(row, "preparation")))

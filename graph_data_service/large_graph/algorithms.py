@@ -25,6 +25,7 @@ from .disk_graph import PartitionedDiskGraph
 from .grouped_algorithms import GroupedAnalysisMixin
 from .processes import process_context
 from .snapshot import _stable_partition
+from graphscope_runtime.storage_codec import decode_node_row
 
 
 ProgressCallback = Callable[[str, float, str, dict[str, Any]], None]
@@ -147,7 +148,7 @@ def brandes_sample_sources_limit() -> int:
 def _brandes_sample_cap(parameters: dict[str, Any]) -> int:
     """Parse and enforce the Brandes source cap inside the worker process."""
     raw = parameters.get(
-        "sample_sources", os.getenv("LARGE_GRAPH_BRANDES_SOURCES", "256")
+        "sample_sources", os.getenv("LARGE_GRAPH_BRANDES_SOURCES", "64")
     )
     if isinstance(raw, bool):
         raise ValueError("参数 sample_sources 必须为正整数")
@@ -579,8 +580,7 @@ def _degree_analysis_node_partition(args: tuple[Any, ...]) -> dict[str, Any]:
                 continue
             with (graph.root / str(relative)).open("r", encoding="utf-8") as nodes:
                 for line in nodes:
-                    row = json.loads(line)
-                    node = str(row["id"])
+                    node, _, ordinal = decode_node_row(line)
                     incoming = (
                         graph.degree(node, direction="in") if graph.directed else 0
                     )
@@ -596,7 +596,7 @@ def _degree_analysis_node_partition(args: tuple[Any, ...]) -> dict[str, Any]:
                         json.dumps(
                             [
                                 node,
-                                int(row.get("ordinal", 0)),
+                                ordinal,
                                 incoming,
                                 outgoing,
                                 total,
@@ -2108,7 +2108,35 @@ class LargeGraphAlgorithms(GroupedAnalysisMixin):
                         (source,),
                     )
                 )
-                result_files, _, _ = self._write_rows("shortest-distances", rows)
+                result_files, distance_preview, _ = self._write_rows(
+                    "shortest-distances", rows
+                )
+                if str(p.get("result_detail", "paths")).strip().lower() == "distances":
+                    nearest_distances = [
+                        {
+                            "target": self._display(target),
+                            "distance": distance,
+                        }
+                        for target, distance in selected_targets
+                    ]
+                    summary = {
+                        "success": True,
+                        "found": reachable > 0,
+                        "source": self._preview_node(source),
+                        "weighted": weighted,
+                        "result_detail": "distances",
+                        "reachable_count": reachable,
+                        "avg_distance": round(float(aggregate[0] or 0), 4),
+                        "min_distance": round(float(aggregate[1] or 0), 4),
+                        "max_distance": round(float(aggregate[2] or 0), 4),
+                        "nearest_distances": nearest_distances,
+                        "truncated": reachable > len(selected_targets),
+                    }
+                    return {
+                        "summary": summary,
+                        "preview": distance_preview,
+                        "result_files": result_files,
+                    }
 
                 def nearest_path_rows() -> Iterable[dict[str, Any]]:
                     for path_index, (target, distance) in enumerate(selected_targets):

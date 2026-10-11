@@ -189,6 +189,58 @@ class MCPModulesTest(unittest.TestCase):
 
 
 class GraphDataClientRetryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_create_session_sends_service_auth_and_object_body(self) -> None:
+        class _RecordingAsyncClient:
+            request_kwargs = None
+
+            def __init__(self, **_kwargs) -> None:
+                return
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args) -> None:
+                return
+
+            async def request(self, method: str, url: str, **kwargs):
+                _RecordingAsyncClient.request_kwargs = {
+                    "method": method,
+                    "url": url,
+                    **kwargs,
+                }
+                request = httpx.Request(method, url)
+                return httpx.Response(
+                    200,
+                    json={"success": True},
+                    request=request,
+                )
+
+        client = GraphDataClient("http://graph-data")
+        with patch.dict(
+            os.environ,
+            {"IGRAPH_CONTROL_SERVICE_KEY": "test-control-key"},
+        ):
+            with patch.object(
+                graph_data_client.httpx,
+                "AsyncClient",
+                _RecordingAsyncClient,
+            ):
+                result = await client.create_session("sid", user_id="alice")
+
+        self.assertEqual(result, {"success": True})
+        self.assertEqual(
+            _RecordingAsyncClient.request_kwargs,
+            {
+                "method": "POST",
+                "url": "http://graph-data/sessions/sid",
+                "json": {},
+                "headers": {
+                    "X-User-ID": "alice",
+                    "X-iGraph-Service-Key": "test-control-key",
+                },
+            },
+        )
+
     async def test_retries_transient_connection_failure(self) -> None:
         class _FlakyAsyncClient:
             calls = 0

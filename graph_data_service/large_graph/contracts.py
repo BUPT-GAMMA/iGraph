@@ -13,6 +13,47 @@ JobStatus = Literal[
 ]
 GraphVersionStatus = Literal["preparing", "published", "failed", "cancelled"]
 ComputePath = Literal["small_graph", "large_graph", "reject"]
+LargeGraphBackend = Literal["auto", "graphscope", "legacy"]
+
+
+@dataclass(frozen=True)
+class BackendPlan:
+    """Immutable execution choice persisted with a durable compute job."""
+
+    requested_backend: LargeGraphBackend
+    selected_backend: Literal["graphscope", "legacy"]
+    native_app: str | None = None
+    semantic_profile: str = "legacy_v1"
+    adapter_url: str | None = None
+    protocol_version: str = "igraph-graphscope-v1"
+    fallback_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> "BackendPlan":
+        values = dict(raw or {})
+        if not values:
+            return cls(requested_backend="legacy", selected_backend="legacy")
+        allowed = set(cls.__dataclass_fields__)
+        unknown = sorted(set(values) - allowed)
+        if unknown:
+            raise ValueError(f"未知大图后端计划字段: {', '.join(unknown)}")
+        requested = str(values.get("requested_backend") or "legacy").strip().lower()
+        selected = str(values.get("selected_backend") or "legacy").strip().lower()
+        if requested not in {"auto", "graphscope", "legacy"}:
+            raise ValueError("requested_backend 必须是 auto、graphscope 或 legacy")
+        if selected not in {"graphscope", "legacy"}:
+            raise ValueError("selected_backend 必须是 graphscope 或 legacy")
+        values["requested_backend"] = requested
+        values["selected_backend"] = selected
+        plan = cls(**values)
+        if plan.selected_backend == "graphscope" and (
+            not plan.native_app or not plan.adapter_url
+        ):
+            raise ValueError("GraphScope 后端计划缺少 native_app 或 adapter_url")
+        return plan
 
 
 @dataclass(frozen=True)

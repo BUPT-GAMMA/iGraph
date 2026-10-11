@@ -879,22 +879,28 @@ function App() {
     return () => { disposed = true; };
   }, [userId]);
   useEffect(() => {
-    if (!userId || demoMode || !hasPendingServerPreparation) return;
+    if (
+      !userId
+      || demoMode
+      || (!datasetOpen && !hasPendingServerPreparation)
+    ) return;
     let disposed = false;
     let inFlight = false;
-    const timer = window.setInterval(() => {
+    const refreshServerDatasets = () => {
       if (inFlight) return;
       inFlight = true;
       listServerDatasets()
         .then(response => { if (!disposed) setServerDatasets(response.datasets || []); })
         .catch(() => undefined)
         .finally(() => { inFlight = false; });
-    }, 3000);
+    };
+    refreshServerDatasets();
+    const timer = window.setInterval(refreshServerDatasets, 3000);
     return () => {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [userId, hasPendingServerPreparation]);
+  }, [userId, datasetOpen, hasPendingServerPreparation]);
   useEffect(() => {
     if (!userId || demoMode) return;
     function handleHistoryNavigation() {

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -18,6 +19,21 @@ from agno.run.cancellation_management.in_memory_cancellation_manager import InMe
 T = TypeVar("T")
 current_scope: ContextVar["RunScope | None"] = ContextVar("igraph_run_scope", default=None)
 operation_id: ContextVar[str | None] = ContextVar("igraph_operation_id", default=None)
+
+
+def _cancel_grace_seconds() -> float:
+    try:
+        return max(0.1, float(os.getenv("AGENT_RUNTIME_CANCEL_GRACE_SECONDS", "5")))
+    except ValueError:
+        return 5.0
+
+
+def _consume_detached(task: asyncio.Future) -> None:
+    """Observe a quarantined task so a late transport error is not leaked."""
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 @dataclass
@@ -33,6 +49,8 @@ class RunScope:
     native_run_created: bool = False
     terminal_write_pending: bool = False
     cancel_requested_at: float | None = None
+    cancel_grace_seconds: float = field(default_factory=_cancel_grace_seconds)
+    cancel_escalated: bool = False
 
     def check(self) -> None:
         if self.stopped.is_set():
@@ -47,6 +65,26 @@ class RunScope:
             logging.getLogger(__name__).info('run_cancel_dispatched run_id=%s generation=%s', self.run_id, self.generation)
         self.stopped.set()
 
+    def escalate_cancel(self) -> bool:
+        """Cancel owned executor tasks after cooperative shutdown times out."""
+        if self.cancel_escalated or self.cancel_requested_at is None:
+            return False
+        if time.monotonic() - self.cancel_requested_at < self.cancel_grace_seconds:
+            return False
+        self.cancel_escalated = True
+        current = asyncio.current_task()
+        targets = [task for task in self.executors | self.leaves
+                   if task is not current and not task.done()]
+        for task in targets:
+            task.cancel()
+        logging.getLogger(__name__).warning(
+            "run_cancel_escalated run_id=%s tasks=%s grace_ms=%s",
+            self.run_id,
+            len(targets),
+            int(self.cancel_grace_seconds * 1000),
+        )
+        return bool(targets)
+
     @property
     def execution_stopped(self) -> bool:
         return all(task.done() for task in self.executors | self.leaves)
@@ -55,6 +93,7 @@ class RunScope:
         task = asyncio.ensure_future(operation)
         self.leaves.add(task)
         signal = asyncio.create_task(self.stopped.wait())
+        detached = False
         try:
             if self.stopped.is_set() or self.preflight_error:
                 task.cancel()
@@ -62,6 +101,18 @@ class RunScope:
                 await asyncio.wait((task, signal), return_when=asyncio.FIRST_COMPLETED)
                 if signal.done():
                     task.cancel()
+                    done, _ = await asyncio.wait(
+                        {task}, timeout=self.cancel_grace_seconds
+                    )
+                    if not done:
+                        task.add_done_callback(_consume_detached)
+                        detached = True
+                        logging.getLogger(__name__).warning(
+                            "run_cancel_cleanup_detached run_id=%s grace_ms=%s",
+                            self.run_id,
+                            int(self.cancel_grace_seconds * 1000),
+                        )
+                        self.check()
             try:
                 result = await task
             except (asyncio.CancelledError, Exception):
@@ -73,11 +124,14 @@ class RunScope:
             return result
         finally:
             signal.cancel()
-            if not task.done():
+            if not detached and not task.done():
                 task.cancel()
             # Never report exit while a cancelled leaf is still unwinding.
             import anyio
-            cleanup = asyncio.gather(task, signal, return_exceptions=True)
+            cleanup = asyncio.gather(
+                *(item for item in (task, signal) if item is not task or not detached),
+                return_exceptions=True,
+            )
             with anyio.CancelScope(shield=True):
                 while not cleanup.done():
                     try:
@@ -85,6 +139,25 @@ class RunScope:
                     except asyncio.CancelledError:
                         continue
             self.leaves.discard(task)
+
+    async def close_after_cancel(self, operation: Awaitable[object], *, label: str) -> None:
+        """Bound close-only work after the run publication fence is closed."""
+        task = asyncio.ensure_future(operation)
+        if not self.stopped.is_set():
+            await task
+            return
+        done, _ = await asyncio.wait({task}, timeout=self.cancel_grace_seconds)
+        if done:
+            await asyncio.gather(task, return_exceptions=True)
+            return
+        task.cancel()
+        task.add_done_callback(_consume_detached)
+        logging.getLogger(__name__).warning(
+            "run_cancel_close_detached run_id=%s component=%s grace_ms=%s",
+            self.run_id,
+            label,
+            int(self.cancel_grace_seconds * 1000),
+        )
 
 
 class RunCancellationManager(InMemoryRunCancellationManager):
@@ -95,7 +168,9 @@ class RunCancellationManager(InMemoryRunCancellationManager):
 
     async def aregister_run(self, run_id: str) -> None:
         await super().aregister_run(run_id)
-        scope = current_scope.get()
+        # A background producer may be created from AgentOS after the request
+        # ContextVar boundary. begin() has already installed the durable scope.
+        scope = current_scope.get() or self.scopes.get(run_id)
         if scope and scope.run_id == run_id:
             scope.native_run_created = True
             self.scopes[run_id] = scope

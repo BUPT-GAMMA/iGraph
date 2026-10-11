@@ -1,0 +1,6 @@
+# GraphScope runs in its own Python 3.11 image; do not merge this file into
+# graph-data.txt, whose application image currently uses Python 3.12.
+graphscope==0.29.0
+fastapi==0.115.0
+uvicorn==0.50.2
+pydantic==2.8.2

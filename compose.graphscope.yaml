@@ -1,0 +1,46 @@
+services:
+  graphscope-adapter:
+    image: ${IGRAPH_GRAPHSCOPE_IMAGE:-igraph-graphscope-adapter:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/graphscope-adapter.Dockerfile
+    pull_policy: never
+    environment:
+      GRAPHSCOPE_ADAPTER_HOST: 0.0.0.0
+      GRAPHSCOPE_ADAPTER_PORT: 21113
+      GRAPHSCOPE_SNAPSHOT_ROOT: /data/large_graph/snapshots
+      GRAPHSCOPE_ARTIFACT_ROOT: /data/large_graph/artifacts
+      GRAPHSCOPE_MAX_ACTIVE_JOBS: ${GRAPHSCOPE_MAX_ACTIVE_JOBS:-1}
+      GRAPHSCOPE_REMOTE_LEASE_SECONDS: ${GRAPHSCOPE_REMOTE_LEASE_SECONDS:-30}
+      OMPI_MCA_plm: isolated
+      IGRAPH_CONTROL_SERVICE_KEY: ${IGRAPH_CONTROL_SERVICE_KEY:?Set a shared random IGRAPH_CONTROL_SERVICE_KEY in .env}
+    volumes:
+      - igraph-data:/data
+    expose:
+      - "21113"
+    networks:
+      - backplane
+    shm_size: ${GRAPHSCOPE_SHM_SIZE:-4gb}
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  graph-engine-api:
+    environment:
+      LARGE_GRAPH_BACKEND: ${LARGE_GRAPH_BACKEND:-auto}
+      LARGE_GRAPH_PRECOMPUTE_ADJACENCY: ${LARGE_GRAPH_PRECOMPUTE_ADJACENCY:-false}
+      GRAPHSCOPE_ADAPTER_URL: http://graphscope-adapter:21113
+      GRAPHSCOPE_ALLOWED_MODES: graph_connectivity:undirected,degree_centrality:default,node_centrality:degree,node_centrality:pagerank,node_centrality:betweenness,node_centrality:closeness,node_centrality:eigenvector,node_centrality:harmonic,node_centrality:katz,node_centrality:voterank,shortest_path:distances,shortest_path:weighted_distances,path_analysis:average_shortest_path_length,community_detection:label_propagation,community_detection:louvain,global_metrics:average_clustering,global_metrics:transitivity,global_metrics:degree_assortativity,distance_measures:average_degree_connectivity,subgraph_extraction:k_core,strongly_connected_components:default,biconnected_components:default,bridges:default,articulation_points:default,minimum_spanning_forest:default,graph_coloring:default,maximal_matching:default,hits:default,k_shell:default,personalized_pagerank:default,approximate_diameter:default,fluid_community:default,densest_subgraph:default,independent_set_cover:maximal_independent_set,independent_set_cover:minimal_dominating_set,independent_set_cover:minimal_vertex_cover,independent_set_cover:minimal_edge_cover,motif_counting:triangle,motif_counting:rectangle,motif_counting:k_clique,motif_counting:diamond,motif_counting:tailed_triangle,motif_counting:three_path,motif_counting:cycle_plus_triangle,motif_counting:cyclic_triangle,motif_counting:acyclic_triangle,motif_counting:in_plus_triangle,motif_counting:out_plus_triangle
+    depends_on:
+      graphscope-adapter:
+        condition: service_healthy
+
+  graph-engine-worker:
+    environment:
+      LARGE_GRAPH_BACKEND: ${LARGE_GRAPH_BACKEND:-auto}
+      LARGE_GRAPH_PRECOMPUTE_ADJACENCY: ${LARGE_GRAPH_PRECOMPUTE_ADJACENCY:-false}
+      GRAPHSCOPE_ADAPTER_URL: http://graphscope-adapter:21113
+      GRAPHSCOPE_ALLOWED_MODES: graph_connectivity:undirected,degree_centrality:default,node_centrality:degree,node_centrality:pagerank,node_centrality:betweenness,node_centrality:closeness,node_centrality:eigenvector,node_centrality:harmonic,node_centrality:katz,node_centrality:voterank,shortest_path:distances,shortest_path:weighted_distances,path_analysis:average_shortest_path_length,community_detection:label_propagation,community_detection:louvain,global_metrics:average_clustering,global_metrics:transitivity,global_metrics:degree_assortativity,distance_measures:average_degree_connectivity,subgraph_extraction:k_core,strongly_connected_components:default,biconnected_components:default,bridges:default,articulation_points:default,minimum_spanning_forest:default,graph_coloring:default,maximal_matching:default,hits:default,k_shell:default,personalized_pagerank:default,approximate_diameter:default,fluid_community:default,densest_subgraph:default,independent_set_cover:maximal_independent_set,independent_set_cover:minimal_dominating_set,independent_set_cover:minimal_vertex_cover,independent_set_cover:minimal_edge_cover,motif_counting:triangle,motif_counting:rectangle,motif_counting:k_clique,motif_counting:diamond,motif_counting:tailed_triangle,motif_counting:three_path,motif_counting:cycle_plus_triangle,motif_counting:cyclic_triangle,motif_counting:acyclic_triangle,motif_counting:in_plus_triangle,motif_counting:out_plus_triangle
+      IGRAPH_CONTROL_SERVICE_KEY: ${IGRAPH_CONTROL_SERVICE_KEY:?Set a shared random IGRAPH_CONTROL_SERVICE_KEY in .env}
+    depends_on:
+      graphscope-adapter:
+        condition: service_healthy

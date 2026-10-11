@@ -44,6 +44,7 @@ class AgentRuntimeConfig:
     authorization: bool
     job_poll_interval_seconds: float = 2.0
     job_wait_timeout_seconds: float = 0.0
+    llm_timeout_seconds: float = 180.0
 
     @classmethod
     def from_env(cls) -> "AgentRuntimeConfig":
@@ -83,4 +84,5 @@ class AgentRuntimeConfig:
             job_wait_timeout_seconds=float(
                 os.getenv("AGENT_RUNTIME_JOB_WAIT_TIMEOUT_SECONDS", "0")
             ),
+            llm_timeout_seconds=max(1.0, float(os.getenv("LLM_TIMEOUT_SECONDS", "180"))),
         )

@@ -18,16 +18,46 @@ from .durability import durable_publish_tree, remove_tree_and_fsync
 from .integrity import validate_snapshot_manifest
 from .processes import process_context
 from .router import ComputeRouter
+from .compatibility import GRAPHSCOPE_ONLY_ALGORITHM_NAMES
 from .snapshot import (
     DerivedSnapshotBuilder,
     _AppendHandlePool,
     _configured_int,
     _stable_partition,
 )
+from graphscope_runtime.storage_codec import decode_edge_row, decode_node_row
 
 
 ProgressCallback = Callable[[str, float, str, dict[str, Any]], None]
+ExternalAlgorithmRunner = Callable[..., dict[str, Any]]
 _MAX_CONTROL_PAYLOAD_BYTES = 2 * 1024 * 1024
+
+
+def _median_from_histogram(
+    histogram: dict[float, int], result_count: int
+) -> float:
+    """Return the exact median of a bounded degree-score histogram."""
+    if result_count <= 0:
+        return 0.0
+    if sum(histogram.values()) != result_count:
+        raise ValueError("度数直方图与结果节点数不一致")
+
+    lower_index = (result_count - 1) // 2
+    upper_index = result_count // 2
+    seen = 0
+    lower: float | None = None
+    upper: float | None = None
+    for score, frequency in sorted(histogram.items()):
+        next_seen = seen + int(frequency)
+        if lower is None and lower_index < next_seen:
+            lower = float(score)
+        if upper_index < next_seen:
+            upper = float(score)
+            break
+        seen = next_seen
+    if lower is None or upper is None:
+        raise ValueError("度数直方图无法覆盖中位数位置")
+    return (lower + upper) / 2.0
 
 
 def _validate_control_payload(summary: dict[str, Any], preview: list[Any]) -> None:
@@ -72,8 +102,7 @@ def _map_degree_partition(args: tuple[Any, ...]) -> dict[str, Any]:
     try:
         with edge_path.open("r", encoding="utf-8") as source:
             for line in source:
-                edge = json.loads(line)
-                src, dst = str(edge["source"]), str(edge["target"])
+                src, dst, _, _ = decode_edge_row(line)
                 if algorithm == "in_degree":
                     write(dst, 1.0)
                 elif algorithm == "out_degree":
@@ -149,11 +178,8 @@ def _reduce_degree_partition(args: tuple[Any, ...]) -> dict[str, Any]:
         if node_path.exists():
             with node_path.open("r", encoding="utf-8") as nodes:
                 for line in nodes:
-                    row = json.loads(line)
-                    node_id = str(row["id"])
-                    node_batch.append(
-                        (node_id, str(row.get("name") or node_id), 0.0)
-                    )
+                    node_id, name, _ = decode_node_row(line)
+                    node_batch.append((node_id, name, 0.0))
                     if len(node_batch) >= batch_rows:
                         flush_nodes(node_batch)
             flush_nodes(node_batch)
@@ -180,6 +206,7 @@ def _reduce_degree_partition(args: tuple[Any, ...]) -> dict[str, Any]:
         score_sum = 0.0
         minimum: float | None = None
         maximum: float | None = None
+        score_histogram: dict[float, int] = {}
         count = 0
         with output_path.open("w", encoding="utf-8") as output:
             for node_id, name, stored_score in connection.execute(
@@ -192,6 +219,7 @@ def _reduce_degree_partition(args: tuple[Any, ...]) -> dict[str, Any]:
                 score_sum += score
                 minimum = score if minimum is None else min(minimum, score)
                 maximum = score if maximum is None else max(maximum, score)
+                score_histogram[score] = score_histogram.get(score, 0) + 1
                 node_id = str(node_id)
                 name = str(name)
                 output.write(
@@ -213,6 +241,7 @@ def _reduce_degree_partition(args: tuple[Any, ...]) -> dict[str, Any]:
             "sum": score_sum,
             "min": minimum if minimum is not None else 0.0,
             "max": maximum if maximum is not None else 0.0,
+            "histogram": score_histogram,
             "top": local_top,
             "state_backend": "sqlite",
         }
@@ -254,12 +283,17 @@ class LocalParallelGraphEngine:
         expected_session_id: str | None = None,
         snapshot_scope: str | None = None,
         derived_target: dict[str, Any] | None = None,
+        external_runner: ExternalAlgorithmRunner | None = None,
     ) -> dict[str, Any]:
         algorithm = str(algorithm).strip().lower()
         # Added: retain the optimized degree mapper and route the complete
         # small-graph compute catalogue to the disk-backed algorithm kernel.
         degree_algorithms = {"degree", "in_degree", "out_degree", "degree_centrality"}
-        supported = degree_algorithms | set(LargeGraphAlgorithms.SUPPORTED)
+        supported = (
+            degree_algorithms
+            | set(LargeGraphAlgorithms.SUPPORTED)
+            | set(GRAPHSCOPE_ONLY_ALGORITHM_NAMES)
+        )
         if algorithm not in supported:
             raise ValueError(
                 f"并行引擎不支持算法 {algorithm!r}；禁止回退到 NetworkX"
@@ -314,20 +348,43 @@ class LocalParallelGraphEngine:
                 progress(stage, value, message, detail or {})
 
         try:
-            if algorithm not in degree_algorithms:
-                emit(
-                    "algorithm", 0.10, "开始执行分区外存算法",
-                    {"algorithm": algorithm, "partitions": partitions, "workers": workers},
-                )
-                with PartitionedDiskGraph(manifest_path) as graph:
-                    kernel = LargeGraphAlgorithms(
-                        graph,
-                        staging / "work",
-                        result_root,
+            if algorithm not in degree_algorithms or external_runner is not None:
+                if (
+                    algorithm in GRAPHSCOPE_ONLY_ALGORITHM_NAMES
+                    and external_runner is None
+                ):
+                    raise ValueError(f"{algorithm} 仅支持 GraphScope 大图后端")
+                if external_runner is None:
+                    emit(
+                        "algorithm", 0.10, "开始执行分区外存算法",
+                        {"algorithm": algorithm, "partitions": partitions, "workers": workers},
+                    )
+                    with PartitionedDiskGraph(manifest_path) as graph:
+                        kernel = LargeGraphAlgorithms(
+                            graph,
+                            staging / "work",
+                            result_root,
+                            workers=workers,
+                            progress=progress,
+                        )
+                        output = kernel.run(algorithm, parameters)
+                else:
+                    emit(
+                        "algorithm", 0.10, "提交 GraphScope 原生算法",
+                        {"algorithm": algorithm, "partitions": partitions, "workers": workers},
+                    )
+                    output = external_runner(
+                        manifest_path=manifest_path,
+                        manifest=manifest,
+                        staging_root=staging,
+                        result_root=result_root,
+                        work_root=staging / "work",
+                        algorithm=algorithm,
+                        parameters=parameters,
                         workers=workers,
+                        top_k=top_k,
                         progress=progress,
                     )
-                    output = kernel.run(algorithm, parameters)
                 algorithm_summary = dict(output["summary"])
                 if algorithm_summary.get("success") is False:
                     raise ValueError(
@@ -380,6 +437,7 @@ class LocalParallelGraphEngine:
                     islice(iter(output.get("preview") or ()), 20)
                 )
                 _validate_control_payload(summary, control_preview)
+                backend_metadata = dict(output.get("backend_metadata") or {})
                 metadata = {
                     "graph_id": graph_id,
                     "graph_version": int(graph_version),
@@ -387,12 +445,16 @@ class LocalParallelGraphEngine:
                     "data_quality_policy_id": manifest["quality"]["policy_id"],
                     "algorithm": algorithm,
                     "parameters": parameters,
-                    "engine": self.ENGINE_NAME,
-                    "engine_version": self.ENGINE_VERSION,
+                    "engine": backend_metadata.get("engine", self.ENGINE_NAME),
+                    "engine_version": backend_metadata.get(
+                        "engine_version", self.ENGINE_VERSION
+                    ),
                     "partitions": partitions,
                     "workers": workers,
                     # Added audit marker: this path did not construct GraphData/NX.
-                    "topology_access": "sqlite-sharded-v1",
+                    "topology_access": backend_metadata.get(
+                        "topology_access", "sqlite-sharded-v1"
+                    ),
                     # Added: persist the actual execution mode instead of
                     # implying that every algorithm used all worker slots.
                     "execution_mode": output.get("summary", {}).get(
@@ -412,6 +474,16 @@ class LocalParallelGraphEngine:
                         },
                     ),
                 }
+                for field in (
+                    "backend",
+                    "adapter_version",
+                    "protocol_version",
+                    "native_app",
+                    "semantic_profile",
+                    "graph_cache_hit",
+                ):
+                    if field in backend_metadata:
+                        metadata[field] = backend_metadata[field]
                 if derived_snapshot is not None:
                     metadata.update(
                         {
@@ -507,6 +579,13 @@ class LocalParallelGraphEngine:
 
             result_count = sum(row["count"] for row in reduce_results)
             score_sum = sum(row["sum"] for row in reduce_results)
+            score_histogram: dict[float, int] = {}
+            for row in reduce_results:
+                for score, frequency in row["histogram"].items():
+                    score = float(score)
+                    score_histogram[score] = (
+                        score_histogram.get(score, 0) + int(frequency)
+                    )
             top = heapq.nlargest(
                 top_k,
                 (candidate for row in reduce_results for candidate in row["top"]),
@@ -526,6 +605,9 @@ class LocalParallelGraphEngine:
                     (row["max"] for row in reduce_results if row["count"]), default=0.0
                 ),
                 "score_mean": score_sum / result_count if result_count else 0.0,
+                "score_median": _median_from_histogram(
+                    score_histogram, result_count
+                ),
                 "top": top_rows,
                 "truncated": result_count > len(top_rows),
                 "parallel": {

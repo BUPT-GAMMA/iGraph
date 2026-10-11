@@ -299,8 +299,17 @@ async def register_session(agent_session_id: str, ctx: Context, user_id: Optiona
     """
     key = _mcp_key(ctx)
     effective_user = str(user_id or "").strip()
-    _session_registry.register(key, agent_session_id, effective_user)
     result = await _graph_data.create_session(agent_session_id, user_id=effective_user)
+    if isinstance(result, dict) and result.get("success") is False:
+        logger.warning(
+            "register_session rejected key=%s agent_session_id=%s status=%s error=%s",
+            key,
+            agent_session_id,
+            result.get("status_code"),
+            result.get("error"),
+        )
+        return _json(result)
+    _session_registry.register(key, agent_session_id, effective_user)
     logger.info(
         "register_session  key=%s -> agent_session_id=%s  total=%d",
         key,

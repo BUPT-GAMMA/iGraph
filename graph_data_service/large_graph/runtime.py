@@ -18,7 +18,7 @@ from typing import Any
 from .catalog import LargeGraphCatalog
 from .contracts import DataQualityPolicy
 from .durability import fsync_directory, remove_tree_and_fsync
-from .engine import LocalParallelGraphEngine
+from .engine_dispatcher import execute_compute_request
 from .router import ResourceManager
 from .processes import process_context
 from .snapshot import PartitionedSnapshotBuilder
@@ -100,29 +100,11 @@ def _job_process_entry(
                 progress=progress,
             )
         elif request["kind"] == "compute":
-            result = LocalParallelGraphEngine(
-                roots["artifacts"], snapshot_root=roots["snapshots"]
-            ).execute(
-                snapshot=dict(request["snapshot"]),
-                algorithm=str(request["algorithm"]),
-                parameters=dict(request.get("parameters") or {}),
-                user_scope=request["user_scope"],
-                graph_id=request["graph_id"],
-                graph_version=int(request["graph_version"]),
-                workers=int(request["workers"]),
+            result = execute_compute_request(
+                request,
+                snapshot_root=roots["snapshots"],
+                artifact_root=roots["artifacts"],
                 progress=progress,
-                expected_user_id=str(
-                    request["snapshot"].get("user_id") or request["user_id"]
-                ),
-                expected_session_id=str(
-                    request["snapshot"].get("session_id") or request["session_id"]
-                ),
-                snapshot_scope=str(request.get("snapshot_scope") or ""),
-                derived_target=(
-                    dict(request["derived_target"])
-                    if isinstance(request.get("derived_target"), dict)
-                    else None
-                ),
             )
         else:
             raise ValueError(f"未知大图任务类型: {request.get('kind')!r}")
@@ -200,7 +182,8 @@ class DurableLargeGraphRuntime:
                 job = self._current_job
             if process is not None and process.pid is not None:
                 self._terminate_process_tree(process)
-            if job_id:
+            remote_quiesced = job is None or self._cancel_remote_attempt(job)
+            if job_id and remote_quiesced:
                 handed_off = self.catalog.requeue_running_job(
                     job_id, "服务停止，任务已持久化并等待重试",
                     lease_id=lease_id,
@@ -266,6 +249,8 @@ class DurableLargeGraphRuntime:
                 "session_id": job["session_id"],
                 "graph_id": job["graph_id"],
                 "graph_version": job["graph_version"],
+                "job_id": job["job_id"],
+                "lease_id": job.get("lease_id"),
             }
         )
         if self.catalog.cancellation_requested(job["job_id"]):
@@ -377,6 +362,10 @@ class DurableLargeGraphRuntime:
             while process.is_alive():
                 if self._stop.is_set():
                     self._terminate_process_tree(process)
+                    if not self._cancel_remote_attempt(job):
+                        # Keep the current lease and attempt files bound until
+                        # recovery can prove the remote execution is terminal.
+                        return
                     handed_off = self.catalog.requeue_running_job(
                         job["job_id"], "服务停止，任务已持久化并等待重试",
                         lease_id=job.get("lease_id"),
@@ -388,6 +377,10 @@ class DurableLargeGraphRuntime:
                     self._terminate_process_tree(process)
                     if result is not None:
                         self._discard_unpublished_result(result)
+                    elif not self._cancel_remote_attempt(job):
+                        # The adapter lease will reap an orphaned run. Do not
+                        # delete its shared output or release this attempt yet.
+                        return
                     self.catalog.finish_cancelled(
                         job["job_id"], lease_id=job.get("lease_id")
                     )
@@ -459,6 +452,8 @@ class DurableLargeGraphRuntime:
             if self.catalog.cancellation_requested(job["job_id"]):
                 if result is not None:
                     self._discard_unpublished_result(result)
+                elif not self._cancel_remote_attempt(job):
+                    return
                 self.catalog.finish_cancelled(
                     job["job_id"], lease_id=job.get("lease_id")
                 )
@@ -474,11 +469,15 @@ class DurableLargeGraphRuntime:
                     elapsed_seconds=finished_elapsed,
                 )
             elif error:
+                if not self._cancel_remote_attempt(job):
+                    return
                 self._cleanup_staging(job)
                 self.catalog.finish_failed(
                     job["job_id"], error, lease_id=job.get("lease_id")
                 )
             elif process.exitcode != 0 or result is None:
+                if not self._cancel_remote_attempt(job):
+                    return
                 self._cleanup_staging(job)
                 self.catalog.finish_failed(
                     job["job_id"], f"底层执行进程异常退出(exitcode={process.exitcode})",
@@ -507,6 +506,8 @@ class DurableLargeGraphRuntime:
         finally:
             # A launch/catalog/queue failure must never leave descendants
             # writing into staging while the scheduler cleans or retries it.
+            if result is None:
+                self._cancel_remote_attempt(job)
             if process.pid is not None:
                 self._terminate_process_tree(process)
             messages.close()
@@ -526,6 +527,10 @@ class DurableLargeGraphRuntime:
         """Quiesce one attempt before its lease-fenced timeout transition."""
 
         self._terminate_process_tree(process)
+        if not self._cancel_remote_attempt(job):
+            # Leave the durable attempt running. The recovery loop retries the
+            # cancellation after the adapter's own control lease has expired.
+            return None
         terminal_status = self.catalog.finish_timeout(
             job["job_id"],
             max_job_seconds=float(self.max_job_seconds or 0.0),
@@ -535,6 +540,30 @@ class DurableLargeGraphRuntime:
         if terminal_status is not None:
             self._cleanup_recorded_attempt(job)
         return terminal_status
+
+    @staticmethod
+    def _cancel_remote_attempt(job: dict[str, Any]) -> bool:
+        """Return whether a remote attempt is absent or durably terminal."""
+
+        request = job.get("request") or {}
+        raw_plan = request.get("backend_plan")
+        if (
+            not isinstance(raw_plan, dict)
+            or raw_plan.get("selected_backend") != "graphscope"
+        ):
+            return True
+        adapter_url = str(raw_plan.get("adapter_url") or "").strip()
+        if not adapter_url:
+            return False
+        try:
+            from .graphscope_backend import GraphScopeAdapterClient, graphscope_run_id
+
+            return GraphScopeAdapterClient(adapter_url).cancel(
+                graphscope_run_id(str(job["job_id"]), job.get("lease_id"))
+            )
+        except (KeyError, TypeError, ValueError, RuntimeError):
+            # Remote leases expire automatically if the worker disappears.
+            return False
 
     def _admit_claimed_job(
         self, job: dict[str, Any], request: dict[str, Any]
@@ -779,7 +808,14 @@ class DurableLargeGraphRuntime:
             lease_id = job.get("lease_id")
             safe, reason = self._quiesce_stale_worker(job)
             if safe and isinstance(lease_id, str) and lease_id:
-                recoverable_leases.add((job["job_id"], lease_id))
+                if self._cancel_remote_attempt(job):
+                    recoverable_leases.add((job["job_id"], lease_id))
+                else:
+                    self.catalog.mark_recovery_blocked(
+                        job["job_id"],
+                        lease_id,
+                        "恢复受阻：无法确认 GraphScope 远端运行已终止",
+                    )
             elif isinstance(lease_id, str) and lease_id:
                 self.catalog.mark_recovery_blocked(
                     job["job_id"], lease_id, reason

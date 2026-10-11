@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .snapshot import _normalise_node, _stable_partition
+from graphscope_runtime.storage_codec import decode_edge_row, decode_node_row
 
 
 class PartitionedDiskGraph:
@@ -105,8 +106,8 @@ class PartitionedDiskGraph:
         if self._node_order_path is not None and self._node_order_path.is_file():
             with self._node_order_path.open("r", encoding="utf-8") as source:
                 for line in source:
-                    row = json.loads(line)
-                    yield str(row["id"]), str(row.get("name") or row["id"])
+                    node_id, name, _ = decode_node_row(line)
+                    yield node_id, name
             return
         for partition in range(self.partitions):
             yield from self._connection(partition).execute(
@@ -122,13 +123,7 @@ class PartitionedDiskGraph:
         for path in self._edge_paths:
             with path.open("r", encoding="utf-8") as source:
                 for line in source:
-                    row = json.loads(line)
-                    yield (
-                        str(row["source"]),
-                        str(row["target"]),
-                        float(row.get("weight", 1.0)),
-                        str(row.get("relation", "")),
-                    )
+                    yield decode_edge_row(line)
 
     def iter_out_edges(
         self, node: str, *, reverse: bool = False
