@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       full:
-        description: '运行完整后端回归（故障注入、隔离计算、重启恢复及 20 次取消验证）'
+        description: '运行完整后端回归（含算法逐项校验、大图集成、故障注入、隔离计算、重启恢复及 20 次取消验证）'
         type: boolean
         default: false
 
@@ -23,10 +23,41 @@ defaults:
     shell: bash
 
 jobs:
+  config:
+    name: Configuration checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # Disposable test credential; non-CI environments supply their own random secret.
+      IGRAPH_CONTROL_SERVICE_KEY: ci-service-configuration-only
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose configuration
+        run: |
+          # --env-file supplies interpolation; services also require env_file: .env.
+          # Validate in a temporary directory so an existing local .env is untouched.
+          compose_dir=$(mktemp -d)
+          trap 'rm -rf "$compose_dir"' EXIT
+          cp compose.yaml "$compose_dir/compose.yaml"
+          cp .env.example "$compose_dir/.env"
+          docker compose --project-directory "$compose_dir" --env-file "$compose_dir/.env" -f "$compose_dir/compose.yaml" config -q
+
+      - name: Check service Dockerfiles without building images
+        run: |
+          for dockerfile in frontend/Dockerfile deploy/docker/backend.Dockerfile \
+            deploy/docker/agent-runtime.Dockerfile deploy/docker/graph-data.Dockerfile \
+            deploy/docker/mcp.Dockerfile; do
+            docker buildx build --check --platform linux/amd64 --file "$dockerfile" .
+          done
+
   python:
     name: Python tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.full == true && 45 || 20 }}
     services:
       control-postgres:
         image: postgres:16-alpine
@@ -58,16 +89,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate Compose configuration
-        run: |
-          # --env-file supplies interpolation; services also require env_file: .env.
-          # Validate in a temporary directory so an existing local .env is untouched.
-          compose_dir=$(mktemp -d)
-          trap 'rm -rf "$compose_dir"' EXIT
-          cp compose.yaml "$compose_dir/compose.yaml"
-          cp .env.example "$compose_dir/.env"
-          docker compose --project-directory "$compose_dir" --env-file "$compose_dir/.env" -f "$compose_dir/compose.yaml" config -q
-
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -88,10 +109,18 @@ jobs:
         run: |
           pytest_args=()
           if [[ "$FULL_REGRESSION" != true ]]; then
+            # Core checks only. Per-algorithm result verification, large-graph
+            # integration, fault injection and restart recovery run via
+            # workflow_dispatch with full=true. The deselected test is
+            # timing-sensitive on shared runners.
             pytest_args+=(
+              --ignore=tests/servers/test_graph_data_app.py
+              --ignore=tests/servers/test_large_graph_all_algorithms.py
+              --ignore=tests/test_large_graph_execution_integration.py
               --ignore=tests/test_isolated_compute.py
               --ignore=tests/test_cancellation_failures.py
               --ignore=tests/test_execution_restart.py
+              --deselect=tests/test_workspace_tools.py::test_workspace_bash_timeout_is_structured
             )
           fi
           python -m pytest -q --durations=10 "${pytest_args[@]}"
@@ -131,148 +160,24 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-  docker-actions:
-    name: Docker action compatibility
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    env:
-      # Disposable credentials for the runner-local registry only.
-      REGISTRY_USER: igraph-ci
-      REGISTRY_PASSWORD: ci-local-registry-only
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Prepare authenticated local registry and test image
-        run: |
-          mkdir -p "$RUNNER_TEMP/registry-auth" "$RUNNER_TEMP/docker-smoke"
-          docker run --rm --entrypoint htpasswd httpd:2.4-alpine \
-            -Bbn "$REGISTRY_USER" "$REGISTRY_PASSWORD" > "$RUNNER_TEMP/registry-auth/htpasswd"
-          docker run -d --name igraph-ci-registry -p 127.0.0.1:5000:5000 \
-            -v "$RUNNER_TEMP/registry-auth:/auth:ro" \
-            -e REGISTRY_AUTH=htpasswd \
-            -e REGISTRY_AUTH_HTPASSWD_REALM=CI \
-            -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd registry:2
-          curl --fail --retry 15 --retry-all-errors --retry-delay 1 --max-time 3 \
-            --user "$REGISTRY_USER:$REGISTRY_PASSWORD" http://localhost:5000/v2/ > /dev/null
-          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/docker-smoke/marker"
-          printf 'FROM scratch\nCOPY marker /marker\n' > "$RUNNER_TEMP/docker-smoke/Dockerfile"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-        with:
-          driver-opts: network=host
-          buildkitd-config-inline: |
-            [registry."localhost:5000"]
-              http = true
-
-      - name: Log in to runner-local registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: localhost:5000
-          username: ${{ env.REGISTRY_USER }}
-          password: ${{ env.REGISTRY_PASSWORD }}
-
-      - name: Build and push test image to runner-local registry
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: ${{ runner.temp }}/docker-smoke
-          file: ${{ runner.temp }}/docker-smoke/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: localhost:5000/igraph-ci:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=docker-actions-smoke
-          cache-to: type=gha,mode=max,scope=docker-actions-smoke
-
-      - name: Pull test image and verify its contents
-        run: |
-          image="localhost:5000/igraph-ci:$GITHUB_SHA"
-          docker pull "$image"
-          container=$(docker create "$image" /unused)
-          trap 'docker rm -v "$container"' EXIT
-          docker cp "$container:/marker" "$RUNNER_TEMP/pulled-marker"
-          cmp "$RUNNER_TEMP/docker-smoke/marker" "$RUNNER_TEMP/pulled-marker"
-
-      - name: Check service Dockerfiles without building or publishing images
-        run: |
-          for dockerfile in frontend/Dockerfile deploy/docker/backend.Dockerfile \
-            deploy/docker/agent-runtime.Dockerfile deploy/docker/graph-data.Dockerfile \
-            deploy/docker/mcp.Dockerfile; do
-            docker buildx build --check --platform linux/amd64 --file "$dockerfile" .
-          done
-
-      - name: Remove runner-local registry
-        if: ${{ always() }}
-        run: |
-          if docker container inspect igraph-ci-registry > /dev/null 2>&1; then
-            docker rm -fv igraph-ci-registry
-          fi
-
   gate:
     name: Required checks
     if: ${{ always() }}
     needs:
+      - config
       - python
       - frontend
-      - docker-actions
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Verify required jobs
         env:
-          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          CONFIG_RESULT: ${{ needs.config.result }}
           PYTHON_RESULT: ${{ needs.python.result }}
-          DOCKER_RESULT: ${{ needs.docker-actions.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
         run: |
-          if [[ "$PYTHON_RESULT" != "success" || "$FRONTEND_RESULT" != "success" || "$DOCKER_RESULT" != "success" ]]; then
-            echo "Required jobs did not all succeed: python=$PYTHON_RESULT frontend=$FRONTEND_RESULT docker=$DOCKER_RESULT"
+          if [[ "$CONFIG_RESULT" != "success" || "$PYTHON_RESULT" != "success" || "$FRONTEND_RESULT" != "success" ]]; then
+            echo "Required jobs did not all succeed: config=$CONFIG_RESULT python=$PYTHON_RESULT frontend=$FRONTEND_RESULT"
             exit 1
           fi
           echo "All required CI jobs succeeded."
-
-  deploy:
-    name: Deploy main to server
-    needs: gate
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.gate.result == 'success' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    concurrency:
-      group: igraph-production-deployment
-      cancel-in-progress: false
-    steps:
-      - name: Check out the tested commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-
-      - name: Deploy tested source and verify services
-        env:
-          DEPLOY_HOST: ${{ vars.IGRAPH_CD_HOST }}
-          DEPLOY_PORT: ${{ vars.IGRAPH_CD_PORT }}
-          DEPLOY_USER: ${{ vars.IGRAPH_CD_USER }}
-          DEPLOY_KEY: ${{ secrets.IGRAPH_CD_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.IGRAPH_CD_KNOWN_HOSTS }}
-        run: |
-          set -Eeuo pipefail
-          [[ -n "$DEPLOY_HOST" && -n "$DEPLOY_USER" && "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
-          [[ -n "$DEPLOY_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
-          umask 077
-          deploy_ssh_dir=$(mktemp -d)
-          trap 'rm -rf "$deploy_ssh_dir"' EXIT
-          printf '%s\n' "$DEPLOY_KEY" > "$deploy_ssh_dir/key"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$deploy_ssh_dir/known_hosts"
-          git archive --format=tar.gz "$GITHUB_SHA" > "$deploy_ssh_dir/source.tar.gz"
-          ssh -T -i "$deploy_ssh_dir/key" -p "$DEPLOY_PORT" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$deploy_ssh_dir/known_hosts" \
-            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "python3 ~/.local/bin/igraph-cd-entry deploy $GITHUB_SHA" < "$deploy_ssh_dir/source.tar.gz"
-          printf 'Deployed commit `%s` after all required CI checks passed.\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

@@ -1,8 +1,18 @@
 # 本地测试
 
-仓库已删除 GitHub Actions CI 工作流，测试由开发者在本地按变更范围执行。
+测试由开发者在本地按变更范围执行。
 验证以后端功能正确性为重点，包括登录鉴权、用户数据隔离、会话与数据集操作、
 流式响应、任务取消和恢复。前端修改检查 TypeScript 类型与 Vite 构建。
+
+## GitHub Actions CI
+
+推送到 `main` 时，CI 只做核心检查：Compose 配置与 Dockerfile 检查、前端构建，
+以及排除耗时细节用例后的后端回归。被排除的是算法逐项结果校验
+（`tests/servers/test_graph_data_app.py`、`tests/servers/test_large_graph_all_algorithms.py`）、
+大图执行集成（`tests/test_large_graph_execution_integration.py`）、故障注入、隔离计算、
+重启恢复，以及在共享 runner 上对时间敏感的 `test_workspace_bash_timeout_is_structured`。
+需要完整回归时，在 Actions 页面手动运行 CI 并勾选 `full`。CI 不包含部署，
+上线见[手动部署](MANUAL_DEPLOYMENT.md)。
 
 ## 后端回归
 
