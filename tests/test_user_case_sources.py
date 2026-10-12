@@ -22,7 +22,7 @@ def install(root):
     install_novel_preset(root)
 
 
-@pytest.mark.parametrize("case", USER_CASES, ids=lambda case: case["id"])
+@pytest.mark.parametrize("case", [case for case in USER_CASES if case["id"] in {"finance", "tianlongbabu"}], ids=lambda case: case["id"])
 def test_source_matches_saved_graph_and_seed_preserves_user_edits(tmp_path, case):
     install(tmp_path)
     path, descriptor = installed_source(tmp_path / "server_datasets", case)

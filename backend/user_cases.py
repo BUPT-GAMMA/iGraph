@@ -5,9 +5,11 @@ import logging
 import uuid
 from pathlib import Path
 from backend.borylation_case import BORYLATION_CASE
+from backend.finance_risk_case import FINANCE_RISK_CASE
 
 
 USER_CASES = [
+    FINANCE_RISK_CASE,
     BORYLATION_CASE,
     {"id": "finance", "name": "金融股权示例", "filename": "finance-ownership.npz",
      "description": "三张金融表已构成股权图，可直接检查股东、控制链和集团关系。",
@@ -86,7 +88,7 @@ def background_for_dataset(dataset):
     if dataset is None or dataset.status != "ready" or dataset.source_kind != "server":
         return None
     case = next((item for item in USER_CASES
-                 if item["id"] in {"tianlongbabu", "borylation"}
+                 if item["id"] in {"tianlongbabu", "borylation", "finance_risk"}
                  and dataset.metadata.get("source_relative_path") == item["filename"]), None)
     if case is None or dataset.file_type != "npz":
         return None

@@ -1589,7 +1589,21 @@ class GraphDataService:
                 1, _env_int("LARGE_GRAPH_NODE_THRESHOLD", 1_000_000)
             )
 
-        if (
+        # Exact packaged PT graphs have known bounds and can use the existing
+        # cancellable loader. A name, metadata supplied by a caller, or an edited
+        # copy cannot qualify; unknown large binaries retain the normal guard.
+        packaged_local_graph = False
+        if (binary_suffix and lower_path.endswith(".pt") and not append
+                and not session.is_remote
+                and (source_bytes >= large_upload_threshold
+                     or source_bytes >= binary_upload_threshold
+                     or binary_expansion_threshold_reached)):
+            from graph_engine.example_inputs import verified_local_graph_source
+            packaged_local_graph = await run_sync(
+                verified_local_graph_source, record.saved_path,
+                max_nodes=node_threshold, max_edges=edge_threshold,
+            )
+        if not packaged_local_graph and (
             source_bytes >= large_upload_threshold
             or edge_threshold_reached
             or node_threshold_reached
@@ -4568,6 +4582,10 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         await run_sync(install_novel_preset, _dp.data_root())
         from graph_engine.borylation_preset import install_borylation_preset
         await run_sync(install_borylation_preset, _dp.data_root())
+        from graph_engine.bundled_presets import install_bundled_preset
+        await run_sync(install_bundled_preset, _dp.data_root(), resources=Path(__file__).resolve().parents[1] / "graph_engine/resources/finance_risk")
+        from graph_engine.example_inputs import install_example_inputs
+        await run_sync(install_example_inputs, _dp.data_root())
         await svc._construction_coordinator.restore()
         if svc._execution_host:
             await svc._execution_host.restore()

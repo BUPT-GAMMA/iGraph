@@ -584,7 +584,9 @@ def _quality(p: Projection, scope: set[str], limit: int) -> dict:
             "issues_truncated": sum(p.issue_counts.values()) > min(limit, len(p.issues)),
             "blocked_entity_count": len(p.blocked), "affected_entity_count": len(affected),
             "affected_entity_ids": affected[:limit], "source_projection_complete": p.complete,
-            "coverage_gap_institutions": p.counts["institutions_with_coverage_gap"]}
+            "coverage_gap_institutions": p.counts["institutions_with_coverage_gap"],
+            "coverage_gap_scope": "whole_graph",
+            "coverage_gap_definition": "recorded direct ownership total below 100%; not equivalent to zero positive shareholders"}
 
 
 def _rule_status(policy: dict) -> str:
@@ -681,6 +683,17 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
             "facts": [_fact(p, f) for f in selected_facts[:limit]], "scc_count": len(cyclic),
             "cyclic_components": [[p.entities[k].business_id for k in components[c][:limit]] for c in sorted(cyclic)[:limit]],
             "ignored_construction_edges": True, "ratio_format": policy.get("ratio_format", "percent_string")}
+        response["result"]["direct_ownership_summaries"] = []
+        for key in selected[:limit]:
+            direct = inc.get(key, [])
+            holders = {fact.holder for fact in direct}
+            response["result"]["direct_ownership_summaries"].append({
+                "entity_id": key, "direct_shareholder_count": len(holders),
+                "institution_shareholder_count": sum(p.entities[h].kind == "institution" for h in holders),
+                "individual_shareholder_count": sum(p.entities[h].kind == "individual" for h in holders),
+                "direct_fact_count": len(direct),
+                "scope": "all_selected_policy_incoming_facts",
+                "complete": p.complete, "direct_data_conflict": key in p.blocked})
         response["completeness"]["display_truncated"] = len(selected) > limit or len(selected_facts) > limit
     elif operation in {"first_holder", "economic_interest"}:
         target = _resolve(p, target_id)

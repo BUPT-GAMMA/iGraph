@@ -402,7 +402,8 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
             "加载 .pt 文件需要安装 PyTorch：pip install torch"
         ) from e
 
-    data = torch.load(path, map_location="cpu", weights_only=False)
+    from graph_data_service.pt_compat import load_pt_payload
+    data = load_pt_payload(path)
 
     if isinstance(data, dict):
         keys = set(data)
@@ -629,7 +630,7 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
 
     # ── label_names ──────────────────────────────────────────────────
     label_names: Optional[List[str]] = None
-    for attr in ("label_name", "label_names"):
+    for attr in ("label_name", "label_names", "label_texts"):
         val = _field(attr)
         if isinstance(val, (list, tuple)) and val and all(isinstance(item, str) for item in val):
             label_names = list(val)

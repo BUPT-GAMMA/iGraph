@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "inputs": [
+    {
+      "id": "finance-csv",
+      "name": "金融风控（CSV 原始三表）",
+      "description": "机构、个人与持股关系三张原始 CSV，已配置主外键，可体验构图、检查并手动保存。",
+      "filename": "finance-three-tables.csv",
+      "metadata": {
+        "csv_bundle": {
+          "version": "csv_bundle.v1",
+          "source_files": [
+            "individual_info.csv",
+            "institution_main.csv",
+            "institution_shareholder_relationship.csv"
+          ],
+          "tables": [
+            {
+              "name": "individual_info",
+              "columns": [
+                "IDV_ID",
+                "IDV_NM",
+                "IDV_MD5",
+                "STATC_DT",
+                "IS_IN_LIST_CO_POS",
+                "IS_BRK_FAH_EXEC",
+                "IS_IDV_GRP_TOP_PNT"
+              ],
+              "primary_key": [
+                "IDV_ID"
+              ],
+              "foreign_keys": []
+            },
+            {
+              "name": "institution_main",
+              "columns": [
+                "UUID",
+                "GCID",
+                "REFR_UUID",
+                "CHN_NM",
+                "ENG_NM",
+                "LCL_NM",
+                "CNSLD_SOC_CR_CODE",
+                "RGST_NAT",
+                "OFFC_NAT",
+                "FN_DT",
+                "APRV_DT",
+                "RGST_CPTL",
+                "RGST_CPTL_CCY_CODE",
+                "OPR_SCOP",
+                "RGST_ADR",
+                "OFFC_ADR",
+                "PROV_CODE",
+                "URB_CODE",
+                "ENTP_OPR_ST",
+                "LGL_RPRT",
+                "IDY_FRST_LVL_CODE",
+                "IDY_SCD_CODE",
+                "IDY_FRST_LVL_NAME",
+                "IDY_SCD_NAME",
+                "CHN_SHRT_NM",
+                "RCRD_ST",
+                "CUST_CRDBL",
+                "ENTP_CHAR_CL",
+                "LIST_ST_CODE",
+                "IS_STE_OWN_BKGD",
+                "IS_IVS_INST",
+                "AFFL_RGON",
+                "IS_GRP_CO",
+                "IS_LTD_CO",
+                "STATC_DT"
+              ],
+              "primary_key": [
+                "UUID"
+              ],
+              "foreign_keys": []
+            },
+            {
+              "name": "institution_shareholder_relationship",
+              "columns": [
+                "UUID",
+                "INST_CHN_NM",
+                "INST_ENG_NM",
+                "INST_CNSLD_SOC_CR_CODE",
+                "INST_RGST_CTY",
+                "REL_SHRHLR_CUST_ID",
+                "REL_SHRHLR_TP_CODE",
+                "REL_SHRHLR_HOLD_SHR_RTO",
+                "REL_SHRHLR_HOLD_SHR_RANK",
+                "REL_INST_SHRHLR_CHN_NM",
+                "REL_INST_SHRHLR_ENG_NM",
+                "REL_INST_SHRHLR_CNSLD_SOC_CR_CODE",
+                "REL_INST_SHRHLR_RGST_CTY",
+                "REL_IDV_SHRHLR_MD5_INF",
+                "REL_IDV_SHRHLR_NM",
+                "STATC_DT"
+              ],
+              "primary_key": [
+                "UUID",
+                "STATC_DT",
+                "REL_SHRHLR_CUST_ID"
+              ],
+              "foreign_keys": [
+                {
+                  "columns": [
+                    "UUID"
+                  ],
+                  "ref_table": "institution_main",
+                  "ref_columns": [
+                    "UUID"
+                  ]
+                },
+                {
+                  "columns": [
+                    "REL_SHRHLR_CUST_ID"
+                  ],
+                  "ref_table": "institution_main",
+                  "ref_columns": [
+                    "UUID"
+                  ]
+                },
+                {
+                  "columns": [
+                    "REL_SHRHLR_CUST_ID"
+                  ],
+                  "ref_table": "individual_info",
+                  "ref_columns": [
+                    "IDV_ID"
+                  ]
+                }
+              ]
+            }
+          ],
+          "total_bytes": 6427223
+        }
+      },
+      "sha256": "38ccb8cca3dcd7b85ee1958caa2000be3dbdbc457be84d76d5073d10e6d7edb8",
+      "size_bytes": 6427239,
+      "parts": [
+        {
+          "file": "finance-csv.000.gz",
+          "sha256": "b618ffdfef81a4011b3ace88414b4f67aec9be92282e0d79bbfa453e6b04144b",
+          "size_bytes": 761804
+        }
+      ],
+      "source_files": [
+        {
+          "filename": "individual_info.csv",
+          "sha256": "42488b995e05eb3e0ba99e7ea1961518246c4de4e81abafc1dd04ad35c04fa0a"
+        },
+        {
+          "filename": "institution_main.csv",
+          "sha256": "32f45bc436a8dd4d9adb162b44eef3919b6754de1a36e1e865b48720d68367f9"
+        },
+        {
+          "filename": "institution_shareholder_relationship.csv",
+          "sha256": "30fcd35b17e4e31010721d4438875cfe421bf0e87c66ce1aeec942ac48c39855"
+        }
+      ]
+    },
+    {
+      "id": "stackexchange-sql",
+      "name": "StackExchange（SQL 原始数据）",
+      "description": "StackExchange SQL 数据源，可体验 SQL 解析、主外键构图和手动保存。",
+      "filename": "stackexchange-graph-15000.sql",
+      "metadata": {},
+      "sha256": "4b3c04e5131b7786ef7a5655405b2701fd840bdeb89cd63b5c7bab6885470c8c",
+      "size_bytes": 974188,
+      "parts": [
+        {
+          "file": "stackexchange-sql.000.gz",
+          "sha256": "46927957f6d41cf67ee9788b0311dc9cdc89e89695f1d03894900c4fd39ed5cd",
+          "size_bytes": 274967
+        }
+      ]
+    },
+    {
+      "id": "arxiv-pt",
+      "name": "arxiv（PT 图）",
+      "description": "arxiv 引文图，包含节点特征、论文文本、分类标签与数据划分，可直接载入分析。",
+      "filename": "arxiv.pt",
+      "metadata": {
+        "num_nodes": 169343,
+        "num_edges": 2315598,
+        "directed": true,
+        "node_feat_dim": 128,
+        "dataset_kind": "single_graph",
+        "format_detected": "single_graph"
+      },
+      "sha256": "fe881bceceeb2685899b4f9ae885fdd111e28803ca4efa2c761b3af051e23d60",
+      "size_bytes": 556878298,
+      "parts": [
+        {
+          "file": "arxiv-pt.000.gz",
+          "sha256": "49b9b476cd318dd876605763cced937f74c256fad59790b52eb1bfb8befee4ea",
+          "size_bytes": 16786937
+        },
+        {
+          "file": "arxiv-pt.001.gz",
+          "sha256": "bca7768cf996bf8ce59b7605871a458d5b8b4fc72ca2aa33b55020da37abb948",
+          "size_bytes": 16780051
+        },
+        {
+          "file": "arxiv-pt.002.gz",
+          "sha256": "60f99c7c41a6b8baba327ccad65e712b259ca3d26dfe26d63025576b6875333f",
+          "size_bytes": 16795328
+        },
+        {
+          "file": "arxiv-pt.003.gz",
+          "sha256": "726acc335f62a0945abfc3fd0145fd8c1c7c54b0bc43038703e9688ec0f4e459",
+          "size_bytes": 16791126
+        },
+        {
+          "file": "arxiv-pt.004.gz",
+          "sha256": "e9b36b2899fe05107c805d73e9fcbc839cbd74acc278f91d8fdc285c5fd5de37",
+          "size_bytes": 17315696
+        },
+        {
+          "file": "arxiv-pt.005.gz",
+          "sha256": "86b5a7e10c05dc2602fcab67fbabd4c9449f67d9b4304e3b644d25a8f8a0aee5",
+          "size_bytes": 17165040
+        },
+        {
+          "file": "arxiv-pt.006.gz",
+          "sha256": "1b62855348210e809f4757cb3bf09f34fa1cffa910f53c7b6e1ae1ba080f29a9",
+          "size_bytes": 17178235
+        },
+        {
+          "file": "arxiv-pt.007.gz",
+          "sha256": "13396847b2c6eebb0d2013ea3fe19bbc934074f02845e93103458eabae80e6bf",
+          "size_bytes": 18357613
+        },
+        {
+          "file": "arxiv-pt.008.gz",
+          "sha256": "cc4baf1f2b154332c148ae8ffd0d08d2caefd5f35226ac380798722a46f61a93",
+          "size_bytes": 45528600
+        },
+        {
+          "file": "arxiv-pt.009.gz",
+          "sha256": "a5ca44995f1833bf7ec14615d3d3ece3658d2b651001037f1ce7144364146e31",
+          "size_bytes": 34508872
+        },
+        {
+          "file": "arxiv-pt.010.gz",
+          "sha256": "d47e82d0c1e2f5c33ef0d7429d6328fa33e988cafc26a473cdfc4407900f9eba",
+          "size_bytes": 10071374
+        },
+        {
+          "file": "arxiv-pt.011.gz",
+          "sha256": "6b44e026973ab152e5f7dcd13ddfef1f3b444a9dcafabcf9aa81ad6885c1ee73",
+          "size_bytes": 1148115
+        }
+      ],
+      "local_graph_loading": true
+    }
+  ]
+}

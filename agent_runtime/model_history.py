@@ -313,6 +313,11 @@ class ModelHistoryMixin:
         request = molecular_review(prepared, draft, response_format)
         kind = "borylation" if request is not None else "kinship"
         if request is None:
+            from agent_runtime.finance_review import review_request as financial_review
+            request = financial_review(prepared, draft, response_format)
+            if request is not None:
+                kind = "finance"
+        if request is None:
             request = review_request(prepared, draft, response_format)
         if request is None:
             return None
@@ -328,6 +333,11 @@ class ModelHistoryMixin:
         from agent_runtime.borylation_review import review_request as molecular_review
         request = molecular_review(prepared, draft, response_format)
         kind = "borylation" if request is not None else "kinship"
+        if request is None:
+            from agent_runtime.finance_review import review_request as financial_review
+            request = financial_review(prepared, draft, response_format)
+            if request is not None:
+                kind = "finance"
         if request is None:
             request = review_request(prepared, draft, response_format)
         if request is None:
@@ -359,13 +369,14 @@ class ModelHistoryMixin:
     async def ainvoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         from agent_runtime.kinship_review import has_tool_calls, content_of, analysis_evidence
         from agent_runtime.borylation_review import borylation_evidence
+        from agent_runtime.finance_review import finance_evidence
         from agno.models.response import ModelResponse
         prepared = self._prepare_history(messages, tools, run_response)
         from agent_runtime.borylation_review import evidence_tool_choice
         tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
         reviewable = response_format is None and (kinship_answer_constraints(messages) is not None
             or any("communities" in record for record in analysis_evidence(messages))
-            or bool(borylation_evidence(messages)))
+            or bool(borylation_evidence(messages)) or bool(finance_evidence(messages)))
         buffered = []
         async with aclosing(super().ainvoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)) as iterator:
             async for event in iterator:
@@ -407,13 +418,14 @@ class ModelHistoryMixin:
     def invoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         from agent_runtime.kinship_review import has_tool_calls, content_of, analysis_evidence
         from agent_runtime.borylation_review import borylation_evidence
+        from agent_runtime.finance_review import finance_evidence
         from agno.models.response import ModelResponse
         prepared = self._prepare_history(messages, tools, run_response)
         from agent_runtime.borylation_review import evidence_tool_choice
         tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
         reviewable = response_format is None and (kinship_answer_constraints(messages) is not None
             or any("communities" in record for record in analysis_evidence(messages))
-            or bool(borylation_evidence(messages)))
+            or bool(borylation_evidence(messages)) or bool(finance_evidence(messages)))
         buffered = []
         for event in super().invoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs):
             self._record_provider_context_usage(event, run_response)

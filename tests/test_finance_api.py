@@ -30,9 +30,12 @@ def test_finance_preserves_business_status_and_session_ownership(client, finance
     assert finance_calls[0][1]['X-User-ID'] == 'admin'
     assert finance_calls[0][2] == {"arguments": args}
     before = len(finance_calls)
-    assert client.post(endpoint, headers=headers('alice'), json=args).status_code == 404
-    assert client.post(endpoint, json=args).status_code == 401
-    assert len(finance_calls) == before
+    # Single-user deployment ignores browser-selected identities.
+    assert client.post(endpoint, headers=headers("alice"), json=args).status_code == 200
+    assert client.post(endpoint, json=args).status_code == 200
+    assert all(call[1]["X-User-ID"] == "admin" for call in finance_calls)
+    assert client.post("/api/sessions/missing/finance/first-holder", json=args).status_code == 404
+    assert len(finance_calls) == before + 2
 
 
 def test_finance_route_never_proxies_arbitrary_tools_or_nonobjects(client, finance_calls):

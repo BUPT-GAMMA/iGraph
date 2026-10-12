@@ -7,14 +7,26 @@ export type BorylationStoryStep = { id: string; title: string; analysis_step: Bo
 type CaseText = { name: string; description: string; questions: string[]; story_steps?: BorylationStoryStep[] };
 export type UserCase = CaseText & { id: string; filename: string; available: boolean; translations?: { en?: CaseText } };
 export const UserCaseContext = createContext<UserCase[]>([]);
+const INPUT_LABELS: Record<string, [string, string]> = {
+  '金融风控（CSV 原始三表）': ['Financial risk (three source CSV tables)', '金融风控（CSV 原始三表）'],
+  'StackExchange（SQL 原始数据）': ['StackExchange (SQL source)', 'StackExchange（SQL 原始数据）'],
+  'arxiv（PT 图）': ['arxiv (PT graph)', 'arxiv（PT 图）'],
+  '机构、个人与持股关系三张原始 CSV，已配置主外键，可体验构图、检查并手动保存。': ['Three original CSV tables with configured keys. Build, inspect, and save your own graph.', '机构、个人与持股关系三张原始 CSV，已配置主外键，可体验构图、检查并手动保存。'],
+  'StackExchange SQL 数据源，可体验 SQL 解析、主外键构图和手动保存。': ['A StackExchange SQL source for parsing, key-based graph construction, and manual saving.', 'StackExchange SQL 数据源，可体验 SQL 解析、主外键构图和手动保存。'],
+  'arxiv 引文图，包含节点特征、论文文本、分类标签与数据划分，可直接载入分析。': ['The arxiv citation graph includes node features, paper text, labels, and splits, ready for analysis.', 'arxiv 引文图，包含节点特征、论文文本、分类标签与数据划分，可直接载入分析。'],
+};
+export function localizeInputLabel(text: string, t: Translate) {
+  const value = INPUT_LABELS[text] || Object.values(INPUT_LABELS).find(pair => pair[0] === text);
+  return value ? t(value[0], value[1]) : text;
+}
 export function useExampleLabels() {
   const cases = useContext(UserCaseContext);
   const { t } = useI18n();
   return {
-    name: (name: string) => localizeExampleName(name, cases, t) || name,
+    name: (name: string) => localizeInputLabel(localizeExampleName(name, cases, t) || name, t),
     description: (description: string) => {
       const item = cases.find(example => example.description === description || example.translations?.en?.description === description);
-      return item ? localizeUserCase(item, t).description : description;
+      return item ? localizeUserCase(item, t).description : localizeInputLabel(description, t);
     },
   };
 }

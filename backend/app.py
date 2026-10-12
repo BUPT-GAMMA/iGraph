@@ -3125,6 +3125,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return {"success": True, "project": _project_row(project, count)}
 
     async def ensure_personal_user_case_sources(request, user_id):
+        from backend.example_inputs import ensure_example_inputs
+        await asyncio.to_thread(ensure_example_inputs, project_datasets, server_datasets.root, user_id)
         from backend.user_cases import USER_CASES, installed_source
         for case in USER_CASES:
             source = installed_source(server_datasets.root, case)

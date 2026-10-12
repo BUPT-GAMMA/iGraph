@@ -116,7 +116,7 @@ class ProjectDatasetDirectory:
         user_id: str,
         name: str,
         original_filename: str,
-        content: bytes,
+        content: bytes | Path,
         description: str = "",
     ) -> ProjectDatasetRecord:
         description = self._description(description)
@@ -131,7 +131,11 @@ class ProjectDatasetDirectory:
             fd, tmp_name = tempfile.mkstemp(prefix="source-", dir=str(dataset_dir))
             try:
                 with os.fdopen(fd, "wb") as handle:
-                    handle.write(content)
+                    if isinstance(content, Path):
+                        with content.open("rb") as source:
+                            shutil.copyfileobj(source, handle, 1024 * 1024)
+                    else:
+                        handle.write(content)
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(tmp_name, source_path)
@@ -310,7 +314,7 @@ class ProjectDatasetDirectory:
             if identity in installed:
                 return None
             dataset = self.create(project_id=None, user_id=user_id, name=case["name"],
-                original_filename=source["filename"], content=source_path.read_bytes(), description=case["description"])
+                original_filename=source["filename"], content=source_path, description=case["description"])
             dataset.metadata.update(source.get("metadata", {}), user_case_id=case["id"])
             records[dataset.dataset_id] = dataset
             self._write(records, installed_user_cases=[*installed, identity])
