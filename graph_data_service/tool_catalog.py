@@ -1358,7 +1358,19 @@ GRAPH_TOOLS: List[dict] = [
             "明确拒绝，不回退到无界 NetworkX 路径。dev 新增的结构、连通性、树/DAG、"
             "匹配/着色和扩展距离分组算子均已接入；结果会按能力标记"
             " exact/approximate/bounded/mixed；"
-            "可物化的全量节点/边结果写入 Artifact，Agent 仅接收有界预览。"
+            "GraphScope 部署还提供仅限大图的 SCC/BCC、桥、割点、最小生成森林、"
+            "图着色、最大匹配、HITS、K-shell、个性化 PageRank、近似直径、Fluid "
+            "Community、稠密子图、独立集/覆盖和 Motif 统计；"
+            "查询有向大图的强连通分量数量或最大强连通分量时，必须使用"
+            " algorithm=strongly_connected_components；不要改用 graph_connectivity"
+            " 或 connectivity_analysis。"
+            "查询大图 HITS Hub/Authority 时必须使用 algorithm=hits 和 GraphScope"
+            " 后端；不要用 node_centrality，也不要用入度/出度近似替代。"
+            "查询大图介数中心性时使用 algorithm=node_centrality、"
+            "centrality_type=betweenness 和 GraphScope 后端；sample_sources 是近似采样"
+            "源点数，省略时系统按部署默认值和当前图工作预算自动选择。"
+            "可物化的全量节点/边结果写入 Artifact，Agent 仅接收有界预览；同一用户、"
+            "同一项目、同一不可变数据版本及参数的等价任务会自动复用已有结果或作业。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1378,8 +1390,23 @@ GRAPH_TOOLS: List[dict] = [
                         "reachability", "global_metrics",
                         "graph_structure_analysis", "connectivity_analysis",
                         "tree_dag_analysis", "matching_coloring_analysis",
-                        "distance_measures"
+                        "distance_measures", "strongly_connected_components",
+                        "biconnected_components", "bridges", "articulation_points",
+                        "minimum_spanning_forest", "graph_coloring",
+                        "maximal_matching", "hits", "k_shell",
+                        "personalized_pagerank", "approximate_diameter",
+                        "fluid_community", "densest_subgraph",
+                        "independent_set_cover", "motif_counting"
                     ],
+                },
+                "backend": {
+                    "type": "string",
+                    "enum": ["auto", "graphscope", "legacy"],
+                    "description": (
+                        "仅控制大图任务后端。legacy 固定现有分区外存引擎；graphscope "
+                        "要求使用已适配的 GraphScope 原生算法且不静默回退；auto 在部署"
+                        "白名单和语义匹配时使用 GraphScope，否则继续使用现有大图引擎。"
+                    ),
                 },
                 "parameters": {
                     "type": "object",
@@ -1391,7 +1418,8 @@ GRAPH_TOOLS: List[dict] = [
                         "reachability 的 descendants/ancestors 需 node；链路预测的 source/target"
                         "必须同时提供或同时省略；分组结构遍历需 source，局部连通度/割集需"
                         " source+target，LCA 需 node1+node2，支配分析需 source，均衡着色需"
-                        " num_colors。保留 additionalProperties 以兼容后续引擎参数。"
+                        " num_colors；independent_set_cover 需 operation，motif_counting 需"
+                        " motif，且 k_clique 另需 k。保留 additionalProperties 以兼容后续引擎参数。"
                     ),
                     "additionalProperties": True,
                     "properties": {
@@ -1399,7 +1427,7 @@ GRAPH_TOOLS: List[dict] = [
                             "type": "string",
                             "description": (
                                 "起点/源点。最短路与成对路径分析必填；最大流/最小割与 sink 配合；"
-                                "链路预测中必须与 target 同时提供。"
+                                "链路预测中必须与 target 同时提供；personalized_pagerank 必填。"
                             ),
                         },
                         "target": {
@@ -1472,6 +1500,29 @@ GRAPH_TOOLS: List[dict] = [
                                 "必须选择与顶层 algorithm 对应的一项。"
                             ),
                         },
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "maximal_independent_set",
+                                "minimal_dominating_set",
+                                "minimal_vertex_cover",
+                                "minimal_edge_cover",
+                            ],
+                            "description": "independent_set_cover 必填的 GraphScope FLASH 原生操作。",
+                        },
+                        "motif": {
+                            "type": "string",
+                            "enum": [
+                                "triangle", "rectangle", "k_clique", "diamond",
+                                "tailed_triangle", "three_path", "cycle_plus_triangle",
+                                "cyclic_triangle", "acyclic_triangle",
+                                "in_plus_triangle", "out_plus_triangle",
+                            ],
+                            "description": (
+                                "motif_counting 必填的原生模式；当前仅接受有向快照并按 "
+                                "GraphScope FLASH 的有向简单图定义计数。"
+                            ),
+                        },
                         "metric": {
                             "type": "string",
                             "enum": [
@@ -1514,8 +1565,16 @@ GRAPH_TOOLS: List[dict] = [
                             "minimum": 1,
                             "description": (
                                 "yen_k_shortest 的路径数（1..200，默认 3），或 ego_graph 半径及"
-                                "k_core/k_truss/k_corona 阈值（默认 2）。"
+                                "k_core/k_truss/k_corona/k_shell 阈值（默认 2；k_shell 必填），"
+                                "或 motif_counting/k_clique 的团大小（2..8，必填）。"
                             ),
+                        },
+                        "rounds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000,
+                            "default": 10,
+                            "description": "densest_subgraph 的 GraphScope FLASH 近似轮数。",
                         },
                         "cutoff": {
                             "type": "integer",
@@ -1583,7 +1642,9 @@ GRAPH_TOOLS: List[dict] = [
                                 "小于节点总数时结果会标记 approximate。部署硬上限由 "
                                 "LARGE_GRAPH_MAX_SAMPLE_SOURCES 配置（当前为 "
                                 f"{_LARGE_GRAPH_MAX_SAMPLE_SOURCES}），且不能由 "
-                                "allow_expensive 绕过。"
+                                "allow_expensive 绕过；实际可用上限还受当前图边数和 "
+                                "LARGE_GRAPH_MAX_ESTIMATED_WORK_UNITS 约束，拒绝信息会返回"
+                                "该图可执行的 sample_sources 上限。省略时使用工作量安全默认值。"
                             ),
                         },
                         "damping": {
@@ -1615,6 +1676,15 @@ GRAPH_TOOLS: List[dict] = [
                             "description": (
                                 "shortest_path 是否使用边权；all_shortest_paths 当前固定使用权重，"
                                 "其他算法会忽略该参数。"
+                            ),
+                        },
+                        "result_detail": {
+                            "type": "string",
+                            "enum": ["distances", "paths"],
+                            "default": "paths",
+                            "description": (
+                                "仅用于 shortest_path 且 target=all。distances 返回完整距离"
+                                " Artifact，可进入 GraphScope BFS；paths 保留原有最近路径结果。"
                             ),
                         },
                         "create_version": {
@@ -1678,6 +1748,9 @@ GRAPH_TOOLS: List[dict] = [
         "description": (
             "返回大图并行引擎当前具有明确语义映射的算法、引擎版本、可用子模式、"
             "exact/approximate/bounded 执行语义、复杂度等级、并行策略及结果类型。"
+            "engine 字段保留本地准入能力信息；available_backends、backend_routes 和"
+            "preferred_backend 描述实际可选执行后端。任务提交后必须以 backend_plan."
+            "selected_backend 和 route_decision.execution_engine 为实际执行引擎依据。"
             "提交 run_large_graph_algorithm 前可用它核对 mode/近似语义；具体字段名、"
             "条件必填项和数值边界见该工具的 parameters Schema。"
         ),

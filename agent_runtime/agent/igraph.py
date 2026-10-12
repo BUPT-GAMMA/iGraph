@@ -576,12 +576,28 @@ class IGraph:
         )
         if "register_session" in self._tool_map:
             try:
-                await self._mcp_client.call_tool(
-                    "register_session",
-                    {"agent_session_id": self.session_id, "user_id": self.user_id},
+                registration = self._decode_mcp_payload(
+                    await self._mcp_client.call_tool(
+                        "register_session",
+                        {
+                            "agent_session_id": self.session_id,
+                            "user_id": self.user_id,
+                        },
+                    )
                 )
+                if (
+                    isinstance(registration, dict)
+                    and registration.get("success") is False
+                ):
+                    raise RuntimeError(
+                        "Graph Engine 会话注册失败: "
+                        f"{registration.get('error') or registration}"
+                    )
             except Exception:
-                pass
+                # Do not retain a half-connected client: the next run must
+                # reopen MCP and retry registration instead of skipping it.
+                await self._cleanup_mcp()
+                raise
         if "set_session_config" in self._tool_map:
             try:
                 await self._mcp_client.call_tool(

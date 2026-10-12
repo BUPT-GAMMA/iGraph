@@ -77,7 +77,19 @@ class GraphDataClient:
         self.base_url = base_url.rstrip("/")
 
     async def create_session(self, session_id: str, user_id: str = "") -> Dict[str, Any]:
-        return await self._post(f"/sessions/{session_id}", user_id=user_id)
+        # Session creation is an internal control operation when cancellation
+        # controls are enabled. It can run before a tool execution context
+        # exists, so add the service credential explicitly and send an object
+        # body rather than JSON null.
+        token = execution_headers.set(
+            {**execution_headers.get(), **service_headers(user_id)}
+        )
+        try:
+            return await self._post(
+                f"/sessions/{session_id}", {}, user_id=user_id
+            )
+        finally:
+            execution_headers.reset(token)
 
     async def delete_session(self, session_id: str, user_id: str = "") -> Dict[str, Any]:
         return await self._delete(f"/sessions/{session_id}", user_id=user_id)

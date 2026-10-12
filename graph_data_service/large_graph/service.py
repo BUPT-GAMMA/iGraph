@@ -17,8 +17,16 @@ from .catalog import (
     LargeGraphCatalog,
     ScopeDeletionInProgress,
     SnapshotUnavailable,
+    project_result_cache_key,
     validate_artifact_job_binding,
 )
+from .backend_planner import (
+    BackendSelectionError,
+    configured_graphscope_modes,
+    resolve_backend_plan,
+)
+from .compatibility import GRAPHSCOPE_ONLY_ALGORITHM_NAMES
+from .contracts import BackendPlan
 from .contracts import DataQualityPolicy
 from .durability import remove_tree_and_fsync
 from .integrity import (
@@ -76,6 +84,24 @@ class LargeGraphService:
     @staticmethod
     def _detect_delimiter(source: Path) -> str:
         return detect_delimiter(source)
+
+    @staticmethod
+    def _execution_engine(plan: BackendPlan) -> dict[str, Any]:
+        if plan.selected_backend == "graphscope":
+            return {
+                "backend": "graphscope",
+                "engine": "graphscope-analytical-engine",
+                "engine_version": "0.29.0",
+                "native_app": plan.native_app,
+                "semantic_profile": plan.semantic_profile,
+            }
+        return {
+            "backend": "legacy",
+            "engine": ComputeRouter.ENGINE_NAME,
+            "engine_version": ComputeRouter.ENGINE_VERSION,
+            "native_app": None,
+            "semantic_profile": plan.semantic_profile,
+        }
 
     @staticmethod
     def _execution_binding(user_id: str, session_id: str) -> dict[str, Any]:
@@ -465,6 +491,7 @@ class LargeGraphService:
         graph_version: int,
         algorithm: str,
         parameters: dict[str, Any] | None,
+        backend: str | None = None,
         workers: int | None = None,
         minimum_derived_version: int | None = None,
     ) -> dict[str, Any]:
@@ -542,22 +569,27 @@ class LargeGraphService:
                     "请以 quality_policy.edge_key=endpoints 重新准备快照。"
                 ),
             }
-        # Added snapshot-format gate: versions prepared before engine v2 do
-        # not contain node-owned adjacency shards. Reject before queueing so a
-        # durable job cannot fail later merely because it targets an old format.
         degree_fast_paths = {"degree", "in_degree", "out_degree", "degree_centrality"}
-        if snapshot is not None and algorithm not in degree_fast_paths:
-            if (
-                manifest_payload is None
-                or
-                manifest_payload.get("adjacency_format")
-                != "igraph-sharded-sqlite-adjacency-v1"
-            ):
-                return {
-                    "success": False,
-                    "code": "SNAPSHOT_UPGRADE_REQUIRED",
-                    "error": "该版本缺少分区邻接索引，请重新调用 prepare_large_graph。",
-                }
+        node_count = (
+            int(snapshot.get("node_count", 0))
+            if snapshot
+            else self.router.large_node_threshold
+        )
+        edge_count = (
+            int(snapshot.get("edge_count", 0))
+            if snapshot
+            else self.router.large_edge_threshold
+        )
+        centrality_type = str(params.get("centrality_type", "degree")).strip().lower()
+        if (
+            snapshot is not None
+            and algorithm == "node_centrality"
+            and centrality_type in {"betweenness", "load", "percolation"}
+            and "sample_sources" not in params
+        ):
+            params["sample_sources"] = self.resources.default_brandes_sample_sources(
+                node_count, edge_count
+            )
         partitions = int(snapshot.get("partitions", 1)) if snapshot else 1
         cpu_count = os.cpu_count() or 1
         workers = max(
@@ -566,8 +598,8 @@ class LargeGraphService:
         )
         decision = self.router.route(
             operation_scope="global",
-            node_count=int(snapshot.get("node_count", 0)) if snapshot else self.router.large_node_threshold,
-            edge_count=int(snapshot.get("edge_count", 0)) if snapshot else self.router.large_edge_threshold,
+            node_count=node_count,
+            edge_count=edge_count,
             algorithm=algorithm,
             directed=bool(snapshot.get("directed", True)) if snapshot else True,
             weighted=bool(params.get("use_weight", False)),
@@ -582,6 +614,43 @@ class LargeGraphService:
             return {"success": False, "error": decision.reason, **decision.to_dict()}
         assert snapshot is not None
         assert manifest_payload is not None
+        try:
+            backend_plan = resolve_backend_plan(
+                requested_backend=backend,
+                algorithm=algorithm,
+                parameters=params,
+                directed=bool(snapshot.get("directed", True)),
+                has_weights=bool(snapshot.get("has_weights", False)),
+                has_self_loops=(
+                    int((manifest_payload.get("quality") or {}).get("self_loops_seen", 0))
+                    > int((manifest_payload.get("quality") or {}).get("self_loops_skipped", 0))
+                ),
+            )
+        except BackendSelectionError as exc:
+            return {
+                "success": False,
+                "code": exc.code,
+                "error": exc.message,
+                "requested_backend": str(backend or "").strip().lower() or None,
+            }
+        route_decision = decision.to_dict()
+        route_decision["execution_engine"] = self._execution_engine(backend_plan)
+        if (
+            backend_plan.selected_backend == "legacy"
+            and algorithm not in degree_fast_paths
+            and manifest_payload.get("adjacency_format")
+            != "igraph-sharded-sqlite-adjacency-v1"
+        ):
+            return {
+                "success": False,
+                "code": "SNAPSHOT_ADJACENCY_REQUIRED",
+                "error": (
+                    "该快照采用 GraphScope 紧凑存储，未预建本地 SQLite 邻接索引；"
+                    "请改用已适配的 GraphScope 模式，或设置 "
+                    "LARGE_GRAPH_PRECOMPUTE_ADJACENCY=true 后重新准备该图版本。"
+                ),
+                "backend_plan": backend_plan.to_dict(),
+            }
         # The catalog schema intentionally keeps snapshot rows compact. Carry
         # the integrity-checked byte accounting in the immutable durable job
         # request so dequeue-time admission uses the same real shard sizes.
@@ -596,12 +665,27 @@ class LargeGraphService:
             "snapshot_binding": shared_snapshot_binding,
             "algorithm": algorithm,
             "parameters": params,
+            "backend_plan": backend_plan.to_dict(),
             "workers": workers,
-            "route_decision": decision.to_dict(),
+            "route_decision": route_decision,
             "execution": self._execution_binding(user_id, session_id),
         }
+        creates_derived_version = bool(
+            algorithm == "subgraph_extraction"
+            and params.get("create_version", True)
+        )
+        project_id = self.catalog.get_session_project(
+            user_id=user_id, session_id=session_id
+        )
+        if project_id and not creates_derived_version:
+            cache_key = project_result_cache_key(request)
+            if cache_key:
+                request["project_result"] = {
+                    "project_id": project_id,
+                    "cache_key": cache_key,
+                }
         try:
-            job_id, derived_version = self.catalog.enqueue_compute(
+            job_id, derived_version, reused = self.catalog.enqueue_compute(
                 user_id=user_id,
                 session_id=session_id,
                 graph_id=graph_id,
@@ -621,13 +705,43 @@ class LargeGraphService:
                 "code": "LARGE_GRAPH_SNAPSHOT_REQUIRED",
                 "error": str(exc),
             }
-        if self.embedded_worker:
+        reused_job = self.catalog.get_job_for_session(
+            job_id, user_id=user_id, session_id=session_id
+        )
+        reused_status = str((reused_job or {}).get("status") or "queued")
+        reused_from_session = str(
+            (reused_job or {}).get("session_id") or ""
+        )
+        if reused and reused_status == "done":
+            cached = self.catalog.get_job_result_for_session(
+                job_id, user_id=user_id, session_id=session_id
+            )
+            if cached is not None:
+                cached.pop("job_id", None)
+                source_graph_id = cached.get("graph_id")
+                source_graph_version = cached.get("graph_version")
+                return {
+                    **cached,
+                    "success": True,
+                    "async": False,
+                    "graph_id": graph_id,
+                    "graph_version": int(graph_version),
+                    "source_job_id": job_id,
+                    "source_graph_id": source_graph_id,
+                    "source_graph_version": source_graph_version,
+                    "project_result_reused": True,
+                    "source_session_id": reused_from_session,
+                    "backend_plan": backend_plan.to_dict(),
+                    "route_decision": route_decision,
+                    "message": "已复用同项目、同数据版本和同参数的已有计算结果。",
+                }
+        if self.embedded_worker and not reused:
             self.runtime.notify()
         return {
             "success": True,
             "async": True,
             "job_id": job_id,
-            "status": "queued",
+            "status": reused_status,
             "graph_id": graph_id,
             "graph_version": int(graph_version),
             **(
@@ -636,17 +750,30 @@ class LargeGraphService:
                 else {}
             ),
             "algorithm": algorithm,
-            "route_decision": decision.to_dict(),
-            "message": "大图全局算法已持久化并进入串行队列。",
+            "project_result_reused": reused,
+            **(
+                {"source_session_id": reused_from_session}
+                if reused and reused_from_session != session_id
+                else {}
+            ),
+            "backend_plan": backend_plan.to_dict(),
+            "route_decision": route_decision,
+            "message": (
+                "已复用同项目中正在执行的等价计算作业。"
+                if reused
+                else "大图全局算法已持久化并进入串行队列。"
+            ),
         }
 
     def job_status(self, job_id: str, *, user_id: str, session_id: str) -> dict[str, Any] | None:
-        job = self.catalog.get_job(job_id, user_id=user_id, session_id=session_id)
+        job = self.catalog.get_job_for_session(
+            job_id, user_id=user_id, session_id=session_id
+        )
         if job is None:
             return None
         # Status is a bounded control-plane view: no source path, request body,
         # full result partitions or artifact contents are embedded here.
-        return {
+        result = {
             key: job.get(key)
             for key in (
                 "job_id", "graph_id", "graph_version", "kind", "status", "stage",
@@ -665,9 +792,23 @@ class LargeGraphService:
             # ``detail`` name so polling clients do not silently lose it.
             "detail": job.get("summary") or {},
         }
+        if str(job.get("session_id") or "") != session_id:
+            result["project_result_reused"] = True
+            result["source_session_id"] = str(job.get("session_id") or "")
+        request = job.get("request")
+        raw_plan = request.get("backend_plan") if isinstance(request, dict) else None
+        try:
+            result["execution_engine"] = self._execution_engine(
+                BackendPlan.from_dict(raw_plan if isinstance(raw_plan, dict) else None)
+            )
+        except (TypeError, ValueError):
+            pass
+        return result
 
     def job_result(self, job_id: str, *, user_id: str, session_id: str) -> dict[str, Any] | None:
-        return self.catalog.get_job_result(job_id, user_id=user_id, session_id=session_id)
+        return self.catalog.get_job_result_for_session(
+            job_id, user_id=user_id, session_id=session_id
+        )
 
     def cancel(self, job_id: str, *, user_id: str, session_id: str) -> bool:
         return self.runtime.cancel(job_id, user_id=user_id, session_id=session_id)
@@ -786,6 +927,32 @@ class LargeGraphService:
         for version in versions:
             version.pop("manifest_path", None)
         return versions
+
+    def list_session_scopes(self) -> list[dict[str, Any]]:
+        """List durable session identities known to the large-graph catalog."""
+        return self.catalog.list_session_scopes()
+
+    def bind_session_project(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        project_id: str | None,
+    ) -> None:
+        """Bind a Graph Engine session to its trusted Backend project."""
+        self.catalog.bind_session_project(
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+        )
+
+    def get_session_scope(
+        self, *, user_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        """Return a durable session identity known to the catalog."""
+        return self.catalog.get_session_scope(
+            user_id=user_id, session_id=session_id
+        )
 
     def version_matches_small_binding(
         self,
@@ -915,15 +1082,15 @@ class LargeGraphService:
         user_id: str,
         session_id: str,
     ) -> tuple[dict[str, Any], Path, dict[str, Any]] | None:
-        artifact = self.catalog.get_artifact(
+        artifact = self.catalog.get_artifact_for_session(
             artifact_id, user_id=user_id, session_id=session_id
         )
         if artifact is None:
             return None
         job = self.catalog.get_job(
             str(artifact.get("job_id") or ""),
-            user_id=user_id,
-            session_id=session_id,
+            user_id=str(artifact.get("user_id") or user_id),
+            session_id=str(artifact.get("session_id") or session_id),
         )
         if job is None or job.get("status") != "done":
             return None
@@ -952,7 +1119,43 @@ class LargeGraphService:
         return artifact, manifest_path, manifest
 
     def capabilities(self) -> list[dict[str, Any]]:
-        return self.router.capability_catalog()
+        graphscope_modes = configured_graphscope_modes()
+        graphscope_only = set(GRAPHSCOPE_ONLY_ALGORITHM_NAMES)
+        configured_backend = os.getenv("LARGE_GRAPH_BACKEND", "legacy").strip().lower()
+        rows = self.router.capability_catalog()
+        for row in rows:
+            algorithm = str(row["algorithm"])
+            native_modes = list(graphscope_modes.get(algorithm, ()))
+            backend_routes: list[dict[str, Any]] = []
+            if native_modes:
+                backend_routes.append(
+                    {
+                        "backend": "graphscope",
+                        "engine": "graphscope-analytical-engine",
+                        "engine_version": "0.29.0",
+                        "modes": native_modes,
+                        "parallel_strategy": "graphscope-native-fragment-parallel",
+                    }
+                )
+            if algorithm not in graphscope_only:
+                backend_routes.append(
+                    {
+                        "backend": "legacy",
+                        "engine": row["engine"],
+                        "engine_version": row["engine_version"],
+                        "modes": list(row.get("modes") or ()),
+                        "parallel_strategy": row["parallel_strategy"],
+                    }
+                )
+            row["available_backends"] = [route["backend"] for route in backend_routes]
+            row["backend_routes"] = backend_routes
+            if native_modes and configured_backend in {"auto", "graphscope"}:
+                row["preferred_backend"] = "graphscope"
+            elif algorithm not in graphscope_only:
+                row["preferred_backend"] = "legacy"
+            else:
+                row["preferred_backend"] = None
+        return rows
 
     def close(self) -> None:
         self.runtime.close()

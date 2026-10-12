@@ -2372,6 +2372,7 @@ def test_degree_fast_paths_handle_singleton_self_loop(
 
     assert result["summary"]["result_count"] == 1
     assert result["summary"]["top"] == expected_top
+    assert result["summary"]["score_median"] == expected_top[0]["score"]
 
 
 @pytest.mark.parametrize(
@@ -2397,6 +2398,7 @@ def test_degree_fast_paths_handle_empty_snapshot(
     assert result["summary"]["score_min"] == 0.0
     assert result["summary"]["score_max"] == 0.0
     assert result["summary"]["score_mean"] == 0.0
+    assert result["summary"]["score_median"] == 0.0
     assert result["summary"]["top"] == []
 
 

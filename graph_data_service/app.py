@@ -775,6 +775,20 @@ class GraphDataService:
         key = self._session_key(session_id, user_id)
         session = self._sessions.get(key)
         if session is None:
+            # The in-memory registry is lost when Graph Engine is recreated,
+            # while large-graph versions remain durable in SQLite. Recover a
+            # matching scope lazily as a second line of defence in case startup
+            # restoration raced with catalog publication.
+            durable_scope = self._large_graph.get_session_scope(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if durable_scope is not None:
+                session = self.get_or_create(session_id, user_id=user_id)
+                session.reserve_version_floor(
+                    int(durable_scope.get("max_graph_version", 0))
+                )
+        if session is None:
             raise HTTPException(status_code=404, detail="会话不存在")
         return session
 
@@ -912,26 +926,49 @@ class GraphDataService:
         return existing
 
     def _restore_sessions_from_disk(self) -> None:
-        def restore_one(session_id: str, user_id: str = "") -> None:
+        def restore_one(
+            session_id: str,
+            user_id: str = "",
+            *,
+            durable_version_floor: int = 0,
+        ) -> None:
             key = self._session_key(session_id, user_id)
             if key in self._sessions:
+                if durable_version_floor:
+                    self._sessions[key].reserve_version_floor(
+                        durable_version_floor
+                    )
                 return
             try:
                 session = GraphSession(session_id=session_id, user_id=user_id)
-                if session.load_snapshot():
-                    large_versions = self._large_graph.list_versions(
-                        user_id=user_id, session_id=session_id, graph_id=session_id
-                    )
-                    if large_versions:
-                        session.reserve_version_floor(
-                            max(
-                                int(row.get("graph_version", 0))
-                                for row in large_versions
-                            )
+                local_snapshot_loaded = session.load_snapshot()
+                large_versions = self._large_graph.list_versions(
+                    user_id=user_id, session_id=session_id, graph_id=session_id
+                )
+                if large_versions:
+                    durable_version_floor = max(
+                        durable_version_floor,
+                        max(
+                            int(row.get("graph_version", 0))
+                            for row in large_versions
                         )
+                    )
+                if durable_version_floor:
+                    session.reserve_version_floor(durable_version_floor)
+                if local_snapshot_loaded or durable_version_floor:
                     self._sessions[key] = session
             except Exception:
                 pass
+
+        # Large-only sessions have no graph_current.npz and were previously
+        # omitted here. Restore the catalog first so direct MCP calls work
+        # immediately after a Graph Engine restart.
+        for scope in self._large_graph.list_session_scopes():
+            restore_one(
+                scope["session_id"],
+                user_id=scope["user_id"],
+                durable_version_floor=int(scope.get("max_graph_version", 0)),
+            )
 
         for session_id in GraphSession.discover_restorable_sessions():
             restore_one(session_id)
@@ -3671,6 +3708,11 @@ class GraphDataService:
                     graph_version=int(arguments.get("graph_version", 0)),
                     algorithm=_required_str(arguments, "algorithm"),
                     parameters=parameters,
+                    backend=(
+                        str(arguments["backend"])
+                        if arguments.get("backend") is not None
+                        else None
+                    ),
                     workers=arguments.get("workers"),
                     minimum_derived_version=(
                         session.next_graph_version()
@@ -4878,8 +4920,16 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         uid = request.headers.get('X-User-ID', '')
         body = await request.json()
         for item in body.get('sessions', []):
-            svc._graph_ml._store.record_owner(svc._session_key(item['session_id'], uid), uid,
-                                              item['session_id'], item.get('project_id'))
+            sid = str(item['session_id'])
+            project_id = str(item.get('project_id') or '').strip() or None
+            svc._graph_ml._store.record_owner(
+                svc._session_key(sid, uid), uid, sid, project_id
+            )
+            svc._large_graph.bind_session_project(
+                user_id=uid,
+                session_id=sid,
+                project_id=project_id,
+            )
         return {'success': True}
 
     @app.delete('/internal/projects/{project_id}/artifacts')
@@ -4920,11 +4970,25 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
                                             headers=service_headers(user_id))
                 if response.status_code >= 400:
                     raise HTTPException(response.status_code, response.json().get('detail'))
-        body = await request.json() if await request.body() else {}
+        parsed_body = await request.json() if await request.body() else {}
+        body = parsed_body if isinstance(parsed_body, dict) else {}
         with svc._session_lifecycle_lock:
             session = svc.get_or_create(session_id, user_id=user_id)
             if 'project_id' in body:
-                svc._graph_ml._store.record_owner(svc._session_key(session_id, user_id), user_id, session_id, body['project_id'])
+                project_id = (
+                    str(body.get("project_id") or "").strip() or None
+                )
+                svc._graph_ml._store.record_owner(
+                    svc._session_key(session_id, user_id),
+                    user_id,
+                    session_id,
+                    project_id,
+                )
+                svc._large_graph.bind_session_project(
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                )
         _service_logger(session_id, "graph_data", user_id=user_id).event(
             "SESSION_CREATE", graph_version=session.graph_version
         )

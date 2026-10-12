@@ -5,7 +5,8 @@ import threading
 import pytest
 from agno.exceptions import RunCancelledException
 
-from agent_runtime.execution_scope import RunScope
+from agent_runtime.execution_scope import RunCancellationManager, RunScope
+from agent_runtime.cancellation_compat import CancellableModelMixin
 from graph_data_service.job_manager import JobManager
 
 
@@ -113,6 +114,91 @@ def test_stop_racing_a_transport_error_does_not_enter_failure_retry():
         with pytest.raises(RunCancelledException):
             await scope.wait(request())
         assert scope.execution_stopped
+    asyncio.run(scenario())
+
+
+def test_scope_quarantines_provider_cleanup_that_suppresses_cancellation():
+    async def scenario():
+        scope = RunScope('r', 'alice', 's', 1, cancel_grace_seconds=.01)
+        entered, release, exited = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def request():
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+            finally:
+                try:
+                    await release.wait()
+                finally:
+                    exited.set()
+
+        waiter = asyncio.create_task(scope.wait(request()))
+        await entered.wait()
+        scope.cancel()
+        with pytest.raises(RunCancelledException):
+            await asyncio.wait_for(waiter, .5)
+        assert scope.execution_stopped
+        assert not exited.is_set()
+        release.set()
+        await asyncio.wait_for(exited.wait(), .5)
+
+    asyncio.run(scenario())
+
+
+def test_background_registration_recovers_scope_without_contextvar():
+    async def scenario():
+        manager = RunCancellationManager()
+        scope = RunScope('r', 'alice', 's', 1)
+        manager.scopes['r'] = scope
+        await manager.aregister_run('r')
+        assert asyncio.current_task() in scope.executors
+        assert scope.native_run_created
+
+    asyncio.run(scenario())
+
+
+def test_request_owned_model_uses_bound_scope_in_background_context():
+    class BlockingBase:
+        async def ainvoke(self):
+            await asyncio.Event().wait()
+
+    class BoundModel(CancellableModelMixin, BlockingBase):
+        pass
+
+    async def scenario():
+        scope = RunScope('r', 'alice', 's', 1)
+        model = BoundModel()
+        model._igraph_bound_scope = scope
+        task = asyncio.create_task(model.ainvoke())
+        await asyncio.sleep(0)
+        scope.cancel()
+        with pytest.raises(RunCancelledException):
+            await asyncio.wait_for(task, 1)
+        assert scope.execution_stopped
+
+    asyncio.run(scenario())
+
+
+def test_scope_escalates_background_executor_after_grace_period():
+    async def scenario():
+        scope = RunScope('r', 'alice', 's', 1, cancel_grace_seconds=.01)
+        entered = asyncio.Event()
+
+        async def producer_without_scope_checks():
+            entered.set()
+            await asyncio.Event().wait()
+
+        producer = asyncio.create_task(producer_without_scope_checks())
+        scope.executors.add(producer)
+        await entered.wait()
+        scope.cancel()
+        assert not scope.escalate_cancel()
+        await asyncio.sleep(.02)
+        assert scope.escalate_cancel()
+        await asyncio.gather(producer, return_exceptions=True)
+        assert scope.execution_stopped
+        assert not scope.escalate_cancel()
+
     asyncio.run(scenario())
 
 

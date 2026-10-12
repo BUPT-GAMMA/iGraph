@@ -1442,10 +1442,40 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     feedback_attempts: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     feedback_attempt_ttl_seconds = 30 * 60
 
+    async def reconcile_graph_project_bindings() -> None:
+        """Refresh Graph Engine's trusted project scope for every session.
+
+        AgentOS owns conversation metadata while Graph Engine owns durable
+        large-graph jobs. Replaying the binding on startup lets jobs produced
+        before this feature participate in project-scoped result reuse.
+        """
+        if not controls_enabled():
+            return
+        for record in users.list():
+            rows = await general_migration.sessions(record.user_id)
+            bindings = [
+                {
+                    "session_id": str(row.get("session_id") or "").strip(),
+                    "project_id": (
+                        str(_state(row).get("project_id") or "").strip() or None
+                    ),
+                }
+                for row in rows
+                if str(row.get("session_id") or "").strip()
+            ]
+            for offset in range(0, len(bindings), 100):
+                await graph.request(
+                    "POST",
+                    "/internal/artifacts/ownership",
+                    headers=service_headers(record.user_id),
+                    json_body={"sessions": bindings[offset : offset + 100]},
+                )
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         nonlocal project_reconciler
         validate_service_configuration()
+        await reconcile_graph_project_bindings()
         scanner = asyncio.create_task(
             scan_server_datasets(), name="server-dataset-scanner"
         )
@@ -1842,6 +1872,18 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             )
         except HTTPException as exc:
             if exc.status_code == 404:
+                # AgentOS sessions outlive the process-local Graph Engine
+                # registry. Recreate only the missing registration; POST is
+                # idempotent and Graph Engine restores any durable snapshot.
+                await graph.request(
+                    "POST",
+                    f"/sessions/{session_id}",
+                    headers={
+                        **forwarded_headers(request, user_id),
+                        **service_headers(user_id),
+                    },
+                    json_body={},
+                )
                 return False
             raise
         return bool(payload.get("loaded", False) or payload.get("num_nodes", 0))
@@ -2803,6 +2845,19 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         lock = await run_lock(user_id, session_id)
         async with lock:
             state = _state(session)
+            project_id = session_project_id(session, user_id)
+            # Project ownership lives in AgentOS session state. Refresh the
+            # Graph Engine binding on every activation/chat so a restarted or
+            # newly recreated Graph Engine can safely discover project results.
+            await graph.request(
+                "POST",
+                f"/sessions/{session_id}",
+                headers={
+                    **forwarded_headers(request, user_id),
+                    **service_headers(user_id),
+                },
+                json_body={"project_id": project_id},
+            )
             dataset_id = str(state.get("active_dataset_id") or "").strip()
             if not dataset_id:
                 if state.get("large_graph_context") is not None:
@@ -2815,7 +2870,6 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                     )
                 return await graph_loaded(session_id, request, user_id)
 
-            project_id = session_project_id(session, user_id)
             dataset = project_dataset_or_404(dataset_id, project_id, user_id)
             loaded = await graph_loaded(session_id, request, user_id)
             force_reload = False

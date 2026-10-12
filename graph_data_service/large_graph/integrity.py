@@ -7,6 +7,8 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from graphscope_runtime.storage_codec import SUPPORTED_SNAPSHOT_FORMATS
+
 
 _SNAPSHOT_ID = re.compile(r"snap_[0-9a-f]{16}")
 _ARTIFACT_ID = re.compile(r"artifact_[0-9a-f]{16}")
@@ -321,6 +323,8 @@ def validate_snapshot_manifest(
     )
     if manifest.get("state") != "published":
         raise ManifestBindingError("快照清单尚未发布")
+    if manifest.get("format") not in SUPPORTED_SNAPSHOT_FORMATS:
+        raise ManifestBindingError("快照清单格式不受支持")
     identity_fields = ("snapshot_id", "graph_id", "format")
     for field in identity_fields:
         if manifest.get(field) != snapshot.get(field):

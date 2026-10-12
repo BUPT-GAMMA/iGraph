@@ -28,6 +28,7 @@ server {
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_cache off;
+        add_header Cache-Control "no-store" always;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
@@ -47,6 +48,15 @@ server {
 
     location = /favicon.ico {
         alias /usr/share/nginx/html/figures/igraph_light.png;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+    }
+
+    location /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
     }
 
     location / {

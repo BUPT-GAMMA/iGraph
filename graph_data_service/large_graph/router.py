@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .compatibility import (
+    GRAPHSCOPE_ONLY_ALGORITHM_NAMES,
     SMALL_GRAPH_ALGORITHM_MODE_DEFAULTS,
     SMALL_GRAPH_ALGORITHM_MODE_PARAMETERS,
     SMALL_GRAPH_ALGORITHM_MODES,
@@ -36,6 +37,14 @@ def _positive_int_env(name: str, default: int) -> int:
     except (TypeError, ValueError, OverflowError):
         value = int(default)
     return max(1, value)
+
+
+def _nonnegative_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        value = int(default)
+    return max(0, value)
 
 
 class ResourceManager:
@@ -74,6 +83,39 @@ class ResourceManager:
             return int(os.sysconf("SC_AVPHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
         except (AttributeError, OSError, ValueError):
             return 0
+
+    @staticmethod
+    def maximum_estimated_work_units() -> int:
+        return _nonnegative_int_env(
+            "LARGE_GRAPH_MAX_ESTIMATED_WORK_UNITS", 2_000_000_000
+        )
+
+    @classmethod
+    def brandes_workload_source_limit(
+        cls, node_count: int, edge_count: int
+    ) -> int | None:
+        max_work = cls.maximum_estimated_work_units()
+        if max_work <= 0:
+            return None
+        return min(
+            max(1, int(node_count)),
+            brandes_sample_sources_limit(),
+            max_work // max(1, int(edge_count)),
+        )
+
+    @classmethod
+    def default_brandes_sample_sources(
+        cls, node_count: int, edge_count: int
+    ) -> int:
+        configured = min(
+            _positive_int_env("LARGE_GRAPH_BRANDES_SOURCES", 64),
+            brandes_sample_sources_limit(),
+            max(1, int(node_count)),
+        )
+        workload_limit = cls.brandes_workload_source_limit(node_count, edge_count)
+        if workload_limit is None:
+            return configured
+        return max(1, min(configured, max(1, workload_limit)))
 
     def estimate_preparation(
         self, source_bytes: int, partitions: int, workers: int | None = None
@@ -180,7 +222,7 @@ class ResourceManager:
                     int(
                         params.get(
                             "sample_sources",
-                            os.getenv("LARGE_GRAPH_BRANDES_SOURCES", "256"),
+                            os.getenv("LARGE_GRAPH_BRANDES_SOURCES", "64"),
                         )
                     ),
                 ),
@@ -203,6 +245,27 @@ class ResourceManager:
         elif name == "node_centrality" and mode in {"pagerank", "eigenvector", "katz"}:
             iterations = max(1, min(int(params.get("max_iterations", 100)), 2000))
             work_units = max(1, iterations * max(1, edge_count))
+        elif name == "fluid_community":
+            work_units = max(1, 10 * max(1, node_count + edge_count))
+        elif name == "densest_subgraph":
+            rounds = max(1, min(int(params.get("rounds", 10)), 1000))
+            work_units = max(1, rounds * max(1, node_count + edge_count))
+        elif name == "motif_counting":
+            average_degree = max(1, edge_count // max(1, node_count))
+            motif = str(params.get("motif", "")).strip().lower()
+            if motif == "k_clique":
+                clique_size = max(2, min(int(params.get("k", 3)), 8))
+                exponent = max(1, clique_size - 2)
+            elif motif in {
+                "rectangle",
+                "diamond",
+                "tailed_triangle",
+                "cycle_plus_triangle",
+            }:
+                exponent = 2
+            else:
+                exponent = 1
+            work_units = max(1, edge_count * (average_degree**exponent))
         elif name == "community_detection":
             # Weighted synchronous label propagation scans the immutable
             # adjacency once per round. The worker deliberately caps at 500;
@@ -520,7 +583,7 @@ class ResourceManager:
             return False, "估算内存超过为 API、图数据库和操作系统预留后的预算", observed
         if estimate["disk_bytes"] > disk_budget:
             return False, "估算临时磁盘空间超过预留后的预算", observed
-        max_work = int(os.getenv("LARGE_GRAPH_MAX_ESTIMATED_WORK_UNITS", "2000000000"))
+        max_work = self.maximum_estimated_work_units()
         if max_work > 0 and int(estimate.get("estimated_work_units", 0)) > max_work:
             return False, "估算计算工作量超过本机大图任务上限", observed
         return True, "资源预算允许执行", observed
@@ -532,7 +595,11 @@ class ComputeRouter:
     ENGINE_NAME = "igraph-partitioned-local"
     # Bumped after adding the five grouped analysis kernels (55 modes).
     ENGINE_VERSION = "2.6"
-    _MODE_PARAMETER = SMALL_GRAPH_ALGORITHM_MODE_PARAMETERS
+    _MODE_PARAMETER = {
+        **SMALL_GRAPH_ALGORITHM_MODE_PARAMETERS,
+        "independent_set_cover": "operation",
+        "motif_counting": "motif",
+    }
     _MODE_DEFAULT = SMALL_GRAPH_ALGORITHM_MODE_DEFAULTS
 
     def __init__(
@@ -575,6 +642,173 @@ class ComputeRouter:
                 parallel_strategy="edge-map/node-reduce",
             ),
         }
+        graphscope_only = {
+            "strongly_connected_components": LargeGraphCapability(
+                algorithm="strongly_connected_components",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_undirected=False,
+                supports_weighted=True,
+                result_kind="node_partition",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "biconnected_components": LargeGraphCapability(
+                algorithm="biconnected_components",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_directed=False,
+                supports_weighted=True,
+                result_kind="node_partition",
+                execution_mode="approximate",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "bridges": LargeGraphCapability(
+                algorithm="bridges",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_directed=False,
+                supports_weighted=True,
+                result_kind="scalar",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "articulation_points": LargeGraphCapability(
+                algorithm="articulation_points",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_directed=False,
+                supports_weighted=True,
+                result_kind="scalar",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "minimum_spanning_forest": LargeGraphCapability(
+                algorithm="minimum_spanning_forest",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_directed=False,
+                supports_weighted=True,
+                result_kind="scalar",
+                complexity_class="O(E log V)",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "graph_coloring": LargeGraphCapability(
+                algorithm="graph_coloring",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_directed=False,
+                supports_weighted=True,
+                result_kind="node_label",
+                execution_mode="approximate",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "maximal_matching": LargeGraphCapability(
+                algorithm="maximal_matching",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_directed=False,
+                supports_weighted=True,
+                result_kind="scalar",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "hits": LargeGraphCapability(
+                algorithm="hits",
+                engine="graphscope",
+                engine_version="0.29",
+                supports_weighted=False,
+                result_kind="node_multi_score",
+                complexity_class="O(iterations·E)",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "k_shell": LargeGraphCapability(
+                algorithm="k_shell",
+                engine="graphscope",
+                engine_version="0.29",
+                supports_directed=False,
+                supports_weighted=True,
+                result_kind="node_set",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "personalized_pagerank": LargeGraphCapability(
+                algorithm="personalized_pagerank",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_weighted=False,
+                result_kind="node_score",
+                execution_mode="approximate",
+                complexity_class="O(iterations·E)",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "approximate_diameter": LargeGraphCapability(
+                algorithm="approximate_diameter",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_weighted=True,
+                result_kind="scalar",
+                execution_mode="approximate",
+                complexity_class="O(V+E) heuristic",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "fluid_community": LargeGraphCapability(
+                algorithm="fluid_community",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_weighted=True,
+                result_kind="node_partition",
+                execution_mode="approximate",
+                complexity_class="O(iterations·(V+E)) heuristic",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "densest_subgraph": LargeGraphCapability(
+                algorithm="densest_subgraph",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_weighted=True,
+                result_kind="scalar",
+                execution_mode="approximate",
+                complexity_class="O(rounds·(V+E)) 2-approximation",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "independent_set_cover": LargeGraphCapability(
+                algorithm="independent_set_cover",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_weighted=True,
+                result_kind="scalar",
+                modes=(
+                    "maximal_independent_set",
+                    "minimal_dominating_set",
+                    "minimal_vertex_cover",
+                    "minimal_edge_cover",
+                ),
+                complexity_class="GraphScope FLASH native",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+            "motif_counting": LargeGraphCapability(
+                algorithm="motif_counting",
+                engine="graphscope-flash",
+                engine_version="0.29",
+                supports_undirected=False,
+                supports_weighted=True,
+                result_kind="scalar",
+                modes=(
+                    "triangle",
+                    "rectangle",
+                    "k_clique",
+                    "diamond",
+                    "tailed_triangle",
+                    "three_path",
+                    "cycle_plus_triangle",
+                    "cyclic_triangle",
+                    "acyclic_triangle",
+                    "in_plus_triangle",
+                    "out_plus_triangle",
+                ),
+                complexity_class="motif-dependent",
+                parallel_strategy="graphscope-native-fragment-parallel",
+            ),
+        }
+        if set(graphscope_only) != set(GRAPHSCOPE_ONLY_ALGORITHM_NAMES):
+            raise RuntimeError("GraphScope 大图专用能力目录不完整")
+        self.capabilities.update(graphscope_only)
         # Every public small-graph selector is advertised and validated from
         # the same compatibility contract.  This includes maximum_cycle's
         # length/weight branch, which used to exist only inside the worker.
@@ -742,6 +976,23 @@ class ComputeRouter:
             "treat_as_undirected", "normalized", "create_version",
             "maxcardinality",
         }
+        if "result_detail" in parameters and str(
+            parameters["result_detail"]
+        ).strip().lower() not in {"distances", "paths"}:
+            return (
+                False,
+                "参数 result_detail 必须是 distances 或 paths",
+                "INVALID_ALGORITHM_PARAMETERS",
+            )
+        if "result_detail" in parameters and not (
+            algorithm == "shortest_path"
+            and str(parameters.get("target", "")).strip().lower() == "all"
+        ):
+            return (
+                False,
+                "result_detail 仅适用于 shortest_path 且 target=all",
+                "INVALID_ALGORITHM_PARAMETERS",
+            )
         for name in boolean_parameters.intersection(parameters):
             if not isinstance(parameters[name], bool):
                 return False, f"参数 {name} 必须为布尔值", "INVALID_ALGORITHM_PARAMETERS"
@@ -780,6 +1031,7 @@ class ComputeRouter:
             "depth_limit": (0, None),
             "iterations": (1, 1_000),
             "num_colors": (1, None),
+            "rounds": (1, 1_000),
         }
         for name, (minimum, maximum) in integer_bounds.items():
             if name not in parameters or parameters[name] is None:
@@ -820,7 +1072,7 @@ class ComputeRouter:
             # reject later.
             raw_sources = parameters.get(
                 "sample_sources",
-                os.getenv("LARGE_GRAPH_BRANDES_SOURCES", "256"),
+                os.getenv("LARGE_GRAPH_BRANDES_SOURCES", "64"),
             )
             try:
                 sample_sources = int(raw_sources)
@@ -952,6 +1204,24 @@ class ComputeRouter:
                 required = ("num_colors",)
             elif mode == "is_matching" and not isinstance(parameters.get("edges", []), list):
                 return False, "is_matching 需要 edges 数组", "INVALID_ALGORITHM_PARAMETERS"
+        elif algorithm == "personalized_pagerank":
+            required = ("source",)
+        elif algorithm == "k_shell" and "k" not in parameters:
+            required = ("k",)
+        elif algorithm == "motif_counting" and mode == "k_clique":
+            required = ("k",)
+
+        if algorithm == "motif_counting" and mode == "k_clique" and "k" in parameters:
+            try:
+                clique_size = int(parameters["k"])
+            except (TypeError, ValueError, OverflowError):
+                clique_size = 0
+            if isinstance(parameters["k"], bool) or not 2 <= clique_size <= 8:
+                return (
+                    False,
+                    "motif_counting/k_clique 的参数 k 必须在 2 到 8 之间",
+                    "INVALID_ALGORITHM_PARAMETERS",
+                )
 
         missing = [name for name in required if parameters.get(name) in (None, "")]
         if missing:
@@ -1031,7 +1301,10 @@ class ComputeRouter:
                 if mode_key
                 else ""
             ).strip().lower()
-            if requested_mode in capability.approximate_modes:
+            if (
+                capability.execution_mode == "approximate"
+                or requested_mode in capability.approximate_modes
+            ):
                 return RouteDecision(
                     "reject",
                     False,
@@ -1047,7 +1320,11 @@ class ComputeRouter:
                 algorithm == "shortest_path"
                 and (
                     requested_mode == "yen_k_shortest"
-                    or str(params.get("target", "")).strip().lower() == "all"
+                    or (
+                        str(params.get("target", "")).strip().lower() == "all"
+                        and str(params.get("result_detail", "paths")).strip().lower()
+                        != "distances"
+                    )
                 )
             ) or (
                 algorithm == "path_analysis"
@@ -1126,11 +1403,45 @@ class ComputeRouter:
             snapshot_storage_bytes,
         )
         accepted, reason, observed = self.resources.admit(estimate)
+        decision_code = "LARGE_GRAPH_ADMITTED" if accepted else "INSUFFICIENT_RESOURCES"
+        mode_key = self._MODE_PARAMETER.get(algorithm)
+        mode = str(
+            params.get(mode_key, self._MODE_DEFAULT.get(algorithm, ""))
+            if mode_key
+            else ""
+        ).strip().lower()
+        if (
+            not accepted
+            and reason == "估算计算工作量超过本机大图任务上限"
+            and algorithm == "node_centrality"
+            and mode in {"betweenness", "load", "percolation"}
+        ):
+            source_limit = self.resources.brandes_workload_source_limit(
+                node_count, edge_count
+            )
+            requested_sources = int(
+                params.get(
+                    "sample_sources",
+                    os.getenv("LARGE_GRAPH_BRANDES_SOURCES", "64"),
+                )
+            )
+            if source_limit is not None and source_limit > 0:
+                reason = (
+                    f"{mode} 在当前图和部署预算下最多允许 sample_sources={source_limit}，"
+                    f"当前请求为 {requested_sources}；请降低采样数，或省略该参数使用"
+                    "工作量安全默认值"
+                )
+            else:
+                reason = (
+                    f"{mode} 对当前图的单个采样源工作量已超过本机大图任务上限；"
+                    "请缩小图范围或提高 LARGE_GRAPH_MAX_ESTIMATED_WORK_UNITS"
+                )
+            decision_code = "BRANDES_SAMPLE_WORK_LIMIT"
         return RouteDecision(
             "large_graph" if accepted else "reject",
             accepted,
             reason,
-            "LARGE_GRAPH_ADMITTED" if accepted else "INSUFFICIENT_RESOURCES",
+            decision_code,
             capability=capability,
             resource_estimate=observed,
         )

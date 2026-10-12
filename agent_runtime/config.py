@@ -52,6 +52,7 @@ class AgentRuntimeConfig:
     remote_graph_max_bytes: int = 10 * 1024 * 1024
     remote_graph_preview_rows: int = 100
     remote_graph_preview_bytes: int = 64 * 1024
+    llm_timeout_seconds: float = 180.0
 
     @classmethod
     def from_env(cls) -> "AgentRuntimeConfig":
@@ -99,4 +100,5 @@ class AgentRuntimeConfig:
             job_wait_timeout_seconds=float(
                 os.getenv("AGENT_RUNTIME_JOB_WAIT_TIMEOUT_SECONDS", "0")
             ),
+            llm_timeout_seconds=max(1.0, float(os.getenv("LLM_TIMEOUT_SECONDS", "180"))),
         )

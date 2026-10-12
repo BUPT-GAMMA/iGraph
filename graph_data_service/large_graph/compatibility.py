@@ -174,8 +174,31 @@ LARGE_GRAPH_FAST_ALGORITHM_NAMES: tuple[str, ...] = (
     "degree_centrality",
 )
 
+# GraphScope-only operations are intentionally absent from the small-graph
+# catalogue.  They are exposed only by ``run_large_graph_algorithm`` so adding
+# native large-graph capabilities never changes GraphCompute/NetworkX routing.
+GRAPHSCOPE_ONLY_ALGORITHM_NAMES: tuple[str, ...] = (
+    "strongly_connected_components",
+    "biconnected_components",
+    "bridges",
+    "articulation_points",
+    "minimum_spanning_forest",
+    "graph_coloring",
+    "maximal_matching",
+    "hits",
+    "k_shell",
+    "personalized_pagerank",
+    "approximate_diameter",
+    "fluid_community",
+    "densest_subgraph",
+    "independent_set_cover",
+    "motif_counting",
+)
+
 LARGE_GRAPH_ALGORITHM_NAMES: frozenset[str] = (
-    SMALL_GRAPH_ALGORITHM_NAMES | frozenset(LARGE_GRAPH_FAST_ALGORITHM_NAMES)
+    SMALL_GRAPH_ALGORITHM_NAMES
+    | frozenset(LARGE_GRAPH_FAST_ALGORITHM_NAMES)
+    | frozenset(GRAPHSCOPE_ONLY_ALGORITHM_NAMES)
 )
 
 # Retained as a compatibility export for callers/tests written while the five

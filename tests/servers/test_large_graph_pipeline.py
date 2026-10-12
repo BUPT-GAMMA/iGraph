@@ -15,7 +15,10 @@ import pytest
 
 import graph_data_service.large_graph.engine as large_graph_engine
 import graph_data_service.large_graph.runtime as large_graph_runtime
-from graph_data_service.large_graph.catalog import LargeGraphCatalog
+from graph_data_service.large_graph.catalog import (
+    LargeGraphCatalog,
+    project_result_cache_key,
+)
 from graph_data_service.large_graph.contracts import DataQualityPolicy
 from graph_data_service.large_graph.disk_graph import PartitionedDiskGraph
 from graph_data_service.large_graph.engine import LocalParallelGraphEngine
@@ -56,6 +59,62 @@ def _build_snapshot(tmp_path: Path) -> dict:
         input_format="edgelist",
         policy=DataQualityPolicy(self_loops="skip"),
         expected_source={"size": stat.st_size},
+    )
+
+
+def test_project_result_cache_key_normalizes_stable_algorithm_defaults() -> None:
+    base_request = {
+        "snapshot": {
+            "snapshot_id": "snap-1",
+            "policy_id": "policy-1",
+            "directed": True,
+            "node_count": 10,
+            "edge_count": 20,
+            "quality": {"source_content_fingerprint": "f" * 64},
+        },
+        "algorithm": "node_centrality",
+        "backend_plan": {
+            "selected_backend": "legacy",
+            "native_app": None,
+            "semantic_profile": "legacy_v1",
+        },
+    }
+    omitted = {
+        **base_request,
+        "parameters": {"centrality_type": "pagerank", "limit": 20},
+    }
+    explicit = {
+        **base_request,
+        "parameters": {
+            "centrality_type": "PageRank",
+            "limit": "20",
+            "damping": 0.85,
+            "tolerance": 1e-6,
+            "max_iterations": 100,
+        },
+    }
+    changed = {
+        **base_request,
+        "parameters": {
+            "centrality_type": "pagerank",
+            "limit": 20,
+            "damping": 0.9,
+        },
+    }
+
+    assert project_result_cache_key(omitted) == project_result_cache_key(explicit)
+    assert project_result_cache_key(omitted) != project_result_cache_key(changed)
+
+    degree_base = {**base_request, "algorithm": "in_degree"}
+    assert project_result_cache_key(
+        {**degree_base, "parameters": {}}
+    ) == project_result_cache_key(
+        {**degree_base, "parameters": {"top_k": 20}}
+    )
+    assert project_result_cache_key(
+        {**degree_base, "parameters": {"top_k": 20}}
+    ) == project_result_cache_key(
+        {**degree_base, "parameters": {"top_k": 20, "limit": 20}}
     )
 
 
@@ -312,6 +371,7 @@ def test_degree_reducer_uses_sqlite_state_and_preserves_statistics(
         "sum": 3.0,
         "min": 0.0,
         "max": 2.0,
+        "histogram": {0.0: 258, 1.0: 1, 2.0: 1},
         "top": [(1.0, "b", "Bob"), (2.0, "a", "Alice")],
         "state_backend": "sqlite",
     }
@@ -326,6 +386,20 @@ def test_degree_reducer_uses_sqlite_state_and_preserves_statistics(
         "score": 0.0,
     }
     assert sqlite_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("histogram", "count", "expected"),
+    [
+        ({}, 0, 0.0),
+        ({0.0: 1, 1.0: 1, 2.0: 1}, 3, 1.0),
+        ({0.0: 2, 1.0: 2}, 4, 0.5),
+    ],
+)
+def test_degree_histogram_returns_exact_median(
+    histogram: dict[float, int], count: int, expected: float
+) -> None:
+    assert large_graph_engine._median_from_histogram(histogram, count) == expected
 
 
 def test_parallel_ranges_handle_crlf_utf8_oversize_and_unterminated_tail(
@@ -454,12 +528,46 @@ def test_snapshot_preparation_streams_deduplicates_and_publishes(tmp_path: Path)
     assert manifest_path.is_file()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["state"] == "published"
+    assert manifest["format"] == "igraph-partitioned-jsonl-v2"
+    assert manifest["record_encoding"] == "compact-json-array-v1"
+    edge_rows = [
+        json.loads(line)
+        for relative in manifest["edge_files"]
+        for line in (manifest_path.parent / relative).read_text(encoding="utf-8").splitlines()
+    ]
+    assert all(isinstance(row, list) for row in edge_rows)
     assert manifest["adjacency_format"] == "igraph-sharded-sqlite-adjacency-v1"
     assert len(manifest["adjacency_files"]) == 2
     with PartitionedDiskGraph(manifest_path) as graph:
         assert graph.resolve_node("A") == "a"
         assert list(graph.iter_out_edges("a")) == [("b", 3.0)]
     assert not list(manifest_path.parent.glob(".*.staging"))
+
+
+def test_graphscope_storage_profile_skips_duplicate_adjacency_but_keeps_degree_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LARGE_GRAPH_PRECOMPUTE_ADJACENCY", "false")
+    snapshot = _build_snapshot(tmp_path)
+    manifest_path = Path(snapshot["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["storage_profile"] == "graphscope_compact"
+    assert "adjacency_format" not in manifest
+    assert "adjacency_files" not in manifest
+    assert manifest["storage_bytes"]["adjacency"] == {"total": 0, "files": []}
+    assert not (manifest_path.parent / "adjacency").exists()
+
+    result = LocalParallelGraphEngine(tmp_path / "artifacts").execute(
+        snapshot=snapshot,
+        algorithm="degree",
+        parameters={"top_k": 3},
+        user_scope="alice__session",
+        graph_id="social",
+        graph_version=7,
+        workers=2,
+    )
+    assert result["summary"]["result_count"] == 3
 
 
 def test_source_fingerprint_is_independent_of_worker_count(tmp_path: Path) -> None:
@@ -500,6 +608,7 @@ def test_parallel_degree_writes_bounded_summary_and_partition_artifact(tmp_path:
 
     assert result["summary"]["result_count"] == 3
     assert result["summary"]["score_max"] == 2.0
+    assert result["summary"]["score_median"] == 1.0
     assert result["summary"]["top"][0]["node_id"] == "b"
     assert len(result["preview"]) == 2
     assert result["summary"]["parallel"] == {
@@ -1202,7 +1311,7 @@ def test_runtime_wall_time_expires_process_tree_and_cleans_derived_attempt(
                  AND graph_id='g1' AND graph_version=1"""
         )
 
-    job_id, derived_version = catalog.enqueue_compute(
+    job_id, derived_version, reused = catalog.enqueue_compute(
         user_id="alice",
         session_id="s1",
         graph_id="g1",
@@ -1219,6 +1328,7 @@ def test_runtime_wall_time_expires_process_tree_and_cleans_derived_attempt(
             "user_scope": "scope",
         },
     )
+    assert reused is False
     assert derived_version == 2
     claimed = catalog.claim_next_job()
     assert claimed is not None and claimed["job_id"] == job_id
@@ -1811,6 +1921,212 @@ def test_durable_service_runs_prepare_then_compute(monkeypatch, tmp_path: Path) 
             assert cycle_result["summary"]["parallel"]["workers"] == 2
     finally:
         service.close()
+
+
+def test_project_sessions_share_equivalent_large_graph_results(tmp_path: Path) -> None:
+    source = tmp_path / "project-shared.edgelist"
+    source.write_text("A B\nB C\nC A\nA C\n", encoding="utf-8")
+    root = tmp_path / "runtime"
+    service = LargeGraphService(root)
+    service.resources.disk_reserve_bytes = 0
+    prepared: dict[str, dict] = {}
+    try:
+        for session_id in ("conversation-1", "conversation-2"):
+            submitted = service.submit_preparation(
+                user_id="alice",
+                session_id=session_id,
+                graph_id=session_id,
+                source_path=str(source),
+                source_name=source.name,
+                source_token=f"upload-{session_id}",
+                directed=True,
+                partitions=1,
+                workers=1,
+                delimiter="whitespace",
+                input_format="edgelist",
+                quality_policy=None,
+            )
+            assert _wait_for_job(
+                service,
+                submitted["job_id"],
+                session_id=session_id,
+            )["status"] == "done"
+            prepared[session_id] = submitted
+
+        original = service.submit_compute(
+            user_id="alice",
+            session_id="conversation-1",
+            graph_id="conversation-1",
+            graph_version=prepared["conversation-1"]["graph_version"],
+            algorithm="node_centrality",
+            parameters={
+                "centrality_type": "pagerank",
+                "limit": 2,
+                "damping": 0.85,
+                "tolerance": 1e-6,
+                "max_iterations": 100,
+            },
+            workers=1,
+        )
+        assert _wait_for_job(
+            service,
+            original["job_id"],
+            session_id="conversation-1",
+        )["status"] == "done"
+        original_result = service.job_result(
+            original["job_id"],
+            user_id="alice",
+            session_id="conversation-1",
+        )
+        assert original_result is not None
+
+        # Existing jobs are backfilled when Backend replays project ownership
+        # after an upgrade or restart.
+        for session_id in ("conversation-1", "conversation-2"):
+            service.bind_session_project(
+                user_id="alice",
+                session_id=session_id,
+                project_id="project-1",
+            )
+
+        # Opening a catalog after an upgrade rewrites legacy project cache
+        # identities, so historical completed jobs immediately participate in
+        # default-equivalent reuse.
+        with service.catalog._connect() as conn:
+            row = conn.execute(
+                "SELECT request_json FROM jobs WHERE job_id=?",
+                (original["job_id"],),
+            ).fetchone()
+            assert row is not None
+            legacy_request = json.loads(row["request_json"])
+            legacy_request["project_result"]["cache_key"] = "legacy-cache-key"
+            conn.execute(
+                "UPDATE jobs SET request_json=? WHERE job_id=?",
+                (
+                    json.dumps(
+                        legacy_request,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    original["job_id"],
+                ),
+            )
+        LargeGraphCatalog(service.catalog.db_path)
+        reindexed = service.catalog.get_job(
+            original["job_id"],
+            user_id="alice",
+            session_id="conversation-1",
+        )
+        assert reindexed is not None
+        assert (
+            reindexed["request"]["project_result"]["cache_key"]
+            == project_result_cache_key(reindexed["request"])
+        )
+
+        reused = service.submit_compute(
+            user_id="alice",
+            session_id="conversation-2",
+            graph_id="conversation-2",
+            graph_version=prepared["conversation-2"]["graph_version"],
+            algorithm="node_centrality",
+            parameters={"centrality_type": "pagerank", "limit": 2},
+            workers=1,
+        )
+        assert reused["success"] is True
+        assert reused["async"] is False
+        assert "job_id" not in reused
+        assert reused["project_result_reused"] is True
+        assert reused["source_job_id"] == original["job_id"]
+        assert reused["source_session_id"] == "conversation-1"
+        assert reused["graph_id"] == "conversation-2"
+        assert reused["source_graph_id"] == "conversation-1"
+        assert reused["summary"] == original_result["summary"]
+
+        shared_status = service.job_status(
+            original["job_id"],
+            user_id="alice",
+            session_id="conversation-2",
+        )
+        assert shared_status is not None
+        assert shared_status["project_result_reused"] is True
+        assert shared_status["source_session_id"] == "conversation-1"
+        shared_result = service.job_result(
+            original["job_id"],
+            user_id="alice",
+            session_id="conversation-2",
+        )
+        assert shared_result is not None
+        assert shared_result["project_result_reused"] is True
+        artifact = service.get_artifact(
+            str(original_result["artifact_id"]),
+            user_id="alice",
+            session_id="conversation-2",
+        )
+        assert artifact is not None
+        assert artifact["project_result_reused"] is True
+        assert artifact["source_session_id"] == "conversation-1"
+
+        assert service.get_artifact(
+            str(original_result["artifact_id"]),
+            user_id="bob",
+            session_id="conversation-2",
+        ) is None
+    finally:
+        service.close()
+
+    # An equivalent queued job is shared as one unit of work. Moving the
+    # requester to another trusted project immediately restores isolation.
+    queued_service = LargeGraphService(root, embedded_worker=False)
+    queued_service.resources.disk_reserve_bytes = 0
+    try:
+        queued = queued_service.submit_compute(
+            user_id="alice",
+            session_id="conversation-1",
+            graph_id="conversation-1",
+            graph_version=prepared["conversation-1"]["graph_version"],
+            algorithm="degree",
+            parameters={"top_k": 3},
+            workers=1,
+        )
+        attached = queued_service.submit_compute(
+            user_id="alice",
+            session_id="conversation-2",
+            graph_id="conversation-2",
+            graph_version=prepared["conversation-2"]["graph_version"],
+            algorithm="degree",
+            parameters={"top_k": 3},
+            workers=1,
+        )
+        assert attached["async"] is True
+        assert attached["project_result_reused"] is True
+        assert attached["job_id"] == queued["job_id"]
+        assert attached["source_session_id"] == "conversation-1"
+
+        queued_service.bind_session_project(
+            user_id="alice",
+            session_id="conversation-2",
+            project_id="project-2",
+        )
+        isolated = queued_service.submit_compute(
+            user_id="alice",
+            session_id="conversation-2",
+            graph_id="conversation-2",
+            graph_version=prepared["conversation-2"]["graph_version"],
+            algorithm="degree",
+            parameters={"top_k": 3},
+            workers=1,
+        )
+        assert isolated["async"] is True
+        assert isolated["project_result_reused"] is False
+        assert isolated["job_id"] != queued["job_id"]
+        assert queued_service.job_status(
+            queued["job_id"],
+            user_id="alice",
+            session_id="conversation-2",
+        ) is None
+    finally:
+        queued_service.close()
 
 
 def test_server_snapshot_is_prepared_idempotently_and_shared_by_session_aliases(

@@ -35,6 +35,7 @@ def runtime_config(tmp_path: Path) -> AgentRuntimeConfig:
         telemetry=False,
         tracing=False,
         authorization=False,
+        llm_timeout_seconds=37,
     )
 
 
@@ -189,7 +190,8 @@ def test_create_model_uses_custom_endpoint_without_exposing_network(monkeypatch:
         {"model_id": " custom/v1 ", "base_url": "https://models.example/v1/", "api_key": " key "},
     )
     assert isinstance(model, FakeOpenAILike)
-    assert created == [{"id": "custom/v1", "api_key": "key", "base_url": "https://models.example/v1"}]
+    assert created == [{"id": "custom/v1", "api_key": "key", "timeout": 37.0,
+                        "base_url": "https://models.example/v1"}]
 
     with pytest.raises(ValueError, match="ID 格式无效"):
         model_factory.create_model("bad model", runtime_config, {"model_id": "bad model", "base_url": "https://models.example", "api_key": "key"})
@@ -235,7 +237,8 @@ def test_create_model_resolves_each_builtin_provider(
 
     monkeypatch.setattr(model_factory, "DAGOpenAILike", FakeOpenAILike)
     model_factory.create_model(model_id, runtime_config)
-    assert captured == {"id": model_id, "api_key": "provider-key", "base_url": "https://provider.example/v1"}
+    assert captured == {"id": model_id, "api_key": "provider-key", "timeout": 37.0,
+                        "base_url": "https://provider.example/v1"}
 
 
 def test_builtin_model_falls_back_to_config_and_rejects_missing_endpoint(monkeypatch: pytest.MonkeyPatch, runtime_config: AgentRuntimeConfig):
@@ -249,7 +252,8 @@ def test_builtin_model_falls_back_to_config_and_rejects_missing_endpoint(monkeyp
 
     monkeypatch.setattr(model_factory, "DAGOpenAILike", FakeOpenAILike)
     model_factory.create_model("", runtime_config, custom_model="not-a-dict")
-    assert captured == {"id": "qwen3.6-plus", "api_key": "fallback-key", "base_url": "https://fallback.example/v1"}
+    assert captured == {"id": "qwen3.6-plus", "api_key": "fallback-key", "timeout": 37.0,
+                        "base_url": "https://fallback.example/v1"}
 
     empty_config = AgentRuntimeConfig(**{**runtime_config.__dict__, "llm_api_key": "", "llm_base_url": ""})
     with pytest.raises(RuntimeError, match="缺少 API Key"):

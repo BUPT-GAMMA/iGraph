@@ -22,6 +22,14 @@ from .contracts import DataQualityPolicy
 from .durability import durable_publish_tree, remove_tree_and_fsync
 from .integrity import measure_snapshot_storage
 from .processes import process_context
+from graphscope_runtime.storage_codec import (
+    RECORD_ENCODING_V2,
+    SNAPSHOT_FORMAT_V2,
+    decode_edge_row,
+    decode_node_row,
+    encode_edge_row,
+    encode_node_row,
+)
 
 
 ProgressCallback = Callable[[str, float, str, dict[str, Any]], None]
@@ -41,6 +49,13 @@ def _configured_int(
         value = default
     value = max(minimum, value)
     return min(value, maximum) if maximum is not None else value
+
+
+def _configured_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class _AppendHandlePool:
@@ -264,7 +279,22 @@ def _map_source_range(args: tuple[Any, ...]) -> dict[str, Any]:
                 counters["explicit_weight_records"] += int(record["explicit_weight"])
                 edge_partition = _stable_partition(record["key"], partitions)
                 handle("edge", edge_partition).write(
-                    json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+                    json.dumps(
+                        {
+                            field: record[field]
+                            for field in (
+                                "key",
+                                "source",
+                                "target",
+                                "weight",
+                                "relation",
+                                "ordinal",
+                            )
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
                 )
                 for node_key, node_name, mention_index in record["node_mentions"]:
                     node_partition = _stable_partition(node_key, partitions)
@@ -469,10 +499,11 @@ def _reduce_edge_partition(args: tuple[Any, ...]) -> dict[str, Any]:
                 continue
             assert current is not None
             output.write(
-                json.dumps(
-                    {field: current[field] for field in ("source", "target", "weight", "relation")},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
+                encode_edge_row(
+                    current["source"],
+                    current["target"],
+                    current["weight"],
+                    current["relation"],
                 )
                 + "\n"
             )
@@ -480,10 +511,11 @@ def _reduce_edge_partition(args: tuple[Any, ...]) -> dict[str, Any]:
             current_key, current = key, row
         if current is not None:
             output.write(
-                json.dumps(
-                    {field: current[field] for field in ("source", "target", "weight", "relation")},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
+                encode_edge_row(
+                    current["source"],
+                    current["target"],
+                    current["weight"],
+                    current["relation"],
                 )
                 + "\n"
             )
@@ -526,31 +558,13 @@ def _reduce_node_partition(args: tuple[Any, ...]) -> dict[str, Any]:
                 continue
             if current_key is not None:
                 output.write(
-                    json.dumps(
-                        {
-                            "id": current_key,
-                            "name": current_name,
-                            "ordinal": current_ordinal,
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    + "\n"
+                    encode_node_row(current_key, current_name, current_ordinal) + "\n"
                 )
                 unique += 1
             current_key, current_name, current_ordinal = key, name, ordinal
         if current_key is not None:
             output.write(
-                json.dumps(
-                    {
-                        "id": current_key,
-                        "name": current_name,
-                        "ordinal": current_ordinal,
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-                + "\n"
+                encode_node_row(current_key, current_name, current_ordinal) + "\n"
             )
             unique += 1
     return {"partition": partition, "unique_nodes": unique, "duplicate_node_mentions": duplicate_mentions}
@@ -588,15 +602,15 @@ def _write_node_order(
             continue
         with path.open("r", encoding="utf-8") as source:
             for line in source:
-                row = json.loads(line)
+                node_id, name, ordinal = decode_node_row(line)
                 row_size = len(line.encode("utf-8")) + 192
                 if chunk and chunk_size + row_size > chunk_bytes:
                     flush()
                 chunk.append(
                     (
-                        int(row.get("ordinal", 0)),
-                        str(row["id"]),
-                        str(row.get("name") or row["id"]),
+                        ordinal,
+                        node_id,
+                        name,
                     )
                 )
                 chunk_size += row_size
@@ -614,14 +628,7 @@ def _write_node_order(
     )
     with output_path.open("w", encoding="utf-8") as output:
         for ordinal, node_id, name in merged:
-            output.write(
-                json.dumps(
-                    {"id": node_id, "name": name, "ordinal": ordinal},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
+            output.write(encode_node_row(node_id, name, ordinal) + "\n")
             count += 1
     return count
 
@@ -644,15 +651,8 @@ def _map_adjacency_partition(args: tuple[Any, ...]) -> dict[str, Any]:
     try:
         with Path(edge_path_raw).open("r", encoding="utf-8") as source:
             for line in source:
-                edge = json.loads(line)
-                src, dst = str(edge["source"]), str(edge["target"])
-                compact = {
-                    "source": src,
-                    "target": dst,
-                    "weight": float(edge.get("weight", 1.0)),
-                    "relation": str(edge.get("relation", "")),
-                }
-                encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":")) + "\n"
+                src, dst, weight, relation = decode_edge_row(line)
+                encoded = encode_edge_row(src, dst, weight, relation) + "\n"
                 handle("out", _stable_partition(src, int(partitions))).write(encoded)
                 handle("in", _stable_partition(dst, int(partitions))).write(encoded)
                 edge_count += 1
@@ -691,8 +691,8 @@ def _build_adjacency_partition(args: tuple[Any, ...]) -> dict[str, Any]:
             batch: list[tuple[str, str]] = []
             with node_path.open("r", encoding="utf-8") as nodes:
                 for line in nodes:
-                    row = json.loads(line)
-                    batch.append((str(row["id"]), str(row.get("name") or row["id"])))
+                    node_id, name, _ = decode_node_row(line)
+                    batch.append((node_id, name))
                     if len(batch) >= 10_000:
                         connection.executemany("INSERT INTO nodes(id,name) VALUES (?,?)", batch)
                         node_rows += len(batch)
@@ -712,11 +712,11 @@ def _build_adjacency_partition(args: tuple[Any, ...]) -> dict[str, Any]:
                     continue
                 with path.open("r", encoding="utf-8") as source:
                     for line in source:
-                        row = json.loads(line)
+                        row = decode_edge_row(line)
                         if kind == "out":
-                            batch4.append((str(row["source"]), str(row["target"]), float(row["weight"]), str(row.get("relation", ""))))
+                            batch4.append(row)
                         else:
-                            batch4.append((str(row["target"]), str(row["source"]), float(row["weight"]), str(row.get("relation", ""))))
+                            batch4.append((row[1], row[0], row[2], row[3]))
                         if len(batch4) >= 10_000:
                             connection.executemany(sql, batch4)
                             if kind == "out":
@@ -758,7 +758,7 @@ class DerivedSnapshotBuilder:
     selected nodes and their original ordering.
     """
 
-    SNAPSHOT_FORMAT = "igraph-partitioned-jsonl-v1"
+    SNAPSHOT_FORMAT = SNAPSHOT_FORMAT_V2
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
@@ -905,9 +905,9 @@ class DerivedSnapshotBuilder:
                     "w", encoding="utf-8"
                 ) as output:
                     for line in source:
-                        row = json.loads(line)
-                        if node_is_selected(str(row["id"])):
-                            output.write(line)
+                        node_id, name, ordinal = decode_node_row(line)
+                        if node_is_selected(node_id):
+                            output.write(encode_node_row(node_id, name, ordinal) + "\n")
                             copied_nodes += 1
             if copied_nodes != selected_node_count:
                 raise ValueError("子图筛选节点与源快照不一致")
@@ -918,9 +918,9 @@ class DerivedSnapshotBuilder:
                 "r", encoding="utf-8"
             ) as source, node_order_path.open("w", encoding="utf-8") as output:
                 for line in source:
-                    row = json.loads(line)
-                    if node_is_selected(str(row["id"])):
-                        output.write(line)
+                    node_id, name, ordinal = decode_node_row(line)
+                    if node_is_selected(node_id):
+                        output.write(encode_node_row(node_id, name, ordinal) + "\n")
                         ordered_nodes += 1
             if ordered_nodes != selected_node_count:
                 raise ValueError("派生快照节点顺序与筛选节点不一致")
@@ -945,14 +945,7 @@ class DerivedSnapshotBuilder:
                         )
                         partition = _stable_partition(edge_key, partitions)
                         handles.get("part", partition).write(
-                            json.dumps(
-                                {
-                                    "source": source, "target": target,
-                                    "weight": float(weight), "relation": "",
-                                },
-                                ensure_ascii=False, separators=(",", ":"),
-                            )
-                            + "\n"
+                            encode_edge_row(source, target, float(weight)) + "\n"
                         )
                         copied_edges += 1
                 finally:
@@ -964,11 +957,14 @@ class DerivedSnapshotBuilder:
                         "w", encoding="utf-8"
                     ) as output:
                         for line in source:
-                            row = json.loads(line)
-                            if edge_is_selected(
-                                str(row["source"]), str(row["target"])
-                            ):
-                                output.write(line)
+                            source_id, target_id, weight, relation = decode_edge_row(line)
+                            if edge_is_selected(source_id, target_id):
+                                output.write(
+                                    encode_edge_row(
+                                        source_id, target_id, weight, relation
+                                    )
+                                    + "\n"
+                                )
                                 copied_edges += 1
             if copied_edges != selected_edge_count:
                 raise ValueError("子图筛选边与源快照不一致")
@@ -976,52 +972,64 @@ class DerivedSnapshotBuilder:
             connection = None
             selection_db.unlink(missing_ok=True)
 
-            emit(
-                "derived_indexing", 0.82, "构建派生快照邻接索引",
-                {"nodes": copied_nodes, "edges": copied_edges},
-            )
             canonical_edges = [
                 edges_root / f"part-{index:05d}.jsonl" for index in range(partitions)
             ]
-            adjacency_maps: list[dict[str, Any]] = []
-            with ProcessPoolExecutor(
-                max_workers=workers, mp_context=process_context()
-            ) as pool:
-                futures = [
-                    pool.submit(
-                        _map_adjacency_partition,
-                        (str(path), str(adjacency_map_root), index, partitions, max_open_files),
-                    )
-                    for index, path in enumerate(canonical_edges)
-                ]
-                for future in as_completed(futures):
-                    adjacency_maps.append(future.result())
-            map_dirs = [row["map_root"] for row in adjacency_maps]
             adjacency_results: list[dict[str, Any]] = []
-            with ProcessPoolExecutor(
-                max_workers=workers, mp_context=process_context()
-            ) as pool:
-                futures = [
-                    pool.submit(
-                        _build_adjacency_partition,
-                        (
-                            partition,
-                            str(nodes_root / f"part-{partition:05d}.jsonl"),
-                            map_dirs,
-                            str(adjacency_root / f"part-{partition:05d}.sqlite3"),
-                        ),
-                    )
-                    for partition in range(partitions)
+            adjacency_files: list[str] = []
+            precompute_adjacency = _configured_bool(
+                "LARGE_GRAPH_PRECOMPUTE_ADJACENCY", True
+            )
+            if precompute_adjacency:
+                emit(
+                    "derived_indexing", 0.82, "构建派生快照邻接索引",
+                    {"nodes": copied_nodes, "edges": copied_edges},
+                )
+                adjacency_maps: list[dict[str, Any]] = []
+                with ProcessPoolExecutor(
+                    max_workers=workers, mp_context=process_context()
+                ) as pool:
+                    futures = [
+                        pool.submit(
+                            _map_adjacency_partition,
+                            (
+                                str(path), str(adjacency_map_root), index,
+                                partitions, max_open_files,
+                            ),
+                        )
+                        for index, path in enumerate(canonical_edges)
+                    ]
+                    for future in as_completed(futures):
+                        adjacency_maps.append(future.result())
+                map_dirs = [row["map_root"] for row in adjacency_maps]
+                with ProcessPoolExecutor(
+                    max_workers=workers, mp_context=process_context()
+                ) as pool:
+                    futures = [
+                        pool.submit(
+                            _build_adjacency_partition,
+                            (
+                                partition,
+                                str(nodes_root / f"part-{partition:05d}.jsonl"),
+                                map_dirs,
+                                str(adjacency_root / f"part-{partition:05d}.sqlite3"),
+                            ),
+                        )
+                        for partition in range(partitions)
+                    ]
+                    for future in as_completed(futures):
+                        adjacency_results.append(future.result())
+                if sum(int(row["nodes"]) for row in adjacency_results) != copied_nodes:
+                    raise ValueError("派生快照邻接节点数不一致")
+                if any(
+                    sum(int(row[field]) for row in adjacency_results) != copied_edges
+                    for field in ("out_edges", "in_edges")
+                ):
+                    raise ValueError("派生快照邻接边数不一致")
+                adjacency_files = [
+                    f"adjacency/part-{index:05d}.sqlite3"
+                    for index in range(partitions)
                 ]
-                for future in as_completed(futures):
-                    adjacency_results.append(future.result())
-            if sum(int(row["nodes"]) for row in adjacency_results) != copied_nodes:
-                raise ValueError("派生快照邻接节点数不一致")
-            if any(
-                sum(int(row[field]) for row in adjacency_results) != copied_edges
-                for field in ("out_edges", "in_edges")
-            ):
-                raise ValueError("派生快照邻接边数不一致")
 
             fingerprint = hashlib.sha256()
             for path in [
@@ -1045,9 +1053,6 @@ class DerivedSnapshotBuilder:
             }
             node_files = [f"nodes/part-{i:05d}.jsonl" for i in range(partitions)]
             edge_files = [f"edges/part-{i:05d}.jsonl" for i in range(partitions)]
-            adjacency_files = [
-                f"adjacency/part-{i:05d}.sqlite3" for i in range(partitions)
-            ]
             storage_bytes = measure_snapshot_storage(
                 staging,
                 node_files=node_files,
@@ -1069,13 +1074,22 @@ class DerivedSnapshotBuilder:
                 "node_files": node_files,
                 "node_order_file": "node-order.jsonl",
                 "edge_files": edge_files,
-                "adjacency_format": "igraph-sharded-sqlite-adjacency-v1",
-                "adjacency_files": adjacency_files,
+                "record_encoding": RECORD_ENCODING_V2,
+                "storage_profile": (
+                    "legacy_indexed" if precompute_adjacency else "graphscope_compact"
+                ),
                 "storage_bytes": storage_bytes,
                 "quality": quality,
                 "source_snapshot_id": source_manifest["snapshot_id"],
                 "source_graph_version": int(source_manifest["graph_version"]),
             }
+            if adjacency_files:
+                manifest.update(
+                    {
+                        "adjacency_format": "igraph-sharded-sqlite-adjacency-v1",
+                        "adjacency_files": adjacency_files,
+                    }
+                )
             (staging / "manifest.json.tmp").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -1119,7 +1133,7 @@ class DerivedSnapshotBuilder:
 class PartitionedSnapshotBuilder:
     """Build an immutable snapshot without constructing a complete graph."""
 
-    SNAPSHOT_FORMAT = "igraph-partitioned-jsonl-v1"
+    SNAPSHOT_FORMAT = SNAPSHOT_FORMAT_V2
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
@@ -1290,62 +1304,77 @@ class PartitionedSnapshotBuilder:
             if ordered_node_count != node_count:
                 raise ValueError("节点顺序索引计数与规范化快照不一致")
 
-            # 新增：把规范化边并行重分区为可随机访问的出/入邻接分片。
-            # 这一表示是全部大图遍历算法的共同底座，避免每扩展一个节点
-            # 都重扫全量 edge 文件。
-            emit("indexing", 0.86, "开始构建分区邻接索引", {"partitions": partitions})
             canonical_edge_files = [
                 edges_root / f"part-{index:05d}.jsonl" for index in range(partitions)
             ]
-            adjacency_maps: list[dict[str, Any]] = []
-            with ProcessPoolExecutor(
-                max_workers=workers, mp_context=process_context()
-            ) as pool:
-                futures = [
-                    pool.submit(
-                        _map_adjacency_partition,
-                        (
-                            str(path), str(adjacency_map_root), index,
-                            partitions, max_open_files,
-                        ),
-                    )
-                    for index, path in enumerate(canonical_edge_files)
-                ]
-                for completed, future in enumerate(as_completed(futures), 1):
-                    adjacency_maps.append(future.result())
-                    emit(
-                        "indexing", 0.86 + 0.03 * completed / len(futures),
-                        "邻接边重分区进行中",
-                        {"partitions_completed": completed, "partitions": len(futures)},
-                    )
-            adjacency_map_dirs = [row["map_root"] for row in adjacency_maps]
             adjacency_results: list[dict[str, Any]] = []
-            with ProcessPoolExecutor(
-                max_workers=workers, mp_context=process_context()
-            ) as pool:
-                futures = [
-                    pool.submit(
-                        _build_adjacency_partition,
-                        (
-                            partition,
-                            str(nodes_root / f"part-{partition:05d}.jsonl"),
-                            adjacency_map_dirs,
-                            str(adjacency_root / f"part-{partition:05d}.sqlite3"),
-                        ),
-                    )
-                    for partition in range(partitions)
+            adjacency_files: list[str] = []
+            precompute_adjacency = _configured_bool(
+                "LARGE_GRAPH_PRECOMPUTE_ADJACENCY", True
+            )
+            if precompute_adjacency:
+                emit(
+                    "indexing", 0.86, "开始构建分区邻接索引",
+                    {"partitions": partitions},
+                )
+                adjacency_maps: list[dict[str, Any]] = []
+                with ProcessPoolExecutor(
+                    max_workers=workers, mp_context=process_context()
+                ) as pool:
+                    futures = [
+                        pool.submit(
+                            _map_adjacency_partition,
+                            (
+                                str(path), str(adjacency_map_root), index,
+                                partitions, max_open_files,
+                            ),
+                        )
+                        for index, path in enumerate(canonical_edge_files)
+                    ]
+                    for completed, future in enumerate(as_completed(futures), 1):
+                        adjacency_maps.append(future.result())
+                        emit(
+                            "indexing", 0.86 + 0.03 * completed / len(futures),
+                            "邻接边重分区进行中",
+                            {
+                                "partitions_completed": completed,
+                                "partitions": len(futures),
+                            },
+                        )
+                adjacency_map_dirs = [row["map_root"] for row in adjacency_maps]
+                with ProcessPoolExecutor(
+                    max_workers=workers, mp_context=process_context()
+                ) as pool:
+                    futures = [
+                        pool.submit(
+                            _build_adjacency_partition,
+                            (
+                                partition,
+                                str(nodes_root / f"part-{partition:05d}.jsonl"),
+                                adjacency_map_dirs,
+                                str(adjacency_root / f"part-{partition:05d}.sqlite3"),
+                            ),
+                        )
+                        for partition in range(partitions)
+                    ]
+                    for completed, future in enumerate(as_completed(futures), 1):
+                        adjacency_results.append(future.result())
+                        emit(
+                            "indexing", 0.89 + 0.04 * completed / len(futures),
+                            "邻接索引写入进行中",
+                            {
+                                "partitions_completed": completed,
+                                "partitions": len(futures),
+                            },
+                        )
+                if sum(row["out_edges"] for row in adjacency_results) != edge_count:
+                    raise ValueError("出邻接索引边数与规范化快照不一致")
+                if sum(row["in_edges"] for row in adjacency_results) != edge_count:
+                    raise ValueError("入邻接索引边数与规范化快照不一致")
+                adjacency_files = [
+                    f"adjacency/part-{index:05d}.sqlite3"
+                    for index in range(partitions)
                 ]
-                for completed, future in enumerate(as_completed(futures), 1):
-                    adjacency_results.append(future.result())
-                    emit(
-                        "indexing", 0.89 + 0.04 * completed / len(futures),
-                        "邻接索引写入进行中",
-                        {"partitions_completed": completed, "partitions": len(futures)},
-                    )
-            if sum(row["out_edges"] for row in adjacency_results) != edge_count:
-                raise ValueError("出邻接索引边数与规范化快照不一致")
-            if sum(row["in_edges"] for row in adjacency_results) != edge_count:
-                raise ValueError("入邻接索引边数与规范化快照不一致")
             quality = {
                 **counters,
                 "node_count": node_count,
@@ -1358,6 +1387,7 @@ class PartitionedSnapshotBuilder:
                 "max_record_bytes": max_record_bytes,
                 "max_node_id_bytes": max_node_id_bytes,
                 "map_open_files": max_open_files,
+                "map_record_encoding": "minimal-object-v1",
             }
             final_stat = source.stat()
             if final_stat.st_size != stat.st_size or final_stat.st_mtime_ns != stat.st_mtime_ns:
@@ -1367,10 +1397,6 @@ class PartitionedSnapshotBuilder:
             ]
             edge_files = [
                 f"edges/part-{index:05d}.jsonl" for index in range(partitions)
-            ]
-            adjacency_files = [
-                f"adjacency/part-{index:05d}.sqlite3"
-                for index in range(partitions)
             ]
             storage_bytes = measure_snapshot_storage(
                 staging,
@@ -1393,12 +1419,20 @@ class PartitionedSnapshotBuilder:
                 "node_files": node_files,
                 "node_order_file": "node-order.jsonl",
                 "edge_files": edge_files,
-                # 新增清单字段：算法必须使用分片索引，不允许回退到全图对象。
-                "adjacency_format": "igraph-sharded-sqlite-adjacency-v1",
-                "adjacency_files": adjacency_files,
+                "record_encoding": RECORD_ENCODING_V2,
+                "storage_profile": (
+                    "legacy_indexed" if precompute_adjacency else "graphscope_compact"
+                ),
                 "storage_bytes": storage_bytes,
                 "quality": quality,
             }
+            if adjacency_files:
+                manifest.update(
+                    {
+                        "adjacency_format": "igraph-sharded-sqlite-adjacency-v1",
+                        "adjacency_files": adjacency_files,
+                    }
+                )
             manifest_tmp = staging / "manifest.json.tmp"
             manifest_tmp.write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"

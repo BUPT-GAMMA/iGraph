@@ -45,6 +45,53 @@ def test_large_reserved_version_advances_small_graph_after_restart(
     assert restored.next_graph_version() == 4
 
 
+def test_large_only_session_restores_from_catalog_after_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = _service(tmp_path, monkeypatch)
+    source = tmp_path / "large-only.txt"
+    source.write_text("A B 1\n", encoding="utf-8")
+    try:
+        service._large_graph.resources.disk_reserve_bytes = 0
+        prepared = service._large_graph.submit_preparation(
+            user_id="alice",
+            session_id="large-only",
+            graph_id="large-only",
+            source_path=str(source),
+            source_name=source.name,
+            source_token="large-only-token",
+            directed=True,
+            partitions=1,
+            workers=1,
+            delimiter="whitespace",
+            input_format="edgelist",
+            quality_policy=None,
+        )
+        assert prepared["success"] is True
+        assert prepared["graph_version"] == 1
+    finally:
+        _close(service)
+
+    restored_service = _service(tmp_path, monkeypatch)
+    try:
+        key = restored_service._session_key("large-only", "alice")
+        assert key in restored_service._sessions
+        restored = restored_service.get_required(
+            "large-only", user_id="alice"
+        )
+        assert restored.next_graph_version() == 2
+
+        # Startup recovery is eager, and the same catalog identity also
+        # supports lazy repair if the process-local registration is lost.
+        restored_service._sessions.pop(key)
+        lazily_restored = restored_service.get_required(
+            "large-only", user_id="alice"
+        )
+        assert lazily_restored.next_graph_version() == 2
+    finally:
+        _close(restored_service)
+
+
 def test_explicit_prepare_rejects_small_version_bound_to_another_upload(
     tmp_path: Path, monkeypatch
 ) -> None:

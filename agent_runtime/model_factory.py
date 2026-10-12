@@ -73,7 +73,8 @@ def create_model(model_id: str, config: AgentRuntimeConfig, custom_model: dict |
         api_key, base_url = _endpoint(normalized, config)
     protocol = protocol_for(custom or {})
     options = dict(id=str(custom.get('upstream_model_id') or normalized) if custom else normalized,
-                   api_key=api_key or 'local-no-auth')
+                   api_key=api_key or 'local-no-auth',
+                   timeout=max(1.0, float(getattr(config, 'llm_timeout_seconds', os.getenv('LLM_TIMEOUT_SECONDS', '180')))))
     limit = int(custom['max_output_tokens']) if custom and 'max_output_tokens' in custom else None
     if protocol == 'openai-compatible':
         constructor = CancellableDAGOpenAILike if controls_enabled() else DAGOpenAILike

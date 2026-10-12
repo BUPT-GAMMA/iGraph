@@ -35,10 +35,16 @@ class CancellableModelMixin:
     """Keep native formatting/errors while closing each request-owned stream.
 
 The client wrapper tracks the response belonging to this invocation, including
-streams created before their first token. It never closes a shared client.
-"""
+    streams created before their first token. It never closes a shared client.
+    """
+    def _igraph_run_scope(self):
+        # AgentOS starts background producers in a task whose context may be
+        # created outside the request's current_scope token. The model instance
+        # belongs to one factory invocation, so this binding is run-local.
+        return current_scope.get() or getattr(self, '_igraph_bound_scope', None)
+
     async def ainvoke(self, *args, **kwargs):
-        scope = current_scope.get()
+        scope = self._igraph_run_scope()
         if scope is None:
             return await super().ainvoke(*args, **kwargs)
         try:
@@ -49,7 +55,7 @@ streams created before their first token. It never closes a shared client.
                     scope.run_id, int((time.monotonic() - scope.cancel_requested_at) * 1000))
 
     async def ainvoke_stream(self, *args, **kwargs):
-        scope = current_scope.get()
+        scope = self._igraph_run_scope()
         if scope:
             scope.check()
         # Agno keeps the provider stream in a local variable without a finally
@@ -177,6 +183,10 @@ class ControlledAgent(Agent):
             scope = await controller.begin(str(kwargs.get("user_id") or self.user_id or ""),
                                            str(kwargs.get("session_id") or self.session_id or ""), rid,
                                            continuing=continuing)
+            # AgentFactory creates a new Agent and model for every request.
+            # Keep the scope available when Agno's background task starts from
+            # a fresh Context rather than inheriting current_scope.
+            setattr(self.model, '_igraph_bound_scope', scope)
             self._track_native_writes(scope)
             session = await controller.owned_session(scope.user_id, scope.session_id)
             interrupted = []
@@ -213,7 +223,10 @@ class ControlledAgent(Agent):
                     yield item
             finally:
                 if iterator is not None:
-                    await iterator.aclose()
+                    if scope.stopped.is_set():
+                        await scope.close_after_cancel(iterator.aclose(), label='native_stream')
+                    else:
+                        await iterator.aclose()
                 scope.executors.discard(asyncio.current_task())
                 controller.wake(scope.run_id)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -36,6 +37,164 @@ def _same_json_value(left: Any, right: Any) -> bool:
         return _json_dump(left) == _json_dump(right)
     except (TypeError, ValueError, OverflowError):
         return False
+
+
+_PROJECT_RESULT_CACHE_VERSION = "project-result-v3"
+
+
+def normalize_project_result_parameters(
+    algorithm: str, parameters: dict[str, Any]
+) -> dict[str, Any]:
+    """Canonicalize stable execution defaults used by project result reuse.
+
+    The durable request retains exactly what the caller supplied. Only the
+    cache identity uses this normalized copy, so an omitted stable default and
+    the same explicitly supplied value resolve to one computation without
+    rewriting provenance. Deployment-controlled defaults are deliberately not
+    added here because they can change between server versions or instances.
+    """
+    name = str(algorithm or "").strip().lower()
+    normalized = dict(parameters)
+
+    if name in {"degree", "in_degree", "out_degree", "degree_centrality"}:
+        # The optimized degree kernel only reads ``top_k``.  Models may also
+        # send the generic list parameter ``limit`` because both fields are
+        # present in the large-graph tool schema; retaining that ignored field
+        # would give semantically identical requests different project cache
+        # keys and force another full edge scan.
+        normalized.pop("limit", None)
+        raw_top_k = normalized.get("top_k", 20)
+        try:
+            top_k = (
+                200
+                if str(raw_top_k).strip().lower() == "all"
+                else int(raw_top_k)
+            )
+        except (TypeError, ValueError, OverflowError):
+            return normalized
+        normalized["top_k"] = max(1, min(top_k, 200))
+        return normalized
+
+    if name != "node_centrality":
+        return normalized
+
+    centrality_type = str(
+        normalized.get("centrality_type", "degree")
+    ).strip().lower()
+    normalized["centrality_type"] = centrality_type
+    raw_limit = normalized.get("limit", 20)
+    try:
+        limit = (
+            200
+            if str(raw_limit).strip().lower() == "all"
+            else int(raw_limit)
+        )
+        normalized["limit"] = max(1, min(limit, 200))
+    except (TypeError, ValueError, OverflowError):
+        pass
+
+    def canonical_float(key: str, default: float) -> None:
+        try:
+            normalized[key] = float(normalized.get(key, default))
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    def canonical_iterations(default: int) -> None:
+        try:
+            value = int(normalized.get("max_iterations", default))
+            normalized["max_iterations"] = max(1, min(value, 2_000))
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    if centrality_type == "pagerank":
+        canonical_float("damping", 0.85)
+        canonical_float("tolerance", 1e-6)
+        canonical_iterations(100)
+    elif centrality_type == "eigenvector":
+        canonical_float("tolerance", 1e-6)
+        canonical_iterations(1_000)
+    elif centrality_type == "katz":
+        canonical_float("alpha", 0.1)
+        canonical_float("beta", 1.0)
+        canonical_float("tolerance", 1e-6)
+        canonical_iterations(1_000)
+    return normalized
+
+
+def project_result_cache_key(request: dict[str, Any]) -> str | None:
+    """Return a stable semantic key for one immutable analysis request.
+
+    Session-local graph IDs and worker counts are deliberately excluded. The
+    key follows the immutable graph content, algorithm semantics and selected
+    execution backend so conversations in one project can reuse an equivalent
+    result without conflating different data revisions or parameters.
+    """
+    snapshot = request.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    algorithm = str(request.get("algorithm") or "").strip().lower()
+    parameters = request.get("parameters")
+    if not algorithm or not isinstance(parameters, dict):
+        return None
+
+    quality = snapshot.get("quality")
+    quality = quality if isinstance(quality, dict) else {}
+    version_source = snapshot.get("version_source")
+    version_source = (
+        version_source if isinstance(version_source, dict) else {}
+    )
+    content_fingerprint = str(
+        quality.get("source_content_fingerprint") or ""
+    ).strip()
+    source_snapshot_id = str(
+        version_source.get("source_snapshot_id") or ""
+    ).strip()
+    snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
+    if content_fingerprint:
+        source_identity: dict[str, Any] = {
+            "kind": "content",
+            "fingerprint": content_fingerprint,
+            "policy_id": str(snapshot.get("policy_id") or ""),
+            "directed": bool(snapshot.get("directed", True)),
+            "node_count": int(snapshot.get("node_count") or 0),
+            "edge_count": int(snapshot.get("edge_count") or 0),
+        }
+    elif source_snapshot_id:
+        source_identity = {
+            "kind": "shared_snapshot",
+            "snapshot_id": source_snapshot_id,
+        }
+    elif snapshot_id:
+        source_identity = {"kind": "snapshot", "snapshot_id": snapshot_id}
+    else:
+        return None
+
+    backend_plan = request.get("backend_plan")
+    backend_plan = (
+        backend_plan if isinstance(backend_plan, dict) else {}
+    )
+    payload = {
+        "version": _PROJECT_RESULT_CACHE_VERSION,
+        "source": source_identity,
+        "algorithm": algorithm,
+        "parameters": normalize_project_result_parameters(
+            algorithm, parameters
+        ),
+        "backend": {
+            "selected_backend": str(
+                backend_plan.get("selected_backend") or "legacy"
+            ),
+            "native_app": backend_plan.get("native_app"),
+            "semantic_profile": str(
+                backend_plan.get("semantic_profile") or "legacy_v1"
+            ),
+        },
+    }
+    try:
+        encoded = _json_dump(payload).encode("utf-8")
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class ScopeDeletionInProgress(RuntimeError):
@@ -344,6 +503,16 @@ class LargeGraphCatalog:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, session_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS session_projects (
+                    user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, session_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_large_session_projects
+                    ON session_projects(user_id, project_id, session_id);
                 """
             )
             # Forward-compatible migration for catalogs created by the first
@@ -361,6 +530,115 @@ class LargeGraphCatalog:
                 conn.execute("ALTER TABLE jobs ADD COLUMN lease_id TEXT")
             if "worker_identity_json" not in job_columns:
                 conn.execute("ALTER TABLE jobs ADD COLUMN worker_identity_json TEXT")
+            self._reindex_project_results(conn)
+
+    @staticmethod
+    def _project_result_metadata(
+        request: dict[str, Any], project_id: str
+    ) -> dict[str, str] | None:
+        parameters = request.get("parameters")
+        creates_version = bool(
+            request.get("algorithm") == "subgraph_extraction"
+            and isinstance(parameters, dict)
+            and parameters.get("create_version", True)
+        )
+        if not project_id or creates_version:
+            return None
+        cache_key = project_result_cache_key(request)
+        if not cache_key:
+            return None
+        return {"project_id": project_id, "cache_key": cache_key}
+
+    def _reindex_project_results(self, conn: sqlite3.Connection) -> None:
+        """Upgrade cache identities for jobs already bound to a project."""
+        now = _now_iso()
+        rows = conn.execute(
+            """SELECT j.job_id,j.request_json,sp.project_id
+               FROM jobs AS j
+               JOIN session_projects AS sp
+                 ON sp.user_id=j.user_id AND sp.session_id=j.session_id
+               WHERE j.kind='compute'"""
+        ).fetchall()
+        for row in rows:
+            request = _json_load(row["request_json"], {})
+            if not isinstance(request, dict):
+                continue
+            updated = dict(request)
+            project_result = self._project_result_metadata(
+                request, str(row["project_id"])
+            )
+            if project_result is None:
+                updated.pop("project_result", None)
+            else:
+                updated["project_result"] = project_result
+            if updated != request:
+                conn.execute(
+                    "UPDATE jobs SET request_json=?,updated_at=? WHERE job_id=?",
+                    (_json_dump(updated), now, row["job_id"]),
+                )
+
+    def bind_session_project(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        project_id: str | None,
+    ) -> None:
+        """Persist trusted project ownership and backfill existing compute jobs."""
+        normalized_project = str(project_id or "").strip()
+        now = _now_iso()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if normalized_project:
+                conn.execute(
+                    """INSERT INTO session_projects(
+                           user_id,session_id,project_id,updated_at
+                       ) VALUES(?,?,?,?)
+                       ON CONFLICT(user_id,session_id) DO UPDATE SET
+                           project_id=excluded.project_id,
+                           updated_at=excluded.updated_at""",
+                    (user_id, session_id, normalized_project, now),
+                )
+            else:
+                conn.execute(
+                    """DELETE FROM session_projects
+                       WHERE user_id=? AND session_id=?""",
+                    (user_id, session_id),
+                )
+
+            rows = conn.execute(
+                """SELECT job_id,request_json FROM jobs
+                   WHERE user_id=? AND session_id=? AND kind='compute'""",
+                (user_id, session_id),
+            ).fetchall()
+            for row in rows:
+                request = _json_load(row["request_json"], {})
+                if not isinstance(request, dict):
+                    continue
+                project_result = self._project_result_metadata(
+                    request, normalized_project
+                )
+                updated = dict(request)
+                if project_result is None:
+                    updated.pop("project_result", None)
+                else:
+                    updated["project_result"] = project_result
+                if updated != request:
+                    conn.execute(
+                        "UPDATE jobs SET request_json=?,updated_at=? WHERE job_id=?",
+                        (_json_dump(updated), now, row["job_id"]),
+                    )
+
+    def get_session_project(
+        self, *, user_id: str, session_id: str
+    ) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT project_id FROM session_projects
+                   WHERE user_id=? AND session_id=?""",
+                (user_id, session_id),
+            ).fetchone()
+        return str(row["project_id"]) if row is not None else None
 
     @staticmethod
     def _job_id() -> str:
@@ -569,7 +847,7 @@ class LargeGraphCatalog:
         graph_version: int,
         request: dict[str, Any],
         minimum_derived_version: int | None = None,
-    ) -> tuple[str, int | None]:
+    ) -> tuple[str, int | None, bool]:
         now = _now_iso()
         job_id = self._job_id()
         with self._connect() as conn:
@@ -609,6 +887,74 @@ class LargeGraphCatalog:
                     "图版本的已发布分区快照已不可用，请重新查询版本后提交"
                 )
             job_request = dict(request)
+            project_result = job_request.get("project_result")
+            project_result = (
+                project_result if isinstance(project_result, dict) else {}
+            )
+            project_id = str(project_result.get("project_id") or "").strip()
+            cache_key = str(project_result.get("cache_key") or "").strip()
+            if project_id and cache_key:
+                binding = conn.execute(
+                    """SELECT project_id FROM session_projects
+                       WHERE user_id=? AND session_id=?""",
+                    (user_id, session_id),
+                ).fetchone()
+                if (
+                    binding is None
+                    or str(binding["project_id"]) != project_id
+                ):
+                    job_request.pop("project_result", None)
+                    project_id = ""
+                    cache_key = ""
+            if project_id and cache_key:
+                existing = conn.execute(
+                    """SELECT j.job_id,j.request_json
+                       FROM jobs AS j
+                       WHERE j.user_id=? AND j.kind='compute'
+                         AND j.status IN ('queued','running','done')
+                         AND json_extract(
+                               j.request_json,
+                               '$.project_result.project_id'
+                             )=?
+                         AND json_extract(
+                               j.request_json,
+                               '$.project_result.cache_key'
+                             )=?
+                         AND NOT EXISTS (
+                             SELECT 1 FROM deleting_scopes AS ds
+                             WHERE ds.user_id=j.user_id
+                               AND ds.session_id=j.session_id
+                         )
+                       ORDER BY CASE j.status
+                                  WHEN 'done' THEN 0
+                                  WHEN 'running' THEN 1
+                                  ELSE 2
+                                END,
+                                j.finished_at DESC,
+                                j.created_at
+                       LIMIT 1""",
+                    (user_id, project_id, cache_key),
+                ).fetchone()
+                if existing is not None:
+                    existing_request = _json_load(
+                        existing["request_json"], {}
+                    )
+                    derived_target = (
+                        existing_request.get("derived_target")
+                        if isinstance(existing_request, dict)
+                        else None
+                    )
+                    reused_derived = (
+                        int(derived_target["graph_version"])
+                        if isinstance(derived_target, dict)
+                        and derived_target.get("graph_version") is not None
+                        else None
+                    )
+                    return (
+                        str(existing["job_id"]),
+                        reused_derived,
+                        True,
+                    )
             parameters = job_request.get("parameters")
             create_derived = bool(
                 job_request.get("algorithm") == "subgraph_extraction"
@@ -666,7 +1012,7 @@ class LargeGraphCatalog:
                     "等待本地大图 Worker", _json_dump(job_request), now, now,
                 ),
             )
-        return job_id, derived_version
+        return job_id, derived_version, False
 
     def recover_interrupted_jobs(
         self,
@@ -1108,6 +1454,10 @@ class LargeGraphCatalog:
             )
             conn.execute(
                 "DELETE FROM graph_versions WHERE user_id=? AND session_id=?",
+                (user_id, session_id),
+            )
+            conn.execute(
+                "DELETE FROM session_projects WHERE user_id=? AND session_id=?",
                 (user_id, session_id),
             )
             conn.execute(
@@ -1779,16 +2129,62 @@ class LargeGraphCatalog:
             ).fetchone()
         return self._decode_job(row) if row is not None else None
 
+    def get_job_for_session(
+        self, job_id: str, *, user_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        """Resolve an owned job or a compute result shared by the same project."""
+        direct = self.get_job(
+            job_id, user_id=user_id, session_id=session_id
+        )
+        if direct is not None:
+            return direct
+        with self._connect() as conn:
+            binding = conn.execute(
+                """SELECT project_id FROM session_projects
+                   WHERE user_id=? AND session_id=?""",
+                (user_id, session_id),
+            ).fetchone()
+            if binding is None:
+                return None
+            row = conn.execute(
+                """SELECT * FROM jobs
+                   WHERE job_id=? AND user_id=? AND kind='compute'
+                     AND json_extract(
+                           request_json,
+                           '$.project_result.project_id'
+                         )=?""",
+                (job_id, user_id, str(binding["project_id"])),
+            ).fetchone()
+        return self._decode_job(row) if row is not None else None
+
     def get_job_result(
         self, job_id: str, *, user_id: str, session_id: str
     ) -> dict[str, Any] | None:
         job = self.get_job(job_id, user_id=user_id, session_id=session_id)
         if job is None:
             return None
+        return self._job_result_payload(job)
+
+    def get_job_result_for_session(
+        self, job_id: str, *, user_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        job = self.get_job_for_session(
+            job_id, user_id=user_id, session_id=session_id
+        )
+        if job is None:
+            return None
+        result = self._job_result_payload(job)
+        if str(job.get("session_id") or "") != session_id:
+            result["project_result_reused"] = True
+            result["source_session_id"] = str(job.get("session_id") or "")
+        return result
+
+    @staticmethod
+    def _job_result_payload(job: dict[str, Any]) -> dict[str, Any]:
         # The full artifact is never read here; callers receive a path/reference
         # plus bounded summary and preview only.
         payload = {
-            "job_id": job_id,
+            "job_id": job["job_id"],
             "kind": job["kind"],
             "status": job["status"],
             "graph_id": job["graph_id"],
@@ -1838,6 +2234,59 @@ class LargeGraphCatalog:
             ).fetchall()
         return [self._decode_version(row) for row in rows]
 
+    def list_session_scopes(self) -> list[dict[str, Any]]:
+        """Return durable large-graph session scopes that may be restored.
+
+        GraphSession itself is process-local, while the large-graph catalog
+        survives an API restart. A scope is therefore restorable as soon as it
+        owns a version reservation, including a preparation that was queued or
+        running when the process stopped. Scopes fenced for deletion are
+        deliberately excluded.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT gv.user_id,gv.session_id,
+                          MAX(gv.graph_version) AS max_graph_version
+                   FROM graph_versions AS gv
+                   LEFT JOIN deleting_scopes AS ds
+                     ON ds.user_id=gv.user_id AND ds.session_id=gv.session_id
+                   WHERE ds.session_id IS NULL
+                   GROUP BY gv.user_id,gv.session_id
+                   ORDER BY gv.user_id,gv.session_id"""
+            ).fetchall()
+        return [
+            {
+                "user_id": str(row["user_id"]),
+                "session_id": str(row["session_id"]),
+                "max_graph_version": int(row["max_graph_version"] or 0),
+            }
+            for row in rows
+        ]
+
+    def get_session_scope(
+        self, *, user_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        """Return one durable scope unless it is fenced for deletion."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT gv.user_id,gv.session_id,
+                          MAX(gv.graph_version) AS max_graph_version
+                   FROM graph_versions AS gv
+                   LEFT JOIN deleting_scopes AS ds
+                     ON ds.user_id=gv.user_id AND ds.session_id=gv.session_id
+                   WHERE gv.user_id=? AND gv.session_id=?
+                     AND ds.session_id IS NULL
+                   GROUP BY gv.user_id,gv.session_id""",
+                (user_id, session_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "user_id": str(row["user_id"]),
+            "session_id": str(row["session_id"]),
+            "max_graph_version": int(row["max_graph_version"] or 0),
+        }
+
     def get_published_snapshot(
         self, *, user_id: str, session_id: str, graph_id: str, graph_version: int
     ) -> dict[str, Any] | None:
@@ -1883,6 +2332,49 @@ class LargeGraphCatalog:
         result["summary"] = _json_load(result.pop("summary_json"), {})
         result["preview"] = _json_load(result.pop("preview_json"), [])
         result["metadata"] = _json_load(result.pop("metadata_json"), {})
+        return result
+
+    def get_artifact_for_session(
+        self, artifact_id: str, *, user_id: str, session_id: str
+    ) -> dict[str, Any] | None:
+        """Resolve an owned artifact or one shared by the same project."""
+        direct = self.get_artifact(
+            artifact_id, user_id=user_id, session_id=session_id
+        )
+        if direct is not None:
+            return direct
+        with self._connect() as conn:
+            binding = conn.execute(
+                """SELECT project_id FROM session_projects
+                   WHERE user_id=? AND session_id=?""",
+                (user_id, session_id),
+            ).fetchone()
+            if binding is None:
+                return None
+            row = conn.execute(
+                """SELECT a.* FROM artifacts AS a
+                   JOIN jobs AS j ON j.job_id=a.job_id
+                   WHERE a.artifact_id=? AND a.user_id=?
+                     AND j.user_id=a.user_id
+                     AND j.session_id=a.session_id
+                     AND j.graph_id=a.graph_id
+                     AND j.graph_version=a.graph_version
+                     AND j.kind='compute' AND j.status='done'
+                     AND j.artifact_id=a.artifact_id
+                     AND json_extract(
+                           j.request_json,
+                           '$.project_result.project_id'
+                         )=?""",
+                (artifact_id, user_id, str(binding["project_id"])),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["summary"] = _json_load(result.pop("summary_json"), {})
+        result["preview"] = _json_load(result.pop("preview_json"), [])
+        result["metadata"] = _json_load(result.pop("metadata_json"), {})
+        result["project_result_reused"] = True
+        result["source_session_id"] = str(result.get("session_id") or "")
         return result
 
     @staticmethod

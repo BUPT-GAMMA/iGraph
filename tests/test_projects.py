@@ -19,6 +19,8 @@ class FakeServiceClient:
     runtime_sessions: dict[str, dict] = {}
     runtime_runs: dict[str, list[dict]] = {}
     graph_loaded: dict[str, bool] = {}
+    graph_missing: set[str] = set()
+    graph_session_creates: list[dict] = []
     graph_sources: dict[str, str] = {}
     graph_ingests: dict[str, list[dict]] = {}
     graph_stream_calls: list[dict] = []
@@ -108,6 +110,8 @@ class FakeServiceClient:
                     job_id, {"success": False, "result": None}
                 )
             if method == "GET" and path.endswith("/graph/info"):
+                if session_id in self.graph_missing:
+                    raise HTTPException(status_code=404, detail="会话不存在")
                 loaded = self.graph_loaded.get(session_id, False)
                 return {"loaded": loaded, "num_nodes": 3 if loaded else 0, "num_edges": 2 if loaded else 0}
             if method == "POST" and path.endswith("/uploads/register"):
@@ -146,6 +150,14 @@ class FakeServiceClient:
                 self.graph_deletes.append(session_id)
                 return {"success": True}
             if method == "POST" and len(parts) == 2 and parts[0] == "sessions":
+                self.graph_missing.discard(session_id)
+                self.graph_session_creates.append(
+                    {
+                        "session_id": session_id,
+                        "headers": dict(headers),
+                        "body": dict(json_body or {}),
+                    }
+                )
                 self.graph_loaded.setdefault(session_id, False)
                 return {"success": True}
             return {"success": True}
@@ -244,6 +256,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         }
     }
     FakeServiceClient.graph_loaded = {}
+    FakeServiceClient.graph_missing = set()
+    FakeServiceClient.graph_session_creates = []
     FakeServiceClient.runtime_runs = {}
     FakeServiceClient.graph_sources = {}
     FakeServiceClient.graph_ingests = {}
@@ -290,6 +304,33 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def headers(user_id: str = "admin") -> dict[str, str]:
     return {"X-User-ID": user_id}
+
+
+def test_activation_repairs_missing_graph_engine_session(
+    client: TestClient,
+) -> None:
+    session_id = client.post(
+        "/api/sessions", headers=headers(), json={}
+    ).json()["session_id"]
+    FakeServiceClient.graph_session_creates = []
+    FakeServiceClient.graph_missing.add(session_id)
+
+    activated = client.post(
+        f"/api/sessions/{session_id}/activate", headers=headers()
+    )
+
+    assert activated.status_code == 200
+    assert activated.json()["has_graph"] is False
+    assert FakeServiceClient.graph_session_creates == [
+        {
+            "session_id": session_id,
+            "headers": {
+                "X-User-ID": "admin",
+                "X-iGraph-Service-Key": "test-project-key",
+            },
+            "body": {"project_id": None},
+        }
+    ]
 
 
 def test_project_directory_reads_do_not_create_general(tmp_path: Path):
