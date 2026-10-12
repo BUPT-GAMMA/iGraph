@@ -1475,7 +1475,12 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def lifespan(application: FastAPI):
         nonlocal project_reconciler
         validate_service_configuration()
-        await reconcile_graph_project_bindings()
+        try:
+            await reconcile_graph_project_bindings()
+        except Exception:
+            # Activation and chat refresh each session binding again, so an
+            # unavailable Graph Engine must not block the BFF from starting.
+            logging.getLogger(__name__).warning('graph_project_binding_reconcile_failed', exc_info=True)
         scanner = asyncio.create_task(
             scan_server_datasets(), name="server-dataset-scanner"
         )
