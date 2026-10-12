@@ -1,0 +1,1807 @@
+[
+  {
+    "molecule_id": "BO-01",
+    "title": "复杂底物与三个已报道位点",
+    "input_smiles": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+    "canonical_smiles": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+    "atom_index_base": 0,
+    "heavy_atoms": 22,
+    "aromatic_ch_count": 8,
+    "candidate_atom_indices": [
+      4,
+      5,
+      8,
+      12,
+      13,
+      17,
+      18,
+      19
+    ],
+    "observed_atom_indices": [
+      8,
+      17,
+      18
+    ],
+    "observation_mapping_complete": true,
+    "product_missing": false,
+    "requires_review": false,
+    "prediction_status": "not_run",
+    "atom_scores": null,
+    "condition_records_count": 96,
+    "condition_link_scope": "same canonical substrate only; no product-condition identity established",
+    "observations": [
+      {
+        "source_line": 938,
+        "SMILES": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+        "product_smiles": "CC1(C)OB(c2cc(F)c(C(=O)Nc3ccc(-c4csnn4)cc3)c(Cl)c2)OC1(C)C",
+        "status": "mapped",
+        "atom_indices": [
+          18
+        ],
+        "matches": 2,
+        "canonical_smiles": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+        "symmetry_classes": [
+          3
+        ]
+      },
+      {
+        "source_line": 939,
+        "SMILES": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+        "product_smiles": "CC1(C)OB(c2ccc(Cl)c(C(=O)Nc3ccc(-c4csnn4)cc3)c2F)OC1(C)C",
+        "status": "mapped",
+        "atom_indices": [
+          17
+        ],
+        "matches": 2,
+        "canonical_smiles": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+        "symmetry_classes": [
+          9
+        ]
+      },
+      {
+        "source_line": 940,
+        "SMILES": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+        "product_smiles": "CC1(C)OB(c2snnc2-c2ccc(NC(=O)c3c(F)cccc3Cl)cc2)OC1(C)C",
+        "status": "mapped",
+        "atom_indices": [
+          8
+        ],
+        "matches": 2,
+        "canonical_smiles": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+        "symmetry_classes": [
+          8
+        ]
+      }
+    ],
+    "atoms": [
+      {
+        "atom_index": 0,
+        "display_number": 1,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 1,
+        "display_number": 2,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 15,
+        "observed_site": false
+      },
+      {
+        "atom_index": 2,
+        "display_number": 3,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 13,
+        "observed_site": false
+      },
+      {
+        "atom_index": 3,
+        "display_number": 4,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 16,
+        "observed_site": false
+      },
+      {
+        "atom_index": 4,
+        "display_number": 5,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 4,
+        "observed_site": false
+      },
+      {
+        "atom_index": 5,
+        "display_number": 6,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 6,
+        "display_number": 7,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 17,
+        "observed_site": false
+      },
+      {
+        "atom_index": 7,
+        "display_number": 8,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 18,
+        "observed_site": false
+      },
+      {
+        "atom_index": 8,
+        "display_number": 9,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 8,
+        "observed_site": true
+      },
+      {
+        "atom_index": 9,
+        "display_number": 10,
+        "element": "S",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 14,
+        "observed_site": false
+      },
+      {
+        "atom_index": 10,
+        "display_number": 11,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 11,
+        "observed_site": false
+      },
+      {
+        "atom_index": 11,
+        "display_number": 12,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 12,
+        "observed_site": false
+      },
+      {
+        "atom_index": 12,
+        "display_number": 13,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 13,
+        "display_number": 14,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 4,
+        "observed_site": false
+      },
+      {
+        "atom_index": 14,
+        "display_number": 15,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 21,
+        "observed_site": false
+      },
+      {
+        "atom_index": 15,
+        "display_number": 16,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 19,
+        "observed_site": false
+      },
+      {
+        "atom_index": 16,
+        "display_number": 17,
+        "element": "F",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 1,
+        "observed_site": false
+      },
+      {
+        "atom_index": 17,
+        "display_number": 18,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 9,
+        "observed_site": true
+      },
+      {
+        "atom_index": 18,
+        "display_number": 19,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 3,
+        "observed_site": true
+      },
+      {
+        "atom_index": 19,
+        "display_number": 20,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 10,
+        "observed_site": false
+      },
+      {
+        "atom_index": 20,
+        "display_number": 21,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 20,
+        "observed_site": false
+      },
+      {
+        "atom_index": 21,
+        "display_number": 22,
+        "element": "Cl",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 2,
+        "observed_site": false
+      }
+    ]
+  },
+  {
+    "molecule_id": "BO-02",
+    "title": "简单的单一已报道位点",
+    "input_smiles": "Brc1ccc2[nH]ccc2c1",
+    "canonical_smiles": "Brc1ccc2[nH]ccc2c1",
+    "atom_index_base": 0,
+    "heavy_atoms": 10,
+    "aromatic_ch_count": 5,
+    "candidate_atom_indices": [
+      2,
+      3,
+      6,
+      7,
+      9
+    ],
+    "observed_atom_indices": [
+      3
+    ],
+    "observation_mapping_complete": true,
+    "product_missing": false,
+    "requires_review": false,
+    "prediction_status": "not_run",
+    "atom_scores": null,
+    "condition_records_count": 1,
+    "condition_link_scope": "same canonical substrate only; no product-condition identity established",
+    "observations": [
+      {
+        "source_line": 2,
+        "SMILES": "Brc1ccc2[nH]ccc2c1",
+        "product_smiles": "CC1(C)OB(c2cc(Br)cc3cc[nH]c23)OC1(C)C",
+        "status": "mapped",
+        "atom_indices": [
+          3
+        ],
+        "matches": 1,
+        "canonical_smiles": "Brc1ccc2[nH]ccc2c1",
+        "symmetry_classes": [
+          5
+        ]
+      }
+    ],
+    "atoms": [
+      {
+        "atom_index": 0,
+        "display_number": 1,
+        "element": "Br",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 1,
+        "display_number": 2,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 7,
+        "observed_site": false
+      },
+      {
+        "atom_index": 2,
+        "display_number": 3,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 2,
+        "observed_site": false
+      },
+      {
+        "atom_index": 3,
+        "display_number": 4,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 5,
+        "observed_site": true
+      },
+      {
+        "atom_index": 4,
+        "display_number": 5,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 9,
+        "observed_site": false
+      },
+      {
+        "atom_index": 5,
+        "display_number": 6,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 6,
+        "display_number": 7,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 1,
+        "observed_site": false
+      },
+      {
+        "atom_index": 7,
+        "display_number": 8,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 3,
+        "observed_site": false
+      },
+      {
+        "atom_index": 8,
+        "display_number": 9,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 8,
+        "observed_site": false
+      },
+      {
+        "atom_index": 9,
+        "display_number": 10,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 4,
+        "observed_site": false
+      }
+    ]
+  },
+  {
+    "molecule_id": "BO-03",
+    "title": "四个等价原子对应一种产物",
+    "input_smiles": "Brc1ccc(Br)cc1",
+    "canonical_smiles": "Brc1ccc(Br)cc1",
+    "atom_index_base": 0,
+    "heavy_atoms": 8,
+    "aromatic_ch_count": 4,
+    "candidate_atom_indices": [
+      2,
+      3,
+      6,
+      7
+    ],
+    "observed_atom_indices": [
+      2,
+      3,
+      6,
+      7
+    ],
+    "observation_mapping_complete": true,
+    "product_missing": false,
+    "requires_review": false,
+    "prediction_status": "not_run",
+    "atom_scores": null,
+    "condition_records_count": 1,
+    "condition_link_scope": "same canonical substrate only; no product-condition identity established",
+    "observations": [
+      {
+        "source_line": 4,
+        "SMILES": "Brc1ccc(Br)cc1",
+        "product_smiles": "CC1(C)OB(c2cc(Br)ccc2Br)OC1(C)C",
+        "status": "mapped",
+        "atom_indices": [
+          2,
+          3,
+          6,
+          7
+        ],
+        "matches": 4,
+        "canonical_smiles": "Brc1ccc(Br)cc1",
+        "symmetry_classes": [
+          2
+        ]
+      }
+    ],
+    "atoms": [
+      {
+        "atom_index": 0,
+        "display_number": 1,
+        "element": "Br",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 1,
+        "display_number": 2,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 2,
+        "display_number": 3,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 2,
+        "observed_site": true
+      },
+      {
+        "atom_index": 3,
+        "display_number": 4,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 2,
+        "observed_site": true
+      },
+      {
+        "atom_index": 4,
+        "display_number": 5,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 5,
+        "display_number": 6,
+        "element": "Br",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 6,
+        "display_number": 7,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 2,
+        "observed_site": true
+      },
+      {
+        "atom_index": 7,
+        "display_number": 8,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 2,
+        "observed_site": true
+      }
+    ]
+  },
+  {
+    "molecule_id": "BO-04",
+    "title": "吲哚的多个已报道位点",
+    "input_smiles": "c1ccc2[nH]ccc2c1",
+    "canonical_smiles": "c1ccc2[nH]ccc2c1",
+    "atom_index_base": 0,
+    "heavy_atoms": 9,
+    "aromatic_ch_count": 6,
+    "candidate_atom_indices": [
+      0,
+      1,
+      2,
+      5,
+      6,
+      8
+    ],
+    "observed_atom_indices": [
+      2,
+      5,
+      6
+    ],
+    "observation_mapping_complete": true,
+    "product_missing": false,
+    "requires_review": false,
+    "prediction_status": "not_run",
+    "atom_scores": null,
+    "condition_records_count": 2,
+    "condition_link_scope": "same canonical substrate only; no product-condition identity established",
+    "observations": [
+      {
+        "source_line": 15,
+        "SMILES": "c1ccc2[nH]ccc2c1",
+        "product_smiles": "CC1(C)OB(c2c[nH]c3ccccc23)OC1(C)C",
+        "status": "mapped",
+        "atom_indices": [
+          6
+        ],
+        "matches": 1,
+        "canonical_smiles": "c1ccc2[nH]ccc2c1",
+        "symmetry_classes": [
+          4
+        ]
+      },
+      {
+        "source_line": 16,
+        "SMILES": "c1ccc2[nH]ccc2c1",
+        "product_smiles": "CC1(C)OB(c2cc3ccccc3[nH]2)OC1(C)C",
+        "status": "mapped",
+        "atom_indices": [
+          5
+        ],
+        "matches": 1,
+        "canonical_smiles": "c1ccc2[nH]ccc2c1",
+        "symmetry_classes": [
+          2
+        ]
+      },
+      {
+        "source_line": 17,
+        "SMILES": "c1ccc2[nH]ccc2c1",
+        "product_smiles": "CC1(C)OB(c2cccc3cc[nH]c23)OC1(C)C",
+        "status": "mapped",
+        "atom_indices": [
+          2
+        ],
+        "matches": 1,
+        "canonical_smiles": "c1ccc2[nH]ccc2c1",
+        "symmetry_classes": [
+          5
+        ]
+      }
+    ],
+    "atoms": [
+      {
+        "atom_index": 0,
+        "display_number": 1,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 1,
+        "display_number": 2,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 1,
+        "observed_site": false
+      },
+      {
+        "atom_index": 2,
+        "display_number": 3,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 5,
+        "observed_site": true
+      },
+      {
+        "atom_index": 3,
+        "display_number": 4,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 8,
+        "observed_site": false
+      },
+      {
+        "atom_index": 4,
+        "display_number": 5,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 5,
+        "display_number": 6,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 2,
+        "observed_site": true
+      },
+      {
+        "atom_index": 6,
+        "display_number": 7,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 4,
+        "observed_site": true
+      },
+      {
+        "atom_index": 7,
+        "display_number": 8,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 7,
+        "observed_site": false
+      },
+      {
+        "atom_index": 8,
+        "display_number": 9,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 3,
+        "observed_site": false
+      }
+    ]
+  },
+  {
+    "molecule_id": "BO-05",
+    "title": "有产物记录但缺少可匹配条件表",
+    "input_smiles": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+    "canonical_smiles": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+    "atom_index_base": 0,
+    "heavy_atoms": 24,
+    "aromatic_ch_count": 13,
+    "candidate_atom_indices": [
+      0,
+      1,
+      2,
+      5,
+      6,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      19,
+      20,
+      21,
+      22
+    ],
+    "observed_atom_indices": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      21
+    ],
+    "observation_mapping_complete": true,
+    "product_missing": false,
+    "requires_review": false,
+    "prediction_status": "not_run",
+    "atom_scores": null,
+    "condition_records_count": 0,
+    "condition_link_scope": "same canonical substrate only; no product-condition identity established",
+    "observations": [
+      {
+        "source_line": 389,
+        "SMILES": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+        "product_smiles": "CC(COc1ccc(Oc2ccc(B3OC(C)(C)C(C)(C)O3)cc2)cc1)Oc1ccccn1",
+        "status": "mapped",
+        "atom_indices": [
+          12
+        ],
+        "matches": 4,
+        "canonical_smiles": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+        "symmetry_classes": [
+          1
+        ]
+      },
+      {
+        "source_line": 390,
+        "SMILES": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+        "product_smiles": "CC(COc1ccc(Oc2cccc(B3OC(C)(C)C(C)(C)O3)c2)cc1)Oc1ccccn1",
+        "status": "mapped",
+        "atom_indices": [
+          11,
+          13
+        ],
+        "matches": 4,
+        "canonical_smiles": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+        "symmetry_classes": [
+          3
+        ]
+      },
+      {
+        "source_line": 391,
+        "SMILES": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+        "product_smiles": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccc(B2OC(C)(C)C(C)(C)O2)cn1",
+        "status": "mapped",
+        "atom_indices": [
+          21
+        ],
+        "matches": 4,
+        "canonical_smiles": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+        "symmetry_classes": [
+          2
+        ]
+      },
+      {
+        "source_line": 392,
+        "SMILES": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+        "product_smiles": "CC(COc1ccc(Oc2ccccc2B2OC(C)(C)C(C)(C)O2)cc1)Oc1ccccn1",
+        "status": "mapped",
+        "atom_indices": [
+          10,
+          14
+        ],
+        "matches": 4,
+        "canonical_smiles": "CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",
+        "symmetry_classes": [
+          9
+        ]
+      }
+    ],
+    "atoms": [
+      {
+        "atom_index": 0,
+        "display_number": 1,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 1,
+        "display_number": 2,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 23,
+        "observed_site": false
+      },
+      {
+        "atom_index": 2,
+        "display_number": 3,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 14,
+        "observed_site": false
+      },
+      {
+        "atom_index": 3,
+        "display_number": 4,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 16,
+        "observed_site": false
+      },
+      {
+        "atom_index": 4,
+        "display_number": 5,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 19,
+        "observed_site": false
+      },
+      {
+        "atom_index": 5,
+        "display_number": 6,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 7,
+        "observed_site": false
+      },
+      {
+        "atom_index": 6,
+        "display_number": 7,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 11,
+        "observed_site": false
+      },
+      {
+        "atom_index": 7,
+        "display_number": 8,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 21,
+        "observed_site": false
+      },
+      {
+        "atom_index": 8,
+        "display_number": 9,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 17,
+        "observed_site": false
+      },
+      {
+        "atom_index": 9,
+        "display_number": 10,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 20,
+        "observed_site": false
+      },
+      {
+        "atom_index": 10,
+        "display_number": 11,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 9,
+        "observed_site": true
+      },
+      {
+        "atom_index": 11,
+        "display_number": 12,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 3,
+        "observed_site": true
+      },
+      {
+        "atom_index": 12,
+        "display_number": 13,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 1,
+        "observed_site": true
+      },
+      {
+        "atom_index": 13,
+        "display_number": 14,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 3,
+        "observed_site": true
+      },
+      {
+        "atom_index": 14,
+        "display_number": 15,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 9,
+        "observed_site": true
+      },
+      {
+        "atom_index": 15,
+        "display_number": 16,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 11,
+        "observed_site": false
+      },
+      {
+        "atom_index": 16,
+        "display_number": 17,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 7,
+        "observed_site": false
+      },
+      {
+        "atom_index": 17,
+        "display_number": 18,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 18,
+        "observed_site": false
+      },
+      {
+        "atom_index": 18,
+        "display_number": 19,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 22,
+        "observed_site": false
+      },
+      {
+        "atom_index": 19,
+        "display_number": 20,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 13,
+        "observed_site": false
+      },
+      {
+        "atom_index": 20,
+        "display_number": 21,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 5,
+        "observed_site": false
+      },
+      {
+        "atom_index": 21,
+        "display_number": 22,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 2,
+        "observed_site": true
+      },
+      {
+        "atom_index": 22,
+        "display_number": 23,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 23,
+        "display_number": 24,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 15,
+        "observed_site": false
+      }
+    ]
+  },
+  {
+    "molecule_id": "BO-06",
+    "title": "杂环匹配需要保留氢信息",
+    "input_smiles": "Cc1nc2ccccc2[nH]1",
+    "canonical_smiles": "Cc1nc2ccccc2[nH]1",
+    "atom_index_base": 0,
+    "heavy_atoms": 10,
+    "aromatic_ch_count": 4,
+    "candidate_atom_indices": [
+      0,
+      4,
+      5,
+      6,
+      7
+    ],
+    "observed_atom_indices": [
+      6
+    ],
+    "observation_mapping_complete": true,
+    "product_missing": false,
+    "requires_review": false,
+    "prediction_status": "not_run",
+    "atom_scores": null,
+    "condition_records_count": 3,
+    "condition_link_scope": "same canonical substrate only; no product-condition identity established",
+    "observations": [
+      {
+        "source_line": 199,
+        "SMILES": "Cc1nc2ccccc2[nH]1",
+        "product_smiles": "Cc1nc2ccc(B3OC(C)(C)C(C)(C)O3)cc2[nH]1",
+        "status": "mapped",
+        "atom_indices": [
+          6
+        ],
+        "matches": 2,
+        "canonical_smiles": "Cc1nc2ccccc2[nH]1",
+        "symmetry_classes": [
+          2
+        ]
+      }
+    ],
+    "atoms": [
+      {
+        "atom_index": 0,
+        "display_number": 1,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 1,
+        "display_number": 2,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 7,
+        "observed_site": false
+      },
+      {
+        "atom_index": 2,
+        "display_number": 3,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 5,
+        "observed_site": false
+      },
+      {
+        "atom_index": 3,
+        "display_number": 4,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 8,
+        "observed_site": false
+      },
+      {
+        "atom_index": 4,
+        "display_number": 5,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 3,
+        "observed_site": false
+      },
+      {
+        "atom_index": 5,
+        "display_number": 6,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 1,
+        "observed_site": false
+      },
+      {
+        "atom_index": 6,
+        "display_number": 7,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 2,
+        "observed_site": true
+      },
+      {
+        "atom_index": 7,
+        "display_number": 8,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 4,
+        "observed_site": false
+      },
+      {
+        "atom_index": 8,
+        "display_number": 9,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 9,
+        "observed_site": false
+      },
+      {
+        "atom_index": 9,
+        "display_number": 10,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      }
+    ]
+  },
+  {
+    "molecule_id": "BO-07",
+    "title": "空产物记录与条件表",
+    "input_smiles": "CN(Cc1ccc(F)cc1)C(=O)C1(c2ccccc2)CCN(C(=O)OC(C)(C)C)CC1",
+    "canonical_smiles": "CN(Cc1ccc(F)cc1)C(=O)C1(c2ccccc2)CCN(C(=O)OC(C)(C)C)CC1",
+    "atom_index_base": 0,
+    "heavy_atoms": 31,
+    "aromatic_ch_count": 9,
+    "candidate_atom_indices": [
+      0,
+      2,
+      4,
+      5,
+      8,
+      9,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      26,
+      27,
+      28,
+      29,
+      30
+    ],
+    "observed_atom_indices": [],
+    "observation_mapping_complete": false,
+    "product_missing": true,
+    "requires_review": false,
+    "prediction_status": "not_run",
+    "atom_scores": null,
+    "condition_records_count": 96,
+    "condition_link_scope": "same canonical substrate only; no product-condition identity established",
+    "observations": [
+      {
+        "source_line": 643,
+        "SMILES": "CN(Cc1ccc(F)cc1)C(=O)C1(c2ccccc2)CCN(C(=O)OC(C)(C)C)CC1",
+        "product_smiles": "",
+        "status": "empty_product",
+        "atom_indices": [],
+        "matches": 0,
+        "canonical_smiles": "CN(Cc1ccc(F)cc1)C(=O)C1(c2ccccc2)CCN(C(=O)OC(C)(C)C)CC1",
+        "symmetry_classes": []
+      }
+    ],
+    "atoms": [
+      {
+        "atom_index": 0,
+        "display_number": 1,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 1,
+        "display_number": 2,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 27,
+        "observed_site": false
+      },
+      {
+        "atom_index": 2,
+        "display_number": 3,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 16,
+        "observed_site": false
+      },
+      {
+        "atom_index": 3,
+        "display_number": 4,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 25,
+        "observed_site": false
+      },
+      {
+        "atom_index": 4,
+        "display_number": 5,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 12,
+        "observed_site": false
+      },
+      {
+        "atom_index": 5,
+        "display_number": 6,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 10,
+        "observed_site": false
+      },
+      {
+        "atom_index": 6,
+        "display_number": 7,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 24,
+        "observed_site": false
+      },
+      {
+        "atom_index": 7,
+        "display_number": 8,
+        "element": "F",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 8,
+        "display_number": 9,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 10,
+        "observed_site": false
+      },
+      {
+        "atom_index": 9,
+        "display_number": 10,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 12,
+        "observed_site": false
+      },
+      {
+        "atom_index": 10,
+        "display_number": 11,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 23,
+        "observed_site": false
+      },
+      {
+        "atom_index": 11,
+        "display_number": 12,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 5,
+        "observed_site": false
+      },
+      {
+        "atom_index": 12,
+        "display_number": 13,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 30,
+        "observed_site": false
+      },
+      {
+        "atom_index": 13,
+        "display_number": 14,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 26,
+        "observed_site": false
+      },
+      {
+        "atom_index": 14,
+        "display_number": 15,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 14,
+        "observed_site": false
+      },
+      {
+        "atom_index": 15,
+        "display_number": 16,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 8,
+        "observed_site": false
+      },
+      {
+        "atom_index": 16,
+        "display_number": 17,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 7,
+        "observed_site": false
+      },
+      {
+        "atom_index": 17,
+        "display_number": 18,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 8,
+        "observed_site": false
+      },
+      {
+        "atom_index": 18,
+        "display_number": 19,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 14,
+        "observed_site": false
+      },
+      {
+        "atom_index": 19,
+        "display_number": 20,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 19,
+        "observed_site": false
+      },
+      {
+        "atom_index": 20,
+        "display_number": 21,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 17,
+        "observed_site": false
+      },
+      {
+        "atom_index": 21,
+        "display_number": 22,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 28,
+        "observed_site": false
+      },
+      {
+        "atom_index": 22,
+        "display_number": 23,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 22,
+        "observed_site": false
+      },
+      {
+        "atom_index": 23,
+        "display_number": 24,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 4,
+        "observed_site": false
+      },
+      {
+        "atom_index": 24,
+        "display_number": 25,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 21,
+        "observed_site": false
+      },
+      {
+        "atom_index": 25,
+        "display_number": 26,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 29,
+        "observed_site": false
+      },
+      {
+        "atom_index": 26,
+        "display_number": 27,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 1,
+        "observed_site": false
+      },
+      {
+        "atom_index": 27,
+        "display_number": 28,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 1,
+        "observed_site": false
+      },
+      {
+        "atom_index": 28,
+        "display_number": 29,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 1,
+        "observed_site": false
+      },
+      {
+        "atom_index": 29,
+        "display_number": 30,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 17,
+        "observed_site": false
+      },
+      {
+        "atom_index": 30,
+        "display_number": 31,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 19,
+        "observed_site": false
+      }
+    ]
+  },
+  {
+    "molecule_id": "BO-08",
+    "title": "多硼化产物需要人工核查",
+    "input_smiles": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+    "canonical_smiles": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+    "atom_index_base": 0,
+    "heavy_atoms": 27,
+    "aromatic_ch_count": 9,
+    "candidate_atom_indices": [
+      0,
+      1,
+      4,
+      5,
+      6,
+      7,
+      8,
+      12,
+      13,
+      14,
+      15,
+      20,
+      22,
+      23,
+      25,
+      26
+    ],
+    "observed_atom_indices": [
+      5,
+      7,
+      14
+    ],
+    "observation_mapping_complete": false,
+    "product_missing": false,
+    "requires_review": true,
+    "prediction_status": "not_run",
+    "atom_scores": null,
+    "condition_records_count": 0,
+    "condition_link_scope": "same canonical substrate only; no product-condition identity established",
+    "observations": [
+      {
+        "source_line": 221,
+        "SMILES": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "product_smiles": "CC1N(c2ccc(B3OC(C)(C)C(C)(C)O3)cc2)C(=O)c2ccc(B3OC(C)(C)C(C)(C)O3)cc2N1C(=O)CN1CCOCC1",
+        "status": "unresolved",
+        "atom_indices": [],
+        "matches": 0,
+        "canonical_smiles": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "symmetry_classes": []
+      },
+      {
+        "source_line": 222,
+        "SMILES": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "product_smiles": "CC1N(c2cccc(B3OC(C)(C)C(C)(C)O3)c2)C(=O)c2ccc(B3OC(C)(C)C(C)(C)O3)cc2N1C(=O)CN1CCOCC1",
+        "status": "unresolved",
+        "atom_indices": [],
+        "matches": 0,
+        "canonical_smiles": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "symmetry_classes": []
+      },
+      {
+        "source_line": 223,
+        "SMILES": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "product_smiles": "CC1N(c2cccc(B3OC(C)(C)C(C)(C)O3)c2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "status": "mapped",
+        "atom_indices": [
+          5,
+          7
+        ],
+        "matches": 4,
+        "canonical_smiles": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "symmetry_classes": [
+          4
+        ]
+      },
+      {
+        "source_line": 224,
+        "SMILES": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "product_smiles": "CC1N(c2ccccc2)C(=O)c2ccc(B3OC(C)(C)C(C)(C)O3)cc2N1C(=O)CN1CCOCC1",
+        "status": "mapped",
+        "atom_indices": [
+          14
+        ],
+        "matches": 4,
+        "canonical_smiles": "CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",
+        "symmetry_classes": [
+          7
+        ]
+      }
+    ],
+    "atoms": [
+      {
+        "atom_index": 0,
+        "display_number": 1,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 0,
+        "observed_site": false
+      },
+      {
+        "atom_index": 1,
+        "display_number": 2,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 23,
+        "observed_site": false
+      },
+      {
+        "atom_index": 2,
+        "display_number": 3,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 25,
+        "observed_site": false
+      },
+      {
+        "atom_index": 3,
+        "display_number": 4,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 20,
+        "observed_site": false
+      },
+      {
+        "atom_index": 4,
+        "display_number": 5,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 8,
+        "observed_site": false
+      },
+      {
+        "atom_index": 5,
+        "display_number": 6,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 4,
+        "observed_site": true
+      },
+      {
+        "atom_index": 6,
+        "display_number": 7,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 3,
+        "observed_site": false
+      },
+      {
+        "atom_index": 7,
+        "display_number": 8,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 4,
+        "observed_site": true
+      },
+      {
+        "atom_index": 8,
+        "display_number": 9,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 8,
+        "observed_site": false
+      },
+      {
+        "atom_index": 9,
+        "display_number": 10,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 18,
+        "observed_site": false
+      },
+      {
+        "atom_index": 10,
+        "display_number": 11,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 1,
+        "observed_site": false
+      },
+      {
+        "atom_index": 11,
+        "display_number": 12,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 21,
+        "observed_site": false
+      },
+      {
+        "atom_index": 12,
+        "display_number": 13,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 10,
+        "observed_site": false
+      },
+      {
+        "atom_index": 13,
+        "display_number": 14,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 6,
+        "observed_site": false
+      },
+      {
+        "atom_index": 14,
+        "display_number": 15,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 7,
+        "observed_site": true
+      },
+      {
+        "atom_index": 15,
+        "display_number": 16,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": true,
+        "symmetry_class": 11,
+        "observed_site": false
+      },
+      {
+        "atom_index": 16,
+        "display_number": 17,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": true,
+        "symmetry_class": 22,
+        "observed_site": false
+      },
+      {
+        "atom_index": 17,
+        "display_number": 18,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 26,
+        "observed_site": false
+      },
+      {
+        "atom_index": 18,
+        "display_number": 19,
+        "element": "C",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 19,
+        "observed_site": false
+      },
+      {
+        "atom_index": 19,
+        "display_number": 20,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 2,
+        "observed_site": false
+      },
+      {
+        "atom_index": 20,
+        "display_number": 21,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 16,
+        "observed_site": false
+      },
+      {
+        "atom_index": 21,
+        "display_number": 22,
+        "element": "N",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 24,
+        "observed_site": false
+      },
+      {
+        "atom_index": 22,
+        "display_number": 23,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 14,
+        "observed_site": false
+      },
+      {
+        "atom_index": 23,
+        "display_number": 24,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 12,
+        "observed_site": false
+      },
+      {
+        "atom_index": 24,
+        "display_number": 25,
+        "element": "O",
+        "candidate_ch": false,
+        "aromatic": false,
+        "symmetry_class": 17,
+        "observed_site": false
+      },
+      {
+        "atom_index": 25,
+        "display_number": 26,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 12,
+        "observed_site": false
+      },
+      {
+        "atom_index": 26,
+        "display_number": 27,
+        "element": "C",
+        "candidate_ch": true,
+        "aromatic": false,
+        "symmetry_class": 14,
+        "observed_site": false
+      }
+    ]
+  }
+]

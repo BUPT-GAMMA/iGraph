@@ -11,6 +11,7 @@ import { ProcessTimeline } from './ProcessTimeline';
 import { fetchArtifact } from './WorkspaceFiles';
 import { useI18n, type Translate } from '../i18n';
 import { executionLabel, executionPending, executionStatus } from '../toolStatus';
+import { BorylationStoryPanel } from './BorylationStoryPanel';
 
 function formatBytes(size?: number) {
   if (!Number.isFinite(size) || (size as number) < 0) return '';
@@ -252,8 +253,9 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
   }, [conversationKey, messages, plan, runTools, scrollToLatest]);
 
   return <main className="chat-pane">
+    {exampleCase?.id === 'borylation' && exampleCase.story_steps?.length ? <BorylationStoryPanel key={conversationKey} userCase={exampleCase} sessionId={artifactSessionId} activeQuestion={[...messages].reverse().find(message => message.role === 'user')?.content} onQuestion={inputProps.onChange} questionDisabled={!composerAvailable || Boolean(editingKey || inputProps.disabled || inputProps.loading || inputProps.uploading || inputProps.sendBlocked)} /> : null}
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-      {messages.length === 0 ? <><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable && !emptyContent ? <div className="suggestions">{exampleQuestions?.length ? exampleQuestions.map(question => <button key={question} onClick={() => inputProps.onChange(question)}>{question}</button>) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
+      {messages.length === 0 ? <><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable && !emptyContent && exampleCase?.id !== 'borylation' ? <div className="suggestions">{exampleQuestions?.length ? exampleQuestions.map(question => <button key={question} onClick={() => inputProps.onChange(question)}>{question}</button>) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
         const versions = isAssistant ? answerVersions(message, messages) : [message];

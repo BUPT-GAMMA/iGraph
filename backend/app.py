@@ -5178,6 +5178,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
             raise HTTPException(422, detail="Finance arguments must be a JSON object")
         return await graph_tool(session_id, names[operation], arguments, request)
 
+    @app.get("/api/sessions/{session_id}/borylation-case")
+    async def borylation_case(session_id: str, request: Request, step: str = "structure"):
+        """Read the same owned, loaded case that Agent tools analyze."""
+        if step not in {"structure", "symmetry", "products", "conditions", "plan"}:
+            raise HTTPException(422, detail="请选择有效的案例步骤")
+        return await graph_tool(session_id, "borylation_case_analysis", {"step": step}, request)
+
     @app.get(MIGRATION_GUIDE_PATH)
     async def dataset_api_migration(request: Request):
         current_user(request, users)

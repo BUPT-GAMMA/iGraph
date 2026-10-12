@@ -8,7 +8,7 @@ from tests.test_server_dataset_catalog import _PreparedServerServiceClient
 def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monkeypatch):
     server = tmp_path / "server"
     server.mkdir()
-    for filename in ("finance-ownership.npz", "tianlongbabu-characters.npz"):
+    for filename in ("finance-ownership.npz", "tianlongbabu-characters.npz", "borylation-story.npz"):
         (server / filename).write_bytes(b"catalog-test-asset")
     supported = tmp_path / "supported.txt"
     supported.write_text("admin\nreader\n", encoding="utf-8")
@@ -22,7 +22,7 @@ def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monk
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=backend_app.create_app(config)), base_url="http://test", headers={"X-User-ID":"admin"}) as client:
             listing = (await client.get("/api/user-cases")).json()["cases"]
-            assert len(listing) == 2 and all(item["available"] and len(item["questions"]) >= 3 for item in listing)
+            assert len(listing) == 3 and all(item["available"] and len(item["questions"]) >= 3 for item in listing)
             for item in listing:
                 english = item['translations']['en']
                 assert english['name'] and english['description']

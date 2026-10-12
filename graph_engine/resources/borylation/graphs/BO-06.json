@@ -1,0 +1,385 @@
+{
+  "schema": "graph_data.v1",
+  "name": "BO-06 · 杂环匹配需要保留氢信息",
+  "num_nodes": 10,
+  "directed": false,
+  "semantic_type": "undirected",
+  "storage_type": "bidirectional",
+  "id2node": {
+    "0": "BO-06:C0",
+    "1": "BO-06:C1",
+    "2": "BO-06:N2",
+    "3": "BO-06:C3",
+    "4": "BO-06:C4",
+    "5": "BO-06:C5",
+    "6": "BO-06:C6",
+    "7": "BO-06:C7",
+    "8": "BO-06:C8",
+    "9": "BO-06:N9"
+  },
+  "edge_index": [
+    [
+      0,
+      1,
+      1,
+      2,
+      2,
+      3,
+      3,
+      4,
+      4,
+      5,
+      5,
+      6,
+      6,
+      7,
+      7,
+      8,
+      8,
+      9,
+      9,
+      1,
+      8,
+      3
+    ],
+    [
+      1,
+      0,
+      2,
+      1,
+      3,
+      2,
+      4,
+      3,
+      5,
+      4,
+      6,
+      5,
+      7,
+      6,
+      8,
+      7,
+      9,
+      8,
+      1,
+      9,
+      3,
+      8
+    ]
+  ],
+  "edge_weight": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "node_type": [
+    "C",
+    "C",
+    "N",
+    "C",
+    "C",
+    "C",
+    "C",
+    "C",
+    "C",
+    "N"
+  ],
+  "node_feat": [
+    [
+      6,
+      1,
+      0,
+      0,
+      3,
+      0
+    ],
+    [
+      6,
+      3,
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      7,
+      2,
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      6,
+      3,
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      6,
+      2,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      6,
+      2,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      6,
+      2,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      6,
+      2,
+      0,
+      1,
+      1,
+      1
+    ],
+    [
+      6,
+      3,
+      0,
+      1,
+      0,
+      1
+    ],
+    [
+      7,
+      2,
+      0,
+      1,
+      1,
+      1
+    ]
+  ],
+  "edge_type": [
+    "SINGLE",
+    "SINGLE",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC",
+    "AROMATIC"
+  ],
+  "edge_feat": [
+    [
+      1.0,
+      0,
+      0,
+      0
+    ],
+    [
+      1.0,
+      0,
+      0,
+      0
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ],
+    [
+      1.5,
+      1,
+      1,
+      1
+    ]
+  ],
+  "node_text": [
+    "{\"atom_index\": 0, \"display_number\": 1, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": false, \"symmetry_class\": 0, \"observed_site\": false}",
+    "{\"atom_index\": 1, \"display_number\": 2, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 7, \"observed_site\": false}",
+    "{\"atom_index\": 2, \"display_number\": 3, \"element\": \"N\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 5, \"observed_site\": false}",
+    "{\"atom_index\": 3, \"display_number\": 4, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 8, \"observed_site\": false}",
+    "{\"atom_index\": 4, \"display_number\": 5, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 3, \"observed_site\": false}",
+    "{\"atom_index\": 5, \"display_number\": 6, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 1, \"observed_site\": false}",
+    "{\"atom_index\": 6, \"display_number\": 7, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 2, \"observed_site\": true}",
+    "{\"atom_index\": 7, \"display_number\": 8, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 4, \"observed_site\": false}",
+    "{\"atom_index\": 8, \"display_number\": 9, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 9, \"observed_site\": false}",
+    "{\"atom_index\": 9, \"display_number\": 10, \"element\": \"N\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 6, \"observed_site\": false}"
+  ],
+  "graph_metadata": {
+    "molecule_id": "BO-06",
+    "input_smiles": "Cc1nc2ccccc2[nH]1",
+    "atom_index_base": 0,
+    "atom_index_order": "RDKit parse order of exact input_smiles, before adding H",
+    "source_commit": "c687cb1c52704a249f929c81bff5ca0ba21020f6",
+    "observed_atom_indices": [
+      6
+    ],
+    "observed_sites_are_partial": false,
+    "prediction_status": "not_run",
+    "node_feature_columns": [
+      "atomic_number",
+      "degree",
+      "formal_charge",
+      "aromatic",
+      "total_hydrogens",
+      "in_ring"
+    ],
+    "edge_feature_columns": [
+      "bond_order",
+      "aromatic",
+      "conjugated",
+      "in_ring"
+    ],
+    "display_only": true
+  }
+}

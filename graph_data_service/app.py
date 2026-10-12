@@ -3410,6 +3410,11 @@ class GraphDataService:
 
     def _dispatch_graph_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str = "") -> dict:
         """图数据/图计算工具分发。"""
+        if tool_name == "borylation_case_analysis":
+            from graph_data_service.borylation import analyze_borylation
+            session = self.get_required(session_id, user_id=user_id)
+            result = analyze_borylation(session.get_graph(), arguments)
+            return {**result, "graph_version": session.graph_version}
         if tool_name == "inspect_kinship":
             from graph_data_service.kinship import inspect_kinship
             session = self.get_required(session_id, user_id=user_id)
@@ -4561,6 +4566,8 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         await run_sync(install_finance_preset, _dp.data_root())
         from graph_engine.novel_preset import install_novel_preset
         await run_sync(install_novel_preset, _dp.data_root())
+        from graph_engine.borylation_preset import install_borylation_preset
+        await run_sync(install_borylation_preset, _dp.data_root())
         await svc._construction_coordinator.restore()
         if svc._execution_host:
             await svc._execution_host.restore()

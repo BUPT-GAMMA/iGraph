@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { createGraphCanvasState, GraphCanvas } from './GraphCanvas';
+import { MoleculeCanvas } from './MoleculeCanvas';
 import { GraphCoverage } from './GraphCoverage';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { normalizeHighlights } from '../graphAppearance';
@@ -34,6 +35,7 @@ type GraphWorkspaceProps = {
   data: GraphData | null;
   view?: GraphViewState;
   datasetName?: string;
+  datasetId?: string;
   messages?: Message[];
   liveTools?: ToolCall[];
   projectId?: string | null;
@@ -52,6 +54,7 @@ type GraphWorkspaceProps = {
   onGraphQuery?: (prompt: string) => void;
   onGraphReset?: () => void;
   graphQueryPending?: boolean;
+  molecularCase?: boolean;
 };
 
 function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWorkspaceProps) {
@@ -66,9 +69,11 @@ function graphWorkspacePropsEqual(previous: GraphWorkspaceProps, next: GraphWork
     && previous.onTab === next.onTab
     && previous.onToggle === next.onToggle
     && previous.sessionId === next.sessionId
+    && previous.datasetId === next.datasetId
     && previous.onGraphQuery === next.onGraphQuery
     && previous.onGraphReset === next.onGraphReset
     && previous.graphQueryPending === next.graphQueryPending
+    && previous.molecularCase === next.molecularCase
     && previous.onStopJob === next.onStopJob;
   if (previous.embedded !== next.embedded || previous.onConstruct !== next.onConstruct || previous.constructionLabel !== next.constructionLabel || previous.datasetName !== next.datasetName) return false;
   if (!coreEqual) return false;
@@ -96,7 +101,7 @@ function sameWorkspaceGraph(left: GraphData | null, right: GraphData | null) {
     && left.edges.every((edge, index) => sameRecord(edge, right.edges[index]));
 }
 
-export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, onStopJob, embedded, onConstruct, constructionLabel, onGraphQuery, onGraphReset, graphQueryPending = false }: GraphWorkspaceProps) {
+export const GraphWorkspace = memo(function GraphWorkspace({ data, view, datasetName, datasetId, messages = [], liveTools = [], projectId = '', sessionId = '', tab, onTab, selected, onSelect, collapsed, onToggle, onExpand, onStopJob, embedded, onConstruct, constructionLabel, onGraphQuery, onGraphReset, graphQueryPending = false, molecularCase = false }: GraphWorkspaceProps) {
   const { language, t } = useI18n();
   const locale = localeFor(language);
   const resolvedConstructionLabel = constructionLabel || t('Build graph', '构图');
@@ -120,11 +125,13 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   const [resultsOnly, setResultsOnly] = useState(false);
   const [resultIndex, setResultIndex] = useState(-1);
   const [selectedDetail, setSelectedDetail] = useState<Record<string, unknown> | null>(null);
+  const [molecularView, setMolecularView] = useState<'structure' | 'relationships'>('structure');
   const [projectTrainingRuns, setProjectTrainingRuns] = useState<ProjectTrainingRun[]>([]);
   const [projectTrainingLoading, setProjectTrainingLoading] = useState(false);
   const [projectTrainingError, setProjectTrainingError] = useState('');
   const hasPendingLiveTraining = liveTools.some(tool => String(tool.tool || '') === 'train' && !tool.done);
-  const canvasIdentity = `${sessionId}\u0000${datasetName || ''}`;
+  const datasetKey = datasetId || datasetName || '';
+  const canvasIdentity = `${sessionId}\u0000${datasetKey}`;
   const canvasMemory = useRef({ identity: canvasIdentity, state: createGraphCanvasState() });
   if (canvasMemory.current.identity !== canvasIdentity) canvasMemory.current = { identity: canvasIdentity, state: createGraphCanvasState() };
   const layoutLabel = layout === 'force' ? t('Force-directed', '力导向') : layout === 'radial' ? t('Radial', '径向') : t('Circular', '环形');
@@ -143,6 +150,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     if (id && index.nodes.has(id) && !preview.nodes.some(node => node.id === id) && !filterMatches && !depth) setFocusId(id);
   }, [selected, index, preview.nodes, filterMatches, depth]);
   const schemaMode = renderedData?.visualization_kind === 'schema';
+  const molecularEligible = molecularCase && !schemaMode && renderedData?.schema_kind !== 'tables';
+  const showMolecule = molecularEligible && molecularView === 'structure';
+  useEffect(() => { setMolecularView('structure'); }, [sessionId, datasetKey, molecularCase]);
   const selectedId = String(selected?.id ?? '');
   const selectedInfo = selected ? index.nodes.get(String(selected.id)) : undefined;
   const detailedSelected = selectedDetail && String(selectedDetail.id ?? selectedDetail.label ?? '') === selectedId
@@ -150,7 +160,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     : undefined;
   useEffect(() => {
     setSelectedDetail(null);
-    if (!selectedId || !sessionId || schemaMode) return;
+    if (!selectedId || !sessionId || schemaMode || showMolecule) return;
     const controller = new AbortController();
     void visualizeGraph(sessionId, { node_names: [selectedId], include_community: false, max_nodes: 1 }, controller.signal)
       .then(result => {
@@ -161,7 +171,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
         if (!(cause && typeof cause === 'object' && 'name' in cause && cause.name === 'AbortError')) setSelectedDetail(null);
       });
     return () => controller.abort();
-  }, [datasetName, schemaMode, selectedId, sessionId]);
+  }, [datasetKey, schemaMode, selectedId, sessionId, showMolecule]);
   const locate = (id: string) => { setFocusId(id); const node = index.nodes.get(id); if (node) onSelect(node); };
   const changeTab = (nextTab: Tab) => {
     if (tab === 'Graph' && nextTab !== 'Graph') {
@@ -171,7 +181,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     }
     onTab(nextTab);
   };
-  useEffect(() => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); setResultsOnly(false); setResultIndex(-1); setExploreOpen(false); }, [sessionId, datasetName]);
+  useEffect(() => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); setResultsOnly(false); setResultIndex(-1); setExploreOpen(false); }, [sessionId, datasetKey]);
   useEffect(() => { setResultIndex(-1); if (!allHighlights.length) setResultsOnly(false); }, [allHighlights]);
   const resetGraphFilters = () => { setQuery(''); setFocusId(''); setDepth(0); setFilterMatches(false); setConnectedOnly(false); setResultsOnly(false); setResultIndex(-1); onSelect(null); setFitVersion(current => current + 1); };
 
@@ -239,6 +249,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
               : view?.status === 'failed' ? <div className="graph-empty"><strong>{t('Failed to load graph', '图加载失败')}</strong><span>{view.error}</span></div>
                 : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>{t('No graph yet', '暂无图')}</strong><span>{t('Load data or request a graph to see analysis results here.', '加载数据或发送建图请求后，这里会显示图分析结果。')}</span></div>
                   : tab === 'Graph' ? <>
+                    {molecularEligible && <div className="molecule-view-switch" role="group" aria-label={t('Molecular workspace view', '分子工作台视图')}>
+                      <button aria-pressed={showMolecule} onClick={() => setMolecularView('structure')}>{t('Molecular structure', '分子结构')}</button>
+                      <button aria-pressed={!showMolecule} onClick={() => setMolecularView('relationships')}>{t('Record relationships', '记录关系')}</button>
+                    </div>}
+                    {showMolecule ? <MoleculeCanvas sessionId={sessionId} datasetKey={datasetKey} highlights={allHighlights} selected={selected} onSelect={onSelect} /> : <>
                     <div className="graph-toolbar">
                       <button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> {t('Search nodes', '搜索节点')}</button>
                       {onGraphQuery && <button onClick={() => setExploreOpen(current => !current)} aria-expanded={exploreOpen}><Icon name="spark" size={14} />{t('Explore graph', '图探索')}</button>}
@@ -269,6 +284,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
                       kind={tablesMode ? 'tables' : schemaMode ? 'schema' : 'instances'} />
                     {(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">{t('Legend', '图例')}</span>{communityById.size ? <span><i className="legend-dot community" />{t('Community colors', '社区着色')}</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className={`legend-dot node-highlight is-${highlightShape}`} />{t('Highlighted nodes', '节点高亮')}</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />{t('Highlighted paths', '路径高亮')}</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />{t('Highlighted subgraphs', '子图高亮')}</span> : null}</div> : null}
                     <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? t('Selected node', '已选节点'))}</strong><span>{t('Selected', '已选择')}</span></div>{!(String(selected.id ?? '').startsWith('row_') && selected.label && String(selected.label) !== String(selected.id)) && <div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div>}<div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String(nodePropertyType(detailedSelected || selectedInfo || selected) ?? t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div>{!schemaMode && <NodeProperties node={detailedSelected || selectedInfo || selected} />}<div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
+                    </>}
                   </>
                     : <WorkspaceTab tab={tab} data={data} datasetName={datasetName} messages={messages} />}
     </div>

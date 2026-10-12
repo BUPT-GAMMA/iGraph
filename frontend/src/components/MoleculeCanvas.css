@@ -1,0 +1,33 @@
+.molecule-view-switch { display: flex; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border-color, #e2e8f0); }
+.molecule-view-switch button { padding: 6px 12px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text-secondary, #64748b); cursor: pointer; }
+.molecule-view-switch button[aria-pressed="true"] { background: var(--accent-soft, #eff6ff); color: var(--accent, #2563eb); border-color: var(--accent, #2563eb); }
+.molecule-canvas { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; padding: 12px; gap: 12px; color: var(--text-primary, #1e293b); }
+.molecule-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 12px; }
+.molecule-toolbar > span { flex: 1; min-width: 120px; color: var(--text-secondary, #64748b); }
+.molecule-canvas button { border: 1px solid var(--border-color, #cbd5e1); border-radius: 6px; background: var(--panel-background, #fff); color: inherit; padding: 4px 8px; cursor: pointer; }
+.molecule-canvas button:disabled { opacity: .45; cursor: default; }
+.molecule-candidate-sites { display: flex; flex-direction: column; gap: 7px; font-size: 12px; }
+.molecule-candidate-sites > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.molecule-candidate-sites button { min-width: 31px; background: #eff6ff; border-color: #93c5fd; color: #1e40af; font-variant-numeric: tabular-nums; }
+.molecule-candidate-sites button[aria-pressed="true"] { background: #2563eb; color: #fff; }
+.molecule-layer-control { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.molecule-layer-control select { max-width: 70%; padding: 4px; border-radius: 5px; border: 1px solid var(--border-color, #cbd5e1); }
+.molecule-scroll { overflow: auto; flex-shrink: 0; border: 1px solid var(--border-color, #e2e8f0); border-radius: 8px; background: white; }
+.molecule-drawing { display: block; min-width: 100%; height: auto; aspect-ratio: 1000 / 560; }
+.molecule-candidate { fill: #93c5fd; fill-opacity: .22; stroke: #60a5fa; stroke-width: 1.2; }
+.molecule-current-highlight { fill-opacity: .11; stroke-width: 3; pointer-events: none; }
+.molecule-selection { fill: none; stroke: #0f172a; stroke-width: 3; stroke-dasharray: 5 3; pointer-events: none; }
+.molecule-atom-target { cursor: pointer; outline: none; }
+.molecule-atom-target > circle { fill: transparent; stroke: transparent; stroke-width: 2.5; }
+.molecule-atom-target:hover > circle, .molecule-atom-target:focus > circle { fill: #2563eb; fill-opacity: .08; stroke: #2563eb; }
+.molecule-legend { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; font-size: 12px; }
+.molecule-legend > span { display: flex; align-items: center; gap: 7px; line-height: 1.5; overflow-wrap: anywhere; }
+.molecule-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.molecule-candidate-key { background: #93c5fd; }
+.molecule-atom-inspector { border-top: 1px solid var(--border-color, #e2e8f0); padding-top: 10px; font-size: 12px; }
+.molecule-atom-inspector dl { margin: 8px 0 0; display: grid; gap: 7px; }
+.molecule-atom-inspector dl > div { display: flex; justify-content: space-between; gap: 12px; }
+.molecule-atom-inspector dt { color: var(--text-secondary, #64748b); }
+.molecule-atom-inspector dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.molecule-empty { justify-content: center; text-align: center; min-height: 220px; font-size: 13px; }
+.molecule-empty p { color: var(--text-secondary, #64748b); line-height: 1.6; }
