@@ -62,13 +62,21 @@ def test_large_capability_modes_exactly_match_public_tool_schema(
     router: ComputeRouter,
 ) -> None:
     public_tools = {str(tool["name"]): tool for tool in GRAPH_TOOLS}
+    # Large-graph-only algorithms have no standalone tool; their modes are
+    # exposed through run_large_graph_algorithm.parameters instead.
+    large_only_properties = public_tools["run_large_graph_algorithm"]["inputSchema"][
+        "properties"
+    ]["parameters"]["properties"]
     for algorithm, capability in router.capabilities.items():
         if not capability.modes:
             continue
         mode_key = router._MODE_PARAMETER[algorithm]
-        schema_modes = set(
-            public_tools[algorithm]["inputSchema"]["properties"][mode_key]["enum"]
+        properties = (
+            public_tools[algorithm]["inputSchema"]["properties"]
+            if algorithm in public_tools
+            else large_only_properties
         )
+        schema_modes = set(properties[mode_key]["enum"])
         assert schema_modes == set(capability.modes), algorithm
 
 
