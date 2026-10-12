@@ -19,8 +19,7 @@ const response = (step: BorylationAnalysisStep, result: Record<string, unknown>)
 afterEach(cleanup);
 beforeEach(() => { vi.mocked(getBorylationCase).mockReset(); localStorage.setItem('igraph-language', 'zh'); });
 
-it('keeps the six steps in an existing conversation and only fills the composer', async () => {
-  vi.mocked(getBorylationCase).mockImplementation(async (_sessionId, step) => response(step, step === 'products' ? { product_count: 3, products: [{ product_id: 'BO-01:P3', display_numbers: [9] }, { product_id: 'BO-01:P1', display_numbers: [19] }, { product_id: 'BO-01:P2', display_numbers: [18] }] } : {}));
+it('keeps molecular conversations consistent with other datasets and preserves free-form drafts', () => {
   const onSend = vi.fn();
   function Conversation() {
     const [value, setValue] = useState('自由问题');
@@ -32,22 +31,13 @@ it('keeps the six steps in an existing conversation and only fills the composer'
   }
   render(<Conversation />);
   expect(screen.getByText('前一个回答')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: /分子硼化反应示例.*展开/ }));
-  expect(screen.getAllByRole('button', { pressed: false })).toHaveLength(5);
-  fireEvent.click(screen.getByRole('button', { name: '2 排除等价位点' }));
-  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('问题：排除等价位点');
-  expect(onSend).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: /分子硼化反应示例.*展开/ })).toBeNull();
+  expect(screen.queryByRole('navigation', { name: '案例问题' })).toBeNull();
+  expect(getBorylationCase).not.toHaveBeenCalled();
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('自由问题');
   fireEvent.change(screen.getByRole('textbox'), { target: { value: '我想自由追问' } });
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('我想自由追问');
-  await waitFor(() => expect(getBorylationCase).toHaveBeenLastCalledWith('session-a', 'symmetry', expect.any(AbortSignal)));
-  fireEvent.click(screen.getByRole('button', { name: '3 看看已有产物' }));
-  const product3 = await screen.findByAltText('BO-01:P3 产物结构');
-  expect(product3.getAttribute('src')).toBe('/examples/borylation/BO-01-product-3.png');
-  expect(screen.getByAltText('BO-01:P1 产物结构').getAttribute('src')).toBe('/examples/borylation/BO-01-product-1.png');
-  expect(screen.getByAltText('BO-01:P2 产物结构').getAttribute('src')).toBe('/examples/borylation/BO-01-product-2.png');
-  fireEvent.click(screen.getByRole('button', { name: /分子硼化反应示例.*收起/ }));
-  expect(screen.queryByRole('navigation', { name: '案例问题' })).toBeNull();
-  expect(screen.getByText('前一个回答')).toBeTruthy();
+  expect(onSend).not.toHaveBeenCalled();
 });
 
 it('ignores a late response from a previous step and clears evidence on errors', async () => {
@@ -120,4 +110,43 @@ it('follows a question sent through Tab without overwriting the composer draft',
   await waitFor(() => expect(getBorylationCase).toHaveBeenLastCalledWith('s', 'symmetry', expect.any(AbortSignal)));
   expect(screen.getByRole('button', { name: '2 排除等价位点' }).getAttribute('aria-pressed')).toBe('true');
   expect(onQuestion).not.toHaveBeenCalled();
+});
+
+
+const fourSteps = ['properties', 'rings', 'structure', 'symmetry'] as const;
+const fourCase: UserCase = { ...userCase, questions: fourSteps.map(s => `中文 ${s}`),
+  story_steps: fourSteps.map(s => ({ id:s, title:`中文 ${s}`, analysis_step:s, question:`中文 ${s}` })),
+  translations: { en: { name:'Molecular example', description:'', questions:fourSteps.map(s => `English ${s}`),
+    story_steps:fourSteps.map(s => ({ id:s, title:`English ${s}`, analysis_step:s, question:`English ${s}` })) } } };
+
+it('shows computed properties separately from missing measurements, and ring types separately from counts', async () => {
+  vi.mocked(getBorylationCase).mockImplementation(async (_sid, step) => response(step, step === 'properties' ? {
+    descriptors:{ formula:'C15H9ClFN3OS', molecular_weight_g_mol:333.775, clogp:4.25, tpsa_angstrom2:83.12, h_bond_donors:1, h_bond_acceptors:4 },
+    method:{version:'2026.09.1'}, solubility:{recorded_reaction_solvents:[{name:'环己烷'}]},
+  } : {ring_count:3,ring_type_count:2,rings:[{ring_id:2,display_numbers:[8,9,10,11,12],elements:{C:2,N:2,S:1},aromatic:true}]}));
+  render(<I18nProvider initialLanguage="zh"><BorylationStoryPanel userCase={fourCase} sessionId="s" onQuestion={()=>{}} /></I18nProvider>);
+  fireEvent.click(screen.getByRole('button',{name:/分子硼化反应示例.*展开/}));
+  await screen.findByText('C15H9ClFN3OS');
+  expect(screen.getByText('毒性：未知，未提供毒性测定或模型预测。')).toBeTruthy();
+  expect(screen.getByRole('img').getAttribute('src')).toBe('/examples/borylation/BO-01-molecule.svg');
+  fireEvent.click(screen.getByRole('button',{name:'2 中文 rings'}));
+  await screen.findByText('环类型');
+  expect(screen.getByText('C2 N2 S1')).toBeTruthy();
+  expect(screen.getByText('环数量').nextElementSibling?.textContent).toBe('3');
+  expect(screen.getByText('环类型').nextElementSibling?.textContent).toBe('2');
+});
+
+it('localizes the new four-question sequence and ends the Tab sequence at symmetry', async () => {
+  vi.mocked(getBorylationCase).mockImplementation(async (_sid, step) => response(step, {}));
+  const onQuestion=vi.fn();
+  render(<I18nProvider initialLanguage="en"><BorylationStoryPanel userCase={fourCase} sessionId="s" onQuestion={onQuestion} /></I18nProvider>);
+  fireEvent.click(screen.getByRole('button',{name:/Molecular example.*Expand/}));
+  await screen.findByText('Toxicity: unknown. No toxicity measurements or model predictions are provided.');
+  for(let i=0;i<fourSteps.length;i++) {
+    fireEvent.click(screen.getByRole('button',{name:`${i+1} English ${fourSteps[i]}`}));
+    expect(onQuestion).toHaveBeenLastCalledWith(`English ${fourSteps[i]}`);
+    const hint=nextExampleQuestion(fourCase,[{role:'user',content:fourCase.questions[i],run_id:'r'}, {role:'assistant',content:'answer',run_id:'r',run_status:'completed'}],en=>en);
+    expect(hint?.question).toBe(fourCase.translations!.en!.questions[i+1]);
+    if(hint) expect(hint.total).toBe(4);
+  }
 });

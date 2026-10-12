@@ -1,6 +1,3 @@
-.molecule-view-switch { display: flex; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border-color, #e2e8f0); }
-.molecule-view-switch button { padding: 6px 12px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text-secondary, #64748b); cursor: pointer; }
-.molecule-view-switch button[aria-pressed="true"] { background: var(--accent-soft, #eff6ff); color: var(--accent, #2563eb); border-color: var(--accent, #2563eb); }
 .molecule-canvas { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; padding: 12px; gap: 12px; color: var(--text-primary, #1e293b); }
 .molecule-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 12px; }
 .molecule-toolbar > span { flex: 1; min-width: 120px; color: var(--text-secondary, #64748b); }

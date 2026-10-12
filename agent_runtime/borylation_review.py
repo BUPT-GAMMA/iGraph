@@ -20,7 +20,7 @@ def borylation_evidence(messages):
         if not isinstance(result, dict):
             continue
         # The condition matrix has 96 rows; summaries and actual successes
-        # retain all facts needed for the six-question review.
+        # retain all facts needed for the molecular-question review.
         records.append({**{key: data[key] for key in ("step", "structure_summary", "limitations", "prediction_status") if key in data},
             "result": {key: value for key, value in result.items() if key != "matrix"}})
     return records[-6:]
@@ -58,8 +58,18 @@ def review_request(messages, draft, response_format=None):
         "下一条 JSON 的 question 为本轮问题，draft 为候选答案，ledger 为本轮成功工具的结果。"
         "只输出修正后的完整答案，保留必要表格；不输出核对过程。遵循原系统本轮界面语言。"
         "rendering_receipts 是本轮成功画图工具回执；有成功回执及 highlights 时保留已展示、高亮的描述，不能改写成未执行或未确认。逐条核对数字、分组、环归属、产物位点、实验条件和结尾汇总。开头、表格、正文和结尾必须一致。"
+        "properties 的描述符是结构计算；cLogP不是logS，不是实测有机溶剂溶解度。"
+        "溶剂筛选记录、投料名义浓度和转化率不证明完全溶解；保留合理且明确为假设的溶剂建议，不改成确定易溶/不溶。"
+        "toxicity 为 unknown 且无 measured_endpoints/predictions 时，不得判定有毒或无毒，更不能把结构警示当毒性实证。"
+        "没有具体毒性警示规则/终点/适用域时，不能因含卤素、芳香环或杂环就列为已确认的结构警示。"
+        "必须删除‘酰胺键在通常剂量下毒性有限’、‘某官能团低毒’等说法：一个键没有独立的给药剂量或完整分子毒性结论。"
+        "DMF、DMSO、NMP是极性非质子溶剂，不能列为低极性溶剂。"
+        "环数量与按大小/元素/芳香性划分的类型数分开；同类型环不表示取代环境相同。"
         "环用 structure_summary.rings 中的大小与元素描述，位点用 1 起始显示编号，symmetry_class 只是内部 ID。"
         "每个环贡献的候选与不等价类别必须对应 per_ring_sites，各环类别之和等于 distinct_site_count。"
+        "涉及候选位点的环邻接与取代基关系时，必须核对 candidate_atoms.bonded_neighbors 与 adjacent_ring_substituents；按显示编号对齐。"
+        "二维拓扑不等于三维位阻；删除无三维计算或实测支持的具体位点拥挤程度/活性强弱排序。只列可能影响因素并标明假设。"
+        "回答候选与标注时，不主动声称 plan 能为未报道位点生成已验证选择性方案。"
         "不能把同一对位取代苯环的镜面对称解释成两个取代基相同；没有核验的官能团位置或机制修饰应省略。"
         "没有记录不能写成绝对未研究、从未报道或确定不反应。已报道只指当前数据，不代表穷尽文献。"
         "达标条件应覆盖 successful_conditions 全部记录；binary=0 不等于零转化，区分非零、达标、转化率和选择性。"

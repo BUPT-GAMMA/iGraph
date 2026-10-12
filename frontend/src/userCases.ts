@@ -2,9 +2,9 @@ import type { Dataset, Message } from './types';
 import { editableLatestTurn } from './latestTurn';
 import { createContext, useContext } from 'react';
 import { useI18n, type Translate } from './i18n';
-export type BorylationAnalysisStep = 'structure' | 'symmetry' | 'products' | 'conditions' | 'plan';
+export type BorylationAnalysisStep = 'properties' | 'rings' | 'structure' | 'symmetry' | 'products' | 'conditions' | 'plan';
 export type BorylationStoryStep = { id: string; title: string; analysis_step: BorylationAnalysisStep; question: string };
-type CaseText = { name: string; description: string; questions: string[]; story_steps?: BorylationStoryStep[] };
+type CaseText = { name: string; description: string; questions: string[]; question_titles?: string[]; story_steps?: BorylationStoryStep[] };
 export type UserCase = CaseText & { id: string; filename: string; available: boolean; translations?: { en?: CaseText } };
 export const UserCaseContext = createContext<UserCase[]>([]);
 const INPUT_LABELS: Record<string, [string, string]> = {
@@ -34,6 +34,7 @@ export function localizeUserCase(item: UserCase, t: Translate): UserCase {
   const en = item.translations?.en;
   return en ? { ...item, name: t(en.name, item.name), description: t(en.description, item.description),
     questions: item.questions.map((question, index) => t(en.questions[index] || question, question)),
+    question_titles: item.questions.map((question, index) => t(en.question_titles?.[index] || en.questions[index] || question, item.question_titles?.[index] || question)),
     story_steps: item.story_steps?.map(step => {
       const translated = en.story_steps?.find(value => value.id === step.id);
       return translated ? { ...step, title: t(translated.title, step.title), question: t(translated.question, step.question) } : step;

@@ -23,7 +23,8 @@ from graph_data_service.construction import to_graph_data
 from graph_data_service.graph_data import GraphData
 
 examples = json.loads((DATA_ROOT/'processed/examples.json').read_text())
-example = next(e for e in examples if e['molecule_id']=='BO-01')
+example = examples[0]
+assert example['molecule_id'] == 'BO-01'
 mol = Chem.MolFromSmiles(example['input_smiles'])
 rdDepictor.Compute2DCoords(mol)
 atoms = []
@@ -63,40 +64,8 @@ provenance = {'paper_url':'https://www.nature.com/articles/s43588-026-01063-0','
               'authors':'Mason Minot, Yannick Stenzhorn and coauthors','scope':'公开实验复盘，不是模型预测'}
 case = {'case_id':'borylation-bo01-v1','molecule_id':'BO-01','smiles':example['input_smiles'],'atoms':atoms,'chemical_bonds':bonds,
         'products':products,'condition_records':records,'shared_conditions':shared,'ligands':ligands,'solvents':solvents,'provenance':provenance}
-nodes,edges = [],[]
-def node(identity,kind,properties):
-    nodes.append({'id':identity,'type':kind,'properties':properties})
-def edge(identity,kind,a,b,properties=None):
-    edges.append({'id':identity,'type':kind,'source':a,'target':b,'properties':properties or {}})
-node('BO-01','substrate',{'label':'BO-01 底物','smiles':case['smiles']})
-for a in atoms:
-    identity=f'BO-01:atom:{a["atom_index"]}'
-    node(identity,'atom',{'label':f'{a["element"]}{a["display_number"]}',**a})
-    edge(f'contains:{a["atom_index"]}','contains_atom','BO-01',identity)
-for i,b in enumerate(bonds):
-    a,c=f'BO-01:atom:{b["begin"]}',f'BO-01:atom:{b["end"]}'
-    edge(f'bond:{i}:forward','chemical_bond',a,c,b)
-    edge(f'bond:{i}:reverse','chemical_bond',c,a,b)
-for p in products:
-    node(p['product_id'],'observed_product',{'label':p['product_id'],**p})
-    edge(p['product_id']+':substrate','reported_product','BO-01',p['product_id'])
-    for idx in p['atom_indices']:
-        edge(p['product_id']+':site:'+str(idx),'observed_at',p['product_id'],f'BO-01:atom:{idx}')
-for component,kind in [(ligands,'ligand'),(solvents,'solvent')]:
-    for c in component:
-        node('BO-01:'+c['id'],kind,{'label':c['name'],**c})
-for r in records:
-    identity='BO-01:experiment:'+r['rxn_id']
-    node(identity,'experiment',{'label':r['rxn_id'].rsplit('_',1)[-1],**r, 'conversion_percent':round(r['conversion']*100,4)})
-    edge(identity+':substrate','tested_substrate',identity,'BO-01')
-    edge(identity+':ligand','uses_ligand',identity,'BO-01:'+r['ligand_id'])
-    edge(identity+':solvent','uses_solvent',identity,'BO-01:'+r['solvent_id'])
-data = to_graph_data({'dataset_id':'ds_borylation_story_v1','revision':1,'graph':{'directed':True,'nodes':nodes,'edges':edges}})
-data = GraphData(num_nodes=data.num_nodes, edge_index=data.edge_index,
-                 id2node=data.id2node, node2id=data.node2id, edge_names=data.edge_names,
-                 directed=True, node_type=data.node_type, edge_type=data.edge_type,
-                 name='分子硼化反应示例', graph_metadata={**data.graph_metadata,'borylation_case':case},
-                 graph_desc='节点包括底物重原子、产物和96组实验。chemical_bond双向条目表示24条化学键；其他边为记录关系。不要将总边数或全图节点度数解释为分子键数或化学价。当前案例是公开实验复盘，非模型预测。')
+from graph_engine.borylation_preset import build_borylation_graph
+data = build_borylation_graph(DATA_ROOT, case=case)
 resources = repo/'graph_engine/resources/borylation'; resources.mkdir(parents=True,exist_ok=True)
 filename = 'borylation-story.npz'
 temporary = resources/'uncompressed.npz'; data.save(str(temporary))
@@ -105,10 +74,10 @@ with np.load(temporary,allow_pickle=True) as archive:
 temporary.unlink()
 now=datetime.now(timezone.utc).isoformat(timespec='seconds')
 dataset={'dataset_id':'ds_borylation_story_v1','name':data.name,'description':data.graph_desc,'source_type':'borylation_preset',
-         'node_count':data.num_nodes,'edge_count':data.num_edges,'is_directed':True,'created_at':now,'updated_at':now,'versions':['v001'],
+         'node_count':data.num_nodes,'edge_count':data.num_edges,'is_directed':False,'created_at':now,'updated_at':now,'versions':['v001'],
          'edge_entry_count':data.num_edge_entries,'unique_edge_count':data.num_unique_edges,'semantic_type':data.semantic_type,'storage_type':data.storage_type,
          'is_symmetric':data.is_symmetric,'has_self_loops':data.has_self_loops,'has_duplicate_entries':data.has_duplicate_entries}
-manifest={'version':1,'filename':filename,'dataset':dataset,'sha256':hashlib.sha256((resources/filename).read_bytes()).hexdigest(),'provenance':provenance}
+manifest={'version':2,'previous_sha256':['5cb990de31694b9c433c3be1f8a3605bfb872087ea1ab39a817706549f8dd24d'],'filename':filename,'dataset':dataset,'sha256':hashlib.sha256((resources/filename).read_bytes()).hexdigest(),'provenance':provenance}
 (resources/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
 (DATA_ROOT/'processed/system_case.json').write_text(json.dumps(case,ensure_ascii=False,indent=2)+'\n')
 data.save(str(DATA_ROOT/'graphs/borylation-story.json'))
@@ -128,4 +97,4 @@ for i,p in enumerate(products,1):
     drawer=rdMolDraw2D.MolDraw2DCairo(900,400);drawer.DrawMolecule(pmol);drawer.FinishDrawing()
     (image_dir/f'BO-01-product-{i}.png').write_bytes(drawer.GetDrawingText())
     (DATA_ROOT/'images'/f'BO-01-product-{i}.png').write_bytes(drawer.GetDrawingText())
-print(json.dumps({'nodes':data.num_nodes,'edge_entries':data.num_edge_entries,'nodes_by_type':dict(Counter(n['type']for n in nodes)),'case':manifest['dataset']['dataset_id']},ensure_ascii=False))
+print(json.dumps({'nodes':data.num_nodes,'edge_entries':data.num_edge_entries,'nodes_by_type':dict(Counter(data.node_type)),'case':manifest['dataset']['dataset_id']},ensure_ascii=False))

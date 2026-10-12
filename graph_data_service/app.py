@@ -4576,8 +4576,6 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         validate_service_configuration()
-        from graph_engine.finance_preset import install_finance_preset
-        await run_sync(install_finance_preset, _dp.data_root())
         from graph_engine.novel_preset import install_novel_preset
         await run_sync(install_novel_preset, _dp.data_root())
         from graph_engine.borylation_preset import install_borylation_preset

@@ -627,6 +627,11 @@ export type BorylationCaseResponse = {
   message?: string;
 };
 
+export async function getDatasetMolecularStructure(dataset: Pick<Dataset, 'dataset_id' | 'project_id'>, signal?: AbortSignal) {
+  const scope = dataset.project_id ? `/api/projects/${encodeURIComponent(dataset.project_id)}/datasets` : '/api/personal-datasets';
+  return json<BorylationCaseResponse>(`${scope}/${encodeURIComponent(dataset.dataset_id)}/molecular-structure`, { signal });
+}
+
 export async function getBorylationCase(sessionId: string, step: BorylationAnalysisStep, signal?: AbortSignal) {
   return json<BorylationCaseResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/borylation-case?step=${encodeURIComponent(step)}`, { signal });
 }

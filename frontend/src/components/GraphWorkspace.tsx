@@ -3,6 +3,7 @@ import { createGraphCanvasState, GraphCanvas } from './GraphCanvas';
 import { MoleculeCanvas } from './MoleculeCanvas';
 import { GraphCoverage } from './GraphCoverage';
 import { graphIndex, previewGraph } from '../graphPreview';
+import { graphNodeLabel, financeNodeTypeLabel } from '../financeNodeLabels';
 import { normalizeHighlights } from '../graphAppearance';
 import { executionError, executionLabel, executionPending, executionStatus } from '../toolStatus';
 import { metricNumber, metricSegments } from '../mlMetrics';
@@ -125,7 +126,6 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   const [resultsOnly, setResultsOnly] = useState(false);
   const [resultIndex, setResultIndex] = useState(-1);
   const [selectedDetail, setSelectedDetail] = useState<Record<string, unknown> | null>(null);
-  const [molecularView, setMolecularView] = useState<'structure' | 'relationships'>('structure');
   const [projectTrainingRuns, setProjectTrainingRuns] = useState<ProjectTrainingRun[]>([]);
   const [projectTrainingLoading, setProjectTrainingLoading] = useState(false);
   const [projectTrainingError, setProjectTrainingError] = useState('');
@@ -150,9 +150,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     if (id && index.nodes.has(id) && !preview.nodes.some(node => node.id === id) && !filterMatches && !depth) setFocusId(id);
   }, [selected, index, preview.nodes, filterMatches, depth]);
   const schemaMode = renderedData?.visualization_kind === 'schema';
-  const molecularEligible = molecularCase && !schemaMode && renderedData?.schema_kind !== 'tables';
-  const showMolecule = molecularEligible && molecularView === 'structure';
-  useEffect(() => { setMolecularView('structure'); }, [sessionId, datasetKey, molecularCase]);
+  const showMolecule = molecularCase && !schemaMode && renderedData?.schema_kind !== 'tables';
   const selectedId = String(selected?.id ?? '');
   const selectedInfo = selected ? index.nodes.get(String(selected.id)) : undefined;
   const detailedSelected = selectedDetail && String(selectedDetail.id ?? selectedDetail.label ?? '') === selectedId
@@ -249,10 +247,6 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
               : view?.status === 'failed' ? <div className="graph-empty"><strong>{t('Failed to load graph', '图加载失败')}</strong><span>{view.error}</span></div>
                 : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>{t('No graph yet', '暂无图')}</strong><span>{t('Load data or request a graph to see analysis results here.', '加载数据或发送建图请求后，这里会显示图分析结果。')}</span></div>
                   : tab === 'Graph' ? <>
-                    {molecularEligible && <div className="molecule-view-switch" role="group" aria-label={t('Molecular workspace view', '分子工作台视图')}>
-                      <button aria-pressed={showMolecule} onClick={() => setMolecularView('structure')}>{t('Molecular structure', '分子结构')}</button>
-                      <button aria-pressed={!showMolecule} onClick={() => setMolecularView('relationships')}>{t('Record relationships', '记录关系')}</button>
-                    </div>}
                     {showMolecule ? <MoleculeCanvas sessionId={sessionId} datasetKey={datasetKey} highlights={allHighlights} selected={selected} onSelect={onSelect} /> : <>
                     <div className="graph-toolbar">
                       <button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> {t('Search nodes', '搜索节点')}</button>
@@ -283,7 +277,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
                       totalEdges={schemaMode || tablesMode ? index.edges.length : renderedData?.total_edges ?? renderedData?.num_edges ?? index.edges.length}
                       kind={tablesMode ? 'tables' : schemaMode ? 'schema' : 'instances'} />
                     {(communityById.size || highlights.length) ? <div className="graph-legend"><span className="graph-legend-title">{t('Legend', '图例')}</span>{communityById.size ? <span><i className="legend-dot community" />{t('Community colors', '社区着色')}</span> : null}{highlights.filter(item => item.type === 'node').length ? <span><i className={`legend-dot node-highlight is-${highlightShape}`} />{t('Highlighted nodes', '节点高亮')}</span> : null}{highlights.filter(item => item.type === 'path').length ? <span><i className="legend-line path-highlight" />{t('Highlighted paths', '路径高亮')}</span> : null}{highlights.filter(item => item.type === 'subgraph').length ? <span><i className="legend-line subgraph-highlight" />{t('Highlighted subgraphs', '子图高亮')}</span> : null}</div> : null}
-                    <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{String(selected.label ?? selected.id ?? t('Selected node', '已选节点'))}</strong><span>{t('Selected', '已选择')}</span></div>{!(String(selected.id ?? '').startsWith('row_') && selected.label && String(selected.label) !== String(selected.id)) && <div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div>}<div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String(nodePropertyType(detailedSelected || selectedInfo || selected) ?? t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div>{!schemaMode && <NodeProperties node={detailedSelected || selectedInfo || selected} />}<div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
+                    <div className="node-inspector">{selected ? <><div className="inspector-title"><strong>{(schemaMode ? String(selected.label ?? selected.id ?? '') : graphNodeLabel(detailedSelected || selectedInfo || selected, t)) || t('Selected node', '已选节点')}</strong><span>{t('Selected', '已选择')}</span></div>{!(String(selected.id ?? '').startsWith('row_') && selected.label && String(selected.label) !== String(selected.id)) && <div className="inspector-row"><span>{t('Node ID', '节点 ID')}</span><strong>{String(selected.id ?? '-')}</strong></div>}<div className="inspector-row"><span>{t('Type', '类型')}</span><strong>{String((!schemaMode && financeNodeTypeLabel(detailedSelected || selectedInfo || selected, t)) || nodePropertyType(detailedSelected || selectedInfo || selected) || t('Node', '节点'))}</strong></div><div className="inspector-row"><span>{selectedInfo?.degreeLabel || t('Degree', '度数')}</span><strong>{selectedInfo?.degree ?? '-'}</strong></div>{!schemaMode && <NodeProperties node={detailedSelected || selectedInfo || selected} />}<div className="graph-neighborhood"><label>{t('View range', '查看范围')}<select aria-label={t('Neighborhood range', '查看邻域范围')} value={depth} onChange={event => { setFocusId(String(selected.id)); setDepth(Number(event.target.value)); }}><option value="0">{t('Full preview', '全部预览')}</option><option value="1">{t('1-hop neighborhood', '一跳邻域')}</option><option value="2">{t('2-hop neighborhood', '两跳邻域')}</option></select></label><span>{t('Neighborhood uses loaded data', '邻域基于已加载数据')}</span></div><div className="inspector-actions"><button onClick={() => onExpand?.(selected)} disabled={!onExpand}><Icon name="plus" size={13} /> {t('Expand neighbors', '扩展邻居')}</button><button onClick={() => navigator.clipboard?.writeText(String(selected.id ?? ''))}><Icon name="copy" size={13} /> {t('Copy ID', '复制 ID')}</button></div></> : <span>{t('Select a node to view its properties', '点击图中节点查看属性')}</span>}</div>
                     </>}
                   </>
                     : <WorkspaceTab tab={tab} data={data} datasetName={datasetName} messages={messages} />}
@@ -368,7 +362,7 @@ function WorkspaceTab({ tab, data, datasetName, messages }: { tab: Tab; data: Gr
       </section>
     </div>;
   }
-  if (tab === 'Data') return <div className="tab-content"><div className="tab-title"><strong>{t('Node and edge data', '节点与边数据')}</strong><span>{t(`${(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString(locale)} nodes`, `${(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString(locale)} 个节点`)}</span></div><div className="data-list">{data.nodes.slice(0, 20).map((node, index) => <div key={index}><Icon name="project" size={14} /><span>{String(node.label ?? node.id ?? t(`Node ${index + 1}`, `节点 ${index + 1}`))}</span><small>{String(node.type ?? t('Node', '节点'))}</small></div>)}</div>{data.nodes.length < (data.total_nodes ?? data.num_nodes ?? data.nodes.length) ? <div className="workspace-note">{t(`This is a visualization preview with ${data.nodes.length.toLocaleString(locale)} loaded node samples.`, `当前为可视化预览，已加载 ${data.nodes.length.toLocaleString(locale)} 个节点样本。`)}</div> : null}</div>;
+  if (tab === 'Data') return <div className="tab-content"><div className="tab-title"><strong>{t('Node and edge data', '节点与边数据')}</strong><span>{t(`${(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString(locale)} nodes`, `${(data.total_nodes ?? data.num_nodes ?? data.nodes.length).toLocaleString(locale)} 个节点`)}</span></div><div className="data-list">{data.nodes.slice(0, 20).map((node, index) => <div key={index}><Icon name="project" size={14} /><span>{graphNodeLabel(node, t) || t(`Node ${index + 1}`, `节点 ${index + 1}`)}</span><small>{financeNodeTypeLabel(node, t) || String(nodePropertyType(node) ?? t('Node', '节点'))}</small></div>)}</div>{data.nodes.length < (data.total_nodes ?? data.num_nodes ?? data.nodes.length) ? <div className="workspace-note">{t(`This is a visualization preview with ${data.nodes.length.toLocaleString(locale)} loaded node samples.`, `当前为可视化预览，已加载 ${data.nodes.length.toLocaleString(locale)} 个节点样本。`)}</div> : null}</div>;
   return <ArtifactsTab messages={messages} />;
 }
 

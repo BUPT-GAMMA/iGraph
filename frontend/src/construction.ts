@@ -22,7 +22,18 @@ export function isPtGraph(dataset: Dataset) {
   return (dataset.file_type || dataset.original_filename.split('.').pop() || '').toLowerCase().replace(/^\./, '') === 'pt';
 }
 
+export function isPrebuiltGraph(dataset: Dataset) {
+  const extension = (dataset.file_type || dataset.original_filename.split('.').pop() || '').toLowerCase().replace(/^\./, '');
+  return !supportsConstruction(dataset) && ['pt', 'npz'].includes(extension);
+}
+
+export function isMolecularGraph(dataset: Dataset) {
+  return isPrebuiltGraph(dataset) && dataset.source_kind === 'server'
+    && dataset.metadata?.source_relative_path === 'borylation-story.npz';
+}
+
 export function constructionLabel(dataset: Dataset) {
+  if (isMolecularGraph(dataset)) return tr('View graph build', '查看构图');
   const construction = constructionMetadata(dataset);
   const status = constructionStatus(dataset);
   if (status === 'building' || status === 'processing') return tr('View progress', '查看进度');

@@ -1,28 +1,28 @@
 {
-  "version": 1,
+  "version": 2,
   "filename": "borylation-story.npz",
   "dataset": {
     "dataset_id": "ds_borylation_story_v1",
     "name": "分子硼化反应示例",
-    "description": "节点包括底物重原子、产物和96组实验。chemical_bond双向条目表示24条化学键；其他边为记录关系。不要将总边数或全图节点度数解释为分子键数或化学价。当前案例是公开实验复盘，非模型预测。",
+    "description": "仅加载第一张 BO-01 分子结构图：22 个重原子、24 条无向化学键（48 条双向存储边）。产物和96条实验记录保存在图的背景元数据中，不作为节点或额外图加载。当前案例是公开实验复盘，非模型预测。",
     "source_type": "borylation_preset",
-    "node_count": 142,
-    "edge_count": 364,
-    "is_directed": true,
+    "node_count": 22,
+    "edge_count": 48,
+    "is_directed": false,
     "created_at": "2026-10-11T13:55:08+00:00",
-    "updated_at": "2026-10-11T13:55:08+00:00",
+    "updated_at": "2026-10-12T06:47:20+00:00",
     "versions": [
       "v001"
     ],
-    "edge_entry_count": 364,
-    "unique_edge_count": 364,
-    "semantic_type": "directed",
-    "storage_type": "directed",
-    "is_symmetric": false,
+    "edge_entry_count": 48,
+    "unique_edge_count": 24,
+    "semantic_type": "undirected",
+    "storage_type": "bidirectional",
+    "is_symmetric": true,
     "has_self_loops": false,
     "has_duplicate_entries": false
   },
-  "sha256": "5cb990de31694b9c433c3be1f8a3605bfb872087ea1ab39a817706549f8dd24d",
+  "sha256": "dc7ca465e40332e6920705da20b09c9eb740d2bc77eb541c126cc3e3c39a3a06",
   "provenance": {
     "paper_url": "https://www.nature.com/articles/s43588-026-01063-0",
     "data_url": "https://zenodo.org/records/20773622",
@@ -37,5 +37,9 @@
     },
     "authors": "Mason Minot, Yannick Stenzhorn and coauthors",
     "scope": "公开实验复盘，不是模型预测"
-  }
+  },
+  "previous_sha256": [
+    "2325661563647ffd4667bc95ec5211b9f07e8f48f708164b6296bfa99d12aa8b",
+    "5cb990de31694b9c433c3be1f8a3605bfb872087ea1ab39a817706549f8dd24d"
+  ]
 }

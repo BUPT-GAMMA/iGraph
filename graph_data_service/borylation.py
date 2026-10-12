@@ -4,8 +4,10 @@ import networkx as nx
 import math
 
 from graph_engine.borylation_catalog import BORYLATION_STEPS
+from graph_engine.borylation_chemistry import chemistry_profile
 
 LIMITATIONS = [
+    "当前数据包没有溶解度、毒性实测数据，未运行溶解度或毒性预测模型；反应溶剂、名义浓度及转化率不证明完全溶解或安全。",
     "当前结果来自公开实验记录及结构计算，未运行位点预测模型。",
     "产物表与条件表是不同任务的数据，仅按同一底物关联。不能说三个产物来自这96组实验，也不能说其它位点在这96组中未反应。",
     "单硼化转化率不等于某个位点的选择性或分离收率；未报道位置不等于已经验证不反应。",
@@ -58,6 +60,22 @@ def analyze_borylation(graph, arguments: dict) -> dict:
                 "kind": "aromatic_carbon_ring" if aromatic and set(elements) == {"C"} else "aromatic_heterocycle" if aromatic else "nonaromatic_ring"})
         candidates = [{**a, "ring_memberships": [ring for ring in rings if a["display_number"] in ring["display_numbers"]]}
             for a in atoms if a["element"] == "C" and a["aromatic"] and a["total_hydrogens"] > 0]
+        # Explicit bond evidence prevents inferring substituent proximity from
+        # display numbers or the visual layout. This is topology, not 3D sterics.
+        for candidate in candidates:
+            i = candidate["atom_index"]
+            candidate["bonded_neighbors"] = [{"display_number": atom_by_index[j]["display_number"],
+                "element": atom_by_index[j]["element"], "total_hydrogens": atom_by_index[j]["total_hydrogens"]}
+                for j in sorted(molecule.neighbors(i))]
+            candidate["adjacent_ring_substituents"] = []
+            for ring in candidate["ring_memberships"]:
+                members = {a["atom_index"] for a in atoms if a["display_number"] in ring["display_numbers"]}
+                for neighbor in sorted(set(molecule.neighbors(i)) & members):
+                    for outside in sorted(set(molecule.neighbors(neighbor)) - members):
+                        candidate["adjacent_ring_substituents"].append({
+                            "ring_atom": atom_by_index[neighbor]["display_number"],
+                            "attached_atom": atom_by_index[outside]["display_number"],
+                            "attached_element": atom_by_index[outside]["element"]})
         groups = defaultdict(list)
         for a in candidates:
             groups[a["symmetry_class"]].append(a["display_number"])
@@ -101,11 +119,27 @@ def analyze_borylation(graph, arguments: dict) -> dict:
                             "changed_field": "solvent", "interpretation": "同底物同配体的两条历史记录；需要重复实验确认差异。"}
         conditions["recorded_contrast"] = contrast
         step = arguments["step"]
-        if step == "structure":
+        if step == "properties":
+            result = {**chemistry_profile(case),
+                "solubility": {"evidence_status": "not_measured", "measurements": [], "predictions": [],
+                    "recorded_reaction_solvents": case["solvents"], "recorded_conditions": case["shared_conditions"],
+                    "interpretation": "仅为反应筛选中使用过的溶剂与名义条件，不证明完全溶解；定量溶解度需指定溶剂、温度和测定方法。"},
+                "toxicity": {"evidence_status": "unknown", "measured_endpoints": [], "predictions": [],
+                    "interpretation": "当前数据包无该分子毒性证据；不能判定有毒或无毒，不等于外部文献无资料。"}}
+        elif step == "rings":
+            types = defaultdict(list)
+            for ring in rings:
+                types[(ring["size"], tuple(ring["elements"].items()), ring["aromatic"])].append(ring["ring_id"])
+            result = {"ring_count": len(rings), "ring_type_count": len(types), "rings": rings,
+                "ring_types": [{"size": key[0], "elements": dict(key[1]), "aromatic": key[2], "ring_ids": ids, "count": len(ids)} for key, ids in types.items()],
+                "classification_basis": "按环大小、元素组成与芳香性分类；同类型不表示取代环境或化学反应性完全相同。",
+                "count_method": "当前分子键图的独立环基；本例各环不共享原子，不存在稠合或桥环的计数歧义。",
+                "fused_ring_pairs": [[a["ring_id"], b["ring_id"]] for i, a in enumerate(rings) for b in rings[i+1:] if set(a["display_numbers"]) & set(b["display_numbers"])]}
+        elif step == "structure":
             result = {"molecule_id": case["molecule_id"], "smiles": case["smiles"], "heavy_atom_count": len(atoms),
                       "chemical_bond_count": len(case["chemical_bonds"]), "aromatic_ch_count": len(candidates),
                       "candidate_atoms": candidates, "rings": rings, "atom_numbering": "display_number从1开始，atom_index从0开始",
-                      "visualization_node_names": [case["molecule_id"]] + [f'{case["molecule_id"]}:atom:{i}' for i in range(len(atoms))]}
+                      "visualization_node_names": [f'{case["molecule_id"]}:atom:{i}' for i in range(len(atoms))]}
         elif step == "symmetry":
             result = {"candidate_atom_count": len(candidates), "distinct_site_count": len(classes), "site_classes": classes}
         elif step == "products":

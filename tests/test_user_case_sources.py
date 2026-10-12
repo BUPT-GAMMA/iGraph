@@ -10,6 +10,7 @@ import pytest
 import backend.app as backend_app
 from backend.config import BackendConfig
 from backend.user_cases import USER_CASES, installed_source
+from graph_engine.borylation_preset import install_borylation_preset
 from graph_engine.finance_preset import install_finance_preset
 from graph_engine.novel_preset import install_novel_preset
 from graph_engine.user_case_sources import seed_construction
@@ -57,6 +58,7 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
     monkeypatch.setenv("BACKEND_SERVER_DATASETS_DIR", str(tmp_path / "server_datasets"))
     monkeypatch.setenv("IGRAPH_RUN_CANCEL_ENABLED", "false")
     install(tmp_path)
+    install_borylation_preset(tmp_path)
     supported = tmp_path / "supported.txt"
     supported.write_text("admin\nalice\n", encoding="utf-8")
     config = BackendConfig(host="127.0.0.1", port=0, agent_runtime_url="http://runtime", graph_engine_url="http://graph",
@@ -89,15 +91,43 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
                 assert response.status_code == 200, response.text
                 return response.json()["datasets"]
             rows = await sources()
-            assert {row["metadata"]["user_case_id"] for row in rows} == {"finance", "tianlongbabu"}
-            assert {row["file_type"] for row in rows} == {"csv", "txt"}
+            assert {row["metadata"]["user_case_id"] for row in rows} == {"tianlongbabu", "borylation"}
+            assert {row["file_type"] for row in rows} == {"txt", "npz"}
             assert all(row["project_id"] is None and row["status"] == "ready" for row in rows)
             ids = {row["dataset_id"] for row in rows}
             assert {row["dataset_id"] for row in await sources()} == ids
             other = await sources(headers={"X-User-ID": "alice"})
             assert ids == {row["dataset_id"] for row in other}
             for row in rows:
+                if row["file_type"] == "npz":
+                    assert row["source_kind"] == "server"
+                    assert row["metadata"]["source_relative_path"] == "borylation-story.npz"
+                    assert row["metadata"]["source_revision"]
+                    from backend.user_cases import background_for_dataset
+                    # The personal reference must retain the same verified chemical background.
+                    from types import SimpleNamespace
+                    record = SimpleNamespace(**{key: row[key] for key in ("dataset_id", "status", "source_kind", "file_type", "metadata")},
+                        storage_path=str(tmp_path / "server_datasets" / "borylation-story.npz"))
+                    assert background_for_dataset(record)["case_id"] == "borylation"
+                    graph_data = GraphData.load(record.storage_path)
+                    assert graph_data.num_nodes == 22 and graph_data.num_edges == 48
+                    preview = await client.get("/api/personal-datasets/" + row["dataset_id"] + "/molecular-structure")
+                    assert preview.status_code == 200, preview.text
+                    from graph_data_service.borylation import analyze_borylation
+                    expected = analyze_borylation(graph_data, {"step": "structure"})["result"]
+                    structure = preview.json()["result"]
+                    for key in ("molecule_id", "smiles", "heavy_atom_count", "chemical_bond_count", "aromatic_ch_count", "visualization_node_names"):
+                        assert structure[key] == expected[key]
+                    for actual, calculated in zip(structure["candidate_atoms"], expected["candidate_atoms"], strict=True):
+                        assert all(calculated[key] == value for key, value in actual.items())
+                    wrong_scope = await client.get("/api/projects/foreign/datasets/" + row["dataset_id"] + "/molecular-structure")
+                    assert wrong_scope.status_code == 404
+                    missing = await client.get("/api/personal-datasets/missing/molecular-structure")
+                    assert missing.status_code == 404
+                    continue
                 endpoint = "/api/personal-datasets/" + row["dataset_id"]
+                wrong_type = await client.get(endpoint + "/molecular-structure")
+                assert wrong_type.status_code == 409
                 state = await client.get(endpoint + "/construction")
                 assert state.status_code == 200 and state.json()["status"] == "ready", state.text
                 graph = await client.get(endpoint + "/construction/graph")
@@ -109,16 +139,32 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
                     assert len(preview.json()["tables"]) == 3
                     schema = await client.get(endpoint + "/construction/schema")
                     assert len(schema.json()["schema"]["source_tables"]) == 3
-            selected = rows[0]
+            selected = next(row for row in rows if row["file_type"] == "txt")
             endpoint = "/api/personal-datasets/" + selected["dataset_id"]
-            rename = await client.patch(endpoint, json={"name": "我的金融数据"})
+            rename = await client.patch(endpoint, json={"name": "我的小说数据"})
             assert rename.status_code == 200, rename.text
-            assert next(row for row in await sources() if row["dataset_id"] == selected["dataset_id"])["name"] == "我的金融数据"
+            assert next(row for row in await sources() if row["dataset_id"] == selected["dataset_id"])["name"] == "我的小说数据"
             removed = await client.delete(endpoint)
             assert removed.status_code == 200, removed.text
             assert store.status("admin", selected["dataset_id"])["status"] == "not_built"
             assert {row["dataset_id"] for row in await sources()} == ids - {selected["dataset_id"]}
-            assert len(await sources(headers={"X-User-ID": "alice"})) == 1
+            molecule = next(row for row in rows if row["file_type"] == "npz")
+            molecule_endpoint = "/api/personal-datasets/" + molecule["dataset_id"]
+            renamed = await client.patch(molecule_endpoint, json={"name": "我的分子"})
+            assert renamed.status_code == 200, renamed.text
+            assert (await sources())[0]["name"] == "我的分子"
+            assert (await client.get(molecule_endpoint + "/molecular-structure")).status_code == 200
+            graph_path = tmp_path / "server_datasets" / "borylation-story.npz"
+            original_graph = graph_path.read_bytes()
+            graph_path.write_bytes(original_graph + b"modified graph")
+            mismatch = await client.get(molecule_endpoint + "/molecular-structure")
+            assert mismatch.status_code == 409
+            graph_path.write_bytes(original_graph)
+            removed = await client.delete(molecule_endpoint)
+            assert removed.status_code == 200, removed.text
+            assert (await client.get(molecule_endpoint + "/molecular-structure")).status_code == 404
+            assert (tmp_path / "server_datasets" / "borylation-story.npz").is_file()
+            assert len(await sources(headers={"X-User-ID": "alice"})) == 0
     asyncio.run(scenario())
 
 

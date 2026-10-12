@@ -618,3 +618,28 @@ it('highlights neighbors without moving nodes, preserves community colors and su
   await waitFor(() => expect(hub.classList.contains('is-selected')).toBe(true));
   expect(container.querySelector('[data-node-id="hub"]')).toBe(hub);
 });
+
+
+describe('financial node language switching', () => {
+  it('updates canvas, selected inspector and data rows while retaining selection', async () => {
+    const company = { id: 'row_company', label: 'institution_main · #1', attrs: { type: 'institution_main', properties: { table: 'institution_main', row_index: 0, data: { CHN_NM: '测试公司', ENG_NM: 'Test Company' } } } };
+    const share = { id: 'row_share', attrs: { type: 'institution_shareholder_relationship', properties: { table: 'institution_shareholder_relationship', row_index: 0, data: {} } } };
+    const data = { nodes: [company, share], edges: [{ source: share.id, target: company.id }] };
+    function Harness() {
+      const { toggleLanguage } = useI18n();
+      const [tab, setTab] = useState<'Graph' | 'Data'>('Graph');
+      return <><button onClick={toggleLanguage}>Switch language</button><button onClick={() => setTab('Data')}>Show data</button>
+        <GraphWorkspace data={data} tab={tab} onTab={vi.fn()} selected={company} onSelect={vi.fn()} collapsed={false} onToggle={vi.fn()} /></>;
+    }
+    const { container } = render(<I18nProvider initialLanguage="zh"><Harness /></I18nProvider>);
+    expect(container.querySelector('[data-node-id="row_company"]')?.getAttribute('aria-label')).toContain('测试公司');
+    expect(container.querySelector('.inspector-title strong')?.textContent).toBe('测试公司');
+    fireEvent.click(screen.getByRole('button', { name: 'Switch language' }));
+    await waitFor(() => expect(container.querySelector('[data-node-id="row_company"]')?.getAttribute('aria-label')).toContain('Test Company'));
+    expect(container.querySelector('[data-node-id="row_share"]')?.getAttribute('aria-label')).toContain('Shareholding');
+    expect(container.querySelector('.inspector-title strong')?.textContent).toBe('Test Company');
+    fireEvent.click(screen.getByRole('button', { name: 'Show data' }));
+    expect(container.querySelector('.data-list')?.textContent).toContain('Test Company');
+    expect(container.querySelector('.data-list')?.textContent).toContain('Shareholding');
+  });
+});

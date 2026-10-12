@@ -5,6 +5,25 @@ import copy
 
 
 class RelayToolCallsMixin:
+    def _format_message(self, message, compress_tool_results=False):
+        payload = super()._format_message(message, compress_tool_results=compress_tool_results)
+        # Agno serializes content=None as an empty string even on tool calls.
+        # Relays to Claude reject that as an empty text block. Tool-only
+        # assistant messages have no text, which Chat Completions represents
+        # with a neutral marker: some relays turn null back into an empty text
+        # block too. Keep tool calls and signatures intact.
+        content = payload.get("content")
+        if isinstance(content, list):
+            content = [part for part in content if not (isinstance(part, dict)
+                and part.get("type") == "text" and not str(part.get("text") or "").strip())]
+            payload["content"] = content or None
+        if content is None or (isinstance(content, str) and not content.strip()) or content == []:
+            if payload.get("role") == "assistant" and payload.get("tool_calls"):
+                payload["content"] = "[Tool invocation; see tool_calls.]"
+            elif payload.get("role") == "tool":
+                payload["content"] = "[Tool returned no textual content.]"
+        return payload
+
     def parse_tool_calls(self, tool_calls_data):
         by_id, by_index, extras = {}, {}, {}
         normalized = []

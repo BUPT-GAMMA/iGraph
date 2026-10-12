@@ -29,6 +29,7 @@ from response_language import resolve_response_language
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
+from graph_engine.borylation_catalog import BORYLATION_STEPS
 from backend.general_migration import GeneralMigration
 from backend.session_pagination import session_page
 from backend.config import BackendConfig
@@ -3128,7 +3129,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         from backend.example_inputs import ensure_example_inputs
         await asyncio.to_thread(ensure_example_inputs, project_datasets, server_datasets.root, user_id)
         from backend.user_cases import USER_CASES, installed_source
+        graph_sources = {item.relative_path: item for item in server_datasets.list()}
         for case in USER_CASES:
+            if case.get("personal_graph"):
+                graph_source = graph_sources.get(case["filename"])
+                if graph_source is not None and not graph_source.metadata_error:
+                    project_datasets.ensure_user_case_graph(user_id=user_id, case=case, source=graph_source)
+                continue
             source = installed_source(server_datasets.root, case)
             if source is None:
                 continue
@@ -3516,6 +3523,18 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return await create_project_dataset(request, file=file, files=files, csv_schema=csv_schema,
                                             name=name, description=description, session_id=session_id,
                                             set_as_default=False)
+
+    @app.get("/api/personal-datasets/{dataset_id}/molecular-structure")
+    @app.get("/api/projects/{project_id}/datasets/{dataset_id}/molecular-structure")
+    async def dataset_molecular_structure(dataset_id: str, request: Request, project_id: str | None = None):
+        user = current_user(request, users)
+        dataset = project_dataset_or_404(dataset_id, project_id, user.user_id)
+        from backend.molecular_preview import molecular_structure_for_dataset
+        result = await asyncio.to_thread(molecular_structure_for_dataset, dataset)
+        if result is None:
+            raise HTTPException(409, detail={"code": "MOLECULAR_PREVIEW_UNAVAILABLE",
+                "message": "此数据集不是可预览的分子示例图，或预存图已发生变化。"})
+        return result
 
     @app.patch("/api/personal-datasets/{dataset_id}")
     async def update_personal_dataset(dataset_id: str, req: ProjectDatasetPatchReq, request: Request):
@@ -5183,7 +5202,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     @app.get("/api/sessions/{session_id}/borylation-case")
     async def borylation_case(session_id: str, request: Request, step: str = "structure"):
         """Read the same owned, loaded case that Agent tools analyze."""
-        if step not in {"structure", "symmetry", "products", "conditions", "plan"}:
+        if step not in BORYLATION_STEPS:
             raise HTTPException(422, detail="请选择有效的案例步骤")
         return await graph_tool(session_id, "borylation_case_analysis", {"step": step}, request)
 

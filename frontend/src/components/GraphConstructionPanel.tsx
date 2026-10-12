@@ -1,3 +1,4 @@
+import { financeNodeLabel } from '../financeNodeLabels';
 import { useExampleLabels } from '../userCases';
 import { Popup, PopupBackdrop } from './PopupMotion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -7,6 +8,8 @@ import type { Translate } from '../i18n';
 import { isGraphData } from '../types';
 import type { ConstructionBuildOptions, ConstructionDomainCategory, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaPropertyPath, ConstructionSchemaResponse, ConstructionState, Dataset, GraphData } from '../types';
 import { GraphWorkspace } from './GraphWorkspace';
+import { isMolecularGraph } from '../construction';
+import { MolecularConstructionPanel } from './MolecularConstructionPanel';
 import { Icon } from './Icon';
 import { DatasetDescriptionEditor } from './DatasetDescriptionEditor';
 import { ConstructionModelSettings } from './ConstructionModelSettings';
@@ -46,6 +49,8 @@ function rawProperties(item: Record<string, unknown> | undefined) {
 }
 function display(value: unknown) { return typeof value === 'object' ? JSON.stringify(value) : String(value ?? ''); }
 function instanceNodeName(node: Record<string, unknown>, t: Translate) {
+  const financeName = financeNodeLabel(node, t);
+  if (financeName) return financeName;
   const id = String(node.id ?? '');
   const data = rawProperties(node).data;
   const name = properties(node).name ?? (data && typeof data === 'object' && !Array.isArray(data) ? (data as Record<string, unknown>).name : undefined);
@@ -272,7 +277,11 @@ type Props = {
   embedded?: boolean;
 };
 
-export function GraphConstructionPanel({ dataset, onClose, onSaved, onStateChange, onUse, onDatasetUpdated, embedded = false }: Props) {
+export function GraphConstructionPanel(props: Props) {
+  return isMolecularGraph(props.dataset) ? <MolecularConstructionPanel dataset={props.dataset} onClose={props.onClose} embedded={props.embedded} /> : <EditableGraphConstructionPanel {...props} />;
+}
+
+function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChange, onUse, onDatasetUpdated, embedded = false }: Props) {
   const { language, t } = useI18n();
   const labels = useExampleLabels();
   const translation = useRef(t);

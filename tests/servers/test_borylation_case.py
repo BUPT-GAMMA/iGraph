@@ -19,9 +19,13 @@ class BorylationCaseTests(unittest.TestCase):
         self.assertEqual(response['prediction_status'], 'not_run')
         return response['result']
 
-    def test_molecule_counts_are_not_heterogeneous_graph_counts(self):
+    def test_only_first_molecule_is_loaded_and_evidence_is_preserved(self):
         r = self.result('structure')
-        self.assertEqual(self.graph.num_nodes,142)
+        self.assertEqual(self.graph.num_nodes,22)
+        self.assertEqual(self.graph.num_edges,48)
+        self.assertFalse(self.graph.directed)
+        self.assertTrue(all(name.startswith('BO-01:atom:') for name in self.graph.node2id))
+        self.assertEqual(set(r['visualization_node_names']), set(self.graph.node2id))
         self.assertEqual((r['heavy_atom_count'],r['chemical_bond_count'],r['aromatic_ch_count']),(22,24,8))
 
     def test_site_nine_is_a_five_membered_sulfur_nitrogen_ring(self):

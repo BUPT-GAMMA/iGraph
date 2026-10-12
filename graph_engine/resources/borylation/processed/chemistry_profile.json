@@ -1,0 +1,28 @@
+{
+  "structure_sha256": "edc4091644d7dcbf9f5a0834aa22c4a666927af67ef108ea0fbd699f9221f469",
+  "molecule_id": "BO-01",
+  "smiles": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+  "method": {
+    "library": "RDKit",
+    "version": "2026.09.1",
+    "evidence_type": "computed_from_structure",
+    "tpsa_includes_sulfur_phosphorus": true
+  },
+  "descriptors": {
+    "formula": "C15H9ClFN3OS",
+    "molecular_weight_g_mol": 333.775,
+    "clogp": 4.25,
+    "tpsa_angstrom2": 83.12,
+    "h_bond_donors": 1,
+    "h_bond_acceptors": 4,
+    "formal_charge": 0
+  },
+  "descriptor_notes": {
+    "clogp": "Calculated octanol/water partition descriptor, not a solvent-specific solubility or logS prediction.",
+    "tpsa": "Topological polar surface area; includes sulfur and phosphorus contributions."
+  },
+  "sources": [
+    "https://www.rdkit.org/docs/GettingStartedInPython.html",
+    "https://www.rdkit.org/docs/RDKit_Book.html"
+  ]
+}

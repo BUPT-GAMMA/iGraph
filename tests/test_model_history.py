@@ -211,3 +211,42 @@ def test_kinship_checklist_uses_current_evidence_and_does_not_leak_into_next_dat
     assert kinship_answer_constraints(current+[Message(role="user",content="finance")]) is None
     assert kinship_answer_constraints([Message(role="user",content="family"),
         Message(role="tool",tool_name="inspect_kinship",content='{"success":false}')]) is None
+
+
+@pytest.mark.anyio
+async def test_relay_followup_sends_tool_only_assistant_without_empty_text(monkeypatch):
+    """Replay the molecular ring answer's tool-only phase into a new turn."""
+    monkeypatch.setenv('IGRAPH_RUN_CANCEL_ENABLED', 'false')
+    captured=[]
+    def respond(req):
+        data=json.loads(req.content); captured.append(data)
+        for msg in data['messages']:
+            assert msg.get('content') not in ('', None)
+            if isinstance(msg.get('content'), list):
+                assert all(p.get('type') != 'text' or p.get('text','').strip() for p in msg['content'])
+        return httpx.Response(200,json={'id':'test','object':'chat.completion','created':1,'model':'relay',
+            'choices':[{'index':0,'message':{'role':'assistant','content':'OK'},'finish_reason':'stop'}]})
+    config=dict(model_id='relay',base_url='http://example.test/v1',api_key='',allow_anonymous=True,
+                context_window=32768,max_output_tokens=1024,vision=False)
+    model=create_model('relay',SimpleNamespace(),config)
+    call={'id':'c1','type':'function','function':{'name':'measure','arguments':'{}'}}
+    messages=[Message(role='user',content='Rings?'),Message(role='assistant',content=None,tool_calls=[call]),
+              Message(role='tool',tool_call_id='c1',content='three rings'),Message(role='assistant',content='Done'),
+              Message(role='assistant',content=''),Message(role='user',content='Mark sites.')]
+    before=copy.deepcopy(messages)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        model.async_client=AsyncOpenAI(api_key='local',base_url=config['base_url'],http_client=client)
+        result=await model.ainvoke(messages,Message(role='assistant'))
+    assert result.content == 'OK' and messages == before
+    sent=captured[0]['messages']
+    assert len(sent)==5 and sent[1]['content']=='[Tool invocation; see tool_calls.]' and len(sent[1]['tool_calls'])==1
+    assert sent[2]['tool_call_id']==sent[1]['tool_calls'][0]['id'] and sent[-1]['content']=='Mark sites.'
+
+def test_relay_removes_only_empty_text_parts_and_keeps_empty_tool_receipt():
+    from agent_runtime.model_factory import DAGOpenAILike
+    model=DAGOpenAILike(id='relay',api_key='unused')
+    parts=[{'type':'text','text':''},{'type':'image_url','image_url':{'url':'https://example.test/image.png'}},{'type':'text','text':'inspect'}]
+    message=Message(role='user',content=parts)
+    payload=model._format_message(message)
+    assert payload['content']==parts[1:] and message.content==parts
+    assert model._format_message(Message(role='tool',tool_call_id='c',content=''))['content']=='[Tool returned no textual content.]'

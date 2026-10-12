@@ -107,6 +107,12 @@ def normalize_history(messages, *, protocol="openai-compatible", history_key=Non
                 active.remove(message.tool_call_id)
         else:
             active = {call['id'] for call in message.tool_calls or []}
+        # Empty historical assistant placeholders carry no conversational
+        # content. Keep tool-only messages and all media; do not mutate storage.
+        blank = message.content is None or (isinstance(message.content, str) and not message.content.strip())
+        if (protocol == 'openai-compatible' and message.role == 'assistant' and blank
+                and not message.tool_calls and not any((message.images, message.audio, message.audio_output, message.videos, message.files))):
+            continue
         normalized.append(message)
     return normalized
 

@@ -25,7 +25,8 @@ export function BorylationStoryPanel({ userCase, sessionId, activeQuestion, onQu
   const [reload, setReload] = useState(0);
   const selected = steps.find(step => step.id === selectedId) || steps[0];
   const candidateImage = selected?.analysis_step === 'structure' || selected?.analysis_step === 'symmetry';
-  const imageUrl = candidateImage ? '/examples/borylation/BO-01.png' : '/examples/borylation/BO-01-observed.png';
+  const neutralImage = selected?.analysis_step === 'properties' || selected?.analysis_step === 'rings';
+  const imageUrl = neutralImage ? '/examples/borylation/BO-01-molecule.svg' : candidateImage ? '/examples/borylation/BO-01.png' : '/examples/borylation/BO-01-observed.png';
 
   useEffect(() => {
     if (!activeQuestion) return;
@@ -36,7 +37,7 @@ export function BorylationStoryPanel({ userCase, sessionId, activeQuestion, onQu
     if (step) setSelectedId(step.id);
   }, [activeQuestion, userCase]);
 
-  useEffect(() => { setImageFailed(false); }, [candidateImage]);
+  useEffect(() => { setImageFailed(false); }, [imageUrl]);
 
   useEffect(() => {
     setResponse(null); setError('');
@@ -56,9 +57,9 @@ export function BorylationStoryPanel({ userCase, sessionId, activeQuestion, onQu
     return () => controller.abort();
   }, [sessionId, selected?.analysis_step, expanded, reload, t]);
 
-  return <section className="borylation-story" aria-label={t('Borylation case walkthrough', '分子硼化案例六步分析')}>
+  return <section className="borylation-story" aria-label={t('Borylation case walkthrough', '分子硼化案例分析')}>
     <button type="button" className="borylation-story-heading" aria-expanded={expanded} aria-controls="borylation-story-body" onClick={() => setExpanded(value => !value)}>
-      <span><strong>{localizedCase.name}</strong><small>{t('Six questions, from molecular sites to the next experiment', '从反应位点，一步步问到下一轮实验')}</small></span>
+      <span><strong>{localizedCase.name}</strong><small>{t('Four questions: properties, rings, sites, and symmetry', '四个问题：性质、环结构、位点与对称性')}</small></span>
       <span className="borylation-story-toggle">{expanded ? t('Collapse', '收起') : t('Expand', '展开')}</span>
     </button>
     {expanded && <div className="borylation-story-body" id="borylation-story-body">
@@ -69,8 +70,8 @@ export function BorylationStoryPanel({ userCase, sessionId, activeQuestion, onQu
       {selected && <p className="borylation-story-question">{selected.question}<small>{t('Choose a question and send it, or ask your own.', '选择问题后发送，也可以自由提问。')}</small></p>}
       <div className="borylation-story-evidence">
         <figure className="borylation-molecule">
-          {!imageFailed ? <a href={imageUrl} target="_blank" rel="noopener noreferrer" aria-label={t('View the full molecular structure image', '查看分子结构原图')}><img src={imageUrl} alt={candidateImage ? t('BO-01 molecular structure with candidate aromatic C–H sites', 'BO-01 分子结构与候选芳香 C–H 位点') : t('BO-01 molecular structure, with experimentally reported sites marked in green', 'BO-01 分子结构，绿色标出论文已报道的反应位点')} onError={() => setImageFailed(true)} /></a> : <p role="status">{t('The molecular structure image is unavailable.', '分子结构图暂时无法显示。')}</p>}
-          <figcaption>{candidateImage ? t('Blue circles: candidate aromatic C–H sites', '蓝色圆点：候选芳香 C–H 位点') : <><span className="borylation-site-dot" />{t('Green circles: experimentally reported sites', '绿色圆点：论文已报道位点')}</>}<small>{t('Click to enlarge', '点击查看大图')}</small></figcaption>
+          {!imageFailed ? <a href={imageUrl} target="_blank" rel="noopener noreferrer" aria-label={t('View the full molecular structure image', '查看分子结构原图')}><img src={imageUrl} alt={neutralImage ? t('BO-01 numbered molecular structure', 'BO-01 带原子编号的分子结构') : candidateImage ? t('BO-01 molecular structure with candidate aromatic C–H sites', 'BO-01 分子结构与候选芳香 C–H 位点') : t('BO-01 molecular structure, with experimentally reported sites marked in green', 'BO-01 分子结构，绿色标出论文已报道的反应位点')} onError={() => setImageFailed(true)} /></a> : <p role="status">{t('The molecular structure image is unavailable.', '分子结构图暂时无法显示。')}</p>}
+          <figcaption>{neutralImage ? t('Numbers identify atoms in the molecular graph', '编号对应分子图中的原子') : candidateImage ? t('Blue circles: candidate aromatic C–H sites', '蓝色圆点：候选芳香 C–H 位点') : <><span className="borylation-site-dot" />{t('Green circles: experimentally reported sites', '绿色圆点：论文已报道位点')}</>}<small>{t('Click to enlarge', '点击查看大图')}</small></figcaption>
         </figure>
         <div className="borylation-step-data" aria-live="polite">
           {!sessionId ? <p>{t('Send the first question to start the analysis.', '发送第一个问题开始分析。')}</p> : loading ? <p role="status"><span className="loader" /> {t('Loading experimental records…', '正在读取实验记录…')}</p> : error ? <div role="alert"><p>{error}</p><button type="button" className="secondary-command" onClick={() => setReload(value => value + 1)}>{t('Retry', '重试')}</button></div> : response ? <BorylationEvidence response={response} /> : null}
@@ -103,7 +104,25 @@ function BorylationEvidence({ response }: { response: BorylationCaseResponse }) 
   const provenance = response.provenance || {};
   const paperUrl = sourceUrl(provenance.paper_url), dataUrl = sourceUrl(provenance.data_url);
   let contents: ReactNode;
-  if (response.step === 'structure') {
+  if (response.step === 'properties') {
+    const d = record(data.descriptors), method = record(data.method);
+    contents = <><h4>{t('Calculated structural descriptors', '结构计算描述符')}</h4>
+      <DataTable headers={[t('Descriptor', '描述符'), t('Value', '数值')]} data={[
+        [t('Molecular formula', '分子式'), textValue(d.formula)],
+        [t('Molecular weight (g/mol)', '分子量（g/mol）'), numberValue(d.molecular_weight_g_mol)],
+        ['cLogP', numberValue(d.clogp)], ['TPSA (Å²)', numberValue(d.tpsa_angstrom2)],
+        [t('H-bond donors / acceptors', '氢键供体 / 受体'), `${numberValue(d.h_bond_donors)} / ${numberValue(d.h_bond_acceptors)}`],
+      ]} />
+      <p className="borylation-data-note">RDKit {textValue(method.version)} · {t('TPSA includes S/P. cLogP is not a solubility measurement.', 'TPSA 包含 S/P 贡献。cLogP 不是溶解度测量值。')}</p>
+      <h4>{t('Evidence available in this dataset', '本数据集的证据范围')}</h4>
+      <p>{t('Solubility: no measurements or model predictions provided. Reaction solvents do not prove complete dissolution.', '溶解性：无实测或模型预测。反应中使用过某种溶剂，不代表已证实完全溶解。')}</p>
+      <p>{t('Toxicity: unknown. No toxicity measurements or model predictions are provided.', '毒性：未知，未提供毒性测定或模型预测。')}</p>
+      <p>{t('Recorded reaction solvents', '记录中的反应溶剂')}：{rows(record(data.solubility).recorded_reaction_solvents).map(s => solventName(s.name, t)).join(', ')}</p></>;
+  } else if (response.step === 'rings') {
+    contents = <><dl className="borylation-facts"><div><dt>{t('Rings', '环数量')}</dt><dd>{numberValue(data.ring_count)}</dd></div><div><dt>{t('Ring types', '环类型')}</dt><dd>{numberValue(data.ring_type_count)}</dd></div></dl>
+      <DataTable headers={[t('Ring', '环'), t('Atoms', '原子编号'), t('Composition', '元素组成'), t('Aromaticity', '芳香性')]} data={rows(data.rings).map(r => [numberValue(r.ring_id), numbers(r.display_numbers), Object.entries(record(r.elements)).map(([element, count]) => `${element}${numberValue(count)}`).join(' '), r.aromatic === true ? t('Aromatic', '芳香') : t('Non-aromatic', '非芳香')])} />
+      <p className="borylation-data-note">{t('Types group rings by size, elements, and aromaticity. Substituent environments may differ.', '按大小、元素组成与芳香性分类；同类型环的取代环境可以不同。')}</p></>;
+  } else if (response.step === 'structure') {
     contents = <><dl className="borylation-facts"><div><dt>{t('Heavy atoms', '重原子')}</dt><dd>{numberValue(data.heavy_atom_count)}</dd></div><div><dt>{t('Chemical bonds', '化学键')}</dt><dd>{numberValue(data.chemical_bond_count)}</dd></div><div><dt>{t('Aromatic C–H sites', '芳香 C–H 位点')}</dt><dd>{numberValue(data.aromatic_ch_count)}</dd></div></dl>
       <p>{t('Candidate site numbers', '候选位点编号')}：{numbers(rows(data.candidate_atoms).map(atom => atom.display_number))}</p></>;
   } else if (response.step === 'symmetry') {

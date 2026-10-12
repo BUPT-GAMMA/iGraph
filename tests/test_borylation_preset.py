@@ -16,10 +16,10 @@ def test_fresh_install_needs_no_model_and_all_steps_work(tmp_path, monkeypatch):
     receipt = install_borylation_preset(tmp_path)
     registry = DatasetRegistry(str(tmp_path / "global/datasets"))
     graph = registry.load_graph(receipt["dataset_id"])
-    assert (graph.num_nodes, graph.num_edges) == (142, 364)
-    for step in ("structure", "symmetry", "products", "conditions", "plan"):
+    assert (graph.num_nodes, graph.num_edges) == (22, 48)
+    for step in ("properties", "rings", "structure", "symmetry", "products", "conditions", "plan"):
         assert analyze_borylation(graph, {"step": step})["success"]
-    assert registry.load_graph(receipt["dataset_id"], "v001").num_nodes == 142
+    assert registry.load_graph(receipt["dataset_id"], "v001").num_nodes == 22
     public = tmp_path / "server_datasets" / receipt["server_filename"]
     assert public.read_bytes() == (RESOURCES / receipt["server_filename"]).read_bytes()
     saved = tmp_path / "global/datasets" / receipt["dataset_id"] / "graph.npz"

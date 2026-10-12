@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { getBorylationCase, type BorylationCaseResponse } from '../api';
-import type { Highlight } from '../types';
+import { getBorylationCase, getDatasetMolecularStructure, type BorylationCaseResponse } from '../api';
+import type { Dataset, Highlight } from '../types';
 import { endpointId } from '../graphAppearance';
 import { useI18n } from '../i18n';
 import './MoleculeCanvas.css';
@@ -91,11 +91,12 @@ export function moleculeHighlightLayers(highlights: Highlight[], depiction: Mole
   }).filter(layer => layer.atoms.length);
 }
 
-type Props = { sessionId: string; datasetKey?: string; highlights: Highlight[]; selected: Record<string, unknown> | null; onSelect: (node: Record<string, unknown> | null) => void };
+type Props = { sessionId?: string; dataset?: Pick<Dataset, 'dataset_id' | 'project_id'>; datasetKey?: string; highlights: Highlight[]; selected: Record<string, unknown> | null; onSelect: (node: Record<string, unknown> | null) => void };
 
-export function MoleculeCanvas({ sessionId, datasetKey = '', highlights, selected, onSelect }: Props) {
+export function MoleculeCanvas({ sessionId = '', dataset, datasetKey = '', highlights, selected, onSelect }: Props) {
   const { t } = useI18n();
-  const identity = `${sessionId}\u0000${datasetKey}`;
+  const datasetId = dataset?.dataset_id, projectId = dataset?.project_id;
+  const identity = datasetId ? `dataset:${projectId || 'personal'}:${datasetId}` : `${sessionId}\u0000${datasetKey}`;
   const [loaded, setLoaded] = useState<{ identity: string; depiction: MoleculeDepiction } | null>(null);
   const [failure, setFailure] = useState<{ identity: string; message: string } | null>(null);
   const [reload, setReload] = useState(0);
@@ -107,9 +108,11 @@ export function MoleculeCanvas({ sessionId, datasetKey = '', highlights, selecte
   useEffect(() => {
     const controller = new AbortController();
     setLoaded(null); setFailure(null); setZoom(1); setLayerIndex(-1);
-    if (!sessionId) return () => controller.abort();
+    if (!sessionId && !datasetId) return () => controller.abort();
     void (async () => {
-      const owned = await getBorylationCase(sessionId, 'structure', controller.signal);
+      const owned = datasetId
+        ? await getDatasetMolecularStructure({ dataset_id: datasetId, project_id: projectId ?? null }, controller.signal)
+        : await getBorylationCase(sessionId, 'structure', controller.signal);
       if (controller.signal.aborted) return;
       if (!owned.success || owned.step !== 'structure' || owned.result?.molecule_id !== MOLECULE_ID || owned.result?.smiles !== MOLECULE_SMILES) throw new Error('molecule-identity-mismatch');
       const asset = await fetch(DEPICTION_URL, { signal: controller.signal, cache: 'no-cache' });
@@ -120,14 +123,14 @@ export function MoleculeCanvas({ sessionId, datasetKey = '', highlights, selecte
       if (!controller.signal.aborted) setFailure({ identity, message: cause instanceof Error ? cause.message : 'depiction-unavailable' });
     });
     return () => controller.abort();
-  }, [sessionId, identity, reload]);
+  }, [sessionId, datasetId, projectId, identity, reload]);
 
   const layers = useMemo(() => depiction ? moleculeHighlightLayers(highlights, depiction) : [], [highlights, depiction]);
   useEffect(() => { setLayerIndex(-1); }, [highlights]);
   const shownLayers = layerIndex >= 0 && layers[layerIndex] ? [layers[layerIndex]] : layers;
   if (!depiction) return <section className="molecule-canvas molecule-empty" aria-label={t('Molecular structure', '分子结构')}>
-    {error ? <div role="alert"><strong>{t('Unable to display the molecular structure', '无法显示分子结构')}</strong><p>{t('Retry or switch to record relationships.', '请重试，或切换到记录关系查看。')}</p><button onClick={() => setReload(value => value + 1)}>{t('Retry', '重试')}</button></div>
-      : <p role="status">{sessionId ? t('Loading molecular structure…', '正在加载分子结构…') : t('Start a conversation to view the molecule.', '进入会话后可查看分子结构。')}</p>}
+    {error ? <div role="alert"><strong>{t('Unable to display the molecular structure', '无法显示分子结构')}</strong><p>{t('Retry to reload the molecular structure.', '请重试以重新加载分子结构。')}</p><button onClick={() => setReload(value => value + 1)}>{t('Retry', '重试')}</button></div>
+      : <p role="status">{sessionId || datasetId ? t('Loading molecular structure…', '正在加载分子结构…') : t('Start a conversation to view the molecule.', '进入会话后可查看分子结构。')}</p>}
   </section>;
 
   const candidateIds = new Set(depiction.candidate_node_ids);

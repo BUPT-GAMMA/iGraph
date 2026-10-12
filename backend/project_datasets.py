@@ -320,10 +320,36 @@ class ProjectDatasetDirectory:
             self._write(records, installed_user_cases=[*installed, identity])
             return dataset
 
+    def ensure_user_case_graph(self, *, user_id: str, case: dict, source) -> ProjectDatasetRecord | None:
+        """Expose a bundled ready graph in the personal library once, without owning its file."""
+        with self._lock:
+            records = self._load()
+            existing = next((item for item in records.values()
+                if item.user_id == user_id and item.project_id is None
+                and item.metadata.get("user_case_id") == case["id"]), None)
+            if existing is not None:
+                return existing
+            payload = json.loads(self.metadata_path.read_text(encoding="utf-8")) if self.metadata_path.is_file() else {}
+            installed = payload.get("installed_user_cases", [])
+            identity = [user_id, case["id"]]
+            if identity in installed:
+                return None
+            dataset, _ = self.create_reference(project_id=None, user_id=user_id,
+                name=case["name"], original_filename=source.original_filename,
+                storage_path=Path(source.storage_path), source_id=source.server_dataset_id,
+                metadata={"source_kind": "server", "source_relative_path": source.relative_path,
+                    "source_size_bytes": source.size_bytes, "source_modified_at": source.modified_at,
+                    "source_revision": source.revision, "directed": source.directed})
+            dataset.metadata["user_case_id"] = case["id"]
+            dataset.description = case["description"]
+            records[dataset.dataset_id] = dataset
+            self._write(records, installed_user_cases=[*installed, identity])
+            return dataset
+
     def create_reference(
         self,
         *,
-        project_id: str,
+        project_id: str | None,
         user_id: str,
         name: str,
         original_filename: str,
