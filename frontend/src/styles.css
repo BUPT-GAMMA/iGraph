@@ -2081,5 +2081,13 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .workspace-home:has(.user-case-gallery) { overflow:auto; justify-content:flex-start; }
 .workspace-home:has(.user-case-gallery) > .empty-state { min-height:240px; flex:none; padding:36px 20px; }
 
+.composer textarea[data-example-suggestion]::placeholder { color: var(--text-muted); opacity: .88; }
+.composer-example-hint { display: flex; width: calc(100% - 32px); margin: 0 16px 10px; padding: 0; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-secondary); background: transparent; text-align: left; font-size: 11px; line-height: 20px; }
+.composer-example-step { margin-left: 5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.composer-example-shortcut { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); }
+.composer-example-shortcut kbd { padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-secondary); background: var(--surface-subtle); font: inherit; line-height: 17px; }
+.composer-example-hint:hover { color: var(--accent-strong); }
+.composer-example-hint:focus-visible { outline: 2px solid var(--accent-border); outline-offset: 3px; border-radius: 4px; }
+
 .chat-scroll:has(.user-case-gallery) .empty-state { margin:20px auto 24px; }
 .chat-scroll:has(.user-case-gallery) .empty-icon { width:48px; height:48px; margin-bottom:14px; border-radius:14px; }

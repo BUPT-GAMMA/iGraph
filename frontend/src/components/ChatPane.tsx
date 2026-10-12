@@ -4,6 +4,7 @@ import { MarkdownContent } from './MarkdownContent';
 import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { editableLatestTurn } from '../latestTurn';
+import { localizeUserCase, nextExampleQuestion, type UserCase } from '../userCases';
 import { answerVersions } from '../answerVersions';
 import { FileTypeIcon } from './FileTypeIcon';
 import { BrandLogo, Icon } from './Icon';
@@ -171,7 +172,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   conversationKey?: string;
   emptyProjectName?: string;
   emptyContent?: ReactNode;
-  exampleQuestions?: string[];
+  exampleCase?: UserCase;
   onOpenGraph: () => void;
   runTools?: ToolCall[];
   plan?: Plan | null;
@@ -187,7 +188,7 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, emptyContent, exampleQuestions, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, emptyContent, exampleCase, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
   const { t } = useI18n();
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const latestTurn = editableLatestTurn(messages);
@@ -196,6 +197,8 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
   useEffect(() => { setEditingKey(null); }, [editableKey]);
   const [versionSelection, setVersionSelection] = useState<Record<string, string>>({});
   const composerAvailable = inputProps.interaction.kind === 'composer';
+  const exampleQuestions = exampleCase ? localizeUserCase(exampleCase, t).questions : undefined;
+  const exampleSuggestion = !editingKey ? nextExampleQuestion(exampleCase, messages, t) : undefined;
   const scrollRef = useRef<HTMLDivElement>(null);
   const sticksToBottomRef = useRef(true);
   const initializedRef = useRef(false);
@@ -301,7 +304,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
       {inputProps.loading && liveAssistantIndex < 0 && (plan?.steps?.length || runTools?.length) ? <div className="live-analysis-card">{toolList(runTools, t)}{planCard(plan, t)}</div> : null}
     </div>
     {showJumpToLatest ? <div className="jump-to-latest-anchor"><button className="jump-to-latest" type="button" onClick={() => scrollToLatest()} aria-label={t('Jump to latest message', '滚动到最新消息')} title={t('Jump to latest message', '滚动到最新消息')}><Icon name="chevron" size={18} /></button></div> : null}
-    <ConversationInputArea {...inputProps} onSend={() => {
+    <ConversationInputArea {...inputProps} exampleSuggestion={exampleSuggestion} onSend={() => {
       // Follow an explicit send, not message IDs replaced by persisted snapshots.
       scrollToLatest('auto');
       inputProps.onSend();
