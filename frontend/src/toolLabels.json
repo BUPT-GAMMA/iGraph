@@ -67,6 +67,7 @@
   "finance_control_chain": "分析控股链",
   "finance_group_tree": "生成控制集团树",
   "finance_economic_interest": "计算穿透经济权益",
+  "borylation_case_analysis": "分析硼化反应示例",
   "get_graph_construction_status": "查询构图状态",
   "get_constructed_graph": "读取已构建图",
   "load_constructed_graph": "加载已构建图",

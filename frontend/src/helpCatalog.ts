@@ -14,6 +14,7 @@ export const helpCategories: Record<string, HelpText> = {
   communities: text('Communities & subgraphs', '社区与子图'),
   largeGraph: text('Large-graph computation', '大图计算'),
   finance: text('Ownership & control', '股权与控制关系'),
+  chemistry: text('Molecules & reactions', '分子与化学反应'),
   learning: text('Graph learning tools', '图学习工具'),
   visualization: text('Visualization & reports', '可视化与报告'),
 };
@@ -66,6 +67,7 @@ export const helpTools: HelpTool[] = [
   tool('finance_control_chain', 'finance', 'Trace control chains using strictly more than 50% controllable voting rights and supporting facts.', '按严格超过 50% 的可支配表决权追踪控股链，并保留持股事实和贡献证明。'),
   tool('finance_group_tree', 'finance', 'Show the strictly controlled members of a selected root and their hierarchy, with review and coverage limits.', '展示指定根主体的严格控制成员与集团层级，同时说明复核状态和规则覆盖范围。'),
   tool('finance_economic_interest', 'finance', 'Accumulate economic interests for boundary roots or a specified upstream owner, with cycle and evidence status.', '累计边界根或指定上游主体的经济权益，保留环路求解与证据状态；经济权益不能直接认定控制关系。'),
+  tool('borylation_case_analysis', 'chemistry', 'Review the borylation example from the loaded molecule, products and experiment records: properties, rings, sites, symmetry, products, conditions and a follow-up plan.', '基于已加载的分子、产物与实验记录复盘硼化反应示例，依次核对性质、环、位点、对称性、产物、条件并生成复核计划。'),
   tool('load_graph_classification_dataset', 'learning', 'Load an uploaded HIV or PCBA multi-graph PT dataset for graph classification.', '加载已上传的 HIV 或 PCBA 多图 PT 数据集，用于图分类。'),
   tool('load_graph_classification_graph', 'learning', 'Select a graph-classification sample as the active graph for exploration.', '选取图分类数据集中的一张图，载入画布进行分析与可视化。'),
   tool('visualize_model_architecture', 'learning', 'Inspect a trained model’s layer summary and architecture diagram.', '查看已训练模型的层级摘要和结构图。'),

@@ -29,6 +29,7 @@ EXPECTED_BUNDLED_SKILLS = (
     "graph_state_check",
     "graph_statistical_reporting",
     "graph_visualization",
+    "molecular-analysis-workflow",
     "remote_graph_qa",
 )
 
