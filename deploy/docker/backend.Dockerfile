@@ -9,8 +9,15 @@ WORKDIR /app
 COPY deploy/requirements/backend.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 COPY backend /app/backend
+# Shared, dependency-free case step contract used by the HTTP endpoint.
+COPY graph_engine/borylation_catalog.py /app/graph_engine/borylation_catalog.py
+# Verified molecular construction preview uses the JSON sidecar of the same NPZ bundle.
+COPY graph_engine/resources/borylation/graphs/borylation-story.json /app/graph_engine/resources/borylation/graphs/
 # Small example documentation is read into the active graph's per-turn context.
 COPY graph_engine/resources/tianlongbabu/manifest.json graph_engine/resources/tianlongbabu/background.md /app/graph_engine/resources/tianlongbabu/
+COPY graph_engine/resources/borylation/manifest.json graph_engine/resources/borylation/background.md /app/graph_engine/resources/borylation/
+COPY graph_engine/resources/finance_risk/manifest.json graph_engine/resources/finance_risk/background.md /app/graph_engine/resources/finance_risk/
+COPY graph_engine/resources/example_inputs/manifest.json /app/graph_engine/resources/example_inputs/
 COPY response_language.py /app/
 COPY execution_protocol.py construction_access.py /app/
 COPY execution_lifecycle.py workspace_storage.py runtime_observability.py /app/

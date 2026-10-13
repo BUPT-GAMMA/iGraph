@@ -107,6 +107,12 @@ def normalize_history(messages, *, protocol="openai-compatible", history_key=Non
                 active.remove(message.tool_call_id)
         else:
             active = {call['id'] for call in message.tool_calls or []}
+        # Empty historical assistant placeholders carry no conversational
+        # content. Keep tool-only messages and all media; do not mutate storage.
+        blank = message.content is None or (isinstance(message.content, str) and not message.content.strip())
+        if (protocol == 'openai-compatible' and message.role == 'assistant' and blank
+                and not message.tool_calls and not any((message.images, message.audio, message.audio_output, message.videos, message.files))):
+            continue
         normalized.append(message)
     return normalized
 
@@ -293,15 +299,15 @@ class ModelHistoryMixin:
 
 
     @staticmethod
-    def _record_kinship_review(response, run_response, fact_count):
+    def _record_kinship_review(response, run_response, fact_count, kind="kinship"):
         if not isinstance(response.content, str) or not response.content.strip() or response.tool_calls:
-            raise RuntimeError("KINSHIP_REVIEW_FAILED: no validated final answer returned")
+            raise RuntimeError(f"{kind.upper()}_REVIEW_FAILED: no validated final answer returned")
         response.provider_data = None
         response.reasoning_content = None
         response.redacted_reasoning_content = None
         if run_response is not None:
             usage = response.response_usage
-            run_response.metadata = {**(run_response.metadata or {}), "kinship_answer_review": {
+            run_response.metadata = {**(run_response.metadata or {}), f"{kind}_answer_review": {
                 "performed": True, "fact_count": fact_count,
                 "input_tokens": getattr(usage, "input_tokens", None),
                 "output_tokens": getattr(usage, "output_tokens", None)}}
@@ -309,7 +315,16 @@ class ModelHistoryMixin:
 
     async def _review_kinship(self, prepared, draft, response_format, run_response):
         from agent_runtime.kinship_review import review_request
-        request = review_request(prepared, draft, response_format)
+        from agent_runtime.borylation_review import review_request as molecular_review
+        request = molecular_review(prepared, draft, response_format)
+        kind = "borylation" if request is not None else "kinship"
+        if request is None:
+            from agent_runtime.finance_review import review_request as financial_review
+            request = financial_review(prepared, draft, response_format)
+            if request is not None:
+                kind = "finance"
+        if request is None:
+            request = review_request(prepared, draft, response_format)
         if request is None:
             return None
         messages, count = request
@@ -317,17 +332,26 @@ class ModelHistoryMixin:
         # Cancellation remains owned by the same RunScope.
         response = await super().ainvoke(messages, Message(role="assistant"),
             None, None, None, None, False)
-        return self._record_kinship_review(response, run_response, count)
+        return self._record_kinship_review(response, run_response, count, kind)
 
     def _review_kinship_sync(self, prepared, draft, response_format, run_response):
         from agent_runtime.kinship_review import review_request
-        request = review_request(prepared, draft, response_format)
+        from agent_runtime.borylation_review import review_request as molecular_review
+        request = molecular_review(prepared, draft, response_format)
+        kind = "borylation" if request is not None else "kinship"
+        if request is None:
+            from agent_runtime.finance_review import review_request as financial_review
+            request = financial_review(prepared, draft, response_format)
+            if request is not None:
+                kind = "finance"
+        if request is None:
+            request = review_request(prepared, draft, response_format)
         if request is None:
             return None
         messages, count = request
         response = super().invoke(messages, Message(role="assistant"),
             None, None, None, None, False)
-        return self._record_kinship_review(response, run_response, count)
+        return self._record_kinship_review(response, run_response, count, kind)
 
     @staticmethod
     def _with_draft_usage(reviewed, draft):
@@ -338,6 +362,8 @@ class ModelHistoryMixin:
 
     async def ainvoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         prepared = self._prepare_history(messages, tools, run_response)
+        from agent_runtime.borylation_review import evidence_tool_choice
+        tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
         response = await super().ainvoke(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
         self._record_provider_context_usage(response, run_response)
         if not response.tool_calls:
@@ -348,10 +374,15 @@ class ModelHistoryMixin:
 
     async def ainvoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         from agent_runtime.kinship_review import has_tool_calls, content_of, analysis_evidence
+        from agent_runtime.borylation_review import borylation_evidence
+        from agent_runtime.finance_review import finance_evidence
         from agno.models.response import ModelResponse
         prepared = self._prepare_history(messages, tools, run_response)
+        from agent_runtime.borylation_review import evidence_tool_choice
+        tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
         reviewable = response_format is None and (kinship_answer_constraints(messages) is not None
-            or any("communities" in record for record in analysis_evidence(messages)))
+            or any("communities" in record for record in analysis_evidence(messages))
+            or bool(borylation_evidence(messages)) or bool(finance_evidence(messages)))
         buffered = []
         async with aclosing(super().ainvoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)) as iterator:
             async for event in iterator:
@@ -380,6 +411,8 @@ class ModelHistoryMixin:
 
     def invoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         prepared = self._prepare_history(messages, tools, run_response)
+        from agent_runtime.borylation_review import evidence_tool_choice
+        tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
         response = super().invoke(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
         self._record_provider_context_usage(response, run_response)
         if not response.tool_calls:
@@ -390,10 +423,15 @@ class ModelHistoryMixin:
 
     def invoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         from agent_runtime.kinship_review import has_tool_calls, content_of, analysis_evidence
+        from agent_runtime.borylation_review import borylation_evidence
+        from agent_runtime.finance_review import finance_evidence
         from agno.models.response import ModelResponse
         prepared = self._prepare_history(messages, tools, run_response)
+        from agent_runtime.borylation_review import evidence_tool_choice
+        tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
         reviewable = response_format is None and (kinship_answer_constraints(messages) is not None
-            or any("communities" in record for record in analysis_evidence(messages)))
+            or any("communities" in record for record in analysis_evidence(messages))
+            or bool(borylation_evidence(messages)) or bool(finance_evidence(messages)))
         buffered = []
         for event in super().invoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs):
             self._record_provider_context_usage(event, run_response)

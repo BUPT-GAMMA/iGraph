@@ -8,7 +8,7 @@ from tests.test_server_dataset_catalog import _PreparedServerServiceClient
 def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monkeypatch):
     server = tmp_path / "server"
     server.mkdir()
-    for filename in ("finance-ownership.npz", "tianlongbabu-characters.npz"):
+    for filename in ("finance-ownership.npz", "tianlongbabu-characters.npz", "borylation-story.npz", "finance-risk.npz"):
         (server / filename).write_bytes(b"catalog-test-asset")
     supported = tmp_path / "supported.txt"
     supported.write_text("admin\nreader\n", encoding="utf-8")
@@ -22,14 +22,18 @@ def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monk
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=backend_app.create_app(config)), base_url="http://test", headers={"X-User-ID":"admin"}) as client:
             listing = (await client.get("/api/user-cases")).json()["cases"]
-            assert len(listing) == 2 and all(item["available"] and len(item["questions"]) >= 3 for item in listing)
+            assert len(listing) == 3 and all(item["available"] and len(item["questions"]) >= 3 for item in listing)
+            assert {item["id"] for item in listing} == {"finance_risk", "borylation", "tianlongbabu"}
+            assert (await client.post("/api/user-cases/finance/project")).status_code == 404
             for item in listing:
                 english = item['translations']['en']
                 assert english['name'] and english['description']
                 assert len(english['questions']) == len(item['questions'])
-            first = await client.post("/api/user-cases/finance/project")
+                assert len(item['question_titles']) == len(english['question_titles']) == len(item['questions'])
+                assert all(0 < len(title) <= 8 for title in item['question_titles'])
+            first = await client.post("/api/user-cases/finance_risk/project")
             assert first.status_code == 200, first.text
-            second = (await client.post("/api/user-cases/finance/project")).json()
+            second = (await client.post("/api/user-cases/finance_risk/project")).json()
             assert second["project"]["project_id"] == first.json()["project"]["project_id"]
             assert second["dataset"]["dataset_id"] == first.json()["dataset"]["dataset_id"]
             novel = (await client.post("/api/user-cases/tianlongbabu/project")).json()
@@ -45,7 +49,7 @@ def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monk
             assert upgraded["dataset"]["metadata"]["source_revision"] != novel["dataset"]["metadata"]["source_revision"]
             repeated = (await client.post("/api/user-cases/tianlongbabu/project")).json()
             assert repeated["dataset"]["dataset_id"] == upgraded["dataset"]["dataset_id"]
-            other = await client.post("/api/user-cases/finance/project", headers={"X-User-ID":"reader"})
+            other = await client.post("/api/user-cases/finance_risk/project", headers={"X-User-ID":"reader"})
             assert other.status_code == 200, other.text
             assert other.json()["project"]["project_id"] == second["project"]["project_id"]
             assert (await client.post("/api/user-cases/missing/project")).status_code == 404

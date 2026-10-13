@@ -38,7 +38,7 @@ const source: Dataset = { dataset_id: 'source-1', project_id: null, name: '订�
 
 it('keeps example questions and default project names localized after entering a project', async () => {
   const example = { id: 'tianlongbabu', name: '天龙八部', filename: 'tianlongbabu-characters.npz', description: '已构好的小说图',
-    questions: ['检查人物关系'], available: true, translations: { en: { name: 'Character graph example', description: 'A ready-made character graph', questions: ['Inspect character relationships'] } } };
+    questions: ['检查人物关系'], question_titles: ['江湖圈子'], available: true, translations: { en: { name: 'Character graph example', description: 'A ready-made character graph', question_titles: ['Social circles'], questions: ['Inspect character relationships'] } } };
   mocks.getUserCases.mockResolvedValue({ cases: [example] });
   const dataset: Dataset = { ...source, project_id: 'novel-project', dataset_id: 'novel-dataset', name: example.name,
     original_filename: example.filename, description: example.description, status: 'ready', metadata: { user_case_id: example.id } };
@@ -49,10 +49,12 @@ it('keeps example questions and default project names localized after entering a
   fireEvent.click(screen.getByRole('button', { name: 'EN' }));
   fireEvent.click(screen.getByRole('button', { name: 'Use example graph' }));
   await screen.findByRole('heading', { name: 'Start graph analysis in Character graph example' });
-  expect(await screen.findByRole('button', { name: 'Inspect character relationships' })).toBeTruthy();
+  fireEvent.click(await screen.findByRole('button', { name: 'Social circles' }));
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Inspect character relationships');
   expect(screen.getByRole('button', { name: 'Create a conversation in Character graph example' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '中文' }));
-  expect(screen.getByRole('button', { name: '检查人物关系' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '江湖圈子' }));
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('检查人物关系');
   expect(screen.getByRole('heading', { name: '开始在 天龙八部 中图分析' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'EN' }));
   fireEvent.click(screen.getByRole('button', { name: 'Create your graph' }));
@@ -76,6 +78,34 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('actual App graph creation destination', () => {
+  it('opens the bundled molecular graph from My graph sources with the common localized question controls', async () => {
+    const example = { id: 'borylation', name: '分子硼化反应示例', filename: 'borylation-story.npz', description: '分子结构图',
+      questions: ['请检查这个分子的环系'], question_titles: ['环系分析'], story_steps: [{ id: 'rings', title: '旧的特殊入口', question: '请检查这个分子的环系' }],
+      available: true, translations: { en: { name: 'Molecular borylation example', description: 'Molecular structure graph', questions: ['Inspect the rings of this molecule'], question_titles: ['Ring systems'] } } };
+    const molecule: Dataset = { dataset_id: 'molecular-graph', project_id: null, name: example.name, original_filename: example.filename,
+      file_type: 'npz', status: 'ready', source_kind: 'server', metadata: { user_case_id: 'borylation', source_relative_path: example.filename } };
+    mocks.getUserCases.mockResolvedValue({ cases: [example] });
+    mocks.listDatasets.mockResolvedValue({ datasets: [molecule] });
+    render(<I18nProvider initialLanguage="zh"><App /></I18nProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看构图 分子硼化反应示例' }));
+    expect(screen.getByRole('region', { name: '构图编辑器' }).textContent).toContain(example.name);
+    fireEvent.click(screen.getByRole('button', { name: '更换数据源' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始分析 分子硼化反应示例' }));
+    expect(screen.queryByRole('region', { name: '构图编辑器' })).toBeNull();
+    expect(screen.queryByRole('region', { name: '示例图分析' })).toBeNull();
+    expect(screen.queryByText('旧的特殊入口')).toBeNull();
+    expect(screen.getByRole('button', { name: '分子硼化反应示例' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: '环系分析' }));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(example.questions[0]);
+    expect(screen.getByRole('button', { name: '查看完整问题：环系分析' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'EN' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ring systems' }));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(example.translations.en.questions[0]);
+    expect(screen.getByRole('button', { name: 'View full question: Ring systems' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '中文' }));
+  });
+
   it('retains a PT upload in the source library and binds it to an analysis draft without construction', async () => {
     const pt: Dataset = { dataset_id: 'pt-graph', project_id: null, name: 'PT 验收图', original_filename: 'PT 验收图.pt', file_type: 'pt', status: 'ready' };
     mocks.listDatasets.mockResolvedValue({ datasets: [] });

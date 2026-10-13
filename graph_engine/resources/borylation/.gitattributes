@@ -1,0 +1,2 @@
+# Preserve published CSV bytes, including CRLF and empty final fields.
+raw/*.csv -text -whitespace

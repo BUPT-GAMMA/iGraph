@@ -1,0 +1,43 @@
+.borylation-story { flex:0 0 auto; margin:12px 20px 0; border:1px solid var(--border); border-radius:12px; background:var(--surface); color:var(--text-primary); overflow:hidden; }
+.borylation-story-heading { width:100%; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 16px; border:0; background:transparent; text-align:left; color:inherit; cursor:pointer; }
+.borylation-story-heading strong { font-size:14px; }
+.borylation-story-heading small { display:block; margin-top:3px; font-size:11px; color:var(--text-secondary); }
+.borylation-story-toggle { font-size:12px; color:var(--accent); white-space:nowrap; }
+.borylation-story-body { max-height:min(300px, 35vh); overflow:auto; padding:0 16px 14px; border-top:1px solid var(--border); }
+.borylation-story-steps { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-top:12px; }
+.borylation-story-steps button { display:flex; align-items:center; gap:7px; padding:7px 9px; border:1px solid var(--border); border-radius:7px; background:transparent; color:inherit; font-size:12px; cursor:pointer; text-align:left; }
+.borylation-story-steps button span { display:grid; place-items:center; flex:0 0 18px; height:18px; border-radius:50%; background:var(--surface-subtle); font-size:10px; }
+.borylation-story-steps button.is-selected { color:var(--accent-strong); background:var(--accent-soft); border-color:var(--accent-border); }
+.borylation-story-steps button:disabled { opacity:.5; cursor:default; }
+.borylation-story-heading:focus-visible,.borylation-story-steps button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.borylation-story-question { margin:10px 0; font-size:12px; line-height:1.6; }
+.borylation-story-question small { display:block; margin-top:3px; font-size:11px; color:var(--text-secondary); }
+.borylation-story-evidence { display:grid; grid-template-columns:minmax(145px,35%) minmax(0,1fr); align-items:start; gap:14px; }
+.borylation-molecule { margin:0; padding:8px; background:#fff; border:1px solid var(--border); border-radius:8px; color:#334155; }
+.borylation-molecule img { display:block; width:100%; height:auto; max-height:200px; object-fit:contain; }
+.borylation-molecule figcaption { font-size:11px; line-height:1.5; }
+.borylation-molecule figcaption small { display:block; margin-top:3px; color:#64748b; font-size:10px; }
+.borylation-site-dot { display:inline-block; width:8px; height:8px; margin-right:5px; border-radius:50%; background:#22a06b; }
+.borylation-step-data { min-width:0; font-size:12px; line-height:1.6; }
+.borylation-step-data p { margin:0 0 8px; }
+.borylation-data-table { width:100%; border-collapse:collapse; font-size:11px; }
+.borylation-data-table th,.borylation-data-table td { padding:5px 7px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
+.borylation-data-table th { color:var(--text-secondary); font-weight:500; }
+.borylation-data-table td small { display:block; color:var(--text-secondary); }
+.borylation-product-image { display:block; width:130px; max-width:none; height:60px; object-fit:contain; background:#fff; border-radius:4px; }
+.borylation-table-wrap { overflow:auto; }
+.borylation-facts { display:flex; flex-wrap:wrap; gap:16px; margin:0 0 10px; }
+.borylation-facts dt { color:var(--text-secondary); font-size:10px; }
+.borylation-facts dd { margin:0; font-size:18px; font-weight:600; }
+.borylation-step-data h4 { margin:10px 0 5px; font-size:12px; font-weight:600; }
+.borylation-data-note { margin-top:9px!important; color:var(--text-secondary); font-size:11px; }
+.borylation-threshold-note { color:var(--text-secondary); font-size:11px; }
+.borylation-sources { margin-top:10px!important; color:var(--text-secondary); font-size:10px; }
+.borylation-sources a { color:var(--accent); text-decoration:underline; text-underline-offset:2px; }
+.borylation-data-details { margin-top:9px; }
+.borylation-data-details summary { color:var(--accent); cursor:pointer; font-size:11px; }
+.borylation-data-details[open] > summary { margin-bottom:6px; }
+.borylation-matrix { white-space:nowrap; font-size:10px; }
+.borylation-matrix caption { margin:6px 0; text-align:left; color:var(--text-secondary); white-space:normal; }
+.borylation-matrix td { text-align:center; }
+@media(max-width:720px) { .borylation-story { margin:8px 10px 0; }.borylation-story-body { max-height:250px; padding:0 12px 12px; }.borylation-story-heading { padding:10px 12px; }.borylation-story-evidence { grid-template-columns:1fr; }.borylation-molecule img { max-height:190px; }.borylation-story-steps button { padding:6px; font-size:11px; } }

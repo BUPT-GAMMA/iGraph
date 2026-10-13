@@ -1,0 +1,9 @@
+SMILES,ID
+"O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",BO-01
+"Brc1ccc2[nH]ccc2c1",BO-02
+"Brc1ccc(Br)cc1",BO-03
+"c1ccc2[nH]ccc2c1",BO-04
+"CC(COc1ccc(Oc2ccccc2)cc1)Oc1ccccn1",BO-05
+"Cc1nc2ccccc2[nH]1",BO-06
+"CN(Cc1ccc(F)cc1)C(=O)C1(c2ccccc2)CCN(C(=O)OC(C)(C)C)CC1",BO-07
+"CC1N(c2ccccc2)C(=O)c2ccccc2N1C(=O)CN1CCOCC1",BO-08

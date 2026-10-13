@@ -4,21 +4,19 @@ import json
 import logging
 import uuid
 from pathlib import Path
+from backend.borylation_case import BORYLATION_CASE
+from backend.finance_risk_case import FINANCE_RISK_CASE
 
 
 USER_CASES = [
-    {"id": "finance", "name": "金融股权示例", "filename": "finance-ownership.npz",
-     "description": "三张金融表已构成股权图，可直接检查股东、控制链和集团关系。",
-     "translations": {"en": {"name": "Financial ownership example",
-         "description": "Three financial tables form a ready-to-use ownership graph for exploring shareholders, control chains, and corporate groups.",
-         "questions": ["Check the size, ownership direction, and data quality of this financial ownership graph.",
-             "Find the largest shareholder of SYN-ENT-000040, distinguishing direct ownership from cumulative economic interest.",
-             "Analyze the strict control group of SYN-ENT-000001, listing its members, control chains, and original ownership evidence."]}},
-     "questions": ["请检查这张金融股权图的数据规模、持股方向和数据质量问题。", "请计算 SYN-ENT-000040 的第一大股东，并区分直接持股和累计经济权益。", "请分析 SYN-ENT-000001 的严格控制集团，列出成员、控制链和原始持股证据。"]},
+    FINANCE_RISK_CASE,
+    BORYLATION_CASE,
     {"id": "tianlongbabu", "name": "天龙八部", "filename": "tianlongbabu-characters.npz",
-     "description": "完整小说经 deepseek-v4-pro 构成人物关系图，可直接探索人物联系和网络结构。",
+     "description": "金庸小说《天龙八部》，通过抽取人物及关系事件构成人物关系图，连接门派、家族与江湖往来。",
+     "question_titles": ["江湖圈子", "势力关联", "身世溯源", "隐秘亲缘"],
      "translations": {"en": {"name": "Demi-Gods and Semi-Devils",
-         "description": "The full novel was processed with deepseek-v4-pro into a character relationship graph, ready for exploring connections and network structure.",
+         "description": "A character graph extracted from Jin Yong’s Demi-Gods and Semi-Devils, connecting people through relationships and events across sects and families.",
+         "question_titles": ["Social circles", "Linked factions", "Family origins", "Hidden kinship"],
          "questions": ["In Demi-Gods and Semi-Devils, what major social circles form around sects, families, and everyday interactions, and who is the most important figure in each?", "What kinship, marriage, or master–disciple relationships connect the seemingly distant Duan family of Dali, Wang family of Gusu, Xiaoyao Sect, and Western Xia royal family?", "Tracing these connections through Wang Yuyan’s (王语嫣) parentage, how do her parents and grandparents link her to the Duan family of Dali, the Xiaoyao Sect, and the Western Xia royal family?", "What easily overlooked relationships connect Wang Yuyan (王语嫣) and Xuzhu (虚竹)? Trace the connections through Xuzhu’s master Wuyazi (无崖子) and his wife Menggu (梦姑)."]}},
      "questions": ["《天龙八部》中，人物围绕门派、家族和日常往来，形成了哪些主要的江湖圈子？每个圈子中最重要的人物是谁？", "在这些圈子之间，大理段氏、姑苏王家、逍遥派和西夏皇室，看似相隔甚远，实际上通过哪些亲缘、婚姻或师承关系联系在一起？", "顺着这些联系追查王语嫣的身世，她的父母和祖辈，如何让她同时与大理段氏、逍遥派和西夏皇室产生牵连？", "王语嫣与虚竹之间，究竟藏着哪几层容易被忽略的关系？分别沿着虚竹的师父无崖子和妻子梦姑追溯，两人各有什么联系？"]},
 ]
@@ -84,7 +82,7 @@ def background_for_dataset(dataset):
     if dataset is None or dataset.status != "ready" or dataset.source_kind != "server":
         return None
     case = next((item for item in USER_CASES
-                 if item["id"] == "tianlongbabu"
+                 if item["id"] in {"tianlongbabu", "borylation", "finance_risk"}
                  and dataset.metadata.get("source_relative_path") == item["filename"]), None)
     if case is None or dataset.file_type != "npz":
         return None

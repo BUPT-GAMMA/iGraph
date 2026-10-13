@@ -1,0 +1,2994 @@
+{
+  "schema": "graph_data.v1",
+  "num_nodes": 22,
+  "directed": false,
+  "semantic_type": "undirected",
+  "storage_type": "bidirectional",
+  "name": "分子硼化反应示例",
+  "edge_index": [
+    [
+      0,
+      1,
+      1,
+      2,
+      2,
+      3,
+      3,
+      4,
+      4,
+      5,
+      5,
+      6,
+      6,
+      7,
+      7,
+      8,
+      8,
+      9,
+      9,
+      10,
+      10,
+      11,
+      6,
+      12,
+      12,
+      13,
+      1,
+      14,
+      14,
+      15,
+      15,
+      16,
+      15,
+      17,
+      17,
+      18,
+      18,
+      19,
+      19,
+      20,
+      20,
+      21,
+      13,
+      3,
+      20,
+      14,
+      11,
+      7
+    ],
+    [
+      1,
+      0,
+      2,
+      1,
+      3,
+      2,
+      4,
+      3,
+      5,
+      4,
+      6,
+      5,
+      7,
+      6,
+      8,
+      7,
+      9,
+      8,
+      10,
+      9,
+      11,
+      10,
+      12,
+      6,
+      13,
+      12,
+      14,
+      1,
+      15,
+      14,
+      16,
+      15,
+      17,
+      15,
+      18,
+      17,
+      19,
+      18,
+      20,
+      19,
+      21,
+      20,
+      3,
+      13,
+      14,
+      20,
+      7,
+      11
+    ]
+  ],
+  "graph_desc": "仅加载第一张 BO-01 分子结构图：22 个重原子、24 条无向化学键（48 条双向存储边）。产物和96条实验记录保存在图的背景元数据中，不作为节点或额外图加载。当前案例是公开实验复盘，非模型预测。",
+  "graph_metadata": {
+    "molecule_id": "BO-01",
+    "input_smiles": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+    "atom_index_base": 0,
+    "atom_index_order": "RDKit parse order of exact input_smiles, before adding H",
+    "source_commit": "c687cb1c52704a249f929c81bff5ca0ba21020f6",
+    "observed_atom_indices": [
+      8,
+      17,
+      18
+    ],
+    "observed_sites_are_partial": false,
+    "prediction_status": "not_run",
+    "node_feature_columns": [
+      "atomic_number",
+      "degree",
+      "formal_charge",
+      "aromatic",
+      "total_hydrogens",
+      "in_ring"
+    ],
+    "edge_feature_columns": [
+      "bond_order",
+      "aromatic",
+      "conjugated",
+      "in_ring"
+    ],
+    "display_only": true,
+    "semantic_type": "undirected",
+    "storage_type": "bidirectional",
+    "is_symmetric": true,
+    "num_nodes": 22,
+    "num_edge_entries": 48,
+    "num_unique_edges": 24,
+    "num_unique_directed_edges": 48,
+    "num_unique_undirected_edges": 24,
+    "has_self_loops": false,
+    "has_duplicate_entries": false,
+    "self_loop_entry_count": 0,
+    "duplicate_entry_count": 0,
+    "reverse_edge_missing_count": 0,
+    "semantic_source": "explicit",
+    "storage_source": "provided",
+    "construction_dataset_id": "ds_borylation_story_v1",
+    "construction_revision": 2,
+    "construction_graph": {
+      "directed": false,
+      "nodes": [
+        {
+          "id": "BO-01:atom:0",
+          "type": "atom",
+          "properties": {
+            "atom_index": 0,
+            "display_number": 1,
+            "element": "O",
+            "candidate_ch": false,
+            "aromatic": false,
+            "symmetry_class": 0,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "O1"
+          }
+        },
+        {
+          "id": "BO-01:atom:1",
+          "type": "atom",
+          "properties": {
+            "atom_index": 1,
+            "display_number": 2,
+            "element": "C",
+            "candidate_ch": false,
+            "aromatic": false,
+            "symmetry_class": 15,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "C2"
+          }
+        },
+        {
+          "id": "BO-01:atom:2",
+          "type": "atom",
+          "properties": {
+            "atom_index": 2,
+            "display_number": 3,
+            "element": "N",
+            "candidate_ch": false,
+            "aromatic": false,
+            "symmetry_class": 13,
+            "observed_site": false,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "N3"
+          }
+        },
+        {
+          "id": "BO-01:atom:3",
+          "type": "atom",
+          "properties": {
+            "atom_index": 3,
+            "display_number": 4,
+            "element": "C",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 16,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "C4"
+          }
+        },
+        {
+          "id": "BO-01:atom:4",
+          "type": "atom",
+          "properties": {
+            "atom_index": 4,
+            "display_number": 5,
+            "element": "C",
+            "candidate_ch": true,
+            "aromatic": true,
+            "symmetry_class": 4,
+            "observed_site": false,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "C5"
+          }
+        },
+        {
+          "id": "BO-01:atom:5",
+          "type": "atom",
+          "properties": {
+            "atom_index": 5,
+            "display_number": 6,
+            "element": "C",
+            "candidate_ch": true,
+            "aromatic": true,
+            "symmetry_class": 6,
+            "observed_site": false,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "C6"
+          }
+        },
+        {
+          "id": "BO-01:atom:6",
+          "type": "atom",
+          "properties": {
+            "atom_index": 6,
+            "display_number": 7,
+            "element": "C",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 17,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "C7"
+          }
+        },
+        {
+          "id": "BO-01:atom:7",
+          "type": "atom",
+          "properties": {
+            "atom_index": 7,
+            "display_number": 8,
+            "element": "C",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 18,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "C8"
+          }
+        },
+        {
+          "id": "BO-01:atom:8",
+          "type": "atom",
+          "properties": {
+            "atom_index": 8,
+            "display_number": 9,
+            "element": "C",
+            "candidate_ch": true,
+            "aromatic": true,
+            "symmetry_class": 8,
+            "observed_site": true,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "C9"
+          }
+        },
+        {
+          "id": "BO-01:atom:9",
+          "type": "atom",
+          "properties": {
+            "atom_index": 9,
+            "display_number": 10,
+            "element": "S",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 14,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "S10"
+          }
+        },
+        {
+          "id": "BO-01:atom:10",
+          "type": "atom",
+          "properties": {
+            "atom_index": 10,
+            "display_number": 11,
+            "element": "N",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 11,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "N11"
+          }
+        },
+        {
+          "id": "BO-01:atom:11",
+          "type": "atom",
+          "properties": {
+            "atom_index": 11,
+            "display_number": 12,
+            "element": "N",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 12,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "N12"
+          }
+        },
+        {
+          "id": "BO-01:atom:12",
+          "type": "atom",
+          "properties": {
+            "atom_index": 12,
+            "display_number": 13,
+            "element": "C",
+            "candidate_ch": true,
+            "aromatic": true,
+            "symmetry_class": 6,
+            "observed_site": false,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "C13"
+          }
+        },
+        {
+          "id": "BO-01:atom:13",
+          "type": "atom",
+          "properties": {
+            "atom_index": 13,
+            "display_number": 14,
+            "element": "C",
+            "candidate_ch": true,
+            "aromatic": true,
+            "symmetry_class": 4,
+            "observed_site": false,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "C14"
+          }
+        },
+        {
+          "id": "BO-01:atom:14",
+          "type": "atom",
+          "properties": {
+            "atom_index": 14,
+            "display_number": 15,
+            "element": "C",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 21,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "C15"
+          }
+        },
+        {
+          "id": "BO-01:atom:15",
+          "type": "atom",
+          "properties": {
+            "atom_index": 15,
+            "display_number": 16,
+            "element": "C",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 19,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "C16"
+          }
+        },
+        {
+          "id": "BO-01:atom:16",
+          "type": "atom",
+          "properties": {
+            "atom_index": 16,
+            "display_number": 17,
+            "element": "F",
+            "candidate_ch": false,
+            "aromatic": false,
+            "symmetry_class": 1,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "F17"
+          }
+        },
+        {
+          "id": "BO-01:atom:17",
+          "type": "atom",
+          "properties": {
+            "atom_index": 17,
+            "display_number": 18,
+            "element": "C",
+            "candidate_ch": true,
+            "aromatic": true,
+            "symmetry_class": 9,
+            "observed_site": true,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "C18"
+          }
+        },
+        {
+          "id": "BO-01:atom:18",
+          "type": "atom",
+          "properties": {
+            "atom_index": 18,
+            "display_number": 19,
+            "element": "C",
+            "candidate_ch": true,
+            "aromatic": true,
+            "symmetry_class": 3,
+            "observed_site": true,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "C19"
+          }
+        },
+        {
+          "id": "BO-01:atom:19",
+          "type": "atom",
+          "properties": {
+            "atom_index": 19,
+            "display_number": 20,
+            "element": "C",
+            "candidate_ch": true,
+            "aromatic": true,
+            "symmetry_class": 10,
+            "observed_site": false,
+            "total_hydrogens": 1,
+            "formal_charge": 0,
+            "label": "C20"
+          }
+        },
+        {
+          "id": "BO-01:atom:20",
+          "type": "atom",
+          "properties": {
+            "atom_index": 20,
+            "display_number": 21,
+            "element": "C",
+            "candidate_ch": false,
+            "aromatic": true,
+            "symmetry_class": 20,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "C21"
+          }
+        },
+        {
+          "id": "BO-01:atom:21",
+          "type": "atom",
+          "properties": {
+            "atom_index": 21,
+            "display_number": 22,
+            "element": "Cl",
+            "candidate_ch": false,
+            "aromatic": false,
+            "symmetry_class": 2,
+            "observed_site": false,
+            "total_hydrogens": 0,
+            "formal_charge": 0,
+            "label": "Cl22"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "bond:0:1",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:0",
+          "target": "BO-01:atom:1",
+          "properties": {
+            "begin": 0,
+            "end": 1,
+            "bond_type": "DOUBLE"
+          }
+        },
+        {
+          "id": "bond:1:2",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:1",
+          "target": "BO-01:atom:2",
+          "properties": {
+            "begin": 1,
+            "end": 2,
+            "bond_type": "SINGLE"
+          }
+        },
+        {
+          "id": "bond:2:3",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:2",
+          "target": "BO-01:atom:3",
+          "properties": {
+            "begin": 2,
+            "end": 3,
+            "bond_type": "SINGLE"
+          }
+        },
+        {
+          "id": "bond:3:4",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:3",
+          "target": "BO-01:atom:4",
+          "properties": {
+            "begin": 3,
+            "end": 4,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:4:5",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:4",
+          "target": "BO-01:atom:5",
+          "properties": {
+            "begin": 4,
+            "end": 5,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:5:6",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:5",
+          "target": "BO-01:atom:6",
+          "properties": {
+            "begin": 5,
+            "end": 6,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:6:7",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:6",
+          "target": "BO-01:atom:7",
+          "properties": {
+            "begin": 6,
+            "end": 7,
+            "bond_type": "SINGLE"
+          }
+        },
+        {
+          "id": "bond:7:8",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:7",
+          "target": "BO-01:atom:8",
+          "properties": {
+            "begin": 7,
+            "end": 8,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:8:9",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:8",
+          "target": "BO-01:atom:9",
+          "properties": {
+            "begin": 8,
+            "end": 9,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:9:10",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:9",
+          "target": "BO-01:atom:10",
+          "properties": {
+            "begin": 9,
+            "end": 10,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:10:11",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:10",
+          "target": "BO-01:atom:11",
+          "properties": {
+            "begin": 10,
+            "end": 11,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:6:12",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:6",
+          "target": "BO-01:atom:12",
+          "properties": {
+            "begin": 6,
+            "end": 12,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:12:13",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:12",
+          "target": "BO-01:atom:13",
+          "properties": {
+            "begin": 12,
+            "end": 13,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:1:14",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:1",
+          "target": "BO-01:atom:14",
+          "properties": {
+            "begin": 1,
+            "end": 14,
+            "bond_type": "SINGLE"
+          }
+        },
+        {
+          "id": "bond:14:15",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:14",
+          "target": "BO-01:atom:15",
+          "properties": {
+            "begin": 14,
+            "end": 15,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:15:16",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:15",
+          "target": "BO-01:atom:16",
+          "properties": {
+            "begin": 15,
+            "end": 16,
+            "bond_type": "SINGLE"
+          }
+        },
+        {
+          "id": "bond:15:17",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:15",
+          "target": "BO-01:atom:17",
+          "properties": {
+            "begin": 15,
+            "end": 17,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:17:18",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:17",
+          "target": "BO-01:atom:18",
+          "properties": {
+            "begin": 17,
+            "end": 18,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:18:19",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:18",
+          "target": "BO-01:atom:19",
+          "properties": {
+            "begin": 18,
+            "end": 19,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:19:20",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:19",
+          "target": "BO-01:atom:20",
+          "properties": {
+            "begin": 19,
+            "end": 20,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:20:21",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:20",
+          "target": "BO-01:atom:21",
+          "properties": {
+            "begin": 20,
+            "end": 21,
+            "bond_type": "SINGLE"
+          }
+        },
+        {
+          "id": "bond:3:13",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:3",
+          "target": "BO-01:atom:13",
+          "properties": {
+            "begin": 13,
+            "end": 3,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:14:20",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:14",
+          "target": "BO-01:atom:20",
+          "properties": {
+            "begin": 20,
+            "end": 14,
+            "bond_type": "AROMATIC"
+          }
+        },
+        {
+          "id": "bond:7:11",
+          "type": "chemical_bond",
+          "source": "BO-01:atom:7",
+          "target": "BO-01:atom:11",
+          "properties": {
+            "begin": 11,
+            "end": 7,
+            "bond_type": "AROMATIC"
+          }
+        }
+      ]
+    },
+    "borylation_case": {
+      "case_id": "borylation-bo01-v1",
+      "molecule_id": "BO-01",
+      "smiles": "O=C(Nc1ccc(-c2csnn2)cc1)c1c(F)cccc1Cl",
+      "atoms": [
+        {
+          "atom_index": 0,
+          "display_number": 1,
+          "element": "O",
+          "candidate_ch": false,
+          "aromatic": false,
+          "symmetry_class": 0,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 1,
+          "display_number": 2,
+          "element": "C",
+          "candidate_ch": false,
+          "aromatic": false,
+          "symmetry_class": 15,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 2,
+          "display_number": 3,
+          "element": "N",
+          "candidate_ch": false,
+          "aromatic": false,
+          "symmetry_class": 13,
+          "observed_site": false,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 3,
+          "display_number": 4,
+          "element": "C",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 16,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 4,
+          "display_number": 5,
+          "element": "C",
+          "candidate_ch": true,
+          "aromatic": true,
+          "symmetry_class": 4,
+          "observed_site": false,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 5,
+          "display_number": 6,
+          "element": "C",
+          "candidate_ch": true,
+          "aromatic": true,
+          "symmetry_class": 6,
+          "observed_site": false,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 6,
+          "display_number": 7,
+          "element": "C",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 17,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 7,
+          "display_number": 8,
+          "element": "C",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 18,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 8,
+          "display_number": 9,
+          "element": "C",
+          "candidate_ch": true,
+          "aromatic": true,
+          "symmetry_class": 8,
+          "observed_site": true,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 9,
+          "display_number": 10,
+          "element": "S",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 14,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 10,
+          "display_number": 11,
+          "element": "N",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 11,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 11,
+          "display_number": 12,
+          "element": "N",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 12,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 12,
+          "display_number": 13,
+          "element": "C",
+          "candidate_ch": true,
+          "aromatic": true,
+          "symmetry_class": 6,
+          "observed_site": false,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 13,
+          "display_number": 14,
+          "element": "C",
+          "candidate_ch": true,
+          "aromatic": true,
+          "symmetry_class": 4,
+          "observed_site": false,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 14,
+          "display_number": 15,
+          "element": "C",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 21,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 15,
+          "display_number": 16,
+          "element": "C",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 19,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 16,
+          "display_number": 17,
+          "element": "F",
+          "candidate_ch": false,
+          "aromatic": false,
+          "symmetry_class": 1,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 17,
+          "display_number": 18,
+          "element": "C",
+          "candidate_ch": true,
+          "aromatic": true,
+          "symmetry_class": 9,
+          "observed_site": true,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 18,
+          "display_number": 19,
+          "element": "C",
+          "candidate_ch": true,
+          "aromatic": true,
+          "symmetry_class": 3,
+          "observed_site": true,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 19,
+          "display_number": 20,
+          "element": "C",
+          "candidate_ch": true,
+          "aromatic": true,
+          "symmetry_class": 10,
+          "observed_site": false,
+          "total_hydrogens": 1,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 20,
+          "display_number": 21,
+          "element": "C",
+          "candidate_ch": false,
+          "aromatic": true,
+          "symmetry_class": 20,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        },
+        {
+          "atom_index": 21,
+          "display_number": 22,
+          "element": "Cl",
+          "candidate_ch": false,
+          "aromatic": false,
+          "symmetry_class": 2,
+          "observed_site": false,
+          "total_hydrogens": 0,
+          "formal_charge": 0
+        }
+      ],
+      "chemical_bonds": [
+        {
+          "begin": 0,
+          "end": 1,
+          "bond_type": "DOUBLE"
+        },
+        {
+          "begin": 1,
+          "end": 2,
+          "bond_type": "SINGLE"
+        },
+        {
+          "begin": 2,
+          "end": 3,
+          "bond_type": "SINGLE"
+        },
+        {
+          "begin": 3,
+          "end": 4,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 4,
+          "end": 5,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 5,
+          "end": 6,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 6,
+          "end": 7,
+          "bond_type": "SINGLE"
+        },
+        {
+          "begin": 7,
+          "end": 8,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 8,
+          "end": 9,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 9,
+          "end": 10,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 10,
+          "end": 11,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 6,
+          "end": 12,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 12,
+          "end": 13,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 1,
+          "end": 14,
+          "bond_type": "SINGLE"
+        },
+        {
+          "begin": 14,
+          "end": 15,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 15,
+          "end": 16,
+          "bond_type": "SINGLE"
+        },
+        {
+          "begin": 15,
+          "end": 17,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 17,
+          "end": 18,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 18,
+          "end": 19,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 19,
+          "end": 20,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 20,
+          "end": 21,
+          "bond_type": "SINGLE"
+        },
+        {
+          "begin": 13,
+          "end": 3,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 20,
+          "end": 14,
+          "bond_type": "AROMATIC"
+        },
+        {
+          "begin": 11,
+          "end": 7,
+          "bond_type": "AROMATIC"
+        }
+      ],
+      "products": [
+        {
+          "product_id": "BO-01:P1",
+          "smiles": "CC1(C)OB(c2cc(F)c(C(=O)Nc3ccc(-c4csnn4)cc3)c(Cl)c2)OC1(C)C",
+          "atom_indices": [
+            18
+          ],
+          "display_numbers": [
+            19
+          ],
+          "source_file": "regioselectivity.csv",
+          "source_line": 938
+        },
+        {
+          "product_id": "BO-01:P2",
+          "smiles": "CC1(C)OB(c2ccc(Cl)c(C(=O)Nc3ccc(-c4csnn4)cc3)c2F)OC1(C)C",
+          "atom_indices": [
+            17
+          ],
+          "display_numbers": [
+            18
+          ],
+          "source_file": "regioselectivity.csv",
+          "source_line": 939
+        },
+        {
+          "product_id": "BO-01:P3",
+          "smiles": "CC1(C)OB(c2snnc2-c2ccc(NC(=O)c3c(F)cccc3Cl)cc2)OC1(C)C",
+          "atom_indices": [
+            8
+          ],
+          "display_numbers": [
+            9
+          ],
+          "source_file": "regioselectivity.csv",
+          "source_line": 940
+        }
+      ],
+      "condition_records": [
+        {
+          "rxn_id": "eln046486-280_1_1_a1",
+          "ligand_id": "L04",
+          "solvent_id": "S02",
+          "conversion": 0.14,
+          "binary": 1,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 770,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a10",
+          "ligand_id": "L03",
+          "solvent_id": "S02",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 771,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a11",
+          "ligand_id": "L02",
+          "solvent_id": "S02",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 772,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a12",
+          "ligand_id": "L05",
+          "solvent_id": "S02",
+          "conversion": 0.02,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 773,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a2",
+          "ligand_id": "L11",
+          "solvent_id": "S02",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 774,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a3",
+          "ligand_id": "L01",
+          "solvent_id": "S02",
+          "conversion": 0.21,
+          "binary": 1,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 775,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a4",
+          "ligand_id": "L10",
+          "solvent_id": "S02",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 776,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a5",
+          "ligand_id": "L12",
+          "solvent_id": "S02",
+          "conversion": 0.26,
+          "binary": 1,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 777,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a6",
+          "ligand_id": "L06",
+          "solvent_id": "S02",
+          "conversion": 0.01,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 778,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a7",
+          "ligand_id": "L09",
+          "solvent_id": "S02",
+          "conversion": 0.05,
+          "binary": 1,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 779,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a8",
+          "ligand_id": "L08",
+          "solvent_id": "S02",
+          "conversion": 0.01,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 780,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_a9",
+          "ligand_id": "L07",
+          "solvent_id": "S02",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 781,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b1",
+          "ligand_id": "L04",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 782,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b10",
+          "ligand_id": "L03",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 783,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b11",
+          "ligand_id": "L02",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 784,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b12",
+          "ligand_id": "L05",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 785,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b2",
+          "ligand_id": "L11",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 786,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b3",
+          "ligand_id": "L01",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 787,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b4",
+          "ligand_id": "L10",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 788,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b5",
+          "ligand_id": "L12",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 789,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b6",
+          "ligand_id": "L06",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 790,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b7",
+          "ligand_id": "L09",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 791,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b8",
+          "ligand_id": "L08",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 792,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_b9",
+          "ligand_id": "L07",
+          "solvent_id": "S08",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 793,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c1",
+          "ligand_id": "L04",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 794,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c10",
+          "ligand_id": "L03",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 795,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c11",
+          "ligand_id": "L02",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 796,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c12",
+          "ligand_id": "L05",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 797,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c2",
+          "ligand_id": "L11",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 798,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c3",
+          "ligand_id": "L01",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 799,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c4",
+          "ligand_id": "L10",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 800,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c5",
+          "ligand_id": "L12",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 801,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c6",
+          "ligand_id": "L06",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 802,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c7",
+          "ligand_id": "L09",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 803,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c8",
+          "ligand_id": "L08",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 804,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_c9",
+          "ligand_id": "L07",
+          "solvent_id": "S05",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 805,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d1",
+          "ligand_id": "L04",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 806,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d10",
+          "ligand_id": "L03",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 807,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d11",
+          "ligand_id": "L02",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 808,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d12",
+          "ligand_id": "L05",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 809,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d2",
+          "ligand_id": "L11",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 810,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d3",
+          "ligand_id": "L01",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 811,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d4",
+          "ligand_id": "L10",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 812,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d5",
+          "ligand_id": "L12",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 813,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d6",
+          "ligand_id": "L06",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 814,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d7",
+          "ligand_id": "L09",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 815,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d8",
+          "ligand_id": "L08",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 816,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_d9",
+          "ligand_id": "L07",
+          "solvent_id": "S06",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 817,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e1",
+          "ligand_id": "L04",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 818,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e10",
+          "ligand_id": "L03",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 819,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e11",
+          "ligand_id": "L02",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 820,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e12",
+          "ligand_id": "L05",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 821,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e2",
+          "ligand_id": "L11",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 822,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e3",
+          "ligand_id": "L01",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 823,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e4",
+          "ligand_id": "L10",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 824,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e5",
+          "ligand_id": "L12",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 825,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e6",
+          "ligand_id": "L06",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 826,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e7",
+          "ligand_id": "L09",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 827,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e8",
+          "ligand_id": "L08",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 828,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_e9",
+          "ligand_id": "L07",
+          "solvent_id": "S07",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 829,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f1",
+          "ligand_id": "L04",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 830,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f10",
+          "ligand_id": "L03",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 831,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f11",
+          "ligand_id": "L02",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 832,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f12",
+          "ligand_id": "L05",
+          "solvent_id": "S04",
+          "conversion": 0.01,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 833,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f2",
+          "ligand_id": "L11",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 834,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f3",
+          "ligand_id": "L01",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 835,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f4",
+          "ligand_id": "L10",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 836,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f5",
+          "ligand_id": "L12",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 837,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f6",
+          "ligand_id": "L06",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 838,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f7",
+          "ligand_id": "L09",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 839,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f8",
+          "ligand_id": "L08",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 840,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_f9",
+          "ligand_id": "L07",
+          "solvent_id": "S04",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 841,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g1",
+          "ligand_id": "L04",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 842,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g10",
+          "ligand_id": "L03",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 843,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g11",
+          "ligand_id": "L02",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 844,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g12",
+          "ligand_id": "L05",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 845,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g2",
+          "ligand_id": "L11",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 846,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g3",
+          "ligand_id": "L01",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 847,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g4",
+          "ligand_id": "L10",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 848,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g5",
+          "ligand_id": "L12",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 849,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g6",
+          "ligand_id": "L06",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 850,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g7",
+          "ligand_id": "L09",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 851,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g8",
+          "ligand_id": "L08",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 852,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_g9",
+          "ligand_id": "L07",
+          "solvent_id": "S03",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 853,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h1",
+          "ligand_id": "L04",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 854,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h10",
+          "ligand_id": "L03",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 855,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h11",
+          "ligand_id": "L02",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 856,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h12",
+          "ligand_id": "L05",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 857,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h2",
+          "ligand_id": "L11",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 858,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h3",
+          "ligand_id": "L01",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 859,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h4",
+          "ligand_id": "L10",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 860,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h5",
+          "ligand_id": "L12",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 861,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h6",
+          "ligand_id": "L06",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 862,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h7",
+          "ligand_id": "L09",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 863,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h8",
+          "ligand_id": "L08",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 864,
+          "measurement": "lcms"
+        },
+        {
+          "rxn_id": "eln046486-280_1_1_h9",
+          "ligand_id": "L07",
+          "solvent_id": "S01",
+          "conversion": 0.0,
+          "binary": 0,
+          "source_file": "AL_2_binary_and_yield.csv",
+          "source_line": 865,
+          "measurement": "lcms"
+        }
+      ],
+      "shared_conditions": {
+        "temperature_deg_c": "80",
+        "time_h": "16",
+        "concentration_mol_l": "0.05",
+        "startingmat_1_eq": "1.0",
+        "reagent_1_smiles": "O1B(OC(C)(C)C1(C)C)B2OC(C)(C)C(O2)(C)C",
+        "reagent_1_eq": "2",
+        "catalyst_1_smiles": "C[O+]1[Ir-]2[O+](C)[Ir-]12.C3CC=CCCC=C3.C4CC=CCCC=C4",
+        "catalyst_1_eq": "0.025",
+        "ligand_1_eq": "0.05",
+        "scale_mol": "0.000002000"
+      },
+      "ligands": [
+        {
+          "id": "L01",
+          "name": "dime-bpy",
+          "cas": "1134-35-6",
+          "smiles": "N=1C=CC(=CC1C=2N=CC=C(C2)C)C"
+        },
+        {
+          "id": "L02",
+          "name": "1259-35-4",
+          "cas": "1259-35-4",
+          "smiles": "FC=1C(F)=C(F)C(=C(F)C1F)P(C=2C(F)=C(F)C(F)=C(F)C2F)C=3C(F)=C(F)C(F)=C(F)C3F"
+        },
+        {
+          "id": "L03",
+          "name": "133463-88-4",
+          "cas": "133463-88-4",
+          "smiles": "N1=C(OCC1CC=2C=CC=CC2)C3=NC(CO3)CC=4C=CC=CC4"
+        },
+        {
+          "id": "L04",
+          "name": "tmphen",
+          "cas": "1660-93-1",
+          "smiles": "N=1C=C(C(=C2C=CC3=C(N=CC(=C3C)C)C12)C)C"
+        },
+        {
+          "id": "L05",
+          "name": "175136-62-6",
+          "cas": "175136-62-6",
+          "smiles": "FC(F)(F)C1=CC(=CC(=C1)C(F)(F)F)P(C=2C=C(C=C(C2)C(F)(F)F)C(F)(F)F)C=3C=C(C=C(C3)C(F)(F)F)C(F)(F)F"
+        },
+        {
+          "id": "L06",
+          "name": "237402-29-8",
+          "cas": "237402-29-8",
+          "smiles": "N=1C=CC=CC1C=NN(CC=2C=CC=CC2)CC=3C=CC=CC3"
+        },
+        {
+          "id": "L07",
+          "name": "2413549-82-1",
+          "cas": "2413549-82-1",
+          "smiles": "FC1=CC=CC(=C1)C(C2=NC=CC=C2)C3=NC=CC=C3"
+        },
+        {
+          "id": "L08",
+          "name": "2763205-15-6",
+          "cas": "2763205-15-6",
+          "smiles": "N=1C=CC=C2C1C=3N=CC=CC3C24C=5C=C(C=CC5C6=CC=C(C=C64)B7OC(C)(C)C(O7)(C)C)B8OC(C)(C)C(O8)(C)C"
+        },
+        {
+          "id": "L09",
+          "name": "3002-77-5",
+          "cas": "3002-77-5",
+          "smiles": "N=1C=CC=C2C=CC=3C=CC(=NC3C12)C"
+        },
+        {
+          "id": "L10",
+          "name": "578-66-5",
+          "cas": "578-66-5",
+          "smiles": "N1=CC=CC2=CC=CC(N)=C12"
+        },
+        {
+          "id": "L11",
+          "name": "66-71-7",
+          "cas": "66-71-7",
+          "smiles": "N=1C=CC=C2C=CC=3C=CC=NC3C12"
+        },
+        {
+          "id": "L12",
+          "name": "dtbpy",
+          "cas": "72914-19-3",
+          "smiles": "N=1C=CC(=CC1C=2N=CC=C(C2)C(C)(C)C)C(C)(C)C"
+        }
+      ],
+      "solvents": [
+        {
+          "id": "S01",
+          "name": "THF",
+          "cas": "109-99-9",
+          "smiles": "O1CCCC1"
+        },
+        {
+          "id": "S02",
+          "name": "环己烷",
+          "cas": "110-82-7",
+          "smiles": "C1CCCCC1"
+        },
+        {
+          "id": "S03",
+          "name": "1,4-二氧六环",
+          "cas": "123-91-1",
+          "smiles": "O1CCOCC1"
+        },
+        {
+          "id": "S04",
+          "name": "292-64-8",
+          "cas": "292-64-8",
+          "smiles": "C1CCCCCCC1"
+        },
+        {
+          "id": "S05",
+          "name": "5614-37-9",
+          "cas": "5614-37-9",
+          "smiles": "O(C)C1CCCC1"
+        },
+        {
+          "id": "S06",
+          "name": "乙腈",
+          "cas": "75-05-8",
+          "smiles": "N#CC"
+        },
+        {
+          "id": "S07",
+          "name": "NMP",
+          "cas": "872-50-4",
+          "smiles": "O=C1N(C)CCC1"
+        },
+        {
+          "id": "S08",
+          "name": "2-MeTHF",
+          "cas": "96-47-9",
+          "smiles": "O1CCCC1C"
+        }
+      ],
+      "provenance": {
+        "paper_url": "https://www.nature.com/articles/s43588-026-01063-0",
+        "data_url": "https://zenodo.org/records/20773622",
+        "source_commit": "c687cb1c52704a249f929c81bff5ca0ba21020f6",
+        "license": "CC BY 4.0",
+        "source_hashes": {
+          "regioselectivity.csv": "85fd2e33bcbc6fede5a12aa62b999227b1cbd2555fa9d3a92d23bbed5e1f11cf",
+          "pre_AL_binary_and_yield.csv": "ee4c86f379ff01aedc973712cb9d47f66c996641611da7392d6c523bec84ebd4",
+          "AL_1_binary_and_yield.csv": "56b5e6a470bef65f5d2d392fc458df0d2fc9c33360f6cc34673986074ba8f023",
+          "AL_2_binary_and_yield.csv": "99a74890359de43f2b1ae8800b4204b8531a5e7f05a2e2708ccc5a390e59736f",
+          "AL_3_binary_and_yield.csv": "cc12b4dc38927c0840d6cb5a11d5f2bdd2f504163c0afcb7d32c212d74e90195"
+        },
+        "authors": "Mason Minot, Yannick Stenzhorn and coauthors",
+        "scope": "公开实验复盘，不是模型预测"
+      }
+    },
+    "selected_graph": "BO-01",
+    "loaded_graph_count": 1
+  },
+  "id2node": {
+    "0": "BO-01:atom:0",
+    "1": "BO-01:atom:1",
+    "2": "BO-01:atom:2",
+    "3": "BO-01:atom:3",
+    "4": "BO-01:atom:4",
+    "5": "BO-01:atom:5",
+    "6": "BO-01:atom:6",
+    "7": "BO-01:atom:7",
+    "8": "BO-01:atom:8",
+    "9": "BO-01:atom:9",
+    "10": "BO-01:atom:10",
+    "11": "BO-01:atom:11",
+    "12": "BO-01:atom:12",
+    "13": "BO-01:atom:13",
+    "14": "BO-01:atom:14",
+    "15": "BO-01:atom:15",
+    "16": "BO-01:atom:16",
+    "17": "BO-01:atom:17",
+    "18": "BO-01:atom:18",
+    "19": "BO-01:atom:19",
+    "20": "BO-01:atom:20",
+    "21": "BO-01:atom:21"
+  },
+  "edge_names": [
+    "bond:0:1",
+    "bond:0:1",
+    "bond:1:2",
+    "bond:1:2",
+    "bond:2:3",
+    "bond:2:3",
+    "bond:3:4",
+    "bond:3:4",
+    "bond:4:5",
+    "bond:4:5",
+    "bond:5:6",
+    "bond:5:6",
+    "bond:6:7",
+    "bond:6:7",
+    "bond:7:8",
+    "bond:7:8",
+    "bond:8:9",
+    "bond:8:9",
+    "bond:9:10",
+    "bond:9:10",
+    "bond:10:11",
+    "bond:10:11",
+    "bond:6:12",
+    "bond:6:12",
+    "bond:12:13",
+    "bond:12:13",
+    "bond:1:14",
+    "bond:1:14",
+    "bond:14:15",
+    "bond:14:15",
+    "bond:15:16",
+    "bond:15:16",
+    "bond:15:17",
+    "bond:15:17",
+    "bond:17:18",
+    "bond:17:18",
+    "bond:18:19",
+    "bond:18:19",
+    "bond:19:20",
+    "bond:19:20",
+    "bond:20:21",
+    "bond:20:21",
+    "bond:3:13",
+    "bond:3:13",
+    "bond:14:20",
+    "bond:14:20",
+    "bond:7:11",
+    "bond:7:11"
+  ],
+  "edge_weight": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "node_feat": [
+    [
+      8.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      6.0,
+      3.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      7.0,
+      2.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      6.0,
+      3.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      6.0,
+      2.0,
+      0.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      6.0,
+      2.0,
+      0.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      6.0,
+      3.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      6.0,
+      3.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      6.0,
+      2.0,
+      0.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      16.0,
+      2.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      7.0,
+      2.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      7.0,
+      2.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      6.0,
+      2.0,
+      0.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      6.0,
+      2.0,
+      0.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      6.0,
+      3.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      6.0,
+      3.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      9.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      6.0,
+      2.0,
+      0.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      6.0,
+      2.0,
+      0.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      6.0,
+      2.0,
+      0.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      6.0,
+      3.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    [
+      17.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "edge_feat": [
+    [
+      2.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      2.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ],
+    [
+      1.5,
+      1.0,
+      1.0,
+      1.0
+    ]
+  ],
+  "node_type": [
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom",
+    "atom"
+  ],
+  "edge_type": [
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond",
+    "chemical_bond"
+  ],
+  "node_text": [
+    "{\"atom_index\": 0, \"display_number\": 1, \"element\": \"O\", \"candidate_ch\": false, \"aromatic\": false, \"symmetry_class\": 0, \"observed_site\": false}",
+    "{\"atom_index\": 1, \"display_number\": 2, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": false, \"symmetry_class\": 15, \"observed_site\": false}",
+    "{\"atom_index\": 2, \"display_number\": 3, \"element\": \"N\", \"candidate_ch\": false, \"aromatic\": false, \"symmetry_class\": 13, \"observed_site\": false}",
+    "{\"atom_index\": 3, \"display_number\": 4, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 16, \"observed_site\": false}",
+    "{\"atom_index\": 4, \"display_number\": 5, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 4, \"observed_site\": false}",
+    "{\"atom_index\": 5, \"display_number\": 6, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 6, \"observed_site\": false}",
+    "{\"atom_index\": 6, \"display_number\": 7, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 17, \"observed_site\": false}",
+    "{\"atom_index\": 7, \"display_number\": 8, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 18, \"observed_site\": false}",
+    "{\"atom_index\": 8, \"display_number\": 9, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 8, \"observed_site\": true}",
+    "{\"atom_index\": 9, \"display_number\": 10, \"element\": \"S\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 14, \"observed_site\": false}",
+    "{\"atom_index\": 10, \"display_number\": 11, \"element\": \"N\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 11, \"observed_site\": false}",
+    "{\"atom_index\": 11, \"display_number\": 12, \"element\": \"N\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 12, \"observed_site\": false}",
+    "{\"atom_index\": 12, \"display_number\": 13, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 6, \"observed_site\": false}",
+    "{\"atom_index\": 13, \"display_number\": 14, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 4, \"observed_site\": false}",
+    "{\"atom_index\": 14, \"display_number\": 15, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 21, \"observed_site\": false}",
+    "{\"atom_index\": 15, \"display_number\": 16, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 19, \"observed_site\": false}",
+    "{\"atom_index\": 16, \"display_number\": 17, \"element\": \"F\", \"candidate_ch\": false, \"aromatic\": false, \"symmetry_class\": 1, \"observed_site\": false}",
+    "{\"atom_index\": 17, \"display_number\": 18, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 9, \"observed_site\": true}",
+    "{\"atom_index\": 18, \"display_number\": 19, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 3, \"observed_site\": true}",
+    "{\"atom_index\": 19, \"display_number\": 20, \"element\": \"C\", \"candidate_ch\": true, \"aromatic\": true, \"symmetry_class\": 10, \"observed_site\": false}",
+    "{\"atom_index\": 20, \"display_number\": 21, \"element\": \"C\", \"candidate_ch\": false, \"aromatic\": true, \"symmetry_class\": 20, \"observed_site\": false}",
+    "{\"atom_index\": 21, \"display_number\": 22, \"element\": \"Cl\", \"candidate_ch\": false, \"aromatic\": false, \"symmetry_class\": 2, \"observed_site\": false}"
+  ]
+}

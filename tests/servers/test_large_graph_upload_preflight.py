@@ -201,3 +201,41 @@ def test_compressed_binary_expansion_is_rejected_before_graphdata_load(
         assert session.get_graph() is None
     finally:
         _close(service)
+
+def test_only_exact_bundled_pt_can_pass_binary_size_guard(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    import torch
+    import graph_engine.example_inputs as examples
+
+    source = tmp_path / "arxiv.pt"
+    torch.save({"edge_index": torch.tensor([[0, 1], [1, 2]]), "num_nodes": 3}, source)
+    resources = tmp_path / "packaged"
+    resources.mkdir()
+    entry = {"filename": "arxiv.pt", "local_graph_loading": True,
+             "size_bytes": source.stat().st_size,
+             "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+             "metadata": {"num_nodes": 3, "num_edges": 2}}
+    (resources / "manifest.json").write_text(json.dumps({"inputs": [entry]}))
+    original = examples.verified_local_graph_source
+    monkeypatch.setattr(examples, "verified_local_graph_source",
+        lambda path, **limits: original(path, resources=resources, **limits))
+    monkeypatch.setenv("LARGE_GRAPH_BINARY_UPLOAD_BYTES_THRESHOLD", "1")
+    service = _service(tmp_path, monkeypatch)
+    try:
+        session = service.get_or_create("s1", user_id="alice")
+        session.register_upload("token", source.name, str(source))
+        result = asyncio.run(service.do_load_graph_from_upload("s1", source.name, append=False, user_id="alice"))
+        assert result["success"] is True
+        assert session.get_graph().num_nodes == 3
+        assert session.get_graph().num_edges == 2
+        appended = asyncio.run(service.do_load_graph_from_upload("s1", source.name, append=True, user_id="alice"))
+        assert appended["code"] == "LARGE_GRAPH_APPEND_UNSUPPORTED"
+        assert not original(source, resources=resources, max_nodes=3, max_edges=10)
+        raw = source.read_bytes()
+        source.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+        rejected = asyncio.run(service.do_load_graph_from_upload("s1", source.name, append=False, user_id="alice"))
+        assert rejected["code"] == "LARGE_GRAPH_FORMAT_UNSUPPORTED"
+        assert session.get_graph().num_nodes == 3
+    finally:
+        _close(service)

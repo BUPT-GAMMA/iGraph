@@ -5,6 +5,7 @@ import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { editableLatestTurn } from '../latestTurn';
 import { localizeUserCase, nextExampleQuestion, type UserCase } from '../userCases';
+import { ExampleQuestionButton } from './ExampleQuestionButton';
 import { answerVersions } from '../answerVersions';
 import { FileTypeIcon } from './FileTypeIcon';
 import { BrandLogo, Icon } from './Icon';
@@ -197,7 +198,8 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
   useEffect(() => { setEditingKey(null); }, [editableKey]);
   const [versionSelection, setVersionSelection] = useState<Record<string, string>>({});
   const composerAvailable = inputProps.interaction.kind === 'composer';
-  const exampleQuestions = exampleCase ? localizeUserCase(exampleCase, t).questions : undefined;
+  const localizedExample = exampleCase ? localizeUserCase(exampleCase, t) : undefined;
+  const exampleQuestions = localizedExample?.questions;
   const exampleSuggestion = !editingKey ? nextExampleQuestion(exampleCase, messages, t) : undefined;
   const scrollRef = useRef<HTMLDivElement>(null);
   const sticksToBottomRef = useRef(true);
@@ -254,7 +256,7 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
 
   return <main className="chat-pane">
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-      {messages.length === 0 ? <><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable && !emptyContent ? <div className="suggestions">{exampleQuestions?.length ? exampleQuestions.map(question => <button key={question} onClick={() => inputProps.onChange(question)}>{question}</button>) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
+      {messages.length === 0 ? <><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable && !emptyContent ? <div className={exampleQuestions?.length ? "example-suggestions" : "suggestions"}>{exampleQuestions?.length ? exampleQuestions.map((question, index) => <ExampleQuestionButton key={question} title={localizedExample?.question_titles?.[index] || question} question={question} disabled={Boolean(inputProps.disabled || inputProps.loading || inputProps.uploading || inputProps.sendBlocked)} onSelect={() => inputProps.onChange(question)} />) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
         const versions = isAssistant ? answerVersions(message, messages) : [message];

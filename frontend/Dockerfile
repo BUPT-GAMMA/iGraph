@@ -13,6 +13,7 @@ COPY frontend/index.html ./index.html
 COPY frontend/src ./src
 COPY frontend/public/figures ./public/figures
 COPY frontend/public/model-providers ./public/model-providers
+COPY frontend/public/examples ./public/examples
 RUN pnpm build
 
 FROM ${NGINX_IMAGE}

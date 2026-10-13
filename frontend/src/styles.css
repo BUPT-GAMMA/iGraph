@@ -2069,18 +2069,6 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .message-model-provenance { color: var(--text-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; margin: -3px 0 8px; }
 .model-switch-notice { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 8px 16px; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
 
-.user-case-gallery { width:min(100%, 1000px); margin:0 auto; padding:0 24px 32px; }
-.user-case-gallery h2 { font-size:20px; margin-bottom:16px; }
-.user-case-cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap:20px; }
-.user-case-cards article { border:1px solid var(--border); border-radius:16px; padding:22px; background:var(--surface); text-align:left; }
-.user-case-cards h3 { margin:0 0 10px; }
-.user-case-cards p { line-height:1.6; opacity:.8; }
-.user-case-questions { display:flex; flex-direction:column; gap:8px; margin-top:20px; }
-.user-case-questions button { text-align:left; white-space:normal; padding:10px; border:1px solid var(--border); border-radius:8px; background:transparent; color:inherit; line-height:1.5; cursor:pointer; }
-.user-case-questions button:hover { background:var(--surface-subtle); }
-.workspace-home:has(.user-case-gallery) { overflow:auto; justify-content:flex-start; }
-.workspace-home:has(.user-case-gallery) > .empty-state { min-height:240px; flex:none; padding:36px 20px; }
-
 .composer textarea[data-example-suggestion]::placeholder { color: var(--text-muted); opacity: .88; }
 .composer-example-hint { display: flex; width: calc(100% - 32px); margin: 0 16px 10px; padding: 0; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-secondary); background: transparent; text-align: left; font-size: 11px; line-height: 20px; }
 .composer-example-step { margin-left: 5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
@@ -2088,6 +2076,3 @@ svg[data-model-provider="unknown"] { color: #8c96a5; }
 .composer-example-shortcut kbd { padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-secondary); background: var(--surface-subtle); font: inherit; line-height: 17px; }
 .composer-example-hint:hover { color: var(--accent-strong); }
 .composer-example-hint:focus-visible { outline: 2px solid var(--accent-border); outline-offset: 3px; border-radius: 4px; }
-
-.chat-scroll:has(.user-case-gallery) .empty-state { margin:20px auto 24px; }
-.chat-scroll:has(.user-case-gallery) .empty-icon { width:48px; height:48px; margin-bottom:14px; border-radius:14px; }

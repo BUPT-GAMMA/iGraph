@@ -1,0 +1,45 @@
+{
+  "version": 2,
+  "filename": "borylation-story.npz",
+  "dataset": {
+    "dataset_id": "ds_borylation_story_v1",
+    "name": "分子硼化反应示例",
+    "description": "仅加载第一张 BO-01 分子结构图：22 个重原子、24 条无向化学键（48 条双向存储边）。产物和96条实验记录保存在图的背景元数据中，不作为节点或额外图加载。当前案例是公开实验复盘，非模型预测。",
+    "source_type": "borylation_preset",
+    "node_count": 22,
+    "edge_count": 48,
+    "is_directed": false,
+    "created_at": "2026-10-11T13:55:08+00:00",
+    "updated_at": "2026-10-12T06:47:20+00:00",
+    "versions": [
+      "v001"
+    ],
+    "edge_entry_count": 48,
+    "unique_edge_count": 24,
+    "semantic_type": "undirected",
+    "storage_type": "bidirectional",
+    "is_symmetric": true,
+    "has_self_loops": false,
+    "has_duplicate_entries": false
+  },
+  "sha256": "dc7ca465e40332e6920705da20b09c9eb740d2bc77eb541c126cc3e3c39a3a06",
+  "provenance": {
+    "paper_url": "https://www.nature.com/articles/s43588-026-01063-0",
+    "data_url": "https://zenodo.org/records/20773622",
+    "source_commit": "c687cb1c52704a249f929c81bff5ca0ba21020f6",
+    "license": "CC BY 4.0",
+    "source_hashes": {
+      "regioselectivity.csv": "85fd2e33bcbc6fede5a12aa62b999227b1cbd2555fa9d3a92d23bbed5e1f11cf",
+      "pre_AL_binary_and_yield.csv": "ee4c86f379ff01aedc973712cb9d47f66c996641611da7392d6c523bec84ebd4",
+      "AL_1_binary_and_yield.csv": "56b5e6a470bef65f5d2d392fc458df0d2fc9c33360f6cc34673986074ba8f023",
+      "AL_2_binary_and_yield.csv": "99a74890359de43f2b1ae8800b4204b8531a5e7f05a2e2708ccc5a390e59736f",
+      "AL_3_binary_and_yield.csv": "cc12b4dc38927c0840d6cb5a11d5f2bdd2f504163c0afcb7d32c212d74e90195"
+    },
+    "authors": "Mason Minot, Yannick Stenzhorn and coauthors",
+    "scope": "公开实验复盘，不是模型预测"
+  },
+  "previous_sha256": [
+    "2325661563647ffd4667bc95ec5211b9f07e8f48f708164b6296bfa99d12aa8b",
+    "5cb990de31694b9c433c3be1f8a3605bfb872087ea1ab39a817706549f8dd24d"
+  ]
+}

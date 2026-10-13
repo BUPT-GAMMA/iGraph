@@ -5,7 +5,7 @@ import { getConstructionState } from '../api';
 import { useI18n } from '../i18n';
 import type { Translate } from '../i18n';
 import type { ConstructionState, CsvBundleSchema, Dataset } from '../types';
-import { constructionStatus, isPtGraph, supportsConstruction } from '../construction';
+import { constructionStatus, isMolecularGraph, isPrebuiltGraph, supportsConstruction } from '../construction';
 import { Icon } from './Icon';
 import { CsvBundleDialog } from './CsvBundleDialog';
 
@@ -36,7 +36,14 @@ function sourceSummary(dataset: Dataset, t: Translate, formatNumber: (value: num
   const status = constructionStatus(dataset);
   const nodes = Number(dataset.metadata?.num_nodes);
   const edges = Number(dataset.metadata?.num_edges);
-  if (isPtGraph(dataset)) {
+  if (isPrebuiltGraph(dataset)) {
+    if (sourceType(dataset) === 'NPZ') {
+      if (dataset.status === 'failed' || dataset.status === 'error') return t('Unable to load this graph.', '图加载失败。');
+      if (dataset.status !== 'ready') return t('The graph is being prepared.', '图正在准备中。');
+      return Number.isFinite(nodes) && Number.isFinite(edges)
+        ? t(`Saved graph · ${formatNumber(nodes)} nodes · ${formatNumber(edges)} edges`, `已保存的图 · ${formatNumber(nodes)} 个节点 · ${formatNumber(edges)} 条边`)
+        : t('Saved graph · Ready for analysis', '已保存的图 · 可直接开始分析');
+    }
     if (dataset.status === 'failed' || dataset.status === 'error') return t('Unable to load this PT graph. Check the file format and upload it again.', 'PT 图加载失败，请检查文件格式后重新上传。');
     if (dataset.status !== 'ready') return t('The PT graph is being prepared.', 'PT 图正在准备中。');
     return Number.isFinite(nodes) && Number.isFinite(edges)
@@ -67,8 +74,8 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
   const [selectionError, setSelectionError] = useState('');
   const stateCallback = useRef(onStateChange);
   stateCallback.current = onStateChange;
-  const sources = datasets.filter(dataset => supportsConstruction(dataset) || isPtGraph(dataset));
-  const monitored = sources.filter(dataset => !isPtGraph(dataset) && ['building', 'processing'].includes(constructionStatus(dataset)));
+  const sources = datasets.filter(dataset => supportsConstruction(dataset) || isPrebuiltGraph(dataset));
+  const monitored = sources.filter(dataset => !isPrebuiltGraph(dataset) && ['building', 'processing'].includes(constructionStatus(dataset)));
   const monitorSignature = monitored.map(dataset => `${dataset.project_id || 'personal'}:${dataset.dataset_id}`).sort().join('|');
 
   useEffect(() => {
@@ -141,9 +148,10 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
         <div className="create-graph-section-head"><div><h2 id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2></div><span>{t(`${formatNumber(sources.length)} available`, `${formatNumber(sources.length)} 个可用`)}</span></div>
         {sources.length ? <div className="create-graph-source-grid">{sources.map(dataset => <article className="create-graph-source-card" key={dataset.dataset_id}>
           <div className="create-graph-source-icon"><Icon name="database" size={20} /></div>
-          <div className="create-graph-source-copy"><div><strong title={labels.name(dataset.name)}>{labels.name(dataset.name)}</strong><span>{sourceType(dataset)}</span></div><p>{sourceSummary(dataset, t, formatNumber)}</p>{dataset.description && <p title={labels.description(dataset.description)}>{labels.description(dataset.description)}</p>}</div>
+          <div className="create-graph-source-copy"><div><strong title={labels.name(dataset.name)}>{labels.name(dataset.name)}</strong><span>{sourceType(dataset)}</span>{Boolean(dataset.metadata?.user_case_id) && <span>{t("Example", "示例")}</span>}</div><p>{sourceSummary(dataset, t, formatNumber)}</p>{dataset.description && <p title={labels.description(dataset.description)}>{labels.description(dataset.description)}</p>}</div>
           <div className="create-graph-source-actions">
-            {isPtGraph(dataset)
+            {isMolecularGraph(dataset) && <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy || dataset.status !== 'ready'} aria-label={t(`View graph build ${labels.name(dataset.name)}`, `查看构图 ${labels.name(dataset.name)}`)}>{t('View graph build', '查看构图')} <Icon name="graph" size={14} /></button>}
+            {isPrebuiltGraph(dataset)
               ? <button className="secondary-command" onClick={() => onAnalyze?.(dataset)} disabled={busy || dataset.status !== 'ready' || !onAnalyze} aria-label={t(`Start analysis ${labels.name(dataset.name)}`, `开始分析 ${labels.name(dataset.name)}`)}>{t('Start analysis', '开始分析')} <Icon name="arrow-right" size={14} /></button>
               : <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${labels.name(dataset.name)}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>}
             {onDelete && <button className="plain-icon create-graph-delete" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete dataset', '删除数据集')} aria-label={t(`Delete dataset ${labels.name(dataset.name)}`, `删除数据集 ${labels.name(dataset.name)}`)}><Icon name="trash" size={16} /></button>}

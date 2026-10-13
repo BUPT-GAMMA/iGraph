@@ -1,0 +1,8 @@
+.molecular-construction-panel > .molecule-canvas { padding: clamp(14px, 2.5vw, 28px); gap: 16px; }
+.molecular-construction-panel .molecule-scroll { width: 100%; max-width: min(1000px, 80dvh); margin-inline: auto; }
+.molecular-construction-panel .molecule-atom-inspector dl { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 28px; }
+.molecular-construction-panel .construction-heading h2 { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .molecular-construction-panel .construction-header { padding: 16px; flex-wrap: wrap; min-height: auto; }
+  .molecular-construction-panel .construction-heading h2 { font-size: 18px; }
+}

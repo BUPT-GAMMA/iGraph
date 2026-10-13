@@ -1,4 +1,4 @@
-import type { UserCase } from './userCases';
+import type { BorylationAnalysisStep, UserCase } from './userCases';
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionSourcePreview, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
@@ -623,4 +623,24 @@ export function getUserCases(signal?: AbortSignal) {
 }
 export function openUserCase(caseId: string) {
   return json<{ project: Project; dataset: Dataset; case: UserCase }>(`/api/user-cases/${encodeURIComponent(caseId)}/project`, { method: 'POST' });
+}
+
+export type BorylationCaseResponse = {
+  success: boolean;
+  step: BorylationAnalysisStep;
+  result: Record<string, unknown>;
+  provenance?: Record<string, unknown>;
+  limitations?: string[];
+  prediction_status?: 'not_run';
+  error?: string;
+  message?: string;
+};
+
+export async function getDatasetMolecularStructure(dataset: Pick<Dataset, 'dataset_id' | 'project_id'>, signal?: AbortSignal) {
+  const scope = dataset.project_id ? `/api/projects/${encodeURIComponent(dataset.project_id)}/datasets` : '/api/personal-datasets';
+  return json<BorylationCaseResponse>(`${scope}/${encodeURIComponent(dataset.dataset_id)}/molecular-structure`, { signal });
+}
+
+export async function getBorylationCase(sessionId: string, step: BorylationAnalysisStep, signal?: AbortSignal) {
+  return json<BorylationCaseResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/borylation-case?step=${encodeURIComponent(step)}`, { signal });
 }

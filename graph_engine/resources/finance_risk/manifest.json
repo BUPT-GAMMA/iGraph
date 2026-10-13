@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "filename": "finance-risk.npz",
+  "sha256": "007bd9599f0453f4c77d60c0f549f27246e41acf357bb95dcff897a4a5ec2635",
+  "dataset": {
+    "dataset_id": "ds_finance_risk_v1",
+    "name": "金融风控",
+    "description": "已保存的金融三表 PK/FK 图；用于授信前股权关联核查。原始关系行保留为节点，金融计算从原始表字段读取持股事实。",
+    "source_type": "finance_risk_preset",
+    "node_count": 19436,
+    "edge_count": 26872,
+    "is_directed": true,
+    "created_at": "2026-10-08T02:28:04+00:00",
+    "updated_at": "2026-10-08T02:28:04+00:00",
+    "versions": [
+      "v001"
+    ],
+    "edge_entry_count": 26872,
+    "unique_edge_count": 26872,
+    "num_unique_directed_edges": 26872,
+    "num_unique_undirected_edges": 26872,
+    "semantic_type": "directed",
+    "storage_type": "directed",
+    "is_symmetric": false,
+    "has_self_loops": false,
+    "has_duplicate_entries": false,
+    "storage_backend": "local",
+    "graph_ref": null
+  },
+  "source_saved_revision": 2
+}

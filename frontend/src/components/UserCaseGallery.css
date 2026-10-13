@@ -1,0 +1,29 @@
+/* Quiet surfaces, precise typography, and compact prompts keep the graph in focus. */
+.user-case-gallery { container: example-gallery / inline-size; width: min(100%, 1112px); margin: 0 auto; padding: clamp(28px, 6vh, 64px) 28px 30px; color: var(--text-primary); }
+.user-case-gallery-heading { margin: 0 auto 32px; text-align: center; }
+.user-case-gallery-mark { overflow: hidden; display: grid; place-items: center; width: 46px; height: 46px; margin: 0 auto 20px; border: 1px solid var(--border); border-radius: 14px; color: var(--text-secondary); background: var(--surface); }
+.user-case-gallery-heading h2 { margin: 0; font-size: clamp(25px, 2.7vw, 32px); line-height: 1.35; font-weight: 550; letter-spacing: -.035em; }
+.user-case-gallery-heading p { margin: 12px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; }
+.user-case-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 265px), 1fr)); gap: 16px; }
+.user-case-card { min-width: 0; display: flex; flex-direction: column; padding: 24px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); text-align: left; box-shadow: 0 2px 4px rgba(15, 23, 42, .02); transition: border-color .18s, box-shadow .18s; }
+.user-case-card:hover { border-color: color-mix(in srgb, var(--border) 50%, var(--text-muted)); box-shadow: 0 8px 28px rgba(15, 23, 42, .045); }
+.user-case-card-meta { display: flex; align-items: center; gap: 9px; margin-bottom: 18px; color: var(--text-secondary); font-size: 11px; }
+.user-case-card-icon { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 9px; color: var(--text-secondary); background: var(--surface-subtle); }
+.user-case-card h3 { margin: 0; font-size: 18px; line-height: 1.5; font-weight: 600; letter-spacing: -.025em; }
+.user-case-card .user-case-description { min-height: 84px; margin: 12px 0 22px; color: var(--text-secondary); font-size: 13px; line-height: 1.8; text-wrap: pretty; }
+.user-case-questions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: auto; }
+.user-case-open { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; margin-top: 22px; padding: 16px 0 0; border-top: 1px solid var(--border); color: var(--text-secondary); background: transparent; text-align: left; font-size: 12px; line-height: 1.5; }
+.user-case-open:hover:not(:disabled) { color: var(--accent-strong); }
+.user-case-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 4px; }
+.user-case-open:disabled { opacity: .5; cursor: not-allowed; }
+.user-case-gallery-hint { margin: 24px 0 0; text-align: center; color: var(--text-secondary); font-size: 11px; line-height: 1.7; }
+.workspace-home:has(.user-case-gallery) { overflow: auto; justify-content: flex-start; }
+.workspace-home:has(.user-case-gallery) > .empty-state, .chat-scroll:has(.user-case-gallery) > .empty-state { display: none; }
+.chat-scroll:has(.user-case-gallery) { padding: 0; }
+.chat-scroll .user-case-gallery { padding-top: 24px; }
+@media (max-width: 720px) { .user-case-gallery { padding: 28px 18px 24px; }.user-case-gallery-heading { margin-bottom: 24px; }.user-case-gallery-mark { margin-bottom: 16px; }.user-case-card { padding: 22px; }.user-case-card .user-case-description { min-height: 0; }.user-case-gallery-hint { max-width: 280px; margin-left: auto; margin-right: auto; } }
+@media (prefers-reduced-motion: reduce) { .user-case-card { transition: none; } }
+
+@container example-gallery (max-width: 590px) { .user-case-card .user-case-description { min-height: 0; } }
+
+.user-case-gallery-mark .brand-logo { width: 100%; height: 100%; object-fit: contain; }

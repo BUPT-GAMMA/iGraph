@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { UserCaseGallery } from './UserCaseGallery';
 import { I18nProvider } from '../i18n';
@@ -39,4 +39,41 @@ it('does not allow opening a graph that is not installed', () => {
   render(<UserCaseGallery busy={false} onSelect={vi.fn()} cases={[{ id:'novel', name:'小说', filename:'novel.npz', description:'', questions:['问题'], available:false }]} />);
   expect(screen.getByRole('button', { name:'尚未安装' }).matches(':disabled')).toBe(true);
   expect(screen.getByRole('button', { name:'问题' }).matches(':disabled')).toBe(true);
+});
+
+it('previews a full question without submitting, then sends the full localized prompt from its short label', async () => {
+  const onSelect = vi.fn();
+  const question = '这个分子包含几个环？请说明各环的性质。';
+  const english = 'How many rings does this molecule contain? Describe their properties.';
+  const example = { id: 'borylation', name: '分子图', filename: 'molecule.npz', description: '原子与化学键', available: true,
+    questions: [question], question_titles: ['环系分析'],
+    translations: { en: { name: 'Molecule', description: 'Atoms and bonds', questions: [english], question_titles: ['Ring systems'] } } };
+  render(<I18nProvider initialLanguage="zh"><TopBar onMenu={vi.fn()} onHome={vi.fn()} /><UserCaseGallery cases={[example]} busy={false} onSelect={onSelect} /></I18nProvider>);
+  expect(screen.getByRole('heading', { name: '从这里开始分析' })).toBeTruthy();
+  expect(screen.queryByText(question)).toBeNull();
+  const help = screen.getByRole('button', { name: '查看完整问题：环系分析' });
+  fireEvent.click(help);
+  expect(await screen.findByRole('tooltip')).toHaveProperty('textContent', '环系分析' + question);
+  expect(onSelect).not.toHaveBeenCalled();
+  fireEvent.keyDown(help, { key: 'Escape' });
+  await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: '环系分析' }));
+  expect(onSelect).toHaveBeenLastCalledWith('borylation', question);
+  fireEvent.click(screen.getByRole('button', { name: 'EN' }));
+  expect(screen.getByRole('heading', { name: 'Start your analysis here' })).toBeTruthy();
+  fireEvent.pointerEnter(screen.getByRole('button', { name: 'View full question: Ring systems' }));
+  expect(await screen.findByRole('tooltip')).toHaveProperty('textContent', 'Ring systems' + english);
+  fireEvent.click(screen.getByRole('button', { name: 'Ring systems' }));
+  expect(onSelect).toHaveBeenLastCalledWith('borylation', english);
+});
+
+it('keeps question help keyboard accessible while graph actions are busy', async () => {
+  const onSelect = vi.fn();
+  render(<I18nProvider initialLanguage="zh"><UserCaseGallery cases={[{ id: 'graph', name: '图', description: '', filename: 'graph.npz', available: true,
+    question_titles: ['属性判断'], questions: ['分析这个分子的属性。'] }]} busy={true} onSelect={onSelect} /></I18nProvider>);
+  expect(screen.getByRole('button', { name: '属性判断' }).matches(':disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: '使用示例图' }).matches(':disabled')).toBe(true);
+  fireEvent.focus(screen.getByRole('button', { name: '查看完整问题：属性判断' }));
+  expect(await screen.findByRole('tooltip')).toHaveProperty('textContent', '属性判断分析这个分子的属性。');
+  expect(onSelect).not.toHaveBeenCalled();
 });

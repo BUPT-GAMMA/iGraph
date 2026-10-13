@@ -1,4 +1,5 @@
 import type { GraphData, Highlight } from './types';
+import { graphNodeLabel, financeNodeSearchNames } from './financeNodeLabels';
 import { createGraphOverview } from './graphOverview';
 import { tr } from './i18n';
 import type { Translate } from './i18n';
@@ -15,6 +16,7 @@ export function graphIndex(data: GraphData, translate: Translate = tr) {
   data.nodes.forEach((node, index) => {
     const id = String(node.id ?? node.label ?? index);
     const indexed = Object.assign({ id, degree: 0, degreeLabel: translate('Preview connections', '预览连接数') }, node);
+    if (data.visualization_kind !== 'schema' && data.schema_kind !== 'tables') indexed.label = graphNodeLabel(node, translate);
     indexed.id = id; indexed.degree = 0; indexed.degreeLabel = translate('Preview connections', '预览连接数');
     nodes.set(id, indexed);
     neighbors.set(id, new Set());
@@ -47,7 +49,7 @@ export function graphIndex(data: GraphData, translate: Translate = tr) {
 export type GraphIndex = ReturnType<typeof graphIndex>;
 export function previewGraph(index: GraphIndex, highlights: Highlight[], query: string, filterMatches: boolean, connectedOnly: boolean, focusId: string, depth: number, resultsOnly = false) {
   const text = query.trim().toLowerCase();
-  const matches = [...index.nodes.values()].filter(node => text && (node.id.toLowerCase().includes(text) || String(node.label ?? '').toLowerCase().includes(text)));
+  const matches = [...index.nodes.values()].filter(node => text && (node.id.toLowerCase().includes(text) || String(node.label ?? '').toLowerCase().includes(text) || financeNodeSearchNames(node).some(name => name.toLowerCase().includes(text))));
   const matchIds = new Set(matches.map(node => node.id));
   let local: Set<string> | null = null;
   if (depth && index.nodes.has(focusId)) {

@@ -116,7 +116,7 @@ class ProjectDatasetDirectory:
         user_id: str,
         name: str,
         original_filename: str,
-        content: bytes,
+        content: bytes | Path,
         description: str = "",
     ) -> ProjectDatasetRecord:
         description = self._description(description)
@@ -131,7 +131,11 @@ class ProjectDatasetDirectory:
             fd, tmp_name = tempfile.mkstemp(prefix="source-", dir=str(dataset_dir))
             try:
                 with os.fdopen(fd, "wb") as handle:
-                    handle.write(content)
+                    if isinstance(content, Path):
+                        with content.open("rb") as source:
+                            shutil.copyfileobj(source, handle, 1024 * 1024)
+                    else:
+                        handle.write(content)
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(tmp_name, source_path)
@@ -310,8 +314,34 @@ class ProjectDatasetDirectory:
             if identity in installed:
                 return None
             dataset = self.create(project_id=None, user_id=user_id, name=case["name"],
-                original_filename=source["filename"], content=source_path.read_bytes(), description=case["description"])
+                original_filename=source["filename"], content=source_path, description=case["description"])
             dataset.metadata.update(source.get("metadata", {}), user_case_id=case["id"])
+            records[dataset.dataset_id] = dataset
+            self._write(records, installed_user_cases=[*installed, identity])
+            return dataset
+
+    def ensure_user_case_graph(self, *, user_id: str, case: dict, source) -> ProjectDatasetRecord | None:
+        """Expose a bundled ready graph in the personal library once, without owning its file."""
+        with self._lock:
+            records = self._load()
+            existing = next((item for item in records.values()
+                if item.user_id == user_id and item.project_id is None
+                and item.metadata.get("user_case_id") == case["id"]), None)
+            if existing is not None:
+                return existing
+            payload = json.loads(self.metadata_path.read_text(encoding="utf-8")) if self.metadata_path.is_file() else {}
+            installed = payload.get("installed_user_cases", [])
+            identity = [user_id, case["id"]]
+            if identity in installed:
+                return None
+            dataset, _ = self.create_reference(project_id=None, user_id=user_id,
+                name=case["name"], original_filename=source.original_filename,
+                storage_path=Path(source.storage_path), source_id=source.server_dataset_id,
+                metadata={"source_kind": "server", "source_relative_path": source.relative_path,
+                    "source_size_bytes": source.size_bytes, "source_modified_at": source.modified_at,
+                    "source_revision": source.revision, "directed": source.directed})
+            dataset.metadata["user_case_id"] = case["id"]
+            dataset.description = case["description"]
             records[dataset.dataset_id] = dataset
             self._write(records, installed_user_cases=[*installed, identity])
             return dataset
@@ -319,7 +349,7 @@ class ProjectDatasetDirectory:
     def create_reference(
         self,
         *,
-        project_id: str,
+        project_id: str | None,
         user_id: str,
         name: str,
         original_filename: str,

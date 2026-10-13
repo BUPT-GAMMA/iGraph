@@ -23,7 +23,7 @@ COPY response_language.py model_protocols.py /app/
 # Skill and memory paths share Backend's canonical data-root resolver.
 COPY backend/__init__.py backend/data_paths.py /app/backend/
 # Shared execution policies also import the finance tool contract.
-COPY graph_engine/__init__.py graph_engine/tool_execution.py graph_engine/finance_catalog.py /app/graph_engine/
+COPY graph_engine/__init__.py graph_engine/tool_execution.py graph_engine/finance_catalog.py graph_engine/borylation_catalog.py /app/graph_engine/
 COPY execution_protocol.py construction_access.py /app/
 COPY execution_lifecycle.py workspace_storage.py runtime_observability.py /app/
 
