@@ -4624,8 +4624,11 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         await run_sync(install_borylation_preset, _dp.data_root())
         from graph_engine.bundled_presets import install_bundled_preset
         await run_sync(install_bundled_preset, _dp.data_root(), resources=Path(__file__).resolve().parents[1] / "graph_engine/resources/finance_risk")
-        from graph_engine.example_inputs import install_example_inputs
-        await run_sync(install_example_inputs, _dp.data_root())
+        # The bundled inputs decompress to about 540 MB per data root; tests that
+        # start the app against throwaway roots switch this off.
+        if os.getenv("GRAPH_ENGINE_INSTALL_EXAMPLE_INPUTS", "true").strip().lower() not in {"0", "false", "no", "off"}:
+            from graph_engine.example_inputs import install_example_inputs
+            await run_sync(install_example_inputs, _dp.data_root())
         await svc._construction_coordinator.restore()
         if svc._execution_host:
             await svc._execution_host.restore()
