@@ -68,10 +68,13 @@ def create_igraph_factory(
         except (PermissionError, ValueError) as exc:
             raise FactoryPermissionError(str(exc)) from exc
 
+        model = create_model(model_id, config, custom_model)
+        # Request-scoped: never infer the next cycle's language from tool output.
+        model.igraph_response_language = options.response_language
         agent = (ControlledAgent if execution_controller else Agent)(
             id=AGENT_ID,
             name="iGraph Agent",
-            model=create_model(model_id, config, custom_model),
+            model=model,
             db=db,
             metadata={'model_snapshot': snapshot} if snapshot else None,
             tools=[create_graph_tools(config, response_language=options.response_language), *create_workspace_tools(), update_agent_notes],

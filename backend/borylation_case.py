@@ -1,7 +1,7 @@
 """Localized four-question walkthrough for the bundled molecular graph."""
 
 BORYLATION_CASE = {'id': 'borylation',
- 'name': '分子硼化反应示例',
+ 'name': '化学分子性质分析',
  'filename': 'borylation-story.npz',
  'personal_graph': True,
  'description': '以 BO-01 分子为对象，将原子与化学键构成分子结构图，并关联芳香 C–H 位点与已报道的硼化反应记录。',
@@ -25,7 +25,7 @@ BORYLATION_CASE = {'id': 'borylation',
                   'title': '对称等价',
                   'analysis_step': 'symmetry',
                   'question': '上述芳香 C–H 位点中，哪些因分子对称性而等价？合并后有哪些不等价位点？请列出等价分组和代表位点。'}],
- 'translations': {'en': {'name': 'Molecular borylation example',
+ 'translations': {'en': {'name': 'Chemical Molecular Property Analysis',
                          'description': 'A molecular graph of BO-01: atoms and chemical bonds, linked to aromatic '
                                         'C–H sites and reported borylation records.',
                          'questions': ['How soluble might this molecule be in common organic solvents, and is '

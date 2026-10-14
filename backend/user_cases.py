@@ -11,10 +11,10 @@ from backend.finance_risk_case import FINANCE_RISK_CASE
 USER_CASES = [
     FINANCE_RISK_CASE,
     BORYLATION_CASE,
-    {"id": "tianlongbabu", "name": "天龙八部", "filename": "tianlongbabu-characters.npz",
+    {"id": "tianlongbabu", "name": "文学人物关系网络", "filename": "tianlongbabu-characters.npz",
      "description": "金庸小说《天龙八部》，通过抽取人物及关系事件构成人物关系图，连接门派、家族与江湖往来。",
      "question_titles": ["江湖圈子", "势力关联", "身世溯源", "隐秘亲缘"],
-     "translations": {"en": {"name": "Demi-Gods and Semi-Devils",
+     "translations": {"en": {"name": "Literary Character Network",
          "description": "A character graph extracted from Jin Yong’s Demi-Gods and Semi-Devils, connecting people through relationships and events across sects and families.",
          "question_titles": ["Social circles", "Linked factions", "Family origins", "Hidden kinship"],
          "questions": ["In Demi-Gods and Semi-Devils, what major social circles form around sects, families, and everyday interactions, and who is the most important figure in each?", "What kinship, marriage, or master–disciple relationships connect the seemingly distant Duan family of Dali, Wang family of Gusu, Xiaoyao Sect, and Western Xia royal family?", "Tracing these connections through Wang Yuyan’s (王语嫣) parentage, how do her parents and grandparents link her to the Duan family of Dali, the Xiaoyao Sect, and the Western Xia royal family?", "What easily overlooked relationships connect Wang Yuyan (王语嫣) and Xuzhu (虚竹)? Trace the connections through Xuzhu’s master Wuyazi (无崖子) and his wife Menggu (梦姑)."]}},
@@ -46,35 +46,37 @@ def installed_source(server_root: Path, case: dict):
 _BACKGROUND_RESOURCES = Path(__file__).resolve().parents[1] / "graph_engine" / "resources"
 
 
-def normalize_novel_example_names(projects, datasets):
-    """Upgrade only published default labels, preserving user names and graph contents."""
-    manifest = json.loads((_BACKGROUND_RESOURCES / "tianlongbabu" / "manifest.json").read_text(encoding="utf-8"))
-    previous = set(manifest.get("previous_names", []))
-    name = manifest["dataset"]["name"]
-    case = next(item for item in USER_CASES if item["id"] == "tianlongbabu")
-    with projects._lock:
-        records = projects._load()
-        changed = False
-        for record in records.values():
-            expected = str(uuid.uuid5(uuid.NAMESPACE_URL, f"igraph:user-case:tianlongbabu:{record.user_id}"))
-            if record.project_id == expected and record.name in previous:
-                record.name = name
-                changed = True
-        if changed:
-            projects._write(records)
-    with datasets._lock:
-        records = datasets._load()
-        changed = False
-        for record in records.values():
-            is_example = record.metadata.get("user_case_id") == case["id"] or (
-                record.source_kind == "server"
-                and record.metadata.get("source_relative_path") == case["filename"]
-            )
-            if is_example and record.name in previous:
-                record.name = name
-                changed = True
-        if changed:
-            datasets._write(records)
+def normalize_user_case_names(projects, datasets):
+    """Migrate published default labels only, across existing example references."""
+    for case in USER_CASES:
+        manifest = json.loads((_BACKGROUND_RESOURCES / case["id"] / "manifest.json").read_text(encoding="utf-8"))
+        previous = set(manifest.get("previous_names", []))
+        if not previous:
+            continue
+        name = manifest["dataset"]["name"]
+        with projects._lock:
+            records = projects._load()
+            changed = False
+            for record in records.values():
+                expected = str(uuid.uuid5(uuid.NAMESPACE_URL, f"igraph:user-case:{case['id']}:{record.user_id}"))
+                if record.project_id == expected and record.name in previous:
+                    record.name = name
+                    changed = True
+            if changed:
+                projects._write(records)
+        with datasets._lock:
+            records = datasets._load()
+            changed = False
+            for record in records.values():
+                is_example = record.metadata.get("user_case_id") == case["id"] or (
+                    record.source_kind == "server"
+                    and record.metadata.get("source_relative_path") == case["filename"]
+                )
+                if is_example and record.name in previous:
+                    record.name = name
+                    changed = True
+            if changed:
+                datasets._write(records)
 
 
 def background_for_dataset(dataset):
@@ -93,7 +95,9 @@ def background_for_dataset(dataset):
             return None
         with Path(dataset.storage_path).open("rb") as handle:
             checksum = hashlib.file_digest(handle, "sha256").hexdigest()
-        if checksum != manifest["sha256"]:
+        # A label-only release keeps byte-verified older snapshots usable.
+        accepted = {manifest["sha256"], *manifest.get("name_only_previous_sha256", [])}
+        if checksum not in accepted:
             return None
         content = (resources / "background.md").read_text(encoding="utf-8").strip()
         if not content:

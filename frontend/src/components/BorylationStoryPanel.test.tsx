@@ -12,7 +12,7 @@ const steps: Array<[string, string, BorylationAnalysisStep]> = [
   ['structure', '从底物开始', 'structure'], ['symmetry', '排除等价位点', 'symmetry'], ['products', '看看已有产物', 'products'],
   ['condition_screen', '反应有多难做', 'conditions'], ['condition_comparison', '比较成功条件', 'conditions'], ['experiment_plan', '安排下一轮实验', 'plan'],
 ];
-const userCase: UserCase = { id: 'borylation', name: '分子硼化反应示例', filename: 'borylation-story.npz', description: '', available: true,
+const userCase: UserCase = { id: 'borylation', name: '科学智能', filename: 'borylation-story.npz', description: '', available: true,
   questions: steps.map(step => `问题：${step[1]}`), story_steps: steps.map(([id, title, analysis_step]) => ({ id, title, analysis_step, question: `问题：${title}` })) };
 const response = (step: BorylationAnalysisStep, result: Record<string, unknown>): BorylationCaseResponse => ({ success: true, step, result, prediction_status: 'not_run' });
 
@@ -31,7 +31,7 @@ it('keeps molecular conversations consistent with other datasets and preserves f
   }
   render(<Conversation />);
   expect(screen.getByText('前一个回答')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: /分子硼化反应示例.*展开/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /科学智能.*展开/ })).toBeNull();
   expect(screen.queryByRole('navigation', { name: '案例问题' })).toBeNull();
   expect(getBorylationCase).not.toHaveBeenCalled();
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('自由问题');
@@ -47,7 +47,7 @@ it('ignores a late response from a previous step and clears evidence on errors',
     : step === 'symmetry' ? Promise.resolve(response(step, { candidate_atom_count: 8, distinct_site_count: 6, site_classes: [{ symmetry_class: 1, display_numbers: [5, 14] }] }))
       : Promise.reject(new Error('案例记录读取失败')));
   render(<BorylationStoryPanel userCase={userCase} sessionId="session-a" onQuestion={() => {}} />);
-  fireEvent.click(screen.getByRole('button', { name: /分子硼化反应示例.*展开/ }));
+  fireEvent.click(screen.getByRole('button', { name: /科学智能.*展开/ }));
   fireEvent.click(screen.getByRole('button', { name: '2 排除等价位点' }));
   await screen.findByText('5, 14');
   await act(async () => { resolveStructure(response('structure', { heavy_atom_count: 22 })); });
@@ -67,7 +67,7 @@ it('renders measured conversions and preserves missing matrix cells', async () =
     top_conditions: [record], ligands: [{ id: 'L1', name: '配体甲' }], solvents: [{ id: 'S1', name: '溶剂甲' }, { id: 'S2', name: '溶剂乙' }], matrix: [record],
   }));
   render(<BorylationStoryPanel userCase={userCase} sessionId="session-a" onQuestion={() => {}} />);
-  fireEvent.click(screen.getByRole('button', { name: /分子硼化反应示例.*展开/ }));
+  fireEvent.click(screen.getByRole('button', { name: /科学智能.*展开/ }));
   fireEvent.click(screen.getByRole('button', { name: '5 比较成功条件' }));
   await screen.findByText('36.75%');
   expect(screen.getByText('成功阈值：单硼化转化率 ≥ 5%。')).toBeTruthy();
@@ -87,7 +87,7 @@ it('localizes all six steps, questions, evidence labels and subsequent Tab hints
   const onQuestion = vi.fn();
   function Control() { const { setLanguage } = useI18n(); return <button onClick={() => setLanguage('en')}>English</button>; }
   render(<I18nProvider initialLanguage="zh"><Control /><BorylationStoryPanel userCase={bilingual} sessionId="s" onQuestion={onQuestion} /></I18nProvider>);
-  fireEvent.click(screen.getByRole('button', { name: /分子硼化反应示例.*展开/ }));
+  fireEvent.click(screen.getByRole('button', { name: /科学智能.*展开/ }));
   fireEvent.click(screen.getByRole('button', { name: 'English' }));
   await screen.findByRole('navigation', { name: 'Case questions' });
   for (let i = 0; i < 6; i++) {
@@ -105,7 +105,7 @@ it('follows a question sent through Tab without overwriting the composer draft',
   vi.mocked(getBorylationCase).mockImplementation(async (_sid, step) => response(step, {}));
   const onQuestion = vi.fn();
   const { rerender } = render(<I18nProvider initialLanguage="zh"><BorylationStoryPanel userCase={userCase} sessionId="s" activeQuestion={userCase.questions[0]} onQuestion={onQuestion} /></I18nProvider>);
-  fireEvent.click(screen.getByRole('button', { name: /分子硼化反应示例.*展开/ }));
+  fireEvent.click(screen.getByRole('button', { name: /科学智能.*展开/ }));
   rerender(<I18nProvider initialLanguage="zh"><BorylationStoryPanel userCase={userCase} sessionId="s" activeQuestion={userCase.questions[1]} onQuestion={onQuestion} /></I18nProvider>);
   await waitFor(() => expect(getBorylationCase).toHaveBeenLastCalledWith('s', 'symmetry', expect.any(AbortSignal)));
   expect(screen.getByRole('button', { name: '2 排除等价位点' }).getAttribute('aria-pressed')).toBe('true');
@@ -125,7 +125,7 @@ it('shows computed properties separately from missing measurements, and ring typ
     method:{version:'2026.09.1'}, solubility:{recorded_reaction_solvents:[{name:'环己烷'}]},
   } : {ring_count:3,ring_type_count:2,rings:[{ring_id:2,display_numbers:[8,9,10,11,12],elements:{C:2,N:2,S:1},aromatic:true}]}));
   render(<I18nProvider initialLanguage="zh"><BorylationStoryPanel userCase={fourCase} sessionId="s" onQuestion={()=>{}} /></I18nProvider>);
-  fireEvent.click(screen.getByRole('button',{name:/分子硼化反应示例.*展开/}));
+  fireEvent.click(screen.getByRole('button',{name:/科学智能.*展开/}));
   await screen.findByText('C15H9ClFN3OS');
   expect(screen.getByText('毒性：未知，未提供毒性测定或模型预测。')).toBeTruthy();
   expect(screen.getByRole('img').getAttribute('src')).toBe('/examples/borylation/BO-01-molecule.svg');

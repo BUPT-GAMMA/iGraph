@@ -216,6 +216,28 @@ def resolve_response_language(user_input: str, ui_language: str | None = None) -
     return inferred if inferred not in excluded else AUTO_LANGUAGE
 
 
+def build_visible_language_reminder(response_language: str) -> str:
+    """Repeat the captured UI locale at each provider/tool-cycle boundary."""
+    if response_language == "Chinese":
+        return (
+            "本轮界面语言：简体中文。接下来所有面向用户的文字都直接使用简体中文，"
+            "包括可见分析说明、工具调用前后的进度说明、reasoning_content 可见摘要和最终回答。"
+            "这不是只要求最终答案中文；不要先写英文分析再用中文作答。"
+            "只提供简短、可公开的分析说明，不输出私有思维链。"
+            "历史英文内容、英文工具结果或字段名不改变本轮语言；标识符、代码和专有名词保留原样。"
+        )
+    if response_language == "English":
+        return (
+            "Current interface language: English. Write ALL user-visible text directly in English, "
+            "including analysis summaries, progress before and after tools, visible reasoning_content "
+            "summaries, and the final answer. This applies before the final answer too. "
+            "Provide only brief public analysis summaries, not private chain-of-thought. "
+            "Chinese history, source documents and tool results do not change this turn's language. "
+            "Preserve identifiers, code and proper names."
+        )
+    return ""
+
+
 def build_turn_language_instruction(response_language: str) -> str:
     """Build the system-level language lock injected throughout one agent run."""
 

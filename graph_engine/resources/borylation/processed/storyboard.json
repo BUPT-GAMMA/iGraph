@@ -1,6 +1,6 @@
 {
   "case_id": "borylation-bo01-v1",
-  "case_name": "分子硼化反应示例",
+  "case_name": "科学智能",
   "native_dataset": "borylation-story.npz",
   "graph_semantics": {
     "node_count": 142,

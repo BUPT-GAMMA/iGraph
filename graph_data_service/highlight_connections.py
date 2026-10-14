@@ -6,6 +6,81 @@ from copy import deepcopy
 import networkx as nx
 
 
+def resolve_ownership_selectors(graph, node_names, highlights, construction_graph=None):
+    """Resolve exact business IDs against current source rows, never company names.
+
+    Raw graph IDs take priority. Untyped IDs shared by a company and a person
+    are ambiguous; duplicated source rows can expand a node group, but not a
+    path endpoint. Mapping preserves real FK topology and never invents edges.
+    """
+    from collections import defaultdict
+    aliases = None
+    resolved = {}
+
+    def index():
+        nonlocal aliases
+        aliases = defaultdict(dict)
+        if isinstance(construction_graph, dict):
+            from graph_data_service.finance import _current_records, Budget
+            document = construction_graph.get('graph', construction_graph)
+            records = _current_records(document, Budget(200000, 400000, 10))
+        else:
+            records = [dict(attrs, id=node) for node, attrs in graph.nodes(data=True)]
+        for row in records:
+            node = row.get('id')
+            if node not in graph:
+                continue
+            props = row.get('properties') or {}
+            table = props.get('table') or row.get('type') or row.get('node_type')
+            kind, field = {'institution_main': ('I:', 'UUID'),
+                           'individual_info': ('P:', 'IDV_ID')}.get(table, ('', ''))
+            data = props.get('data') or {}
+            if not kind or not isinstance(data, dict):
+                continue
+            bid = str(data.get(field) or '').strip()
+            if not bid:
+                continue
+            typed = kind + bid
+            for key in (bid, typed):
+                aliases[key].setdefault(typed, []).append(node)
+
+    def nodes(value, *, endpoint=False):
+        if value in graph:
+            return [value]
+        if aliases is None:
+            index()
+        matches = aliases.get(value, {})
+        if not matches:
+            return [value]
+        if len(matches) != 1:
+            raise ValueError(f'AMBIGUOUS_OWNERSHIP_NODE: {value}; use I:/P: or source_node_ids')
+        found = sorted(set(next(iter(matches.values()))), key=str)
+        if endpoint and len(found) != 1:
+            raise ValueError(f'AMBIGUOUS_OWNERSHIP_ENDPOINT: {value}; use source_node_ids')
+        resolved[value] = found
+        return found
+
+    def group(values):
+        return list(dict.fromkeys(node for value in values for node in nodes(value)))
+
+    selected = group(node_names) if node_names else node_names
+    result = deepcopy(highlights)
+    if isinstance(result, dict):
+        for kind, field in (('nodes', 'ids'), ('subgraphs', 'nodes'), ('paths', 'node_sequence')):
+            for item in result.get(kind, []):
+                if field in item:
+                    item[field] = ([nodes(value, endpoint=True)[0] for value in item[field]]
+                                   if kind == 'paths' else group(item[field]))
+                for edge in item.get('edges', []):
+                    if isinstance(edge, dict):
+                        for key in ('src', 'dst', 'source', 'target'):
+                            if key in edge:
+                                edge[key] = nodes(edge[key], endpoint=True)[0]
+                    elif isinstance(edge, list) and len(edge) == 2:
+                        edge[:] = [nodes(value, endpoint=True)[0] for value in edge]
+    return selected, result, resolved
+
+
 def complete_ownership_connections(graph: nx.Graph, highlights: dict | None) -> tuple[dict | None, set]:
     """Expand node-only groups with their internal ownership records.
 

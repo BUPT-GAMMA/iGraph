@@ -23,7 +23,7 @@ def analyze_borylation(graph, arguments: dict) -> dict:
     metadata = graph.graph_metadata or {}
     case = metadata.get("borylation_case")
     if not isinstance(case, dict) or case.get("case_id") != "borylation-bo01-v1":
-        return {"success": False, "code": "BORYLATION_CASE_NOT_LOADED", "message": "请先打开分子硼化反应示例。"}
+        return {"success": False, "code": "BORYLATION_CASE_NOT_LOADED", "message": "请先打开科学智能。"}
     try:
         atoms, records, products = case["atoms"], case["condition_records"], case["products"]
         if not (1 <= len(atoms) <= 256 and 1 <= len(records) <= 1000 and len(products) <= 100):

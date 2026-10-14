@@ -134,7 +134,7 @@ it('shows only the molecular structure and preserves atom selection in the molec
   const graph = { nodes: depiction.atoms.map(atom => ({ id: atom.node_id, label: atom.node_id, attrs: { type: 'atom', properties: atom } })), edges: [] };
   function Workspace() {
     const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
-    return <GraphWorkspace data={graph} molecularCase sessionId="s" datasetName="分子硼化反应示例" tab="Graph" onTab={() => {}} selected={selected} onSelect={setSelected} collapsed={false} onToggle={() => {}} />;
+    return <GraphWorkspace data={graph} molecularCase sessionId="s" datasetName="科学智能" tab="Graph" onTab={() => {}} selected={selected} onSelect={setSelected} collapsed={false} onToggle={() => {}} />;
   }
   const { container } = render(<Workspace />);
   await screen.findByRole('button', { name: '选择候选位点 5' });

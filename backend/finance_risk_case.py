@@ -1,6 +1,6 @@
 """Questions supplied for the saved finance risk graph."""
 FINANCE_RISK_CASE = {'id': 'finance_risk',
- 'name': '金融风控',
+ 'name': '金融股权穿透分析',
  'filename': 'finance-risk.npz',
  'description': '由机构、个人及持股关系三张表构成的股权关系图，连接企业与股东，保留持股比例等信息。',
  'questions': ['请检查“合成示例青岛工程技术00044控股有限公司”的主体信息和股权数据。先确认机构 '
@@ -9,7 +9,7 @@ FINANCE_RISK_CASE = {'id': 'finance_risk',
                '请继续分析该企业的股权控制链。回答谁通过哪几级股权关系形成严格超过 50% '
                '的控制，并列出中间控制主体和每一步的原始持股证据。随后以返回的股权控制根生成控制集团树，区分树边、附加控制边和普通关联边。',
                '请计算 `SYN-ENT-000001` 对 `SYN-ENT-000044` 的累计穿透持股比例，并与主要控制路径上的持股比例分别列出。如果数据中存在循环持股或其他异常，也请说明该比例是否需要复核。'],
- 'translations': {'en': {'name': 'Financial risk',
+ 'translations': {'en': {'name': 'Ownership Look-Through Analysis',
                          'description': 'An ownership graph built from institution, individual, and shareholding '
                                         'tables, connecting companies and shareholders with ownership '
                                         'percentages.',
