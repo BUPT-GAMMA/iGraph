@@ -155,6 +155,43 @@ def test_sdk_text_request_and_stream(protocol, stream, monkeypatch):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('language,reminder', [
+    ('Chinese', '本轮界面语言：简体中文'),
+    ('English', 'Current interface language: English'),
+])
+@pytest.mark.parametrize('stream', [False, True])
+def test_gemini_wire_preserves_system_rules_with_language_reminder(language, reminder, stream):
+    async def scenario():
+        bodies = []
+
+        def respond(request):
+            bodies.append(json.loads(request.content))
+            if stream:
+                return httpx.Response(200, headers={'content-type': 'text/event-stream'}, content=stream_body('gemini'))
+            return httpx.Response(200, json=payload('gemini'))
+
+        model = create_model('custom-test', SimpleNamespace(), config('gemini'))
+        model.igraph_response_language = language
+        messages = [Message(role='system', content='BASE_GRAPH_RULE: use graph tools.'),
+                    Message(role='developer', content='EVIDENCE_RULE: cite verified evidence.'),
+                    Message(role='user', content='Analyse this graph.')]
+        before = copy.deepcopy(messages)
+        async with inject_client(model, 'gemini', respond):
+            if stream:
+                events = [event async for event in model.ainvoke_stream(messages, Message(role='assistant'))]
+                assert ''.join(event.content or '' for event in events) == 'OK'
+            else:
+                assert (await model.ainvoke(messages, Message(role='assistant'))).content == 'OK'
+        assert messages == before
+        system = '\n'.join(part['text'] for part in bodies[0]['systemInstruction']['parts'])
+        assert 'BASE_GRAPH_RULE: use graph tools.' in system
+        assert 'EVIDENCE_RULE: cite verified evidence.' in system
+        assert reminder in system
+        assert system.index('BASE_GRAPH_RULE') < system.index('EVIDENCE_RULE') < system.index(reminder)
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('protocol', PROTOCOLS)
 @pytest.mark.parametrize('stream', [False, True])
 def test_actual_agno_tool_round_trip_preserves_native_ids_and_signatures(protocol, stream, monkeypatch):

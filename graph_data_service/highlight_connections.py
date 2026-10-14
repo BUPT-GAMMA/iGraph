@@ -68,10 +68,12 @@ def resolve_ownership_selectors(graph, node_names, highlights, construction_grap
     if isinstance(result, dict):
         for kind, field in (('nodes', 'ids'), ('subgraphs', 'nodes'), ('paths', 'node_sequence')):
             for item in result.get(kind, []):
+                if not isinstance(item, dict):
+                    continue
                 if field in item:
                     item[field] = ([nodes(value, endpoint=True)[0] for value in item[field]]
                                    if kind == 'paths' else group(item[field]))
-                for edge in item.get('edges', []):
+                for edge in item.get('edges') or []:
                     if isinstance(edge, dict):
                         for key in ('src', 'dst', 'source', 'target'):
                             if key in edge:

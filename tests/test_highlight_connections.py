@@ -1,9 +1,34 @@
 from copy import deepcopy
 
 import networkx as nx
+import pytest
 
 from graph_data_service.compute import GraphCompute
 from graph_data_service.graph_data import GraphData
+
+
+@pytest.mark.parametrize('kind,field', [('paths', 'node_sequence'), ('subgraphs', 'nodes')])
+def test_null_highlight_edges_preserve_node_selection(kind, field):
+    graph = nx.DiGraph([('a', 'b')])
+    highlights = {kind: [{field: ['a', 'b'], 'edges': None}]}
+    before = deepcopy(highlights)
+    result = GraphCompute().visualize_subgraph(graph, GraphData(), include_community=False, highlights=highlights)
+    assert result['success']
+    assert result['highlights'][kind][0][field] == ['a', 'b']
+    assert result['highlights'][kind][0]['edges'] == ([['a', 'b']] if kind == 'paths' else [])
+    assert highlights == before
+
+
+@pytest.mark.parametrize('kind,field', [('nodes', 'ids'), ('paths', 'node_sequence'), ('subgraphs', 'nodes')])
+def test_invalid_highlight_groups_do_not_discard_valid_groups(kind, field):
+    graph = nx.DiGraph([('a', 'b')])
+    highlights = {kind: [None, 'invalid group', {field: ['a', 'b']}]}
+    before = deepcopy(highlights)
+    result = GraphCompute().visualize_subgraph(graph, GraphData(), include_community=False, highlights=highlights)
+    assert result['success']
+    assert len(result['highlights'][kind]) == 1
+    assert result['highlights'][kind][0][field] == ['a', 'b']
+    assert highlights == before
 
 
 def ownership_graph():
