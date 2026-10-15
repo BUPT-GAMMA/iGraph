@@ -59,6 +59,12 @@ server {
         add_header Cache-Control "public, max-age=31536000, immutable" always;
     }
 
+    # Serve bundled walkthroughs directly, including byte-range requests for seeking.
+    location /media/user-cases/ {
+        try_files $uri =404;
+        add_header X-Content-Type-Options nosniff;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }

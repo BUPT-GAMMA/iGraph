@@ -16,6 +16,33 @@
 
 旧“金融股权示例”已退出默认示例列表，启动不再安装该旧预存图。金融风控及其三张 CSV 原始示例数据继续提供。升级保留已有用户项目、历史会话和数据版本。
 
+
+## 帮助中的用户案例视频
+
+“帮助”中的“用户案例”与“使用流程”“图分析计算工具”“图学习模型”并列。每个案例按图介绍、四个当前示例问题、应用价值和演示视频排列；顶部可直接跳转到对应案例。页面文案跟随界面语言，录制视频为中文。案例名称、介绍和问题复用首页的示例目录，不单独维护另一套问题。
+
+| 示例 | 随源码提供的视频 |
+| --- | --- |
+| 金融股权穿透分析 | `frontend/public/media/user-cases/financial-risk.mp4` |
+| 化学分子性质分析 | `frontend/public/media/user-cases/molecular-graph.mp4` |
+| 文学人物关系网络 | `frontend/public/media/user-cases/demi-gods-and-semi-devils.mp4` |
+
+三个 MP4 来自用户提供的“金融风控.mp4”“分子图.mp4”“天龙八部.mp4”，同目录 JPG 为视频截帧封面。资源随 `frontend/Dockerfile` 打包进镜像，首次部署无需另行上传、登录视频站或访问外部视频服务。
+
+播放器支持原生播放、暂停、拖动进度与全屏；使用 `preload="none"`，打开帮助时仅加载封面，点击播放后才读取视频。播放另一段会暂停上一段，切换帮助栏目或关闭帮助会停止播放。“打开视频”可单独打开同一部署上的 MP4。Nginx 直接提供媒体文件及 HTTP Range 分段请求，找不到资源时返回 404。
+
+已有部署更新本功能时，保留原 `.env` 与数据卷，在服务器项目目录执行：
+
+```sh
+docker compose -f compose.yaml -f compose.server.yaml build frontend
+docker compose -f compose.yaml -f compose.server.yaml up -d --no-deps frontend
+docker compose -f compose.yaml -f compose.server.yaml ps frontend
+```
+
+如果原部署指定了 Compose 项目名，上述三条命令也须使用相同的 `-p` 项目名。仅使用 `compose.yaml` 的部署可移除覆盖文件参数。构建完成后刷新浏览器，打开“帮助 → 用户案例”，分别点击三个视频并拖动进度验证。分子示例第三问的更新位于后端，已有部署还须按原部署方式重建并启动 `backend`。
+
+替换视频时保留文件名或同步更新 `HelpUserCases.tsx` 中的映射，同时更新对应封面并重建前端镜像；推荐浏览器兼容的 H.264 MP4。视频是演示录制，后续示例问题的文字更新不会自动重录视频内容。
+
 ## 重新生成小说预置资源
 
 在部署环境配置 `GRAPH_CONSTRUCTION_API_KEY` 和 `GRAPH_CONSTRUCTION_BASE_URL`（OpenAI 兼容基础地址）；这些值不会从构图请求的 options 接收。TXT 页面默认选择 `deepseek-v4-pro`，可选模型由 `GRAPH_CONSTRUCTION_MODELS` 限定。正文支持 UTF-8、GB18030/GBK 和带 BOM 的 UTF-16。

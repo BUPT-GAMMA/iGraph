@@ -4,12 +4,13 @@ import { helpCategories, helpModels, helpTasks, helpTools, helpToolTitle, matche
 import { DrawerShell } from './DrawerShell';
 import { Icon } from './Icon';
 import { HelpPipeline } from './HelpPipeline';
+import { HelpUserCases } from './HelpUserCases';
 import './HelpPage.css';
 
 export function HelpPage({ onClose = () => undefined }: { onClose?: () => void }) {
   const { language, t } = useI18n();
   const [query, setQuery] = useState('');
-  const [tab, setTab] = useState<'pipeline' | 'tools' | 'models'>('pipeline');
+  const [tab, setTab] = useState<'pipeline' | 'cases' | 'tools' | 'models'>('pipeline');
   const [category, setCategory] = useState('all');
   const tools = helpTools.filter(item => (category === 'all' || item.category === category) && matchesHelpQuery(query, item.name, helpToolTitle(item.name, 'zh'), item.description.en, item.description.zh, helpCategories[item.category].en, helpCategories[item.category].zh));
   const models = helpModels.filter(item => matchesHelpQuery(query, item.name, item.title, item.description.en, item.description.zh, ...item.tasks.flatMap(task => [helpTasks[task].en, helpTasks[task].zh])));
@@ -36,12 +37,14 @@ export function HelpPage({ onClose = () => undefined }: { onClose?: () => void }
       <div className="help-toolbar">
         <div className="help-tabs" role="tablist" aria-label={t('Help sections', '帮助分类')}>
           <button type="button" id="help-pipeline-tab" role="tab" aria-controls="help-pipeline-panel" aria-selected={tab === 'pipeline'} onClick={() => setTab('pipeline')}>{t('Usage pipeline', '使用流程')}</button>
+          <button type="button" id="help-cases-tab" role="tab" aria-controls="help-cases-panel" aria-selected={tab === 'cases'} onClick={() => setTab('cases')}>{t('User cases', '用户案例')}</button>
           <button type="button" id="help-tools-tab" role="tab" aria-controls="help-tools-panel" aria-selected={tab === 'tools'} onClick={() => setTab('tools')}>{t('Graph analysis tools', '图分析计算工具')}<span>{helpTools.length}</span></button>
           <button type="button" id="help-models-tab" role="tab" aria-controls="help-models-panel" aria-selected={tab === 'models'} onClick={() => setTab('models')}>{t('Graph learning models', '图学习模型')}<span>{helpModels.length}</span></button>
         </div>
-        {tab !== 'pipeline' && <label className="help-search"><Icon name="search" size={16} /><input type="search" aria-label={t('Search help', '搜索帮助')} placeholder={t('Search names, tasks or descriptions…', '搜索名称、任务或用途…')} value={query} onChange={event => setQuery(event.target.value)} /></label>}
+        {(tab === 'tools' || tab === 'models') && <label className="help-search"><Icon name="search" size={16} /><input type="search" aria-label={t('Search help', '搜索帮助')} placeholder={t('Search names, tasks or descriptions…', '搜索名称、任务或用途…')} value={query} onChange={event => setQuery(event.target.value)} /></label>}
       </div>
       <div role="tabpanel" id="help-pipeline-panel" aria-labelledby="help-pipeline-tab" hidden={tab !== 'pipeline'}><HelpPipeline /></div>
+      {tab === 'cases' && <div role="tabpanel" id="help-cases-panel" aria-labelledby="help-cases-tab"><HelpUserCases /></div>}
       {tab === 'tools' ? <div role="tabpanel" id="help-tools-panel" aria-labelledby="help-tools-tab">
         <div className="help-filter-row"><label htmlFor="help-category">{t('Category', '工具分类')}</label><select id="help-category" value={category} onChange={event => setCategory(event.target.value)}><option value="all">{t('All categories', '全部分类')}</option>{Object.entries(helpCategories).map(([id, label]) => <option value={id} key={id}>{label[language]}</option>)}</select><span role="status">{t(`${tools.length} tools`, `${tools.length} 项工具`)}</span></div>
         {tools.length ? <div className="help-tool-list">{tools.map(item => <article className="help-tool-card" key={item.name}><div className="help-card-heading"><h2>{helpToolTitle(item.name, language)}</h2><span>{helpCategories[item.category][language]}</span></div><code>{item.name}</code><p>{item.description[language]}</p></article>)}</div> : <p className="help-empty">{t('No matching tools. Try another keyword or category.', '没有匹配的工具，请更换关键词或分类。')}</p>}
