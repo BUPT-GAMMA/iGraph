@@ -48,6 +48,12 @@ server {
         alias /usr/share/nginx/html/figures/igraph_light.png;
     }
 
+    # Serve bundled walkthroughs directly, including byte-range requests for seeking.
+    location /media/user-cases/ {
+        try_files $uri =404;
+        add_header X-Content-Type-Options nosniff;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }

@@ -19,6 +19,8 @@ RUN pnpm build
 FROM ${NGINX_IMAGE}
 
 COPY --from=build /app/dist /usr/share/nginx/html
+# Bundle walkthroughs directly; replacing a recording does not rebuild the app.
+COPY frontend/public/media /usr/share/nginx/html/media
 COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=12 \
