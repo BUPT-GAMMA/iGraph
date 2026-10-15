@@ -7,7 +7,7 @@ export function remoteGraphError(cause: unknown): string {
     REMOTE_GRAPH_NOT_SELECTED: tr('Select a remote connection.', '请选择远程连接'),
     REMOTE_GRAPH_NOT_FOUND: tr('Connection removed. Select again.', '连接已删除，请重新选择'),
     REMOTE_GRAPH_CHANGED: tr('Connection changed. Refresh and select again.', '连接已修改，请刷新后重新选择'),
-    REMOTE_GRAPH_INVALID_CONFIG: tr('Check the connection fields and allowed server addresses.', '请检查连接配置及服务端允许的地址范围'),
+    REMOTE_GRAPH_INVALID_CONFIG: tr('Check the database URI, database name, username and password.', '请检查数据库 URI、数据库名称、用户名和密码'),
     REMOTE_GRAPH_UNREACHABLE: tr('Could not reach the database.', '无法连接数据库'),
     REMOTE_GRAPH_AUTH_FAILED: tr('Authentication failed. Check the credentials.', '认证失败，请检查凭据'),
     REMOTE_GRAPH_ACCESS_DENIED: tr('The database denied access to this operation.', '数据库拒绝访问此操作'),

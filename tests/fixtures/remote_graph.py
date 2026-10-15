@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlsplit
 
 import pytest
 
@@ -64,8 +63,6 @@ def remote_executor(remote_live, tmp_path):
                            username=remote_live.values['IGRAPH_TEST_NEO4J_READER_USER'], password=remote_live.values['IGRAPH_TEST_NEO4J_READER_PASSWORD'])
     connection = catalog.save('live-owner', form)
     settings = SimpleNamespace(remote_graph_timeout_seconds=30, remote_graph_max_rows=10000,
-        remote_graph_max_bytes=10 * 1024 * 1024, remote_graph_preview_rows=100, remote_graph_preview_bytes=64 * 1024,
-        remote_graph_allowed_hosts=(urlsplit(remote_live.uri).hostname,),
-        remote_graph_allowed_cidrs=tuple(filter(None, os.environ.get('IGRAPH_TEST_NEO4J_ALLOWED_CIDRS', '').split(','))))
+        remote_graph_max_bytes=10 * 1024 * 1024, remote_graph_preview_rows=100, remote_graph_preview_bytes=64 * 1024)
     return SimpleNamespace(executor=RemoteGraphExecutor(catalog, settings), form=form,
                            binding=RemoteBinding(**connection.model_dump()), root=tmp_path / 'Ephemeral' / 'remote_graph')

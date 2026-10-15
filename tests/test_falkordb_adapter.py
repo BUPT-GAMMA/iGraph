@@ -29,7 +29,7 @@ def context(**kwargs):
     public = SimpleNamespace(uri='redis://127.0.0.1:21188', username='', database='test', kind='falkordb')
     return AdapterContext(connection=SimpleNamespace(public=public, password=SecretStr('private')),
         deadline=time.monotonic()+5, max_rows=kwargs.get('max_rows',128), max_bytes=kwargs.get('max_bytes',65536),
-        network_policy=NetworkPolicy(allowed_cidrs=['127.0.0.1/32']))
+        network_policy=NetworkPolicy())
 
 
 class Wire:

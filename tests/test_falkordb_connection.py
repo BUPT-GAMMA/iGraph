@@ -258,18 +258,17 @@ async def test_cancellation_during_fallback_closes_current_socket_without_more_a
 
 
 @pytest.mark.anyio
-async def test_rejected_dns_answer_prevents_all_connection_attempts(transport, monkeypatch):
+async def test_empty_dns_answer_prevents_all_connection_attempts(transport, monkeypatch):
     from dataclasses import replace
 
     async def resolve(*args, **kwargs):
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 6379)),
-                (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', 6379))]
+        return []
 
     monkeypatch.setattr(asyncio.get_running_loop(), 'getaddrinfo', resolve)
-    policy = NetworkPolicy(allowed_hosts=['graph.example'], allowed_cidrs=['192.0.2.0/24'])
-    with pytest.raises(ControlError, match='REMOTE_GRAPH_INVALID_CONFIG'):
+    policy = NetworkPolicy()
+    with pytest.raises(ControlError, match='REMOTE_GRAPH_UNREACHABLE'):
         async with protocol.open_connection(replace(transport.ctx, network_policy=policy)):
-            pytest.fail('unapproved DNS answer yielded a connection')
+            pytest.fail('empty DNS answer yielded a connection')
     assert transport.sockets == []
 
 
@@ -311,8 +310,7 @@ async def test_approved_address_fallback_uses_real_tcp_and_one_dns_snapshot(monk
             uri=f'redis://fallback.test:{port}', username='', database='graph'),
             password=SecretStr('private')),
         deadline=time.monotonic() + 3, max_rows=128, max_bytes=65536,
-        network_policy=NetworkPolicy(allowed_hosts=['fallback.test'],
-                                     allowed_cidrs=['127.0.0.1/32', '127.0.0.2/32']))
+        network_policy=NetworkPolicy())
     try:
         async with protocol.open_connection(ctx) as connection:
             assert await connection.command('GRAPH.RO_QUERY', 'graph', 'RETURN 7') == 7

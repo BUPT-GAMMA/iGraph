@@ -15,7 +15,7 @@ from .results import RowBudget, bounded_rows
 
 
 class _PinnedAddress(Address):
-    """Use a checked IP for the socket and the original name for TLS verification."""
+    """Use a resolved IP for the socket and the original name for TLS verification."""
     def __new__(cls, address, hostname):
         instance = tuple.__new__(cls, address)
         instance.hostname = hostname

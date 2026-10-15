@@ -19,7 +19,7 @@ from .query_errors import UnsupportedMapError
 class RemoteGraphExecutor:
     def __init__(self, catalog, settings):
         self.catalog, self.settings = catalog, settings
-        self.policy = NetworkPolicy(settings.remote_graph_allowed_hosts, settings.remote_graph_allowed_cidrs)
+        self.policy = NetworkPolicy()
 
     def _context(self, connection, deadline):
         return AdapterContext(connection=connection, deadline=deadline,

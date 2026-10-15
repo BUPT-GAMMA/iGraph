@@ -323,7 +323,7 @@ Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
 
 远程查询依赖既有运行控制来保存可信连接快照：本地部署需在各服务共享 `.env` 设置 `IGRAPH_RUN_CANCEL_ENABLED=true`，按 `docs/RUN_CANCELLATION.md` 迁移后重启相关服务，并核实 `/api/capabilities` 的 `run_cancel_v1` 为 true。
 
-Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置独立的 Fernet 凭据密钥和明确允许的目标主机/CIDR；默认拒绝网络目标。密钥缺失不影响普通聊天，不能保存或解析远程凭据。密钥更换后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。单用户版中 Backend 的公开接口统一归属工作区所有者，忽略客户端传入的 `X-User-ID`；历史[交接记录](docs/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于更早的版本。
+Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置独立的 Fernet 凭据密钥；用户可直接在前端填写数据库 URI、数据库名称、用户名和密码并测试、保存连接，无需预先配置主机或 CIDR 白名单。公网、内网、回环和数据库返回的路由地址均直接尝试连接；原有 `IGRAPH_REMOTE_GRAPH_ALLOWED_HOSTS` / `IGRAPH_REMOTE_GRAPH_ALLOWED_CIDRS` 配置不再生效。密钥缺失不影响普通聊天，不能保存或解析远程凭据。密钥更换后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。单用户版中 Backend 的公开接口统一归属工作区所有者，忽略客户端传入的 `X-User-ID`；历史[交接记录](docs/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于更早的版本。
 
 离线回归：
 
@@ -340,7 +340,7 @@ Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置�
 (cd frontend && corepack pnpm exec playwright test --config playwright.remote-graph.config.ts)
 ```
 
-真实测试还需要环境变量：`IGRAPH_TEST_NEO4J_READER_USER/PASSWORD`、`IGRAPH_TEST_NEO4J_DEDICATED=1`、`IGRAPH_TEST_CORA_INPUT`、`IGRAPH_TEST_CORA_MANIFEST`、`IGRAPH_TEST_EVIDENCE_DIR`；私网目标需 `IGRAPH_TEST_NEO4J_ALLOWED_CIDRS`。Agent/浏览器使用 `IGRAPH_E2E_BASE_URL`、专用 `remote-graph-test-*` 测试账号的 `IGRAPH_E2E_USER_ID` 和平台已有真实模型的 `IGRAPH_TEST_MODEL_ID`，可通过 `IGRAPH_E2E_AUTHORIZATION` 或浏览器 `IGRAPH_E2E_STORAGE_STATE` 提供网关登录状态。不要把凭据写入仓库。浏览器测试禁用 trace、视频和截图以防表单泄密。
+真实测试还需要环境变量：`IGRAPH_TEST_NEO4J_READER_USER/PASSWORD`、`IGRAPH_TEST_NEO4J_DEDICATED=1`、`IGRAPH_TEST_CORA_INPUT`、`IGRAPH_TEST_CORA_MANIFEST`、`IGRAPH_TEST_EVIDENCE_DIR`。Agent/浏览器使用 `IGRAPH_E2E_BASE_URL`、专用 `remote-graph-test-*` 测试账号的 `IGRAPH_E2E_USER_ID` 和平台已有真实模型的 `IGRAPH_TEST_MODEL_ID`，可通过 `IGRAPH_E2E_AUTHORIZATION` 或浏览器 `IGRAPH_E2E_STORAGE_STATE` 提供网关登录状态。不要把凭据写入仓库。浏览器测试禁用 trace、视频和截图以防表单泄密。
 
 `--require-live` 在缺少前置条件时失败；普通离线运行会跳过真实测试，跳过不能作为验收通过。测试会保留专用会话、导入数据和成果以便复核，应用写入拒绝测试检查源数据未变，诱导文本测试会恢复原属性。
 

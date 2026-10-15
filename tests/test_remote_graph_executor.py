@@ -30,8 +30,7 @@ def service(tmp_path, monkeypatch):
     driver = Driver()
     monkeypatch.setattr('agent_runtime.remote_graph.neo4j.AsyncGraphDatabase.driver', lambda *args, **kwargs: driver)
     settings = SimpleNamespace(remote_graph_timeout_seconds=30, remote_graph_max_rows=2,
-        remote_graph_max_bytes=1024, remote_graph_preview_rows=1, remote_graph_preview_bytes=512,
-        remote_graph_allowed_hosts=('db.example',), remote_graph_allowed_cidrs=())
+        remote_graph_max_bytes=1024, remote_graph_preview_rows=1, remote_graph_preview_bytes=512)
     executor = RemoteGraphExecutor(catalog, settings)
     return SimpleNamespace(executor=executor, driver=driver, catalog=catalog, form=form,
                            binding=RemoteBinding(**item.model_dump()), root=tmp_path / 'Ephemeral' / 'remote_graph')
