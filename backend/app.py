@@ -1372,8 +1372,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         Path(os.getenv("BACKEND_PROJECT_DATASETS_FILE", str(settings.projects_file.with_name("project_datasets.json")))).resolve(),
         Path(os.getenv("BACKEND_PROJECT_DATA_ROOT", str(data_root / "projects"))).resolve(),
     )
-    from backend.user_cases import normalize_novel_example_names
-    normalize_novel_example_names(projects, project_datasets)
+    from backend.user_cases import normalize_user_case_names
+    normalize_user_case_names(projects, project_datasets)
     try:
         server_dataset_limit = max(
             1, int(os.getenv("BACKEND_SERVER_DATASETS_MAX_ENTRIES", "10000"))

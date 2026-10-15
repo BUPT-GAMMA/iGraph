@@ -5,7 +5,7 @@ BORYLATION_STEPS = ("properties", "rings", "structure", "symmetry", "products", 
 BORYLATION_TOOLS = [{
     "name": BORYLATION_TOOL_NAME,
     "description": (
-        "分析当前会话的分子硼化反应示例，直接从已加载图的原子、产物与实验记录计算结果。"
+        "分析当前会话的科学智能，直接从已加载图的原子、产物与实验记录计算结果。"
         "该案例的四问必须先调用本工具核对事实：properties 查结构计算描述符及溶解性/毒性证据缺口；rings 查环数量与分类；structure 查重原子、化学键和芳香C–H候选；"
         "描述所属环时必须依据 structure.rings 和 candidate_atoms.ring_memberships，不能凭 SMILES 猜测。"
         "含 S 的五元芳杂环不能称三唑环，位点9不能归入苯环。"

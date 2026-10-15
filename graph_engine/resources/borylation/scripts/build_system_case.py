@@ -77,7 +77,7 @@ dataset={'dataset_id':'ds_borylation_story_v1','name':data.name,'description':da
          'node_count':data.num_nodes,'edge_count':data.num_edges,'is_directed':False,'created_at':now,'updated_at':now,'versions':['v001'],
          'edge_entry_count':data.num_edge_entries,'unique_edge_count':data.num_unique_edges,'semantic_type':data.semantic_type,'storage_type':data.storage_type,
          'is_symmetric':data.is_symmetric,'has_self_loops':data.has_self_loops,'has_duplicate_entries':data.has_duplicate_entries}
-manifest={'version':2,'previous_sha256':['5cb990de31694b9c433c3be1f8a3605bfb872087ea1ab39a817706549f8dd24d'],'filename':filename,'dataset':dataset,'sha256':hashlib.sha256((resources/filename).read_bytes()).hexdigest(),'provenance':provenance}
+manifest={'version':3,'previous_names':['分子硼化反应示例','Molecular borylation example'],'previous_sha256':['5cb990de31694b9c433c3be1f8a3605bfb872087ea1ab39a817706549f8dd24d'],'filename':filename,'dataset':dataset,'sha256':hashlib.sha256((resources/filename).read_bytes()).hexdigest(),'provenance':provenance}
 (resources/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
 (DATA_ROOT/'processed/system_case.json').write_text(json.dumps(case,ensure_ascii=False,indent=2)+'\n')
 data.save(str(DATA_ROOT/'graphs/borylation-story.json'))

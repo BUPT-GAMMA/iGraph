@@ -13,6 +13,14 @@ class NativeClaude(ModelHistoryMixin, DAGModelMixin, CancellableModelMixin, Clau
 
 
 class NativeGemini(ModelHistoryMixin, DAGModelMixin, CancellableModelMixin, Gemini):
+    def _format_messages(self, messages, *args, **kwargs):
+        formatted, system = super()._format_messages(messages, *args, **kwargs)
+        # Agno 2.9.0 keeps only the last system/developer message for Gemini.
+        # Preserve every instruction, including request-scoped language reminders.
+        system = '\n\n'.join(message.get_content_string() for message in messages
+                             if message.role in {'system', 'developer'} and message.content) or system
+        return formatted, system
+
     def get_client(self):
         client = super().get_client()
         track_stream_method(client.aio.models, 'generate_content_stream', always=True)

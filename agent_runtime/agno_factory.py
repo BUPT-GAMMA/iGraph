@@ -78,10 +78,13 @@ def create_igraph_factory(
             learning.background_queue = learning_queue
             learning.planning_mode = options.planning_mode
         source_pre_hook, source_tool_hook = source_scope_hooks(remote_binding, db)
+        model = create_model(model_id, config, custom_model)
+        # Request-scoped: never infer the next cycle's language from tool output.
+        model.igraph_response_language = options.response_language
         agent = (ControlledAgent if execution_controller else Agent)(
             id=AGENT_ID,
             name="iGraph Agent",
-            model=create_model(model_id, config, custom_model),
+            model=model,
             db=db,
             metadata={**({'model_snapshot': snapshot} if snapshot else {}),
                       **({'remote_graph_binding': remote_binding} if remote_binding else {})} or None,

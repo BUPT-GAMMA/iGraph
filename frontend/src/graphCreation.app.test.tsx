@@ -79,23 +79,23 @@ afterEach(cleanup);
 
 describe('actual App graph creation destination', () => {
   it('opens the bundled molecular graph from My graph sources with the common localized question controls', async () => {
-    const example = { id: 'borylation', name: '分子硼化反应示例', filename: 'borylation-story.npz', description: '分子结构图',
+    const example = { id: 'borylation', name: '科学智能', filename: 'borylation-story.npz', description: '分子结构图',
       questions: ['请检查这个分子的环系'], question_titles: ['环系分析'], story_steps: [{ id: 'rings', title: '旧的特殊入口', question: '请检查这个分子的环系' }],
-      available: true, translations: { en: { name: 'Molecular borylation example', description: 'Molecular structure graph', questions: ['Inspect the rings of this molecule'], question_titles: ['Ring systems'] } } };
+      available: true, translations: { en: { name: 'AI for Science', description: 'Molecular structure graph', questions: ['Inspect the rings of this molecule'], question_titles: ['Ring systems'] } } };
     const molecule: Dataset = { dataset_id: 'molecular-graph', project_id: null, name: example.name, original_filename: example.filename,
       file_type: 'npz', status: 'ready', source_kind: 'server', metadata: { user_case_id: 'borylation', source_relative_path: example.filename } };
     mocks.getUserCases.mockResolvedValue({ cases: [example] });
     mocks.listDatasets.mockResolvedValue({ datasets: [molecule] });
     render(<I18nProvider initialLanguage="zh"><App /></I18nProvider>);
     fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
-    fireEvent.click(await screen.findByRole('button', { name: '查看构图 分子硼化反应示例' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看构图 科学智能' }));
     expect(screen.getByRole('region', { name: '构图编辑器' }).textContent).toContain(example.name);
     fireEvent.click(screen.getByRole('button', { name: '更换数据源' }));
-    fireEvent.click(await screen.findByRole('button', { name: '开始分析 分子硼化反应示例' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始分析 科学智能' }));
     expect(screen.queryByRole('region', { name: '构图编辑器' })).toBeNull();
     expect(screen.queryByRole('region', { name: '示例图分析' })).toBeNull();
     expect(screen.queryByText('旧的特殊入口')).toBeNull();
-    expect(screen.getByRole('button', { name: '分子硼化反应示例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '科学智能' })).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: '环系分析' }));
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(example.questions[0]);
     expect(screen.getByRole('button', { name: '查看完整问题：环系分析' })).toBeTruthy();

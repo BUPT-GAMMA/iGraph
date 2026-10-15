@@ -781,6 +781,16 @@ def _analysis(p: Projection, operation: str, policy: dict, budget: Budget,
                 response["evidence"].update(requested_root_entity_id=requested_root,
                     requested_root_id=p.entities[requested_root].business_id)
         if operation == "first_holder":
+            # Same-snapshot identities for evidence tables and canvas highlighting.
+            # Do not force the model to reuse holder IDs from an earlier answer.
+            direct_facts = inc.get(target, [])
+            result["direct_holders"] = [
+                {**_entity(p, f.holder), "direct_ratio": _decimal(f.ratio),
+                 "ownership_source_node_ids": _source_evidence(p, f.source_ids)["source_node_ids"]}
+                for f in direct_facts[:limit]
+            ]
+            result["direct_holder_count"] = len(direct_facts)
+            result["direct_holders_truncated"] = len(direct_facts) > limit
             result["first_holder_ids"] = [p.entities[k].business_id for k in chosen[:limit]]
             result["first_holder_entity_ids"] = chosen[:limit]
             result["first_holder_count"] = len(chosen)

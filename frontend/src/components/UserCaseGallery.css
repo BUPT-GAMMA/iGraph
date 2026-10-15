@@ -12,9 +12,28 @@
 .user-case-card h3 { margin: 0; font-size: 18px; line-height: 1.5; font-weight: 600; letter-spacing: -.025em; }
 .user-case-card .user-case-description { min-height: 84px; margin: 12px 0 22px; color: var(--text-secondary); font-size: 13px; line-height: 1.8; text-wrap: pretty; }
 .user-case-questions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: auto; }
-.user-case-open { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; margin-top: 22px; padding: 16px 0 0; border-top: 1px solid var(--border); color: var(--text-secondary); background: transparent; text-align: left; font-size: 12px; line-height: 1.5; }
-.user-case-open:hover:not(:disabled) { color: var(--accent-strong); }
-.user-case-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 4px; }
+.user-case-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  margin-top: 22px;
+  padding: 10px 16px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #fff;
+  background: var(--accent-solid);
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  transition: background-color .16s;
+}
+.user-case-open > svg { flex: 0 0 auto; }
+.user-case-open:hover:not(:disabled) { background: var(--accent-hover); }
+.user-case-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .user-case-open:disabled { opacity: .5; cursor: not-allowed; }
 .user-case-gallery-hint { margin: 24px 0 0; text-align: center; color: var(--text-secondary); font-size: 11px; line-height: 1.7; }
 .workspace-home:has(.user-case-gallery) { overflow: auto; justify-content: flex-start; }
@@ -22,7 +41,7 @@
 .chat-scroll:has(.user-case-gallery) { padding: 0; }
 .chat-scroll .user-case-gallery { padding-top: 24px; }
 @media (max-width: 720px) { .user-case-gallery { padding: 28px 18px 24px; }.user-case-gallery-heading { margin-bottom: 24px; }.user-case-gallery-mark { margin-bottom: 16px; }.user-case-card { padding: 22px; }.user-case-card .user-case-description { min-height: 0; }.user-case-gallery-hint { max-width: 280px; margin-left: auto; margin-right: auto; } }
-@media (prefers-reduced-motion: reduce) { .user-case-card { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .user-case-card, .user-case-open { transition: none; } }
 
 @container example-gallery (max-width: 590px) { .user-case-card .user-case-description { min-height: 0; } }
 

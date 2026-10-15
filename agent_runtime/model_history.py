@@ -11,7 +11,7 @@ import json
 import math
 import time
 from agno.models.message import Message
-from contextlib import aclosing
+from contextlib import aclosing, closing
 
 
 def estimate_tokens(value):
@@ -281,6 +281,11 @@ class ModelHistoryMixin:
         self._publish_context_usage(usage, run_response)
 
     def _prepare_history(self, messages, tools, run_response):
+        from response_language import build_visible_language_reminder
+        reminder = build_visible_language_reminder(getattr(self, 'igraph_response_language', 'Auto'))
+        if reminder:
+            # Copy the request only; do not rewrite history or buffer any delta.
+            messages = [*messages, Message(role='system', content=reminder)]
         settings = getattr(self, 'igraph_capabilities', None)
         if not settings:
             return messages
@@ -298,116 +303,24 @@ class ModelHistoryMixin:
         return prepared
 
 
-    @staticmethod
-    def _record_kinship_review(response, run_response, fact_count, kind="kinship"):
-        if not isinstance(response.content, str) or not response.content.strip() or response.tool_calls:
-            raise RuntimeError(f"{kind.upper()}_REVIEW_FAILED: no validated final answer returned")
-        response.provider_data = None
-        response.reasoning_content = None
-        response.redacted_reasoning_content = None
-        if run_response is not None:
-            usage = response.response_usage
-            run_response.metadata = {**(run_response.metadata or {}), f"{kind}_answer_review": {
-                "performed": True, "fact_count": fact_count,
-                "input_tokens": getattr(usage, "input_tokens", None),
-                "output_tokens": getattr(usage, "output_tokens", None)}}
-        return response
-
-    async def _review_kinship(self, prepared, draft, response_format, run_response):
-        from agent_runtime.kinship_review import review_request
-        from agent_runtime.borylation_review import review_request as molecular_review
-        request = molecular_review(prepared, draft, response_format)
-        kind = "borylation" if request is not None else "kinship"
-        if request is None:
-            from agent_runtime.finance_review import review_request as financial_review
-            request = financial_review(prepared, draft, response_format)
-            if request is not None:
-                kind = "finance"
-        if request is None:
-            request = review_request(prepared, draft, response_format)
-        if request is None:
-            return None
-        messages, count = request
-        # Call the underlying adapter once, without recursion or tool execution.
-        # Cancellation remains owned by the same RunScope.
-        response = await super().ainvoke(messages, Message(role="assistant"),
-            None, None, None, None, False)
-        return self._record_kinship_review(response, run_response, count, kind)
-
-    def _review_kinship_sync(self, prepared, draft, response_format, run_response):
-        from agent_runtime.kinship_review import review_request
-        from agent_runtime.borylation_review import review_request as molecular_review
-        request = molecular_review(prepared, draft, response_format)
-        kind = "borylation" if request is not None else "kinship"
-        if request is None:
-            from agent_runtime.finance_review import review_request as financial_review
-            request = financial_review(prepared, draft, response_format)
-            if request is not None:
-                kind = "finance"
-        if request is None:
-            request = review_request(prepared, draft, response_format)
-        if request is None:
-            return None
-        messages, count = request
-        response = super().invoke(messages, Message(role="assistant"),
-            None, None, None, None, False)
-        return self._record_kinship_review(response, run_response, count, kind)
-
-    @staticmethod
-    def _with_draft_usage(reviewed, draft):
-        if draft.response_usage is not None:
-            reviewed.response_usage = (reviewed.response_usage + draft.response_usage
-                if reviewed.response_usage is not None else draft.response_usage)
-        return reviewed
-
     async def ainvoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         prepared = self._prepare_history(messages, tools, run_response)
         from agent_runtime.borylation_review import evidence_tool_choice
         tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
         response = await super().ainvoke(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
         self._record_provider_context_usage(response, run_response)
-        if not response.tool_calls:
-            reviewed = await self._review_kinship(messages, response.content, response_format, run_response)
-            if reviewed is not None:
-                return self._with_draft_usage(reviewed, response)
         return response
 
     async def ainvoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
-        from agent_runtime.kinship_review import has_tool_calls, content_of, analysis_evidence
-        from agent_runtime.borylation_review import borylation_evidence
-        from agent_runtime.finance_review import finance_evidence
-        from agno.models.response import ModelResponse
         prepared = self._prepare_history(messages, tools, run_response)
         from agent_runtime.borylation_review import evidence_tool_choice
         tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
-        reviewable = response_format is None and (kinship_answer_constraints(messages) is not None
-            or any("communities" in record for record in analysis_evidence(messages))
-            or bool(borylation_evidence(messages)) or bool(finance_evidence(messages)))
-        buffered = []
+        # Forward native deltas immediately, including for example graphs.
+        # Tool evidence stays in the prompt; no second answer-review call runs.
         async with aclosing(super().ainvoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)) as iterator:
             async for event in iterator:
                 self._record_provider_context_usage(event, run_response)
-                if reviewable:
-                    buffered.append(event)
-                else:
-                    yield event
-        if not buffered:
-            return
-        if has_tool_calls(buffered):
-            for event in buffered:
                 yield event
-            return
-        reviewed = await self._review_kinship(messages, content_of(buffered), response_format, run_response)
-        if reviewed is None:
-            for event in buffered:
-                yield event
-            return
-        # Preserve both requests' billing usage, but never expose the draft
-        # or its signed provider state as the reviewed final answer.
-        for event in buffered:
-            if event.response_usage is not None:
-                yield ModelResponse(response_usage=event.response_usage)
-        yield reviewed
 
     def invoke(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
         prepared = self._prepare_history(messages, tools, run_response)
@@ -415,43 +328,16 @@ class ModelHistoryMixin:
         tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
         response = super().invoke(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)
         self._record_provider_context_usage(response, run_response)
-        if not response.tool_calls:
-            reviewed = self._review_kinship_sync(messages, response.content, response_format, run_response)
-            if reviewed is not None:
-                return self._with_draft_usage(reviewed, response)
         return response
 
     def invoke_stream(self, messages, assistant_message, response_format=None, tools=None, tool_choice=None, run_response=None, compress_tool_results=False, **kwargs):
-        from agent_runtime.kinship_review import has_tool_calls, content_of, analysis_evidence
-        from agent_runtime.borylation_review import borylation_evidence
-        from agent_runtime.finance_review import finance_evidence
-        from agno.models.response import ModelResponse
         prepared = self._prepare_history(messages, tools, run_response)
         from agent_runtime.borylation_review import evidence_tool_choice
         tool_choice = evidence_tool_choice(messages, tools, tool_choice, run_response, response_format)
-        reviewable = response_format is None and (kinship_answer_constraints(messages) is not None
-            or any("communities" in record for record in analysis_evidence(messages))
-            or bool(borylation_evidence(messages)) or bool(finance_evidence(messages)))
-        buffered = []
-        for event in super().invoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs):
-            self._record_provider_context_usage(event, run_response)
-            if reviewable:
-                buffered.append(event)
-            else:
+        with closing(super().invoke_stream(prepared, assistant_message, response_format, tools, tool_choice, run_response, compress_tool_results, **kwargs)) as iterator:
+            for event in iterator:
+                self._record_provider_context_usage(event, run_response)
                 yield event
-        if not buffered:
-            return
-        if has_tool_calls(buffered):
-            yield from buffered
-            return
-        reviewed = self._review_kinship_sync(messages, content_of(buffered), response_format, run_response)
-        if reviewed is None:
-            yield from buffered
-            return
-        for event in buffered:
-            if event.response_usage is not None:
-                yield ModelResponse(response_usage=event.response_usage)
-        yield reviewed
 
     def _stamp_provider_state(self, response):
         item = response[0] if isinstance(response, tuple) else response

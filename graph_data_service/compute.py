@@ -28,7 +28,7 @@ import networkx as nx
 from graph_data_service.graph_data import GraphData
 from graph_data_service.analysis_contract import analysis_contract
 from graph_data_service.smart_overview import SmartOverviewSelection, select_smart_overview
-from graph_data_service.highlight_connections import complete_ownership_connections
+from graph_data_service.highlight_connections import complete_ownership_connections, resolve_ownership_selectors
 from graph_engine.finance_catalog import (
     FINANCE_MAX_RESULT_BYTES, FINANCE_OPERATIONS, validate_finance_arguments,
 )
@@ -2280,6 +2280,13 @@ class GraphCompute:
         node_cap = max(1, requested_cap) if requested_cap > 0 else max(1, self._MAX_VIZ_NODES)
         edge_cap = max(1, self._MAX_VIZ_EDGES)
 
+        # Finance tools return business identities; the canvas uses source row IDs.
+        try:
+            node_names, highlights, resolved_ids = resolve_ownership_selectors(
+                g, node_names, highlights, gd.graph_metadata.get("construction_graph"))
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "code": "OWNERSHIP_NODE_RESOLUTION_FAILED"}
+
         # 确定要可视化的节点
         if node_names:
             # 验证节点存在性
@@ -2574,6 +2581,8 @@ class GraphCompute:
             "community": community_info,
             "highlights": normalized_highlights,
         }
+        if resolved_ids:
+            result["resolved_node_ids"] = resolved_ids
         if nodes_truncated or edges_truncated:
             result["truncated"] = True
             result["total_nodes"] = source_total_nodes

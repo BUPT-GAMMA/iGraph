@@ -41,7 +41,7 @@ def build_borylation_graph(resources: Path = RESOURCES, *, case: dict | None = N
         edge_weight=source.edge_weight, node_feat=source.node_feat, edge_feat=source.edge_feat,
         node_type=topology.node_type, edge_type=["chemical_bond"] * source.num_edges, node_text=source.node_text,
         directed=False, semantic_type="undirected", storage_type="bidirectional",
-        name="分子硼化反应示例", graph_metadata={**source.graph_metadata, **topology.graph_metadata,
+        name="科学智能", graph_metadata={**source.graph_metadata, **topology.graph_metadata,
             "borylation_case": case, "selected_graph": "BO-01", "loaded_graph_count": 1},
         graph_desc="仅加载第一张 BO-01 分子结构图：22 个重原子、24 条无向化学键（48 条双向存储边）。产物和96条实验记录保存在图的背景元数据中，不作为节点或额外图加载。当前案例是公开实验复盘，非模型预测。")
 

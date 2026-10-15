@@ -1,15 +1,8 @@
 import json
 from types import SimpleNamespace
-import pytest
 from agno.models.message import Message
-from agno.models.response import ModelResponse
-from agno.metrics import MessageMetrics
 from agent_runtime.borylation_review import borylation_evidence, review_request
-from agent_runtime.model_history import ModelHistoryMixin
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
 
 def messages():
     return [Message(role="system", content="Use English for this turn."),
@@ -30,40 +23,6 @@ def test_current_turn_only_and_machine_output_boundaries():
     assert review_request(ms, "draft", {"type":"json_object"}) is None
     assert not borylation_evidence([Message(role="tool", tool_name="borylation_case_analysis", content='{"success":false}')])
 
-class Provider:
-    async def ainvoke_stream(self, *args, **kwargs):
-        yield ModelResponse(content="UNCHECKED DRAFT")
-        yield ModelResponse(response_usage=MessageMetrics(input_tokens=100, output_tokens=10))
-    async def ainvoke(self, ms, assistant, response_format, tools, *args, **kwargs):
-        assert tools is None
-        assert json.loads(ms[-1].content)["ledger"][0]["result"]["distinct_site_count"] == 6
-        return ModelResponse(content="Conclusion: Six classes. Summary: 2 + 1 + 3.",
-            response_usage=MessageMetrics(input_tokens=40,output_tokens=10))
-
-class Model(ModelHistoryMixin, Provider):
-    id = "test"
-
-@pytest.mark.anyio
-async def test_molecular_stream_buffers_draft_and_counts_review_usage():
-    run = SimpleNamespace(metadata={})
-    events = [event async for event in Model().ainvoke_stream(messages(), Message(role="assistant"), run_response=run)]
-    assert "UNCHECKED" not in "".join(e.content or "" for e in events)
-    assert "Conclusion:" in "".join(e.content or "" for e in events)
-    assert run.metadata["borylation_answer_review"]["performed"]
-    assert "kinship_answer_review" not in run.metadata
-    assert sum(e.response_usage.input_tokens for e in events if e.response_usage) == 140
-
-@pytest.mark.anyio
-async def test_failed_review_does_not_publish_candidate():
-    class FailedProvider(Provider):
-        async def ainvoke(self,*args,**kwargs): raise RuntimeError("review unavailable")
-    class FailedModel(ModelHistoryMixin, FailedProvider):
-        id = "failed"
-    emitted = []
-    with pytest.raises(RuntimeError,match="review unavailable"):
-        async for event in FailedModel().ainvoke_stream(messages(),Message(role="assistant")):
-            emitted.append(event)
-    assert not emitted
 
 def test_each_verified_case_turn_requires_a_fresh_read_without_looping():
     from agent_runtime.borylation_review import evidence_tool_choice

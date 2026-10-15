@@ -1,10 +1,18 @@
 {
   "version": 1,
-  "previous_names": ["天龙八部人物关系示例", "天龙八部人物关系（预置图）", "天龙八部人物关系", "天龙八部示例", "Demi-Gods and Semi-Devils character example"],
+  "previous_names": [
+    "天龙八部人物关系示例",
+    "天龙八部人物关系（预置图）",
+    "天龙八部人物关系",
+    "天龙八部示例",
+    "Demi-Gods and Semi-Devils character example",
+    "天龙八部",
+    "Demi-Gods and Semi-Devils"
+  ],
   "filename": "tianlongbabu-characters.npz",
   "dataset": {
     "dataset_id": "ds_tianlongbabu_v1",
-    "name": "天龙八部",
+    "name": "文学人物关系网络",
     "description": "完整小说经 deepseek-v4-pro 抽取，并人工核实补充关键亲缘与婚姻关系；原抽取记录保留分块来源，人工补录关系保留独立出处。",
     "source_type": "novel_preset",
     "node_count": 304,
