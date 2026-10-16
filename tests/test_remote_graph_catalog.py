@@ -191,11 +191,50 @@ def test_rotated_password_is_encrypted_and_binding_has_no_location(catalog):
     assert set(binding(item).model_dump()) == {'connection_id', 'revision', 'name', 'kind', 'database'}
 
 
-def test_secret_key_config_is_optional_and_not_in_repr(monkeypatch):
+def test_missing_key_uses_persisted_key_file(catalog, tmp_path):
+    from agent_runtime.remote_graph.catalog import RemoteGraphCatalog
+    from agent_runtime.remote_graph.secrets import SecretBox
+    key_file = tmp_path / 'configuration' / 'remote-graph-secret.key'
+    first = RemoteGraphCatalog(catalog.store, SecretBox('', key_file))
+    assert not key_file.exists()
+    item = first.save('alice', body())
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    # A restarted runtime reuses the same file and can still decrypt.
+    restarted = RemoteGraphCatalog(catalog.store, SecretBox('', key_file))
+    assert restarted.resolve('alice', binding(item)).password.get_secret_value() == 'fixture-secret'
+    assert list(key_file.parent.iterdir()) == [key_file]
+
+
+def test_explicit_or_corrupt_key_never_falls_back_to_key_file(tmp_path):
+    from agent_runtime.remote_graph.secrets import SecretBox
+    key_file = tmp_path / 'remote-graph-secret.key'
+    with pytest.raises(ControlError, match='REMOTE_GRAPH_SECRET_UNAVAILABLE'):
+        SecretBox('invalid', key_file).encrypt('value')
+    assert not key_file.exists()
+    key_file.write_text('corrupt')
+    with pytest.raises(ControlError, match='REMOTE_GRAPH_SECRET_UNAVAILABLE'):
+        SecretBox('', key_file).encrypt('value')
+    assert key_file.read_text() == 'corrupt'
+
+
+def test_concurrent_key_file_creation_keeps_one_key(tmp_path):
+    from agent_runtime.remote_graph.secrets import SecretBox
+    key_file = tmp_path / 'remote-graph-secret.key'
+    boxes = [SecretBox('', key_file) for _ in range(8)]
+    with ThreadPoolExecutor(8) as pool:
+        tokens = list(pool.map(lambda box: box.encrypt('value'), boxes))
+    assert all(box.decrypt(token) == 'value' for box in boxes for token in tokens)
+
+
+def test_secret_key_config_is_optional_and_not_in_repr(monkeypatch, tmp_path):
     from agent_runtime.config import AgentRuntimeConfig
     monkeypatch.setenv('GRAPH_ENGINE_MCP_URL', 'http://mcp:21110/mcp')
+    monkeypatch.setenv('IGRAPH_DATA_ROOT', str(tmp_path))
     monkeypatch.delenv('IGRAPH_REMOTE_GRAPH_SECRET_KEY', raising=False)
+    monkeypatch.delenv('IGRAPH_REMOTE_GRAPH_SECRET_KEY_FILE', raising=False)
     assert AgentRuntimeConfig.from_env().remote_graph_secret_key == ''
+    assert AgentRuntimeConfig.from_env().remote_graph_secret_key_file == (
+        tmp_path / 'configuration' / 'remote-graph-secret.key').resolve()
     monkeypatch.setenv('IGRAPH_REMOTE_GRAPH_SECRET_KEY', 'deployment-secret')
     config = AgentRuntimeConfig.from_env()
     assert config.remote_graph_secret_key == 'deployment-secret'

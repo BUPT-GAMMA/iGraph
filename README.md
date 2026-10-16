@@ -323,7 +323,7 @@ Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
 
 远程查询依赖既有运行控制来保存可信连接快照：本地部署需在各服务共享 `.env` 设置 `IGRAPH_RUN_CANCEL_ENABLED=true`，按 `docs/RUN_CANCELLATION.md` 迁移后重启相关服务，并核实 `/api/capabilities` 的 `run_cancel_v1` 为 true。
 
-Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。必须设置独立的 Fernet 凭据密钥；用户可直接在前端填写数据库 URI、数据库名称、用户名和密码并测试、保存连接，无需预先配置主机或 CIDR 白名单。公网、内网、回环和数据库返回的路由地址均直接尝试连接；原有 `IGRAPH_REMOTE_GRAPH_ALLOWED_HOSTS` / `IGRAPH_REMOTE_GRAPH_ALLOWED_CIDRS` 配置不再生效。密钥缺失不影响普通聊天，不能保存或解析远程凭据。密钥更换后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。单用户版中 Backend 的公开接口统一归属工作区所有者，忽略客户端传入的 `X-User-ID`；历史[交接记录](docs/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于更早的版本。
+Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。凭据使用 Fernet 加密：`IGRAPH_REMOTE_GRAPH_SECRET_KEY` 留空时，首次保存连接会在数据卷生成 `/data/configuration/remote-graph-secret.key`（0600）并持续复用，密文仍存于 PostgreSQL；显式设置的密钥优先，无效时直接报错而不回退到密钥文件。用户可直接在前端填写数据库 URI、数据库名称、用户名和密码并测试、保存连接，无需预先配置主机或 CIDR 白名单。公网、内网、回环和数据库返回的路由地址均直接尝试连接；原有 `IGRAPH_REMOTE_GRAPH_ALLOWED_HOSTS` / `IGRAPH_REMOTE_GRAPH_ALLOWED_CIDRS` 配置不再生效。密钥不可用不影响普通聊天，只是不能保存或解析远程凭据。密钥更换或密钥文件丢失后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。单用户版中 Backend 的公开接口统一归属工作区所有者，忽略客户端传入的 `X-User-ID`；历史[交接记录](docs/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于更早的版本。
 
 离线回归：
 
