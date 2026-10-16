@@ -12,6 +12,7 @@ import { BrandLogo, Icon } from './Icon';
 import { ProcessTimeline } from './ProcessTimeline';
 import { fetchArtifact } from './WorkspaceFiles';
 import { useI18n, type Translate } from '../i18n';
+import { copyText } from '../clipboard';
 import { executionLabel, executionPending, executionStatus } from '../toolStatus';
 
 function formatBytes(size?: number) {
@@ -109,7 +110,7 @@ function MessageCopyAction({ content, onEdit }: { content: string; onEdit?: () =
     clearTimeout(resetTimerRef.current);
     setStatus('idle');
     try {
-      await navigator.clipboard.writeText(content);
+      await copyText(content);
       if (request !== requestRef.current) return;
       setStatus('copied');
       resetTimerRef.current = setTimeout(() => setStatus('idle'), 2000);
