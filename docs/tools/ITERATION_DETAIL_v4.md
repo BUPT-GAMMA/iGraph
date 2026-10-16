@@ -221,7 +221,7 @@ svg.append("defs").append("marker")
 | `graph_data_service/compute.py` | 新增 `visualize_subgraph` 方法 |
 | `graph_data_service/app.py` | 工具分发 + 数据工具注册 |
 | `index.html` | 可视化面板组件 + D3.js 渲染 |
-| `docs/ITERATION_SUMMARY.md` | 更新版本表 |
+| `docs/archive/reports/ITERATION_SUMMARY.md` | 更新版本表 |
 | `docs/tools/ITERATION_DETAIL_v4.md` | 本文档 |
 
 ---

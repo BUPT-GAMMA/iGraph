@@ -348,8 +348,8 @@ loadDataset('ds_xyz');
 ## 相关项目文档
 
 - `docs/README.md` - 项目总体文档
-- `docs/GRAPH_DATA_JSON_FORMAT.md` - 详细数据格式说明
-- `docs/RUN_AND_TEST.md` - 运行和测试指南
+- `docs/architecture/GRAPH_DATA_JSON_FORMAT.md` - 详细数据格式说明
+- `docs/legacy/RUN_AND_TEST.md` - 运行和测试指南
 - `datasets/ReadMe.md` - 数据集使用说明
 
 ---

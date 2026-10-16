@@ -1,34 +1,52 @@
 # iGraph 文档导航
 
-本目录包含当前代码实现对应的完整文档。
+按用途分为以下目录。新增文档时放入对应目录，一次性的验证、评审和计划记录放入 `archive/`。
 
-> 当前架构入口是 [`AGENTOS_FOUR_MODULE_REFACTOR.md`](AGENTOS_FOUR_MODULE_REFACTOR.md)。
-> `DESIGN.md`、`RUN_AND_TEST.md`、`DEPLOY_SERVERS.md` 和 `SKILLS_MEMORY.md`
-> 主要记录重构前的进程内 Runtime，保留用于行为对照，不再作为启动依据。
+> 当前架构入口是 [`architecture/AGENTOS_FOUR_MODULE_REFACTOR.md`](architecture/AGENTOS_FOUR_MODULE_REFACTOR.md)。
+> `legacy/` 中的文档记录重构前的进程内 Runtime，保留用于行为对照，不再作为启动依据。
 
-## 文档列表
+## guides/ 使用、测试与部署
 
-- [AGENT_ORCHESTRATION_INTEGRATION.md](AGENT_ORCHESTRATION_INTEGRATION.md)：基于 dev 的编排功能移植、兼容修复、测试证据和部署条件。
+- [TESTING.md](guides/TESTING.md)：本地后端回归、前端构建、CI 范围、覆盖率分析和 PR 验证约定。
+- [MANUAL_DEPLOYMENT.md](guides/MANUAL_DEPLOYMENT.md)：main 手动部署流程与检查。
+- [SINGLE_USER_DEPLOYMENT.zh-CN.txt](guides/SINGLE_USER_DEPLOYMENT.zh-CN.txt)：单用户版服务器部署与运维。
+- [MODEL_PROVIDERS.md](guides/MODEL_PROVIDERS.md)：模型服务与提供商管理。
+- [NEBULAGRAPH.md](guides/NEBULAGRAPH.md)：NPZ/GraphData + NebulaGraph 混合存储的配置、同步工具、原生查询与验收方式。
+- [GRAPH_TOOLS_DEVELOPMENT_GUIDE.md](guides/GRAPH_TOOLS_DEVELOPMENT_GUIDE.md)：图工具与算法接口规范及开发指南。
+- [datasets/](guides/datasets/)：数据集加载完整指南、搜索索引与快速参考。
 
-- `AGENTOS_FOUR_MODULE_REFACTOR.md`：**当前主文档**。四模块职责、AgentOS 映射、迁移阶段和依赖方向。
-- [TESTING.md](TESTING.md)：本地后端回归、前端构建、覆盖率分析和 PR 验证约定。
-- [TOOL_DAG_EXECUTION.md](TOOL_DAG_EXECUTION.md)：工具资源目录、DAG 并行调度、后台作业与并发配置。
-- [TOOL_DAG_VERIFICATION.md](TOOL_DAG_VERIFICATION.md)：真实模型问答、算法并行正确性和构图/前端回归验收记录。
-- [GRAPH_CONSTRUCTION.md](GRAPH_CONSTRUCTION.md)：构图接口、数据集复用、优化预览与提交。
-- [CONSTRUCTION_P1_VERIFICATION.md](CONSTRUCTION_P1_VERIFICATION.md)：构图资源隔离、候选扫描与超时修复的回归及性能验证。
-- [CONSTRUCTION_P2_VERIFICATION.md](CONSTRUCTION_P2_VERIFICATION.md)：业务属性编辑、重试状态与 SQLite 外键修复的回归及基线差异。
-- [STREAM_RECOVERY.md](STREAM_RECOVERY.md)：断流续传、完整快照、审批安全、依赖契约、故障测试与排障。
-- [RUN_CANCELLATION.md](RUN_CANCELLATION.md)：当前任务终止、作业隔离、持久控制、故障验收及剩余发布门禁。
-- [RUN_CANCELLATION_REVIEW_FIXES.md](RUN_CANCELLATION_REVIEW_FIXES.md)：终止功能审查问题的修复、故障回归与性能复测记录。
-- `DESIGN.md`：重构前完整系统设计，作为兼容行为参考。
-- `SKILLS_MEMORY.md`：重构前自研 Skills / Memory / Tools Selector 机制，保留用于数据映射和行为对照。
-- `RUN_AND_TEST.md`：环境准备、`.env` 配置、启动方式、API 联调、测试命令与常见问题。
-- `DEPLOY_SERVERS.md`：单机/拆分部署建议、完整环境变量清单、运维建议。
-- `GRAPH_DATA_JSON_FORMAT.md`：`graph_data.v1` JSON 存储格式与服务交换文档格式。
-- `GRAPH_ML_SERVICE.md`：GraphData 内置 GraphML 子模块说明、训练/推理参数。
-- `NEBULAGRAPH.md`：NPZ/GraphData + NebulaGraph 混合存储的配置、同步工具、原生查询与验收方式。
-- `guides/datasets/`：数据集加载完整指南、搜索索引与快速参考。
-- `archive/plans/`：已完成迭代的历史计划与审查记录，不作为当前实施入口。
+## architecture/ 当前架构与运行机制
+
+- [AGENTOS_FOUR_MODULE_REFACTOR.md](architecture/AGENTOS_FOUR_MODULE_REFACTOR.md)：**当前主文档**。四模块职责、AgentOS 映射、迁移阶段和依赖方向。
+- [TOOL_DAG_EXECUTION.md](architecture/TOOL_DAG_EXECUTION.md)：工具资源目录、DAG 并行调度、后台作业与并发配置。
+- [STREAM_RECOVERY.md](architecture/STREAM_RECOVERY.md)：断流续传、完整快照、审批安全、依赖契约、故障测试与排障。
+- [RUN_CANCELLATION.md](architecture/RUN_CANCELLATION.md)：当前任务终止、作业隔离、持久控制、故障验收及剩余发布门禁。
+- [AGENT_TOOLS.md](architecture/AGENT_TOOLS.md)：Agent 可用工具汇总。
+- [GRAPH_DATA_JSON_FORMAT.md](architecture/GRAPH_DATA_JSON_FORMAT.md)：`graph_data.v1` JSON 存储格式与服务交换文档格式。
+- [GRAPH_ML_SERVICE.md](architecture/GRAPH_ML_SERVICE.md)：GraphData 内置 GraphML 子模块说明、训练/推理参数。
+- [SHORT_TERM_MEMORY.md](architecture/SHORT_TERM_MEMORY.md)：长会话的短期上下文记忆。
+
+## features/ 功能说明
+
+- [GRAPH_CONSTRUCTION.md](features/GRAPH_CONSTRUCTION.md)：构图接口、数据集复用、优化预览与提交。
+- [TABULAR_CONSTRUCTION_SUBAGENT.md](features/TABULAR_CONSTRUCTION_SUBAGENT.md)：表格构图子代理的使用与设计。
+- [GRAPH_WORKSPACE_FEATURES.md](features/GRAPH_WORKSPACE_FEATURES.md)：构图、图探索与项目数据复用。
+- [SOURCE_DATA_PREVIEW.md](features/SOURCE_DATA_PREVIEW.md)：构图前的源数据示例。
+- [PERSONAL_DATA_AND_PROJECT_DELETION.md](features/PERSONAL_DATA_AND_PROJECT_DELETION.md)：独立对话、个人数据集与项目删除。
+- [USER_CASES.md](features/USER_CASES.md)：预置图与示例问题。
+- [USER_CASE_SOURCES.md](features/USER_CASE_SOURCES.md)：预置示例的构图数据源。
+- [FINANCE_WORKFLOW_IMPLEMENTATION_2026-09-26.md](features/FINANCE_WORKFLOW_IMPLEMENTATION_2026-09-26.md)：金融股权工作流实现说明。
+- [DATASET_API_MIGRATION.md](features/DATASET_API_MIGRATION.md)：数据集接口与客户端迁移。
+- [model-management-plan.md](features/model-management-plan.md)：模型管理与会话切换。
+- [graph-analysis-and-gnn-upgrade.md](features/graph-analysis-and-gnn-upgrade.md)：图分析算子与现代 GNN 升级。
+- [POPUP_MOTION.md](features/POPUP_MOTION.md)：子窗口动效。
+
+## 其他目录
+
+- [adr/](adr/)：架构决策记录。
+- [research/](research/)：技术调研。
+- [legacy/](legacy/)：重构前基线（`DESIGN.md`、`RUN_AND_TEST.md`、`DEPLOY_SERVERS.md`、`SKILLS_MEMORY.md`、`REFACTOR_BASELINE.md`），仅用于行为对照。
+- [archive/](archive/)：已完成的计划（`plans/`、`superpowers/`）、验证与实测报告（`reports/`）、代码评审（`reviews/`）、演示提纲（`demos/`）和带日期的验收记录（`testing/`），不作为当前实施入口。
 
 ## 重构前基线摘要
 

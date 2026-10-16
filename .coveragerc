@@ -9,7 +9,7 @@ source =
 
 [report]
 # Coverage is informational; daily CI runs without instrumentation or thresholds.
-# See docs/TESTING.md for optional local reports.
+# See docs/guides/TESTING.md for optional local reports.
 fail_under = 0
 precision = 2
 show_missing = True

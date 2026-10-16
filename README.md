@@ -12,13 +12,13 @@
 模型服务中的 URL 和 API Key 输入框默认留空，不自动加载已保存密钥；留空保留服务器连接。
 构图页面提供模型选择、自定义模型 ID、URL 和 API Key 配置，供 TXT 抽取和表格智能构图使用。
 构图配置保存至持久卷 `/data/configuration/construction-model.json`，不会写入数据集构图参数或报告。
-完整的服务器部署、SSH 隧道、备份及故障排查步骤见 [单用户版部署说明](docs/SINGLE_USER_DEPLOYMENT.zh-CN.txt)。
+完整的服务器部署、SSH 隧道、备份及故障排查步骤见 [单用户版部署说明](docs/guides/SINGLE_USER_DEPLOYMENT.zh-CN.txt)。
 
 iGraph 采用四个一级业务模块：Frontend、Backend、Agent Runtime 和 Graph Engine。
 Agent Runtime 使用开源 Agno AgentOS；Session、Run、Memory、Learning、Skills、Approval
 和 Trace 不再由 Backend 的进程内对象维护。
 
-表格数据的 PK/FK 构图、独立 LLM 子代理、跨任务领域策略记忆与查询验收使用方法见[表格构图子代理文档](docs/TABULAR_CONSTRUCTION_SUBAGENT.md)。
+表格数据的 PK/FK 构图、独立 LLM 子代理、跨任务领域策略记忆与查询验收使用方法见[表格构图子代理文档](docs/features/TABULAR_CONSTRUCTION_SUBAGENT.md)。
 
 ## 架构
 
@@ -186,7 +186,7 @@ docker compose up --build -d
 ```
 
 个人／项目数据集 HTTP API、Agent 工具和旧客户端的迁移约定见
-[数据集接口迁移](docs/DATASET_API_MIGRATION.md)。旧 HTTP 入口目前保留兼容，
+[数据集接口迁移](docs/features/DATASET_API_MIGRATION.md)。旧 HTTP 入口目前保留兼容，
 响应头和 OpenAPI 会标注弃用；Agent 数据集工具继续维护。
 
 ### 服务器预置大图数据
@@ -311,19 +311,19 @@ Graph Engine 启动时还会将旧的用户图快照从
 `data/users/{user}/graph_sessions/{session}`。只迁移包含图快照、图版本记录或
 Nebula 引用的目录；已存在的目标不覆盖，旧目录不删除。
 
-详细边界和迁移说明见 [AgentOS 四模块重构](docs/AGENTOS_FOUR_MODULE_REFACTOR.md)。
+详细边界和迁移说明见 [AgentOS 四模块重构](docs/architecture/AGENTOS_FOUR_MODULE_REFACTOR.md)。
 
 ### 模型提供商管理
 
-在工作台右上角打开「模型服务」，管理提供商连接、发现或添加模型，并为新会话选择默认模型。详情见 [模型服务与提供商管理](docs/MODEL_PROVIDERS.md)。
+在工作台右上角打开「模型服务」，管理提供商连接、发现或添加模型，并为新会话选择默认模型。详情见 [模型服务与提供商管理](docs/guides/MODEL_PROVIDERS.md)。
 
 ### 远程图数据库问答（本地链路已验证，待独立验收）
 
 会话可同时保留本地图和远程 Neo4j 连接。输入区或数据集面板中的“远程数据库”用于新建、测试、保存和选择连接；密码不会回显，编辑时留空保留原凭据。远程工具只读，查询卡片显示来源版本、已读取行数和两种截断状态。远程报告通过聊天或工作区交付，不复用会补入本地图统计的报告工具。
 
-远程查询依赖既有运行控制来保存可信连接快照：本地部署需在各服务共享 `.env` 设置 `IGRAPH_RUN_CANCEL_ENABLED=true`，按 `docs/RUN_CANCELLATION.md` 迁移后重启相关服务，并核实 `/api/capabilities` 的 `run_cancel_v1` 为 true。
+远程查询依赖既有运行控制来保存可信连接快照：本地部署需在各服务共享 `.env` 设置 `IGRAPH_RUN_CANCEL_ENABLED=true`，按 `docs/architecture/RUN_CANCELLATION.md` 迁移后重启相关服务，并核实 `/api/capabilities` 的 `run_cancel_v1` 为 true。
 
-Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。凭据使用 Fernet 加密：`IGRAPH_REMOTE_GRAPH_SECRET_KEY` 留空时，首次保存连接会在数据卷生成 `/data/configuration/remote-graph-secret.key`（0600）并持续复用，密文仍存于 PostgreSQL；显式设置的密钥优先，无效时直接报错而不回退到密钥文件。用户可直接在前端填写数据库 URI、数据库名称、用户名和密码并测试、保存连接，无需预先配置主机或 CIDR 白名单。公网、内网、回环和数据库返回的路由地址均直接尝试连接；原有 `IGRAPH_REMOTE_GRAPH_ALLOWED_HOSTS` / `IGRAPH_REMOTE_GRAPH_ALLOWED_CIDRS` 配置不再生效。密钥不可用不影响普通聊天，只是不能保存或解析远程凭据。密钥更换或密钥文件丢失后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。单用户版中 Backend 的公开接口统一归属工作区所有者，忽略客户端传入的 `X-User-ID`；历史[交接记录](docs/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于更早的版本。
+Runtime 使用 `.env.example` 的 `IGRAPH_REMOTE_GRAPH_*` 配置。凭据使用 Fernet 加密：`IGRAPH_REMOTE_GRAPH_SECRET_KEY` 留空时，首次保存连接会在数据卷生成 `/data/configuration/remote-graph-secret.key`（0600）并持续复用，密文仍存于 PostgreSQL；显式设置的密钥优先，无效时直接报错而不回退到密钥文件。用户可直接在前端填写数据库 URI、数据库名称、用户名和密码并测试、保存连接，无需预先配置主机或 CIDR 白名单。公网、内网、回环和数据库返回的路由地址均直接尝试连接；原有 `IGRAPH_REMOTE_GRAPH_ALLOWED_HOSTS` / `IGRAPH_REMOTE_GRAPH_ALLOWED_CIDRS` 配置不再生效。密钥不可用不影响普通聊天，只是不能保存或解析远程凭据。密钥更换或密钥文件丢失后原密文不可用，应先制定迁移方案。当前 driver 固定为 `neo4j==6.3.0`；允许 Community 和可写账号；工具独立阻止写入、结构变更、管理操作。连接测试分别报告连接可用和数据库权限状态（verified_read_only / not_read_only / unknown），未知不等于已验证。单用户版中 Backend 的公开接口统一归属工作区所有者，忽略客户端传入的 `X-User-ID`；历史[交接记录](docs/archive/testing/intelligent-graph-qa-handoff.md)中的裸 `X-User-ID` 限制描述适用于更早的版本。
 
 离线回归：
 

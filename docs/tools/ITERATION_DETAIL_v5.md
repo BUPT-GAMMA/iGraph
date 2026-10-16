@@ -246,7 +246,7 @@ function applyInlineHighlights(gid) {
 | `backend/agent/context/context_manager.py` | 新增 | 图可视化原则章节 |
 | `graph_data_service/compute.py` | 完善 | `_normalize_highlights` 高亮标准化 |
 | `index.html` | 新增 | 高亮按钮系统、样式、交互逻辑 |
-| `docs/ITERATION_SUMMARY.md` | 更新 | 新增 v5 版本记录 |
+| `docs/archive/reports/ITERATION_SUMMARY.md` | 更新 | 新增 v5 版本记录 |
 | `docs/tools/ITERATION_DETAIL_v5.md` | 新增 | 本文档 |
 
 ---
@@ -280,7 +280,7 @@ function applyInlineHighlights(gid) {
 | 文件 | 改动类型 | 说明 |
 |------|----------|------|
 | `index.html` | 修改 | `expandInlineGraph` 改为右侧侧边栏，新增 `toggleExpandHighlight`, `clearExpandHighlights`, `applyExpandHighlights` |
-| `docs/ITERATION_SUMMARY.md` | 更新 | 新增 v6 版本记录 |
+| `docs/archive/reports/ITERATION_SUMMARY.md` | 更新 | 新增 v6 版本记录 |
 
 ### 关键代码
 

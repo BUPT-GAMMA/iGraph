@@ -160,7 +160,7 @@
 - **P0-1 Memory 存储路径唯一化**
   - 定位 `memory/default_user/` vs `memory/memory/default_user/` 中真正被读写的那一份。
   - 把非真实路径合并/归档到 `legacy_backup/`，代码中的引用统一指向唯一路径。
-  - 结论落到 `docs/SKILLS_MEMORY.md` 或 RUNBOOK。
+  - 结论落到 `docs/legacy/SKILLS_MEMORY.md` 或 RUNBOOK。
 
 - **P0-2 Golden tests 建档**
   - Skills：给定 tools 列表，断言 system prompt 出现期望技能；断言判断使用*全量可见工具*而非 selector 子集。

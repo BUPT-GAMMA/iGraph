@@ -471,7 +471,7 @@ def load_graph(self, dataset_id: str, version: str = "latest") -> GraphData:
 | Service - 加载逻辑 | graph_data_service/app.py | 600 |
 | 数据集注册表 | graph_data_service/dataset_registry.py | 34 |
 | GraphData类 | graph_data_service/graph_data.py | 13 |
-| 数据格式文档 | docs/GRAPH_DATA_JSON_FORMAT.md | - |
+| 数据格式文档 | docs/architecture/GRAPH_DATA_JSON_FORMAT.md | - |
 
 ---
 

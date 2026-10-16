@@ -1,6 +1,6 @@
 # Memgraph / NebulaGraph Task 7 探针输入
 
-日期：2026-09-27。**仅为资料调研；未拉镜像、部署、执行探针或验收接入。** 对照 [Task 7](../superpowers/plans/2026-09-27-multi-database-graph-qa-phase1.md)；Neo4j/FalkorDB 先交付，本笔记只供后续独立验证。来源只用产品官方文档、发行记录、仓库及官方客户端。
+日期：2026-09-27。**仅为资料调研；未拉镜像、部署、执行探针或验收接入。** 对照 [Task 7](../archive/superpowers/plans/2026-09-27-multi-database-graph-qa-phase1.md)；Neo4j/FalkorDB 先交付，本笔记只供后续独立验证。来源只用产品官方文档、发行记录、仓库及官方客户端。
 
 ## 固定候选与部署边界
 
@@ -29,7 +29,7 @@ nGQL 包含原生命令、Cypher 风格语法和复合语句；Studio 官方说�
 
 ## 可重复的 pass/fail 探针
 
-每个产品由管理员**只在隔离实例**准备固定小图、可写账号和唯一 canary ID；负例只交给待测的模型查询执行入口，事前事后用独立管理员连接读取节点数、属性、schema、用户/作业/模块列表。通过条件是入口拒绝且所有快照一致；语法错误、账号无权限或后续回滚都不能单独算“应用拦截通过”。先用管理员直连确认每条负例在该版本和该账号本来可执行，再重置环境。[Task 7 验收范围](../superpowers/plans/2026-09-27-multi-database-graph-qa-phase1.md)、[Memgraph Cypher 示例](https://memgraph.com/docs/client-libraries/python)、[Nebula nGQL 速查](https://docs.nebula-graph.io/3.8.0/2.quick-start/6.cheatsheet-for-ngql/)。
+每个产品由管理员**只在隔离实例**准备固定小图、可写账号和唯一 canary ID；负例只交给待测的模型查询执行入口，事前事后用独立管理员连接读取节点数、属性、schema、用户/作业/模块列表。通过条件是入口拒绝且所有快照一致；语法错误、账号无权限或后续回滚都不能单独算“应用拦截通过”。先用管理员直连确认每条负例在该版本和该账号本来可执行，再重置环境。[Task 7 验收范围](../archive/superpowers/plans/2026-09-27-multi-database-graph-qa-phase1.md)、[Memgraph Cypher 示例](https://memgraph.com/docs/client-libraries/python)、[Nebula nGQL 速查](https://docs.nebula-graph.io/3.8.0/2.quick-start/6.cheatsheet-for-ngql/)。
 
 最小夹具：Memgraph 在隔离实例 `CREATE (:Probe {id:'p1'})`；Nebula 先 `CREATE SPACE qa_probe (partition_num=1, replica_factor=1, vid_type=FIXED_STRING(32))`，等待 space 就绪后 `USE qa_probe; CREATE TAG Probe(id string)`，再 `INSERT VERTEX Probe(id) VALUES "p1":("p1")`。Nebula 的 space/tag 名是管理员固定配置，不能由模型拼接。每轮负例后从快照恢复，不复用已污染的夹具。[Memgraph CREATE](https://memgraph.com/docs/querying/clauses/create)、[Nebula CREATE SPACE](https://docs.nebula-graph.io/3.8.0/3.ngql-guide/9.space-statements/1.create-space/)、[Nebula 速查](https://docs.nebula-graph.io/3.8.0/2.quick-start/6.cheatsheet-for-ngql/)。
 
@@ -47,4 +47,4 @@ nGQL 包含原生命令、Cypher 风格语法和复合语句；Studio 官方说�
 - Memgraph 有服务端 `--query-execution-timeout-sec`、运行时 `query.timeout`、`QUERY MEMORY LIMIT` 和进程 `--memory-limit`；区别记录客户端等待超时与服务端确实停止。`SHOW TRANSACTIONS` / `TERMINATE TRANSACTIONS` 是候选取消路径，3.13.1 修正了权限结果和若干过程响应取消的行为；必须在目标版本以自己的 query ID 验证，不给模型开放管理命令。[官方性能说明](https://memgraph.com/blog/handling-large-graph-datasets)、[发行记录](https://memgraph.com/docs/release-notes)。
 - Nebula 3.8 文档列出 `SHOW [LOCAL] QUERIES` 和 `KILL QUERY(SESSION=...,PLAN=...)`；`SHOW QUERIES` 经 Meta 同步有延迟，非 GOD 只能杀自己的查询。graphd 的 `storage_client_timeout_ms` 是到 Storage 的 RPC 等待，不是通用查询截止；配置页给出查询长度和内存追踪参数，但未确认可设置每查询服务端 wall-clock deadline。探针需证明可在有界时间内找到并取消自己的查询，且取消后服务端停止、资源恢复；否则报告为未验证。[SHOW QUERIES](https://docs.nebula-graph.io/3.8.0/3.ngql-guide/7.general-query-statements/6.show/18.show-queries/)、[KILL QUERY](https://docs.nebula-graph.io/3.8.0/3.ngql-guide/17.query-tuning-statements/6.kill-query/)、[graphd 配置](https://docs.nebula-graph.io/3.8.0/5.configurations-and-logs/1.configurations/3.graph-config/)。
 
-**进入产品实现的门槛：** 分别记录精确镜像 digest/客户端版本、管理员直连正控、应用入口负控的状态前后差异、网络可达性、并发隔离、服务端期限/取消证据，以及未覆盖的语法和过程。任何可靠分类或服务端约束缺失时仅记“尚未验证/当前方案不通过”，不得标记已支持；也不由资料缺口推断该产品没有能力。[Task 7](../superpowers/plans/2026-09-27-multi-database-graph-qa-phase1.md)。
+**进入产品实现的门槛：** 分别记录精确镜像 digest/客户端版本、管理员直连正控、应用入口负控的状态前后差异、网络可达性、并发隔离、服务端期限/取消证据，以及未覆盖的语法和过程。任何可靠分类或服务端约束缺失时仅记“尚未验证/当前方案不通过”，不得标记已支持；也不由资料缺口推断该产品没有能力。[Task 7](../archive/superpowers/plans/2026-09-27-multi-database-graph-qa-phase1.md)。

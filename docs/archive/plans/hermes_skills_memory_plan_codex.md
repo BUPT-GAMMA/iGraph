@@ -1,6 +1,6 @@
 # Hermes Skills / Memory 机制总结与 iGraph 迭代计划
 
-> 阅读范围：`hermes-agent` 的 `agent/`、`tools/`、`plugins/memory/`、`skills/`、`CONTRIBUTING.md`、`SECURITY.md` 等；iGraph 的 `backend/agent/skills/`、`backend/agent/memory/`、`backend/agent/context/`、`backend/agent/igraph.py`、`docs/SKILLS_MEMORY.md`、`docs/ARCHITECTURE.md` 等。
+> 阅读范围：`hermes-agent` 的 `agent/`、`tools/`、`plugins/memory/`、`skills/`、`CONTRIBUTING.md`、`SECURITY.md` 等；iGraph 的 `backend/agent/skills/`、`backend/agent/memory/`、`backend/agent/context/`、`backend/agent/igraph.py`、`docs/legacy/SKILLS_MEMORY.md`、`docs/ARCHITECTURE.md` 等。
 
 ## 1. 总体结论
 
