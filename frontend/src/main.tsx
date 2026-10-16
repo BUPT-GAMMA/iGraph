@@ -41,6 +41,7 @@ import { listModels, getSessionModel, modelErrorMessage, type ModelCatalog } fro
 import { parseWorkspaceRoute, writeWorkspaceRoute } from './navigation';
 import { migrateGeneralDraft, readRecoveredDrafts, recoveredDraftsKey } from './draftMigration';
 import { I18nProvider, tr, useI18n } from './i18n';
+import { randomUUID } from './randomId';
 import './styles.css';
 
 type GraphTab = 'Overview' | 'Graph' | 'Data' | 'ML' | 'Artifacts';
@@ -650,7 +651,7 @@ function App() {
       } : null;
       const generation = effectiveActiveRun && previousRun?.runId === effectiveActiveRun.run_id
         ? previousRun.generation
-        : `resume:${effectiveActiveRun?.run_id || crypto.randomUUID()}`;
+        : `resume:${effectiveActiveRun?.run_id || randomUUID()}`;
       const savedComposer = restoreComposer ? readComposerDraft(identity, id) : null;
       const graphVersion = nextGraphVersion(id, true);
       dispatchConversation({
@@ -1137,7 +1138,7 @@ function App() {
     const existing = conversationRef.current.draftsByScope[draftScopeKey(projectId)] || readStoredDraft(userId, projectId);
     const preferredModel = activeSession?.model || defaultModel;
     const draft = refreshEmptyDraftModel(existing || {
-      draftId: crypto.randomUUID(), projectId, phase: 'editing', text: '',
+      draftId: randomUUID(), projectId, phase: 'editing', text: '',
       model: preferredModel,
       activeDatasetId: project?.default_dataset_id || null, attachments: [],
     }, preferredModel);
@@ -1424,7 +1425,7 @@ function App() {
     const accountEpoch = accountEpochRef.current;
     const creationController = new AbortController();
     const stale = () => creationController.signal.aborted || accountIsStale(identity, accountEpoch);
-    const generation = crypto.randomUUID();
+    const generation = randomUUID();
     draftCreationControllersRef.current.set(draftScopeKey(projectId), creationController);
     dispatchConversation({ type: 'PATCH_DRAFT', projectId, draftId: draft.draftId, patch: { phase: 'creating_session', error: undefined } });
     try {
@@ -1542,7 +1543,7 @@ function App() {
     if (targetView?.uploading || [...uploadControllersRef.current.values()].some(item => item.sessionId === sessionId)) return;
     const pendingFirstTurn = readPendingFirstTurn(userId, sessionId);
     if (!edit && messageOverride === undefined && (targetView?.pendingAttachments.length || pendingFirstTurn)) {
-      const generation = crypto.randomUUID();
+      const generation = randomUUID();
       dispatchConversation({ type: 'BEGIN_RUN_PREPARATION', sessionId, generation });
       const sessionProjectId = activeSession.project_id ?? pendingFirstTurn?.projectId ?? null;
       void prepareAndStartFirstTurn(
@@ -1562,7 +1563,7 @@ function App() {
       return;
     }
     const attachments = messageOverride !== undefined ? [] : edit?.attachments ?? targetView?.attachments ?? [];
-    const generation = crypto.randomUUID();
+    const generation = randomUUID();
     const userMessage: Message = { id: `user:${generation}`, role: 'user', content: message, attachments };
     persistRun(sessionId, undefined, -1, generation);
     const assistantMessage: Message = { id: `assistant:${generation}`, role: 'assistant', content: '', streaming: true, tools: [] };
@@ -1599,7 +1600,7 @@ function App() {
     if (!callId) return dispatchConversation({ type: 'PATCH_VIEW', sessionId, patch: { error: tr('The confirmation request has no tool call ID and cannot continue safely', '当前确认请求缺少工具 Call ID，无法安全继续') } });
     if (connectionManagerRef.current.get(sessionId)) return;
     const generation = run.generation;
-    const decisionId = crypto.randomUUID();
+    const decisionId = randomUUID();
     const retry = () => openResumeConnection(sessionId, generation, { run_id: run.runId!, status: 'running', last_event_index: run.lastAppliedEventIndex }, conversationRef.current.activeSessionId === sessionId);
     const connection = connectionManagerRef.current.acquire({
       sessionId,
@@ -1667,7 +1668,7 @@ function App() {
     if (!draft && (!sessionId || !view || selectRunGate(view).blocksSessionMutation)) return;
     const pending = draft?.attachments || view?.pendingAttachments || [];
     const replacement = pending.find(item => item.filename === file.name && ['failed', 'needs_reselect'].includes(item.status));
-    const attachment: DraftAttachment = { localId: replacement?.localId || crypto.randomUUID(), filename: file.name, file, status: 'staged' };
+    const attachment: DraftAttachment = { localId: replacement?.localId || randomUUID(), filename: file.name, file, status: 'staged' };
     const nextPending = [...pending.filter(item => item.localId !== attachment.localId), attachment];
     if (draft) {
       const nextDraft = { ...draft, attachments: nextPending };
