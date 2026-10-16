@@ -25,8 +25,7 @@ async def test_unknown_kind_query_never_uses_catalog(monkeypatch):
     binding = RemoteBinding.model_construct(connection_id='id', revision=1,
         name='Unknown', kind='unregistered', database='graph')
     settings = SimpleNamespace(remote_graph_timeout_seconds=2, remote_graph_max_rows=10,
-        remote_graph_max_bytes=1000, remote_graph_preview_rows=10, remote_graph_preview_bytes=1000,
-        remote_graph_allowed_hosts=(), remote_graph_allowed_cidrs=())
+        remote_graph_max_bytes=1000, remote_graph_preview_rows=10, remote_graph_preview_bytes=1000)
     result = await RemoteGraphExecutor(Catalog(), settings).query('owner', binding, QueryRequest(query='RETURN 1'))
     assert not result.success and result.error_code == 'REMOTE_GRAPH_INVALID_CONFIG'
 
@@ -82,8 +81,7 @@ async def test_dispatch_uses_frozen_kind(monkeypatch):
     monkeypatch.setattr(registry, 'get_adapter', lambda kind: Adapter() if kind == 'falkordb' else None)
     binding = RemoteBinding(connection_id='id', revision=1, name='Graph', kind='falkordb', database='graph')
     settings = SimpleNamespace(remote_graph_timeout_seconds=2, remote_graph_max_rows=10,
-        remote_graph_max_bytes=1000, remote_graph_preview_rows=10, remote_graph_preview_bytes=1000,
-        remote_graph_allowed_hosts=(), remote_graph_allowed_cidrs=())
+        remote_graph_max_bytes=1000, remote_graph_preview_rows=10, remote_graph_preview_bytes=1000)
     result = await RemoteGraphExecutor(Catalog(), settings).query('owner', binding, QueryRequest(query='MATCH (n) RETURN n'))
     assert result.success and result.source.kind == 'falkordb' and result.rows == [['falkordb']]
     assert seen == [('falkordb', 'MATCH (n) RETURN n')]

@@ -41,8 +41,7 @@ async def test_adapters_do_not_share_credentials_or_cancellation(monkeypatch):
     adapter = Adapter()
     monkeypatch.setattr(registry, 'get_adapter', lambda kind: adapter)
     settings = SimpleNamespace(remote_graph_timeout_seconds=2, remote_graph_max_rows=10,
-        remote_graph_max_bytes=1000, remote_graph_preview_rows=10, remote_graph_preview_bytes=1000,
-        remote_graph_allowed_hosts=(), remote_graph_allowed_cidrs=())
+        remote_graph_max_bytes=1000, remote_graph_preview_rows=10, remote_graph_preview_bytes=1000)
     executor = RemoteGraphExecutor(Catalog(), settings)
     binding = RemoteBinding(connection_id='id', revision=1, name='Graph', database='neo4j')
     first = asyncio.create_task(executor.query('first', binding, QueryRequest(query='RETURN 1')))
@@ -78,8 +77,7 @@ async def test_shared_executor_caps_adapter_rows(monkeypatch):
 
     monkeypatch.setattr(registry, 'get_adapter', lambda kind: Adapter())
     settings = SimpleNamespace(remote_graph_timeout_seconds=2, remote_graph_max_rows=2,
-        remote_graph_max_bytes=1000, remote_graph_preview_rows=2, remote_graph_preview_bytes=1000,
-        remote_graph_allowed_hosts=(), remote_graph_allowed_cidrs=())
+        remote_graph_max_bytes=1000, remote_graph_preview_rows=2, remote_graph_preview_bytes=1000)
     binding = RemoteBinding(connection_id='id', revision=1, name='Graph', database='neo4j')
     result = await RemoteGraphExecutor(Catalog(), settings).query('owner', binding, QueryRequest(query='RETURN 1'))
     assert result.success and result.rows == [[1], [2]]

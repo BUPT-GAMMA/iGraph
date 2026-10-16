@@ -115,7 +115,7 @@ def read_qa_count(run, query, parameters):
     context = AdapterContext(connection=SimpleNamespace(public=SimpleNamespace(
         uri=uri, database=database, username=username), password=SecretStr(password)),
         deadline=time.monotonic() + 8, max_rows=2, max_bytes=8192,
-        network_policy=NetworkPolicy(allowed_cidrs=[host + ('/128' if ':' in host else '/32')]))
+        network_policy=NetworkPolicy())
     async def execute():
         async with asyncio.timeout(8):
             return await get_adapter(run['kind']).execute(context, QueryRequest(query=query, parameters=parameters))

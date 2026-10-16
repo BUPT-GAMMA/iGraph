@@ -2,6 +2,7 @@ import { ApiError, cancelJob, cancelRun, getJobControl, getRunControl, getRunSna
 import type { RunControl, RunTarget } from './api';
 import type { ConversationAction, SessionViewState } from './sessionState';
 import { RunConnectionManager } from './RunConnectionManager';
+import { randomUUID } from './randomId';
 
 type Intent = { identity: string; sessionId: string; generation: string; cancelRequestId: string; target: RunTarget;
   attempt: number; revision: number; requestVersion: number; busy: boolean; detached?: boolean; requiresManualRetry?: boolean; queryOnly?: boolean };
@@ -30,7 +31,7 @@ export class RunCancellation {
     if (!run.cancellation && o.manager.get(sid)) return;
     if (!run.cancellation && !(run.serverCanSend === false && ['completed', 'cancelled', 'failed'].includes(run.status))) return;
     const intent: Intent = { identity: o.identity(), sessionId: sid, generation: run.generation,
-      cancelRequestId: crypto.randomUUID(), target: { run_id: run.runId }, queryOnly: true,
+      cancelRequestId: randomUUID(), target: { run_id: run.runId }, queryOnly: true,
       attempt: 0, revision: run.controlRevision || 0, requestVersion: 0, busy: false };
     this.intents.set(sid, intent);
     o.manager.prioritizeCancellation(sid);
@@ -55,7 +56,7 @@ export class RunCancellation {
       this.intents.delete(sid);
     }
     const intent: Intent = { identity: o.identity(), sessionId: sid, generation: run.generation,
-      cancelRequestId: run.cancelRequestId || crypto.randomUUID(), target: run.runId ? { run_id: run.runId } : { start_request_id: run.startRequestId! },
+      cancelRequestId: run.cancelRequestId || randomUUID(), target: run.runId ? { run_id: run.runId } : { start_request_id: run.startRequestId! },
       attempt: 0, revision: 0, requestVersion: 0, busy: false };
     this.install(intent);
     void this.step(intent, false);
@@ -214,7 +215,7 @@ export class RunCancellation {
   requestJob(sid: string, jid: string, notify: (status: string) => void) {
     let job = this.jobs.get(jid);
     if (!job) {
-      job = { sid, jid, identity: this.options.identity(), requestId: crypto.randomUUID(), attempt: 0, busy: false, notify };
+      job = { sid, jid, identity: this.options.identity(), requestId: randomUUID(), attempt: 0, busy: false, notify };
       this.jobs.set(jid, job);
     }
     job.notify = notify;

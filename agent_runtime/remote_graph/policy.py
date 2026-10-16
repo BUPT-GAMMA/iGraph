@@ -1,6 +1,5 @@
-"""Explicit egress and executable-entry policy, backed by server read metadata."""
+"""Database address resolution and executable-entry checks using server metadata."""
 import asyncio
-import ipaddress
 import re
 import socket
 from dataclasses import dataclass
@@ -16,34 +15,15 @@ class VerifiedAddress:
 
 
 class NetworkPolicy:
-    def __init__(self, allowed_hosts=(), allowed_cidrs=()):
-        self.hosts = {h.lower().rstrip('.') for h in allowed_hosts}
-        try:
-            self.networks = [ipaddress.ip_network(cidr, strict=False) for cidr in allowed_cidrs]
-        except ValueError:
-            raise ControlError('REMOTE_GRAPH_INVALID_CONFIG', 422) from None
+    """Resolve database and routing hosts without deployment allowlists."""
 
     async def resolve(self, address):
         host, port = address[:2]
         hostname = str(host).lower().rstrip('.')
-        try:
-            literal = ipaddress.ip_address(hostname)
-        except ValueError:
-            literal = None
-        if literal is None:
-            if hostname not in self.hosts:
-                raise ControlError('REMOTE_GRAPH_INVALID_CONFIG', 422)
-            entries = await asyncio.get_running_loop().getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
-            addresses = list(dict.fromkeys(entry[4] for entry in entries))
-        else:
-            addresses = [(str(literal), port)]
+        entries = await asyncio.get_running_loop().getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        addresses = list(dict.fromkeys(entry[4] for entry in entries))
         if not addresses:
             raise ControlError('REMOTE_GRAPH_UNREACHABLE', 502)
-        for item in addresses:
-            ip = ipaddress.ip_address(item[0])
-            if not (any(ip in net for net in self.networks)
-                    or (ip.is_global and hostname in self.hosts)):
-                raise ControlError('REMOTE_GRAPH_INVALID_CONFIG', 422)
         return [VerifiedAddress(str(item[0]), int(item[1]), hostname) for item in addresses]
 
 

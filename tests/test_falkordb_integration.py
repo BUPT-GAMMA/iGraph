@@ -43,7 +43,7 @@ def live(request):
         return AdapterContext(connection=SimpleNamespace(public=SimpleNamespace(uri=os.environ[keys[0]],
             username='',database=target or graph),password=SecretStr(os.environ[keys[1]])),
             deadline=time.monotonic()+kwargs.get('timeout',8),max_rows=kwargs.get('max_rows',128),
-            max_bytes=kwargs.get('max_bytes',262144),network_policy=NetworkPolicy(allowed_cidrs=['127.0.0.1/32']))
+            max_bytes=kwargs.get('max_bytes',262144),network_policy=NetworkPolicy())
     try: yield admin,graph,ctx
     finally:
         admin.execute_command('GRAPH.DELETE',graph)
@@ -179,7 +179,7 @@ async def test_shared_executor_artifact_preserves_source_and_preview(live,tmp_pa
             assert uid=='owner' and actual==binding
             return ctx().connection
     settings=SimpleNamespace(remote_graph_timeout_seconds=5,remote_graph_max_rows=128,remote_graph_max_bytes=262144,
-        remote_graph_preview_rows=3,remote_graph_preview_bytes=8192,remote_graph_allowed_hosts=(),remote_graph_allowed_cidrs=['127.0.0.1/32'])
+        remote_graph_preview_rows=3,remote_graph_preview_bytes=8192)
     request=QueryRequest(query='MATCH (n:Budget) WHERE n.number >= $min RETURN n.number',parameters={'min':2},save_result=True)
     result=await RemoteGraphExecutor(Catalog(),settings).query('owner',binding,request,tmp_path)
     assert result.success and result.returned_rows==128 and result.truncated and result.preview_truncated and len(result.rows)==3

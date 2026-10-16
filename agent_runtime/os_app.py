@@ -45,7 +45,8 @@ def create_app(config: AgentRuntimeConfig | None = None) -> FastAPI:
     db = create_db(settings)
     store = ExecutionStore(db.db_engine)
     catalog = ModelCatalog(store, settings)
-    remote_catalog = RemoteGraphCatalog(store, SecretBox(settings.remote_graph_secret_key))
+    remote_catalog = RemoteGraphCatalog(store, SecretBox(
+        settings.remote_graph_secret_key, settings.remote_graph_secret_key_file))
     remote_executor = RemoteGraphExecutor(remote_catalog, settings)
     controller = None
     if controls_enabled():
