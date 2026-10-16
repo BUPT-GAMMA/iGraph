@@ -8,13 +8,14 @@ import pytest
 
 from graph_data_service.finance import analyze_finance
 
-SOURCE = Path(os.getenv("IGRAPH_FINANCE_TEST_DATA", "<本地数据目录>/data/finance/finance_csv"))
+_SOURCE_DIR = os.getenv("IGRAPH_FINANCE_TEST_DATA")
+SOURCE = Path(_SOURCE_DIR) if _SOURCE_DIR else None
 
 
 @pytest.fixture(scope="module")
 def real_graph():
     tables = ("institution_main", "individual_info", "institution_shareholder_relationship")
-    if not all((SOURCE / (table + ".csv")).is_file() for table in tables):
+    if SOURCE is None or not all((SOURCE / (table + ".csv")).is_file() for table in tables):
         pytest.skip("Set IGRAPH_FINANCE_TEST_DATA to the supplied three-table directory")
     nodes = []
     for table in tables:
