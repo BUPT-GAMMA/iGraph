@@ -554,9 +554,12 @@ function App() {
     } catch (cause: any) {
       if (accountIsStale(identity, accountEpoch)) return null;
       const unsupported = unsupportedGraphViewFromError(cause);
+      // A background refresh after a tool run (e.g. a remote-database answer)
+      // can find no local graph at all: that is the empty state, not a failure.
+      const notLoaded = refreshMode === 'background' && cause instanceof ApiError && cause.code === 'GRAPH_NOT_LOADED';
       let retainedCurrentGraph = false;
-      if (unsupported) {
-        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: unsupported, refreshMode });
+      if (unsupported || notLoaded) {
+        dispatchConversation({ type: 'GRAPH_REQUEST_SUCCESS', sessionId, requestVersion: version, graph: unsupported || { status: 'empty', data: null }, refreshMode });
       } else {
         const message = cause.message || tr('Could not load the graph', '图谱加载失败');
         const currentGraph = conversationRef.current.viewsBySessionId[sessionId]?.graph;

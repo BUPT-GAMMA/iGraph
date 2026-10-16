@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => {} }) }));
-vi.mock('./components/GraphWorkspace', () => ({ GraphWorkspace: () => null }));
+vi.mock('./components/GraphWorkspace', () => ({ GraphWorkspace: ({ view }: { view?: { status: string } }) => <output aria-label="graph status">{view?.status}</output> }));
 vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
   validateUser: vi.fn().mockResolvedValue({ valid: true, default_model: 'model' }),
   listSessions: vi.fn().mockResolvedValue({ sessions: [{ session_id: 's', title: 'Analysis', active_dataset_id: 'local' }] }),
@@ -19,7 +19,7 @@ vi.mock('./api', async () => ({ ...await vi.importActual('./api'),
 }));
 import App from './main';
 import { I18nProvider } from './i18n';
-import { USER_KEY, activateSession, listRemoteGraphs, selectRemoteGraph, saveRemoteGraph, setSessionDataset, createSession } from './api';
+import { ApiError, USER_KEY, activateSession, listRemoteGraphs, selectRemoteGraph, saveRemoteGraph, setSessionDataset, createSession, visualizeGraph } from './api';
 const connection = { connection_id: 'c', revision: 2, name: 'Cora', kind: 'neo4j' as const, database: 'neo4j', uri: 'bolt+s://db', username: 'reader', has_password: true };
 const binding = { connection_id: 'c', revision: 2, name: 'Cora', kind: 'neo4j' as const, database: 'neo4j' };
 beforeEach(() => {
@@ -92,4 +92,16 @@ it.each(['/?session=other-session', '/?new=1'])('discards a pending save binding
   expect(selectRemoteGraph).not.toHaveBeenCalled();
   expect(createSession).not.toHaveBeenCalled();
   expect(screen.queryByText('Connection saved and in use')).toBeNull();
+});
+
+it.each([
+  ['an empty graph when no local graph is loaded', new ApiError(409, 'not loaded', { code: 'GRAPH_NOT_LOADED' }, null, null, 'GRAPH_NOT_LOADED'), 'empty'],
+  ['a failure for other errors', new Error('boom'), 'failed'],
+])('a background graph refresh after remote answers shows %s', async (_label, error, status) => {
+  vi.mocked(visualizeGraph).mockRejectedValueOnce(error);
+  vi.mocked(activateSession).mockResolvedValue({ model: 'model', active_dataset_id: null, remote_graph: binding, has_graph: true, messages: [], active_run: null });
+  render(<I18nProvider initialLanguage="en"><App /></I18nProvider>);
+  await screen.findByText('Remote: Neo4j · Cora · neo4j');
+  await waitFor(() => expect(visualizeGraph).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByRole('status', { name: 'graph status' }).textContent).toBe(status));
 });
