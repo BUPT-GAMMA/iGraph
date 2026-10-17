@@ -8,6 +8,7 @@
 ## guides/ 使用、测试与部署
 
 - [TESTING.md](guides/TESTING.md)：本地后端回归、前端构建、CI 范围、覆盖率分析和 PR 验证约定。
+- [DEPLOYMENT.zh-CN.md](guides/DEPLOYMENT.zh-CN.md)：Linux 服务器单用户部署说明，含硬件要求、rootless Docker、镜像源、GPU、备份恢复与故障排查。
 - [MANUAL_DEPLOYMENT.md](guides/MANUAL_DEPLOYMENT.md)：main 手动部署流程与检查。
 - [SINGLE_USER_DEPLOYMENT.zh-CN.txt](guides/SINGLE_USER_DEPLOYMENT.zh-CN.txt)：单用户版服务器部署与运维。
 - [MODEL_PROVIDERS.md](guides/MODEL_PROVIDERS.md)：模型服务与提供商管理。
