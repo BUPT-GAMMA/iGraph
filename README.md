@@ -17,6 +17,7 @@
 <p align="center">
   <a href="https://igraph-docs.graphagent.workers.dev"><img src="https://img.shields.io/badge/Technical_Report-Read_Online-176B87" alt="Read the technical report"></a>
   <a href="docs/guides/DEPLOYMENT.md"><img src="https://img.shields.io/badge/Deployment-Docker_Compose-2496ED?logo=docker&amp;logoColor=white" alt="Deploy with Docker Compose"></a>
+  <a href="https://wpa.qq.com/wpa_jump_page?v=3&amp;uin=1095689347&amp;site=qq&amp;menu=yes"><img src="https://img.shields.io/badge/Contact-QQ-12B7F5?logo=qq&amp;logoColor=white" alt="Contact on QQ: 1095689347"></a>
   <a href="https://github.com/BUPT-GAMMA/iGraph/stargazers"><img src="https://img.shields.io/github/stars/BUPT-GAMMA/iGraph?style=flat&amp;color=E9B44C" alt="GitHub stars"></a>
 </p>
 
@@ -54,6 +55,11 @@ model setup, optional GPU support, backups, and troubleshooting.
 
 For the broader design and capabilities, read the **[Technical Report](https://igraph-docs.graphagent.workers.dev)**.
 For implementation details, see the [developer documentation](docs/README.md).
+
+## 📬 Contact
+
+For questions and collaboration, reach us on QQ: **[1095689347](https://wpa.qq.com/wpa_jump_page?v=3&uin=1095689347&site=qq&menu=yes)**.
+If the link does not open your QQ client, search for **1095689347** in QQ to add the contact.
 
 ## 🌟 Star History
 
