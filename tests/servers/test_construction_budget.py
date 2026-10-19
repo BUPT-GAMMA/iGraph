@@ -100,7 +100,7 @@ def test_expired_budget_is_not_converted_into_invalid_graph_or_candidate(tmp_pat
     from graph_engine.construction.domain import rank_candidates
     path = tmp_path / "people.csv"
     path.write_text("id,name\n1,Alice\n")
-    source = load_source(path)
+    source = load_source(path, {"primary_key": ["id"]})
     graph = initial_graph(source)
     operations = {
         "source": lambda: load_source(path), "initial": lambda: initial_graph(source),

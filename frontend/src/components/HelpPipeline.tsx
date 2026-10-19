@@ -58,7 +58,7 @@ export function HelpPipeline() {
         </ul> : <ul>
           <li>{t('Select one or more UTF-8, comma-separated .csv files together. Each file needs a non-empty, unique header row and the same number of columns in every record.', '可同时选择一个或多个 UTF-8、逗号分隔的 .csv 文件。每个文件应包含非空且不重复的表头，所有记录的列数应一致。')}</li>
           <li>{t('In “Configure primary and foreign keys”, set the dataset name, table names, and keys. Review the suggested keys; they are based only on column names.', '在“配置主键与外键”窗口填写数据集名称、表名和主外键。自动建议仅依据列名，需要人工核对。')}</li>
-          <li>{t('A primary key uniquely identifies a row. Use “Add relationship” to link a source column to its target table and column, then click “Upload … tables”.', '主键用于唯一标识记录。点击“添加关系”，将来源列连接到目标表和目标列，再点击“上传 … 张表”。')}</li>
+          <li>{t('Tables with a primary key create nodes. For edge tables, leave the primary key blank and use “Add relationship” to configure two foreign-key column groups to node tables. Other fields become edge properties. Then click “Upload … tables”.', '设置主键的表生成节点。关系表的主键留空，点击“添加关系”配置两组指向节点表的外键列，其他字段作为边属性，再点击“上传 … 张表”。')}</li>
           <li><code>orders.customer_id → customers.customer_id</code>{t(' is an example foreign-key mapping. Check that the referenced values exist in the target table.', ' 是外键映射的例子；请确认引用值在目标表中存在。')}</li>
         </ul>}
         <p>{isPt ? t('After upload, the PT file appears in “My graph sources” with a “Start analysis” button.', '上传后，PT 文件会显示在“我的构图数据源”中，并提供“开始分析”按钮。') : t('The file appears in “My graph sources”. Open “Build graph” if the construction workspace is not already open. You can use “Rename dataset” to change its display name.', '文件会出现在“我的构图数据源”中。若未自动进入工作台，点击“构图”；可通过“重命名数据集”修改显示名称。')}</p>

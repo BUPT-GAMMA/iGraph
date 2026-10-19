@@ -193,7 +193,7 @@ class AutoToolRecoveryTest(unittest.TestCase):
         planner = TextOnlyPlanner()
         with self.assertRaises(ConstructionFailed) as caught:
             TabularConstructionSubAgent(llm_factory=lambda _: planner).run(self.source, {
-                "query_count": 1, "workload_attempts": 2, "min_query_seconds": 0,
+                "primary_key": ["id"], "query_count": 1, "workload_attempts": 2, "min_query_seconds": 0,
             })
         self.assertEqual(caught.exception.code, "workload_generation_failed")
         self.assertEqual(caught.exception.report["llm_tool_choice"], "auto")
@@ -207,7 +207,7 @@ class AutoToolRecoveryTest(unittest.TestCase):
                  "aggregations": [{"function": "count", "column": "*", "as": "n"}]}
         with self.assertRaises(ConstructionFailed) as caught:
             TabularConstructionSubAgent(llm_factory=lambda _: planner).run(self.source, {
-                "queries": [query], "query_count": 1, "max_iterations": 2, "min_query_seconds": 0,
+                "primary_key": ["id"], "queries": [query], "query_count": 1, "max_iterations": 2, "min_query_seconds": 0,
             })
         self.assertEqual(caught.exception.code, "no_evolution_candidate_evaluated")
         self.assertEqual(len(planner.messages), 2)

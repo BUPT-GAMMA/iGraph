@@ -899,6 +899,8 @@ class ConstructionStore:
                     message = "TXT 实体关系抽取未完整成功；未发布半成品图，源文件已保留，请检查文本或模型配置后重试。"
                 elif code == "construction_time_budget_exhausted":
                     message = "构图超过时间预算；源文件已保留，可调整预算后重试。"
+                elif code == "csv_configuration_required":
+                    message = "请检查 CSV 主外键配置：节点表须设置主键；关系表须配置两组外键列，每端须唯一匹配一个节点。修正配置或引用值后重新上传。"
                 else:
                     message = "构图失败；源文件已保留，请检查构图算法后重试。"
                 record.update(status="failed", last_build_status="failed", failure_code=code,

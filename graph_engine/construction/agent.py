@@ -25,7 +25,7 @@ from pathlib import Path
 
 from graph_data_service.construction import _atomic_json, validate_graph
 from graph_engine.construction.llm import ConstructionLLMError, ToolCallingLLM, selected_model
-from graph_engine.construction.sources import initial_graph, load_source
+from graph_engine.construction.sources import CsvConfigurationError, initial_graph, load_source
 from graph_engine.construction.tools import TRANSFORM_NAMES, fidelity_errors, graph_schema, tool_specs, transform
 from graph_engine.construction.workload import evaluate_workload, generate_workload, validate_queries
 from graph_engine.construction.domain import domain_profile, workload_context, strategy_signature, rank_candidates
@@ -166,6 +166,8 @@ _PUBLIC_REJECTION_MESSAGES = {
 
 
 def _public_stage_message(stage, report):
+    if stage == "failed" and report.get("failure_code") == "csv_configuration_required":
+        return "请检查 CSV 主外键配置：节点表须设置主键；关系表须配置两组外键列，每端须唯一匹配一个节点。修正配置或引用值后重新上传。"
     if report.get("config", {}).get("mode") == "rules":
         messages = {
             "starting": "正在读取数据源，按主键和外键构图。",
@@ -1714,6 +1716,9 @@ class TabularConstructionSubAgent:
             raise
         except ConstructionBudgetExceeded:
             fail("construction_time_budget_exhausted")
+        except CsvConfigurationError as exc:
+            report.update(error_type=type(exc).__name__, error=str(exc)[:2000])
+            fail("csv_configuration_required")
         except Exception as exc:
             # Internal sidecar has bounded diagnostic text; external build API
             # continues to return ConstructionStore's sanitized failure state.

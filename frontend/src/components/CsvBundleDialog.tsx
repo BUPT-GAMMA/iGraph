@@ -144,10 +144,19 @@ export function CsvBundleDialog({ files, onCancel, onSubmit }: Props) {
     if (!datasetName.trim()) { setError(t('Enter a dataset name.', '请输入数据集名称。')); return; }
     if (names.some(name => !name) || new Set(names).size !== names.length) { setError(t('Table names must be non-empty and unique.', '表名不能为空且不能重复。')); return; }
     for (const table of tables) {
+      if (!table.primary_key.length && new Set(table.foreign_keys.map(fk => JSON.stringify(fk.columns))).size !== 2) {
+        setError(t(`Table ${table.name}: configure a primary key for nodes, or two foreign-key column groups for edges.`, `表 ${table.name}：请设置主键以生成节点，或配置两组外键列以生成边。`)); return;
+      }
       for (const fk of table.foreign_keys) {
         if (!fk.columns.length || fk.columns.length !== fk.ref_columns.length || !names.includes(fk.ref_table)) {
           setError(t('Each foreign key must map the same number of source and target columns.', '每个外键的来源列和目标列数量必须相同。')); return;
         }
+        if (!tables.find(parent => parent.name === fk.ref_table)?.primary_key.length) {
+          setError(t(`Target table ${fk.ref_table} needs a primary key to create endpoint nodes.`, `目标表 ${fk.ref_table} 需要设置主键，才能生成边的端点节点。`)); return;
+        }
+      }
+      if (new Set(table.foreign_keys.map(({ columns, ref_table, ref_columns }) => JSON.stringify([columns, ref_table, ref_columns]))).size !== table.foreign_keys.length) {
+        setError(t(`Table ${table.name} contains duplicate foreign keys.`, `表 ${table.name} 存在重复外键，请为边的两端配置不同的外键。`)); return;
       }
     }
     const schema: CsvBundleSchema = { version: 'csv_bundle.v1', description: description.trim(), tables: tables.map(table => ({
@@ -164,11 +173,12 @@ export function CsvBundleDialog({ files, onCancel, onSubmit }: Props) {
         <label className="csv-bundle-name">{t('Dataset name', '数据集名称')}<input value={datasetName} onChange={event => setDatasetName(event.target.value)} /></label>
         <label className="csv-bundle-name">{t('Dataset description', '数据集描述')}<textarea rows={3} maxLength={4000} value={description} onChange={event => setDescription(event.target.value)} placeholder={t('Describe the data source, entities, and relationships.', '描述数据来源、实体含义和关系。')} /></label>
         <p className="csv-bundle-help">{t('Key suggestions use column names only; please review them.', '主外键建议仅基于列名，请核对。')}</p>
-        <details className="csv-key-guide"><summary>{t('PK/FK configuration guide', 'PK/FK 配置说明')}</summary><p><b>PK · {t('Primary key', '主键')}</b> {t('Uniquely identifies one row (or a combination of columns). Values must be unique and non-null.', '唯一标识一条记录，可由多个字段组成；值必须唯一且不能为空。')}</p><p><b>FK · {t('Foreign key', '外键')}</b> {t('References another table’s key to create graph relationships. Composite key columns are paired in the displayed order.', '引用另一张表的键以生成图中的连接；复合键按界面显示的列顺序一一对应。')}</p><p>{t('Example: orders.customer_id → customers.customer_id. Blank PK uses conservative detection; if no safe key is found, row identities are generated.', '例如：orders.customer_id → customers.customer_id。PK 留空将尝试保守识别；没有可靠主键时生成行标识。')}</p></details>
+        <details className="csv-key-guide"><summary>{t('PK/FK configuration guide', 'PK/FK 配置说明')}</summary><p><b>PK · {t('Primary key', '主键')}</b> {t('Uniquely identifies one row (or a combination of columns). Values must be unique and non-null.', '唯一标识一条记录，可由多个字段组成；值必须唯一且不能为空。')}</p><p><b>FK · {t('Foreign key', '外键')}</b> {t('References another table’s key to create graph relationships. Composite key columns are paired in the displayed order.', '引用另一张表的键以生成图中的连接；复合键按界面显示的列顺序一一对应。')}</p><p>{t('Tables with a primary key create nodes. Tables without a primary key create edges using two foreign-key column groups to node tables; the first group is the source and the second is the target. A group can reference alternative target tables, with exactly one match per row. Other fields become edge properties. Blank PK stays blank.', '设置主键的表生成节点；无主键的表通过两组外键列生成边，第一组为起点，第二组为终点，目标表均须设置主键。同组可配置多个候选目标表，每条记录须唯一匹配。其他字段保留为边属性。主键留空不会自动补充。')}</p></details>
         {loading && <div className="csv-bundle-loading">{t('Reading CSV headers…', '正在读取 CSV 表头…')}</div>}
         {!loading && tables.map((table, tableIndex) => <article className="csv-table-card" key={table.file_name}>
           <div className="csv-table-head"><div><strong>{table.file_name}</strong><small>{table.columns.length} {t('columns', '列')}</small></div><label>{t('Table name', '表名')}<input value={table.name} onChange={event => renameTable(tableIndex, event.target.value)} /></label></div>
-          <fieldset><legend>{t('Primary key', '主键')} <small>{t('(multiple columns allowed; blank means safe auto-detection)', '（可多选；留空时安全自动识别）')}</small></legend><div className="csv-column-options">{table.columns.map(column => <label key={column}><input type="checkbox" checked={table.primary_key.includes(column)} onChange={event => replaceTable(tableIndex, current => ({ ...current, primary_key: event.target.checked ? [...current.primary_key, column] : current.primary_key.filter(value => value !== column) }))} />{column}</label>)}</div></fieldset>
+          <fieldset><legend>{t('Primary key', '主键')} <small>{t('(multiple columns allowed; leave blank for an edge table)', '（可多选；关系表请留空）')}</small></legend><div className="csv-column-options">{table.columns.map(column => <label key={column}><input type="checkbox" checked={table.primary_key.includes(column)} onChange={event => replaceTable(tableIndex, current => ({ ...current, primary_key: event.target.checked ? [...current.primary_key, column] : current.primary_key.filter(value => value !== column) }))} />{column}</label>)}</div></fieldset>
+          <p className="csv-bundle-help">{table.primary_key.length ? t('Node table: each row becomes a node.', '节点表：每条记录生成一个节点。') : t('Edge table: configure two foreign-key column groups for its endpoints; other fields become edge properties.', '关系表：配置两组外键列作为边的两端，其他字段作为边属性。')}</p>
           <div className="csv-field-summary" aria-label={t(`Field roles for ${table.name}`, `${table.name} 字段角色`)}>{table.columns.map(column => <span key={column}><code>{column}</code>{table.primary_key.includes(column) && <b>PK</b>}{table.foreign_keys.some(fk => fk.columns.includes(column)) && <b>FK</b>}{!table.primary_key.includes(column) && !table.foreign_keys.some(fk => fk.columns.includes(column)) && <small>{t('Attribute', '特征属性')}</small>}</span>)}</div>
           <div className="csv-fk-heading"><strong>{t('Foreign keys', '外键')}</strong><button className="secondary-command" onClick={() => addForeignKey(tableIndex)}><Icon name="plus" size={13} />{t('Add relationship', '添加关系')}</button></div>
           {table.foreign_keys.length === 0 && <small className="csv-no-fk">{t('No foreign keys configured for this table.', '此表尚未配置外键。')}</small>}
