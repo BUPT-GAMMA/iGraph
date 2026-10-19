@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://igraph-docs.graphagent.workers.dev"><img src="https://img.shields.io/badge/Technical_Report-Read_Online-176B87" alt="Read the technical report"></a>
   <a href="docs/guides/DEPLOYMENT.md"><img src="https://img.shields.io/badge/Deployment-Docker_Compose-2496ED?logo=docker&amp;logoColor=white" alt="Deploy with Docker Compose"></a>
-  <a href="https://weixin.qq.com/g/AwYAAG6DggZULxxSwo4nXAVrtGOS8OCNTggL8J6NHH1LuCZ48lBnKcAB4e70TPbP"><img src="https://img.shields.io/badge/Contact-WeChat-07C160?logo=wechat&amp;logoColor=white" alt="Open the iGraph WeChat group invitation"></a>
+  <a href="#wechat-group"><img src="https://img.shields.io/badge/Contact-WeChat-07C160?logo=wechat&amp;logoColor=white" alt="View the iGraph WeChat group QR code"></a>
   <a href="https://github.com/BUPT-GAMMA/iGraph/stargazers"><img src="https://img.shields.io/github/stars/BUPT-GAMMA/iGraph?style=flat&amp;color=E9B44C" alt="GitHub stars"></a>
 </p>
 
@@ -60,16 +60,16 @@ For implementation details, see the [developer documentation](docs/README.md).
 
 ### WeChat group
 
-Open the **[iGraph group invitation](https://weixin.qq.com/g/AwYAAG6DggZULxxSwo4nXAVrtGOS8OCNTggL8J6NHH1LuCZ48lBnKcAB4e70TPbP)** in WeChat, or scan the QR code below, to join the **iGraph user group** for questions, feedback, and discussion.
-The invitation requires WeChat. If your browser opens the WeChat download page, scan the QR code instead. Click the image to view it at full size.
+Scan the QR code in WeChat to join the **iGraph user group** for questions, feedback, and discussion.
+Click the image to view it at full size, or save it and select it from your album in WeChat's scanner.
 
 <p align="center">
   <a href="docs/assets/igraph-wechat-group.png">
-    <img src="docs/assets/igraph-wechat-group.png" width="320" alt="QR code for joining the iGraph WeChat user group; valid before October 26, 2026">
+    <img src="docs/assets/igraph-wechat-group.png" width="320" alt="QR code for joining the iGraph WeChat user group">
   </a>
 </p>
 
-This invitation and QR code are valid **before October 26, 2026**. If they have expired, [open an issue](https://github.com/BUPT-GAMMA/iGraph/issues) to request an updated invitation.
+If the QR code has expired, [open an issue](https://github.com/BUPT-GAMMA/iGraph/issues) to request an updated invitation.
 
 ## 🌟 Star History
 
