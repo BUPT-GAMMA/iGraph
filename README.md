@@ -21,9 +21,10 @@
   <a href="https://github.com/BUPT-GAMMA/iGraph/stargazers"><img src="https://img.shields.io/github/stars/BUPT-GAMMA/iGraph?style=flat&amp;color=E9B44C" alt="GitHub stars"></a>
 </p>
 
-**iGraph** brings graph construction, graph analysis, and graph machine learning into one conversational workspace.
+**iGraph is a Graph Data Agent** that brings graph construction, graph analysis, and graph machine learning into one conversational workspace.
 Start with tables, text, or an existing graph, ask a question in natural language, and let the agent plan the analysis,
 call tools, and explain the results with evidence you can inspect.
+The current release includes ready-to-explore demos for **Financial Risk Control**, **AI for Science**, and **Relationship Insights**.
 
 <p align="center">
   <img src="docs/assets/igraph-overview.png" width="100%" alt="iGraph overview: a visual workspace connects to an agent with memory and skills, backed by graph construction, graph analysis, and graph machine learning tools.">
@@ -42,7 +43,17 @@ call tools, and explain the results with evidence you can inspect.
 - **Analyze and learn.** Combine graph queries, graph algorithms, and graph machine learning to answer questions about nodes, links, and whole graphs.
 - **Continue your work.** Keep projects, conversations, memory, and reusable skills in one workspace, and follow up on earlier results.
 
-Included examples cover financial ownership analysis, molecular properties, and literary character relationships.
+## 🧭 Built-in experiences
+
+Try three built-in experiences with prepared graphs and example questions:
+
+| Experience | What you can explore |
+| --- | --- |
+| **Financial Risk Control** | Trace ownership and control relationships across institutions, individuals, and shareholding records to investigate financial risk. |
+| **AI for Science** | Explore molecular structures and properties through graph analysis, using the included chemistry example. |
+| **Relationship Insights** | Discover character connections, relationship paths, and network structures in the included literary character graph. |
+
+Choose an example to start exploring, or bring your own tables, text, and graph datasets.
 
 ## 🚀 Get started
 
