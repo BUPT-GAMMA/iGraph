@@ -86,10 +86,12 @@ If the QR code has expired, [open an issue](https://github.com/BUPT-GAMMA/iGraph
 
 If iGraph is useful for your work, consider giving the project a star.
 
-<a href="https://star-history.com/#BUPT-GAMMA/iGraph&amp;Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=BUPT-GAMMA/iGraph&amp;type=Date&amp;theme=dark">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=BUPT-GAMMA/iGraph&amp;type=Date">
-    <img src="https://api.star-history.com/svg?repos=BUPT-GAMMA/iGraph&amp;type=Date" width="100%" alt="Star History Chart for BUPT-GAMMA/iGraph">
-  </picture>
+## Star History
+
+<a href="https://www.star-history.com/?type=date&repos=BUPT-GAMMA%2FiGraph">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=BUPT-GAMMA/iGraph&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=BUPT-GAMMA/iGraph&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=BUPT-GAMMA/iGraph&type=date&legend=top-left" />
+ </picture>
 </a>
