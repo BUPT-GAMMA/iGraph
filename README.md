@@ -86,8 +86,6 @@ If the QR code has expired, [open an issue](https://github.com/BUPT-GAMMA/iGraph
 
 If iGraph is useful for your work, consider giving the project a star.
 
-## Star History
-
 <a href="https://www.star-history.com/?type=date&repos=BUPT-GAMMA%2FiGraph">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=BUPT-GAMMA/iGraph&type=date&theme=dark&legend=top-left" />
