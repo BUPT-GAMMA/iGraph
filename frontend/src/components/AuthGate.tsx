@@ -79,7 +79,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
   return <main className="auth-page"><section className="auth-card">
     <div className="auth-heading"><span className="auth-brand"><BrandLogo /><strong>iGraph</strong></span><button className="auth-language" type="button" onClick={() => setLanguage(language === 'zh' ? 'en' : 'zh')}>{language === 'zh' ? 'EN' : '中文'}</button></div>
     <h1>{registering ? t('Create your account', '创建你的账户') : t('Welcome back', '登录 iGraph')}</h1>
-    <p className="auth-description">{t('Your graphs, conversations, and projects, together in your own workspace.', '在你的专属工作区保存图数据、聊天记录和项目。')}</p>
     <form onSubmit={submit}>
       <label>{t('Username', '用户名')}<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required minLength={registering ? 3 : 1} maxLength={32} pattern={registering ? '[A-Za-z0-9][A-Za-z0-9_.\\-]{2,31}' : undefined} /></label>
       {registering && <small>{t('3–32 letters, numbers, dots, underscores, or hyphens.', '3–32 位字母、数字、点、下划线或短横线。')}</small>}
