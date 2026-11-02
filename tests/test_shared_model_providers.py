@@ -1,4 +1,4 @@
-"""Deployment defaults become independent user-owned connections, including upgrades."""
+"""Preserve existing private connections without seeding secrets into public accounts."""
 import json
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -23,7 +23,10 @@ def catalog(tmp_path, monkeypatch):
     store.migrate()
     catalog = ModelCatalog(store, SimpleNamespace(llm_api_key='', llm_base_url=''))
     catalog.bootstrap('admin', ['qwen3.6-plus'], is_admin=True)
-    catalog.bootstrap('bob', ['qwen3.6-plus'])
+    # Simulate Bob's private connections created before the public-signup upgrade.
+    with monkeypatch.context() as legacy:
+        legacy.setenv('IGRAPH_ADMIN_USER_ID', 'bob')
+        catalog.bootstrap('bob', ['qwen3.6-plus'])
     return catalog
 
 
@@ -50,7 +53,10 @@ def finish(catalog, run, uid='bob'):
         preparation_stopped=True, agent_stopped=True, terminal_persisted=True, run_status='completed')
 
 
-def test_all_accounts_get_equivalent_editable_private_defaults(catalog):
+def test_existing_accounts_retain_private_connections_but_new_accounts_inherit_no_secrets(catalog):
+    catalog.bootstrap('u_public', list(SUPPORTED_MODELS), is_admin=True)
+    assert catalog.list_providers('u_public')['providers'] == []
+    assert catalog.list('u_public') == {'models': [], 'default_model': ''}
     a, b = connection(catalog), connection(catalog, 'bob')
     assert a['provider_id'] != b['provider_id']
     for uid, p in [('admin', a), ('bob', b)]:
@@ -112,7 +118,8 @@ def test_default_model_management_only_changes_its_owner(catalog):
     assert model(catalog)['config_id'] == updated['config_id']
 
 
-def test_frozen_run_survives_migration_and_personal_edits(catalog):
+def test_frozen_run_survives_owner_migration_and_personal_edits(catalog, monkeypatch):
+    monkeypatch.setenv("IGRAPH_ADMIN_USER_ID", "legacy")
     # Insert the exact shared-table shape used before this change.
     shared = dict(provider_id='shared-legacy', revision=3, data=dict(name='智增增', preset_id='zhizengzeng',
         scope='shared', base_url='https://api.zhizengzeng.com/v1', api_key='old-shared-key', enabled=True,
@@ -134,7 +141,7 @@ def test_frozen_run_survives_migration_and_personal_edits(catalog):
     assert catalog.resolve('legacy', {'config_id': 'qwen3.6-plus', 'revision': 1})['api_key'] == 'old-shared-key'
     assert credentials(catalog, 'legacy') == 'new-private-key'
     catalog.bootstrap('new-member', [])
-    assert credentials(catalog, 'new-member') == 'old-shared-key'
+    assert catalog.list_providers('new-member')['providers'] == []
     with pytest.raises(ControlError, match='MODEL_PROVIDER_REMOVED'):
         catalog.provider_credentials('legacy', 'shared-legacy', 3)
     with catalog.store.engine.connect() as conn:
@@ -186,8 +193,8 @@ def test_bootstrap_from_two_workers_only_creates_one_personal_copy(catalog):
         return ModelCatalog(catalog.store, catalog.config).bootstrap('new', ['qwen3.6-plus'])
     with ThreadPoolExecutor(2) as pool:
         list(pool.map(initialize, range(2)))
-    assert len(catalog.list_providers('new')['providers']) == 1
-    assert len(catalog.list('new')['models']) == len(SUPPORTED_MODELS)
+    assert catalog.list_providers('new')['providers'] == []
+    assert catalog.list('new')['models'] == []
 
 
 def test_personal_delete_racing_admission_is_atomic(catalog):

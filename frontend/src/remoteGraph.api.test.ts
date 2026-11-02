@@ -15,7 +15,7 @@ it('uses workspace remote graph endpoints and revision without saving a test', a
   ]);
   expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual(form);
   expect(JSON.parse(fetcher.mock.calls[5][1].body)).toEqual({ connection_id: null });
-  expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('admin');
+  expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-Workspace-User')).toBe('admin');
 });
 it('loads product types through the workspace API', async () => {
   localStorage.setItem(USER_KEY, 'alice');
@@ -23,5 +23,5 @@ it('loads product types through the workspace API', async () => {
   vi.stubGlobal('fetch', fetcher);
   expect(await listRemoteGraphTypes()).toEqual({ types: [] });
   expect(fetcher.mock.calls[0][0]).toBe('/api/remote-graph-types');
-  expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('admin');
+  expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-Workspace-User')).toBe('admin');
 });

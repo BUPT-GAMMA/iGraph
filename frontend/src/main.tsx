@@ -36,6 +36,7 @@ import { ManagementPanel } from './components/ManagementPanel';
 import { DeleteProjectDialog, ProjectDialog } from './components/ProjectDialogs';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
+import { AuthGate } from './components/AuthGate';
 import { ModelSettings } from './components/ModelSettings';
 import { listModels, getSessionModel, modelErrorMessage, type ModelCatalog } from './api';
 import { parseWorkspaceRoute, writeWorkspaceRoute } from './navigation';
@@ -2214,4 +2215,4 @@ function ChatPaneWithState({ hasGraph, ...props }: any) {
 
 export default App;
 
-createRoot(document.getElementById('root')!).render(<I18nProvider><App /></I18nProvider>);
+createRoot(document.getElementById('root')!).render(<I18nProvider><AuthGate><App /></AuthGate></I18nProvider>);

@@ -14,7 +14,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from graph_engine.construction.settings import read_settings
+from graph_engine.construction.settings import read_settings, owns_server_settings
 
 
 class ConstructionLLMError(RuntimeError):
@@ -63,8 +63,10 @@ class ToolCallingLLM:
         base = next((os.environ[p + "_BASE_URL"] for p in prefixes if os.getenv(p + "_BASE_URL")), "")
         if "base_url" in saved:
             base, self._key = saved["base_url"], saved.get("api_key", "")
+        elif not owns_server_settings():
+            base, self._key = "", ""
         if not self._key or not base:
-            raise ConstructionLLMError("construction_llm_unavailable: configure GRAPH_CONSTRUCTION_API_KEY/BASE_URL or the model provider environment")
+            raise ConstructionLLMError("construction_llm_unavailable: configure your construction model API URL and API key")
         if not base.startswith(("https://", "http://")):
             raise ConstructionLLMError("construction_llm_invalid_base_url")
         self._url = base.rstrip("/") + "/chat/completions"

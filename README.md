@@ -46,11 +46,12 @@ Included examples cover financial ownership analysis, molecular properties, and 
 ## 🚀 Get started
 
 1. Follow the **[Deployment Guide](docs/guides/DEPLOYMENT.md)** to prepare a Linux server and start iGraph with Docker Compose.
-2. Open the workspace, configure your model connection, and choose an example graph or bring your own data.
+2. Open the workspace, register or sign in, configure your personal model connection, and choose an example graph or bring your own data.
 3. Ask a question, inspect the graph and results, and continue the conversation.
 
-The current release uses a **single-user workspace**. The deployment guide covers access through an SSH tunnel,
-model setup, optional GPU support, backups, and troubleshooting.
+This branch supports **persistent user accounts and private workspaces**. See the
+[multi-user upgrade notes](docs/multi-user-deployment.md) for owner login setup and data migration.
+The deployment guide covers server setup, SSH access, optional GPU support, backups, and troubleshooting.
 
 For the broader design and capabilities, read the **[Technical Report](https://igraph-docs.graphagent.workers.dev)**.
 For implementation details, see the [developer documentation](docs/README.md).

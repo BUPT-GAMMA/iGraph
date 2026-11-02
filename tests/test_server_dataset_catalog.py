@@ -163,7 +163,7 @@ def test_server_dataset_http_catalog_and_project_import(
     supported = tmp_path / "supported.txt"
     supported.write_text("admin\n", encoding="utf-8")
     monkeypatch.setenv("BACKEND_SERVER_DATASETS_DIR", str(server_root))
-    config = BackendConfig(
+    config = BackendConfig(auth_enabled=False,
         host="127.0.0.1",
         port=0,
         agent_runtime_url="http://unused-runtime",
@@ -231,7 +231,7 @@ def test_large_server_dataset_uses_prepared_snapshot_without_session_copy(
     _PreparedServerServiceClient.runtime_sessions = {}
     _PreparedServerServiceClient.prepare_calls = []
     _PreparedServerServiceClient.attach_calls = []
-    config = BackendConfig(
+    config = BackendConfig(auth_enabled=False,
         host="127.0.0.1",
         port=0,
         agent_runtime_url="http://fake-runtime",

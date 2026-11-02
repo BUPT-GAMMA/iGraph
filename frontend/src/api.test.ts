@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, validateUser, saveConstructionModelSettings } from './api';
+import { ApiError, bindRequestAccount, createSession, streamChat, uploadFile, uploadProjectDataset, consumeSseResponse, parseGraphDataResponse, USER_KEY, setAuthSession, validateUser, saveConstructionModelSettings } from './api';
 
 let unbindAccount = () => {};
 
 afterEach(() => {
   unbindAccount();
+  setAuthSession(null);
   localStorage.clear();
   vi.unstubAllGlobals();
 });
@@ -19,7 +20,7 @@ function responseFromChunks(chunks: string[]) {
   }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-describe('single-user workspace requests', () => {
+describe('authenticated workspace requests', () => {
   it('sends construction settings as a JSON object accepted by FastAPI', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ model: 'deepseek-v4-pro', has_api_key: true })));
     vi.stubGlobal('fetch', fetcher);
@@ -33,14 +34,18 @@ describe('single-user workspace requests', () => {
   });
   it.each(['', 'old-user', 'another-user'])('ignores a cached account (%s)', async cached => {
     localStorage.setItem(USER_KEY, cached);
-    unbindAccount = bindRequestAccount('stale-rendered-user');
+    setAuthSession({ user: { user_id: 'current-user', username: 'alice' }, csrf_token: 'csrf' });
+    unbindAccount = bindRequestAccount('current-user');
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ session_id: 'A' })));
     vi.stubGlobal('fetch', fetcher);
     await createSession({ initialMessagePreview: 'draft' });
-    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBe('admin');
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-User-ID')).toBeNull();
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-Workspace-User')).toBe('current-user');
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-CSRF-Token')).toBe('csrf');
+    expect(fetcher.mock.calls[0][1].credentials).toBe('same-origin');
   });
 
-  it('loads the workspace directly without a login request', async () => {
+  it('loads the authenticated workspace', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ valid: true })));
     vi.stubGlobal('fetch', fetcher);
     await validateUser();

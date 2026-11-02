@@ -120,16 +120,27 @@ export function modelErrorMessage(code?: string | null) {
   return code ? messages[code] || code : '';
 }
 
-// A stable browser-storage namespace. The backend independently binds every
-// public request to the deployment owner; stale account selections are ignored.
-export function getUserId() { return WORKSPACE_USER_ID; }
-export function setUserId(_value: string) { /* Account selection is unavailable. */ }
+// Identity is supplied by the authenticated server session, never browser storage.
+let activeUserId = '';
+let csrfToken = '';
+export function getUserId() { return activeUserId; }
+export function setUserId(value: string) { activeUserId = value; }
+export type AuthSession = { user: { user_id: string; username: string }; csrf_token: string };
+export function setAuthSession(session: AuthSession | null) {
+  activeUserId = session?.user.user_id || '';
+  csrfToken = session?.csrf_token || '';
+}
+export const getAuthSession = () => json<AuthSession>('/api/auth/session', { cache: 'no-store' });
+export const signIn = (username: string, password: string) => json<AuthSession>('/api/auth/login', modelJson('POST', { username, password }));
+export const signUp = (username: string, password: string) => json<AuthSession>('/api/auth/register', modelJson('POST', { username, password }));
+export const signOut = () => json('/api/auth/logout', modelJson('POST', {}));
+export const changePassword = (current_password: string, new_password: string) => json<AuthSession>('/api/auth/password', modelJson('POST', { current_password, new_password }));
 
 let requestAccount: { userId: string } | undefined;
 
 /** Bind requests to the account rendered by the mounted workspace. */
 export function bindRequestAccount(userId: string) {
-  const account = { userId: WORKSPACE_USER_ID };
+  const account = { userId };
   requestAccount = account;
   return () => { if (requestAccount === account) requestAccount = undefined; };
 }
@@ -137,8 +148,17 @@ export function bindRequestAccount(userId: string) {
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
-  headers.set('X-User-ID', WORKSPACE_USER_ID);
-  return fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (!path.startsWith('/api/auth/')) {
+    const uid = requestAccount?.userId || activeUserId;
+    if (uid) headers.set('X-Workspace-User', uid);
+  }
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes((options.method || 'GET').toUpperCase())) headers.set('X-CSRF-Token', csrfToken);
+  const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'same-origin', headers });
+  if (!path.startsWith('/api/auth/') && (response.status === 401 || response.status === 409)) {
+    const body = await response.clone().json().catch(() => ({}));
+    if (response.status === 401 || body?.detail?.code === 'AUTH_ACCOUNT_CHANGED') window.dispatchEvent(new Event('igraph-auth-expired'));
+  }
+  return response;
 }
 
 async function json<T>(path: string, options?: RequestInit): Promise<T> {
@@ -375,7 +395,8 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
         if (error) reject(error); else resolve(data!);
       }
       xhr.open('POST', `${API_BASE}${path}`);
-      if (identity) xhr.setRequestHeader('X-User-ID', identity);
+      if (identity) xhr.setRequestHeader('X-Workspace-User', identity);
+      if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
       xhr.setRequestHeader('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
       xhr.upload.onprogress = event => {
         if (accountChanged()) { finish(accountError()); xhr.abort(); return; }
@@ -386,7 +407,11 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
         let data: UploadResult;
         try { data = JSON.parse(xhr.responseText); }
         catch { finish(new ApiError(xhr.status, tr('The upload response was invalid. Try again.', '上传响应无效，请重试'))); return; }
-        if (xhr.status < 200 || xhr.status >= 300) { finish(ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'))); return; }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const error = ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'));
+          if (xhr.status === 401 || error.code === 'AUTH_ACCOUNT_CHANGED') window.dispatchEvent(new Event('igraph-auth-expired'));
+          finish(error); return;
+        }
         if (data?.success !== true || typeof data.file_token !== 'string' || !data.file_token) { finish(new ApiError(xhr.status, tr('The upload did not complete. Try again.', '上传未成功，请重试'))); return; }
         finish(undefined, data);
       };

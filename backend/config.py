@@ -26,6 +26,8 @@ class BackendConfig:
     stream_heartbeat_seconds: float = 15.0
     auth_trusted_proxies: tuple[str, ...] = ("127.0.0.1", "::1")
     auth_allowed_origins: tuple[str, ...] = ()
+    auth_enabled: bool = True
+    auth_database: Path | None = None
 
     @classmethod
     def from_env(cls) -> "BackendConfig":
@@ -55,4 +57,6 @@ class BackendConfig:
             ),
             auth_trusted_proxies=tuple(value.strip() for value in os.getenv("BACKEND_AUTH_TRUSTED_PROXIES", "127.0.0.1,::1").split(",") if value.strip()),
             auth_allowed_origins=tuple(value.strip() for value in os.getenv("BACKEND_AUTH_ALLOWED_ORIGINS", "").split(",") if value.strip()),
+            auth_enabled=os.getenv("BACKEND_AUTH_ENABLED", "true").lower() not in {"false", "0", "no"},
+            auth_database=Path(os.getenv("BACKEND_AUTH_DATABASE", str(data_root / "backend" / "auth.sqlite3"))).resolve(),
         )

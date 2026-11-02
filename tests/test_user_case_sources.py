@@ -61,7 +61,7 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
     install_borylation_preset(tmp_path)
     supported = tmp_path / "supported.txt"
     supported.write_text("admin\nalice\n", encoding="utf-8")
-    config = BackendConfig(host="127.0.0.1", port=0, agent_runtime_url="http://runtime", graph_engine_url="http://graph",
+    config = BackendConfig(auth_enabled=False, host="127.0.0.1", port=0, agent_runtime_url="http://runtime", graph_engine_url="http://graph",
         agent_id="igraph-agent", request_timeout=30, stream_timeout=30, users_file=tmp_path / "users.json",
         projects_file=tmp_path / "projects.json", supported_ids_file=supported, admin_user_id="admin",
         default_admin_model="test", default_user_model="test", custom_models_file=tmp_path / "custom.json")

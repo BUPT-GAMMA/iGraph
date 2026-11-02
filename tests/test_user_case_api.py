@@ -16,7 +16,7 @@ def test_bundled_examples_are_available_idempotent_and_user_owned(tmp_path, monk
     monkeypatch.setenv("IGRAPH_RUN_CANCEL_ENABLED", "false")
     monkeypatch.setattr(backend_app, "ServiceClient", _PreparedServerServiceClient)
     _PreparedServerServiceClient.runtime_sessions = {}
-    config = BackendConfig(host="127.0.0.1", port=0, agent_runtime_url="http://fake-runtime", graph_engine_url="http://fake-graph", agent_id="igraph-agent", request_timeout=1, stream_timeout=1,
+    config = BackendConfig(auth_enabled=False, host="127.0.0.1", port=0, agent_runtime_url="http://fake-runtime", graph_engine_url="http://fake-graph", agent_id="igraph-agent", request_timeout=1, stream_timeout=1,
         users_file=tmp_path/"users.json", projects_file=tmp_path/"projects.json", supported_ids_file=supported,
         admin_user_id="admin", default_admin_model="test", default_user_model="test", custom_models_file=tmp_path/"custom.json")
     async def run():

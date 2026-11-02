@@ -1,5 +1,7 @@
 # iGraph Deployment Guide
 
+> This branch now requires user login. Read the [multi-user upgrade notes](../multi-user-deployment.md) for initial owner access and persistent account storage; the single-user instructions below describe the earlier release.
+
 > Deployment reference updated: October 17, 2026. English edition: October 19, 2026.
 > This guide translates the supplied deployment notes, which were prepared from the inspected working copy, server configuration, and Docker/NVIDIA documentation. Server details and credentials have been redacted. Recorded versions and observations describe that deployment; this documentation update does not constitute a fresh deployment or GPU validation.
 >

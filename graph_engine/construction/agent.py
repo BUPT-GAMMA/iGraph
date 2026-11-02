@@ -1073,6 +1073,7 @@ class TabularConstructionSubAgent:
                     if original.suffix.lower() == source_path.suffix.lower():
                         options["table_name"] = original.stem
         experience_store = self._experience_store
+        user_id = None
         if self._data_root is not None:
             # The user identity comes from ConstructionStore's access-checked
             # retained path, never from dataset options or a model argument.
@@ -1081,15 +1082,18 @@ class TabularConstructionSubAgent:
             if len(parts) != 6 or parts[0] != "users" or parts[2] != "datasets" or parts[4] != "construction":
                 raise ValueError("Invalid retained construction source location")
             user_directory = self._data_root / "users" / parts[1]
+            user_id = parts[1]
             memory_path = user_directory / "construction-experience" / "strategies.sqlite3"
             if not memory_path.resolve().is_relative_to(user_directory.resolve()):
                 raise ValueError("Experience path escapes the construction user's storage")
             config = EvolutionConfig.from_options(options)
             if config.mode == "llm" and config.experience_enabled:
                 experience_store = DomainExperienceStore(memory_path)
-        return self.run(source_path, options, report_path=source_path.parent / "evolution-report.json",
-                        progress_path=source_path.parent / "construction-progress.json",
-                        build_id=record.get("build_id"), experience_store=experience_store).graph
+        from graph_engine.construction.settings import construction_identity
+        with construction_identity(user_id):
+            return self.run(source_path, options, report_path=source_path.parent / "evolution-report.json",
+                            progress_path=source_path.parent / "construction-progress.json",
+                            build_id=record.get("build_id"), experience_store=experience_store).graph
 
     def run(self, source_path, options=None, *, report_path=None, progress_path=None,
             build_id=None, experience_store=None):
