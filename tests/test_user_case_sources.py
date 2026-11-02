@@ -59,6 +59,8 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
     monkeypatch.setenv("IGRAPH_RUN_CANCEL_ENABLED", "false")
     install(tmp_path)
     install_borylation_preset(tmp_path)
+    from graph_engine.bundled_presets import install_bundled_preset
+    install_bundled_preset(tmp_path, resources=Path(__file__).resolve().parents[1] / "graph_engine/resources/finance_risk")
     supported = tmp_path / "supported.txt"
     supported.write_text("admin\nalice\n", encoding="utf-8")
     config = BackendConfig(auth_enabled=False, host="127.0.0.1", port=0, agent_runtime_url="http://runtime", graph_engine_url="http://graph",
@@ -91,7 +93,7 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
                 assert response.status_code == 200, response.text
                 return response.json()["datasets"]
             rows = await sources()
-            assert {row["metadata"]["user_case_id"] for row in rows} == {"tianlongbabu", "borylation"}
+            assert {row["metadata"]["user_case_id"] for row in rows} == {"finance_risk", "tianlongbabu", "borylation"}
             assert {row["file_type"] for row in rows} == {"txt", "npz"}
             assert all(row["project_id"] is None and row["status"] == "ready" for row in rows)
             ids = {row["dataset_id"] for row in rows}
@@ -99,6 +101,22 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
             other = await sources(headers={"X-User-ID": "alice"})
             assert ids == {row["dataset_id"] for row in other}
             for row in rows:
+                if row["metadata"]["user_case_id"] == "finance_risk":
+                    assert row["source_kind"] == "server" and row["file_type"] == "npz"
+                    assert row["metadata"]["source_relative_path"] == "finance-risk.npz"
+                    from backend.user_cases import background_for_dataset
+                    from types import SimpleNamespace
+                    record = SimpleNamespace(**{key: row[key] for key in ("dataset_id", "status", "source_kind", "file_type", "metadata")},
+                        storage_path=str(tmp_path / "server_datasets" / "finance-risk.npz"))
+                    assert background_for_dataset(record)["case_id"] == "finance_risk"
+                    graph_data = GraphData.load(record.storage_path)
+                    assert graph_data.num_nodes == 19436 and graph_data.num_edges == 26872
+                    removed = await client.delete("/api/personal-datasets/" + row["dataset_id"])
+                    assert removed.status_code == 200, removed.text
+                    assert row["dataset_id"] not in {item["dataset_id"] for item in await sources()}
+                    assert Path(record.storage_path).is_file()
+                    ids.remove(row["dataset_id"])
+                    continue
                 if row["file_type"] == "npz":
                     assert row["source_kind"] == "server"
                     assert row["metadata"]["source_relative_path"] == "borylation-story.npz"
@@ -148,7 +166,7 @@ def test_personal_api_installs_sources_once_with_real_engine_authorization(tmp_p
             assert removed.status_code == 200, removed.text
             assert store.status("admin", selected["dataset_id"])["status"] == "not_built"
             assert {row["dataset_id"] for row in await sources()} == ids - {selected["dataset_id"]}
-            molecule = next(row for row in rows if row["file_type"] == "npz")
+            molecule = next(row for row in rows if row["metadata"]["user_case_id"] == "borylation")
             molecule_endpoint = "/api/personal-datasets/" + molecule["dataset_id"]
             renamed = await client.patch(molecule_endpoint, json={"name": "我的分子"})
             assert renamed.status_code == 200, renamed.text
