@@ -6,6 +6,8 @@ import { Icon } from './Icon';
 import { getUserId } from '../api';
 import { useI18n, type Translate } from '../i18n';
 import { pinKey, readPins } from '../sessionPins';
+import { useAccount } from './AuthGate';
+import './SidebarAccount.css';
 
 function sessionTitle(session: Session, t: Translate) { return session.title || session.preview || session.last_message || t('Untitled analysis', '未命名分析'); }
 
@@ -71,6 +73,7 @@ function SessionRunIndicator({ status, unread, t }: { status?: string; unread?: 
 
 export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
+  const account = useAccount();
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
   const pinned = pinState.userId === userId ? pinState.ids : readPins(userId);
   useEffect(() => {
@@ -235,9 +238,24 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
       {sessionListError && <span role="alert">{sessionListError}</span>}
       {hasMoreSessions && <button className="text-button" onClick={onLoadMoreSessions} disabled={loadingSessions}>{loadingSessions ? t('Loading…', '加载中…') : sessionListError ? t('Retry loading tasks', '重试加载任务') : t('Load older tasks', '加载更多任务')}</button>}
     </div>
-    <div className="sidebar-footer">
+    <div className="sidebar-footer sidebar-account-footer">
+      {account && <section className="sidebar-account-card" aria-label={t('My account', '我的账户')}>
+        <div className="sidebar-account-identity">
+          <span className="sidebar-account-avatar" aria-hidden="true">{account.username.slice(0, 1).toUpperCase()}</span>
+          <div className="sidebar-account-info">
+            <strong title={account.username}>{account.username}</strong>
+            <span>{t('Personal account', '个人账户')}</span>
+          </div>
+        </div>
+        <div className="sidebar-account-actions">
+          <button type="button" className="sidebar-account-password" onClick={account.openPassword} title={t('Change password', '修改密码')}><Icon name="key" size={15} /><span>{t('Password', '修改密码')}</span></button>
+          <button type="button" className="sidebar-account-logout" onClick={() => void account.logout()}><Icon name="log-out" size={15} /><span>{t('Sign out', '退出登录')}</span></button>
+        </div>
+      </section>}
+      <div className="sidebar-account-preferences">
       <button className="sidebar-theme" onClick={toggleLanguage} aria-label={language === 'en' ? 'Switch to Chinese' : '切换到英文'} title={language === 'en' ? 'Switch to Chinese' : '切换到英文'}><span lang={language === 'en' ? 'zh-CN' : 'en'}>{language === 'en' ? '中' : 'EN'}</span></button>
       <button className="sidebar-theme" onClick={onTheme} aria-label={dark ? t('Switch to light theme', '切换到浅色主题') : t('Switch to dark theme', '切换到深色主题')} title={dark ? t('Switch to light theme', '切换到浅色主题') : t('Switch to dark theme', '切换到深色主题')}><Icon name={dark ? 'sun' : 'moon'} size={17} /></button>
+      </div>
     </div>
     </div>
   </aside>

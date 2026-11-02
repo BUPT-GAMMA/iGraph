@@ -1,14 +1,11 @@
 import { BrandLogo, Icon } from './Icon';
 import { useI18n } from '../i18n';
-import { useAccount } from './AuthGate';
 
 export function TopBar({ onMenu, onHome, onModels }: { onMenu: () => void; onHome: () => void; onModels?: () => void }) {
   const { language, setLanguage, t } = useI18n();
-  const account = useAccount();
   return <header className="topbar">
     <button type="button" className="brand-lockup" onClick={onHome} aria-label={t('Go to home', '返回主界面')} title={t('Go to home', '返回主界面')}><span className="brand-mark"><BrandLogo /></span><strong>iGraph</strong></button>
     <div className="top-actions">
-      {account && <div className="auth-account"><span className="auth-account-name" title={account.username}>{account.username}</span><button onClick={account.openPassword}>{t('Password', '修改密码')}</button><button onClick={() => void account.logout()}>{t('Sign out', '退出登录')}</button></div>}
       {onModels && <button className="model-services-trigger" onClick={onModels} aria-label={t('Model services', '模型服务')}><Icon name="cube" size={16} /><span>{t('Model services', '模型服务')}</span></button>}
       <div className="language-switcher" role="group" aria-label={t('Language', '语言')}>
         <button type="button" lang="en" className={language === 'en' ? 'is-active' : ''} aria-pressed={language === 'en'} onClick={() => setLanguage('en')}>EN</button>

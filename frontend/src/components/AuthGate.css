@@ -17,9 +17,6 @@
 .authenticated-workspace { display: contents; }
 .auth-page .brand-logo-light, .auth-overlay .brand-logo-light { display: block; }
 .auth-page .brand-logo-dark, .auth-overlay .brand-logo-dark { display: none; }
-.auth-account { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.auth-account button { color: inherit; background: transparent; border: 1px solid var(--border, #dce4ef); border-radius: 7px; padding: 7px 9px; cursor: pointer; }
-.auth-account-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-overlay { position: fixed; inset: 0; z-index: 1500; display: grid; place-items: center; padding: 18px; background: #17243c66; }
 .auth-session-error { position: fixed; right: 20px; bottom: 20px; z-index: 1600; background: #fff1f2; color: #ad1d28; padding: 14px; border-radius: 10px; }
-@media (max-width: 640px) { .auth-card { padding: 25px; } .auth-account-name { display: none; } .auth-account { gap: 4px; } .auth-account button { font-size: 11px; padding: 5px; } }
+@media (max-width: 640px) { .auth-card { padding: 25px; } }
