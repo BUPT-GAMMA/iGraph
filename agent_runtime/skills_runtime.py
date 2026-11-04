@@ -62,10 +62,12 @@ def bundled_skills_path(config: AgentRuntimeConfig | None = None) -> Path:
         canonical = _canonical_name(source_dir.name)
         target_dir = target / canonical
         shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
-        target_file = target_dir / "SKILL.md"
-        body = target_file.read_text(encoding="utf-8")
-        body = re.sub(r"(?m)^name:\s*[^\r\n]+", f"name: {canonical}", body, count=1)
-        target_file.write_text(body, encoding="utf-8")
+        for filename in ("SKILL.md", "SKILL.en.md"):
+            target_file = target_dir / filename
+            if target_file.is_file():
+                body = target_file.read_text(encoding="utf-8")
+                body = re.sub(r"(?m)^name:\s*[^\r\n]+", f"name: {canonical}", body, count=1)
+                target_file.write_text(body, encoding="utf-8")
     return target
 
 

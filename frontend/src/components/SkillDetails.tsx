@@ -23,7 +23,7 @@ function errorMessage(value: unknown, t: Translate): string {
 }
 
 export function SkillDetails({ skill, onClose, children, summary, closeLabel }: Props) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const dialog = useRef<HTMLDialogElement>(null);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
@@ -49,9 +49,9 @@ export function SkillDetails({ skill, onClose, children, summary, closeLabel }: 
     setLoading(true); setContent(''); setError('');
     async function load() {
       try {
-        const query = ['bundled', 'user', 'review_queue'].includes(skill.source || '')
-          ? `?source=${encodeURIComponent(skill.source!)}` : '';
-        const response = await apiFetch(`/api/skills/${encodeURIComponent(skill.name || '')}${query}`, { signal: controller.signal });
+        const query = new URLSearchParams({ language });
+        if (['bundled', 'user', 'review_queue'].includes(skill.source || '')) query.set('source', skill.source!);
+        const response = await apiFetch(`/api/skills/${encodeURIComponent(skill.name || '')}?${query}`, { signal: controller.signal });
         const data = await response.json();
         if (!response.ok) throw new Error(errorMessage(data, t));
         if (typeof data.skill?.content !== 'string') throw new Error(t('The skill response is invalid. Try again.', 'Skill 返回内容无效，请重试'));
@@ -64,7 +64,7 @@ export function SkillDetails({ skill, onClose, children, summary, closeLabel }: 
     }
     void load();
     return () => { active = false; controller.abort(); };
-  }, [skill.name, skill.source, attempt, t]);
+  }, [skill.name, skill.source, attempt, language, t]);
 
   const effectiveCloseLabel = closeLabel || t('Close skill details', '关闭 Skill 详情');
 

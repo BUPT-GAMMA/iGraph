@@ -317,3 +317,64 @@ def test_markdown_upload_rejects_invalid_files_without_writing(skill_client, fil
     assert response.status_code == status, response.text
     root = candidate_skills_path(config, "alice")
     assert not root.exists() or not list(root.iterdir())
+
+def test_bundled_skills_switch_language_without_changing_runtime_instructions(skill_client):
+    import re
+    from agno.skills import LocalSkills
+
+    client, config = skill_client
+    original = client.get("/internal/skills?source=bundled", headers=_headers()).json()["skills"]
+    english = client.get("/internal/skills?source=bundled&language=en", headers=_headers()).json()["skills"]
+    assert len(english) == len(original) == 18
+    assert [row["name"] for row in english] == [row["name"] for row in original]
+    for zh, en in zip(original, english):
+        assert en["description"] and en["description"] != zh["description"]
+        assert not re.search(r"[\u4e00-\u9fff]", en["description"])
+        for key in ("name", "source", "domain", "version", "risk_level", "path"):
+            assert en[key] == zh[key]
+        path = f'/internal/skills/{en["name"]}'
+        translated = client.get(path, params={"source": "bundled", "language": "en"}, headers=_headers()).json()["skill"]
+        restored = client.get(path, params={"source": "bundled", "language": "zh"}, headers=_headers()).json()["skill"]
+        assert translated["description"] == en["description"]
+        assert not re.search(r"[\u4e00-\u9fff]", translated["content"])
+        assert f'name: {en["name"]}\n' in translated["content"]
+        assert restored["content"] == Path(zh["path"]).read_text(encoding="utf-8")
+        assert restored["description"] == zh["description"]
+        assert translated["content"] != restored["content"]
+
+    # The extra display documents must not duplicate or replace executable skills.
+    loaded = LocalSkills(str(bundled_skills_path(config))).load()
+    assert len(loaded) == len(original)
+    assert {skill.name: skill.description for skill in loaded} == {
+        row["name"]: row["description"] for row in original
+    }
+
+
+def test_english_skill_requests_preserve_fallback_and_user_isolation(skill_client):
+    client, config = skill_client
+    body = "---\nname: private-helper\ndescription: 用户原文\n---\n\n用户技能正文"
+    for source, root in (("user", user_skills_path(config, "alice")),
+                         ("review_queue", candidate_skills_path(config, "alice"))):
+        skill_dir = root / "private-helper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+        (skill_dir / "SKILL.en.md").write_text("Unreviewed alternative", encoding="utf-8")
+        query = {"source": source, "language": "en"}
+        rows = client.get("/internal/skills", params=query, headers=_headers()).json()["skills"]
+        assert rows[0]["description"] == "用户原文"
+        fetched = client.get("/internal/skills/private-helper", params=query, headers=_headers()).json()["skill"]
+        assert fetched["content"] == body
+        assert client.get("/internal/skills/private-helper", params=query, headers=_headers("bob")).status_code == 404
+
+    fallback = bundled_skills_path(config) / "no-translation"
+    fallback.mkdir()
+    (fallback / "SKILL.md").write_text("---\nname: no-translation\ndescription: Original\n---\nOriginal body", encoding="utf-8")
+    result = client.get("/internal/skills/no-translation?source=bundled&language=en", headers=_headers()).json()["skill"]
+    assert result["description"] == "Original"
+    assert result["content"].endswith("Original body")
+
+
+@pytest.mark.parametrize("path", ["/internal/skills", "/internal/skills/graph-state-check"])
+def test_skill_language_must_be_supported(skill_client, path):
+    client, _config = skill_client
+    assert client.get(path, params={"language": "../../secret"}, headers=_headers()).status_code == 422

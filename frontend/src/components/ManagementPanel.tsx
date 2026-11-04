@@ -20,6 +20,7 @@ const METADATA_LABELS: Record<string, readonly [english: string, chinese: string
   bundled: ['Built in', '内置'],
   custom: ['Custom', '自定义'],
   user: ['Added by user', '用户添加'],
+  review_queue: ['Pending review', '待审核'],
   workspace: ['Workspace', '工作区'],
   low: ['Low risk', '低风险'],
   medium: ['Medium risk', '中风险'],
@@ -44,7 +45,7 @@ async function readJson(path: string, t: Translate) {
 }
 
 export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: () => void; initialTab?: 'memory' | 'skills' }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const { askConfirm, actionDialog } = useActionDialog();
   const [tab, setTab] = useState<'memory' | 'skills'>(initialTab);
   const [query, setQuery] = useState('');
@@ -62,10 +63,10 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
   useEffect(() => {
     let active = true;
     setLoading(true); setError('');
-    const request = tab === 'memory' ? readJson('/api/memory?scope=long_term&limit=200', t) : readJson('/api/skills?source=all', t);
+    const request = tab === 'memory' ? readJson('/api/memory?scope=long_term&limit=200', t) : readJson(`/api/skills?source=all&language=${language}`, t);
     request.then(data => { if (!active) return; if (tab === 'memory') setMemories(Array.isArray(data.items) ? data.items : []); else setSkills(Array.isArray(data.skills) ? data.skills : []); }).catch(cause => { if (active) setError(cause.message || t('Failed to load management data', '管理数据读取失败')); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [tab, t]);
+  }, [tab, language, t]);
 
 
 
@@ -95,7 +96,7 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
       const response = await apiFetch('/api/skills/upload', { method: 'POST', body });
       const payload = await response.json();
       if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : t('Failed to upload skill', '技能上传失败'));
-      const data = await readJson('/api/skills?source=all', t);
+      const data = await readJson(`/api/skills?source=all&language=${language}`, t);
       setSkills(Array.isArray(data.skills) ? data.skills : []);
     } catch (cause) { setError(cause instanceof Error ? cause.message : t('Failed to upload skill', '技能上传失败')); }
     finally { setUploading(false); }
@@ -110,7 +111,7 @@ export function ManagementPanel({ onClose, initialTab = 'memory' }: { onClose: (
       const response = await apiFetch('/api/skills/' + encodeURIComponent(name) + '/' + action,
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       if (!response.ok) throw new Error(t('Failed to review skill', '技能审核失败'));
-      const data = await readJson('/api/skills?source=all', t);
+      const data = await readJson(`/api/skills?source=all&language=${language}`, t);
       setSkills(Array.isArray(data.skills) ? data.skills : []); setSelectedSkill(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : t('Failed to review skill', '技能审核失败')); }
     finally { setSkillBusy(false); }

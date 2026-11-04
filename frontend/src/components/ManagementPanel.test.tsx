@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ManagementPanel } from './ManagementPanel';
+import { I18nProvider, LANGUAGE_STORAGE_KEY } from '../i18n';
 
 const { apiFetchMock } = vi.hoisted(() => ({ apiFetchMock: vi.fn() }));
 
@@ -86,7 +87,7 @@ describe('ManagementPanel', () => {
     fireEvent.click(screen.getByRole('tab', { name: /技能/ }));
 
     await waitFor(() => expect(screen.getByText('Graph Audit')).toBeTruthy());
-    expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/skills?source=all');
+    expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/skills?source=all&language=zh');
     fireEvent.change(screen.getByPlaceholderText('搜索技能'), { target: { value: 'audit' } });
     expect(screen.queryByText('Train Model')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Graph Audit/ }));
@@ -139,4 +140,32 @@ describe('ManagementPanel', () => {
     await waitFor(() => expect(screen.getAllByText('内置').length).toBeGreaterThan(0));
     expect(screen.queryByRole('button', { name: '删除技能' })).toBeNull();
   });
+});
+
+it('switches skill summaries and an open reader with the interface language', async () => {
+  apiFetchMock.mockImplementation(async path => {
+    const url = new URL(String(path), 'http://localhost');
+    const english = url.searchParams.get('language') === 'en';
+    if (url.pathname === '/api/skills') return jsonResponse({ skills: [{
+      name: 'graph-helper', source: 'bundled',
+      description: english ? 'Find important nodes' : '查找重要节点',
+    }] });
+    return jsonResponse({ skill: { content: english ? '# Centrality instructions' : '# 中心性分析步骤' } });
+  });
+  render(<I18nProvider initialLanguage="zh"><ManagementPanel initialTab="skills" onClose={vi.fn()} /></I18nProvider>);
+  await screen.findByText('查找重要节点');
+  fireEvent(window, new StorageEvent('storage', { key: LANGUAGE_STORAGE_KEY, newValue: 'en' }));
+  await screen.findByText('Find important nodes');
+  expect(screen.queryByText('查找重要节点')).toBeNull();
+  fireEvent.change(screen.getByPlaceholderText('Search skills'), { target: { value: 'important' } });
+  fireEvent.click(screen.getByRole('button', { name: /graph-helper/ }));
+  await screen.findByText('# Centrality instructions');
+  expect(apiFetchMock).toHaveBeenCalledWith('/api/skills/graph-helper?language=en&source=bundled', expect.anything());
+  fireEvent(window, new StorageEvent('storage', { key: LANGUAGE_STORAGE_KEY, newValue: 'zh' }));
+  await screen.findByText('# 中心性分析步骤');
+  expect(screen.queryByText('# Centrality instructions')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '关闭技能详情' }));
+  fireEvent.change(screen.getByPlaceholderText('搜索技能'), { target: { value: '' } });
+  await screen.findByText('查找重要节点');
+  expect(apiFetchMock).toHaveBeenCalledWith('/api/skills?source=all&language=zh');
 });

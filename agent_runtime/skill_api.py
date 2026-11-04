@@ -145,9 +145,18 @@ def _markdown_upload(raw: bytes, filename: str) -> tuple[str, str]:
     return name, f"---\n{header}\n---\n\n{instructions}\n"
 
 
-def _entry(skill_dir: Path, source: str) -> dict:
+def _content_file(skill_dir: Path, source: str, language: str) -> Path:
+    # Translations are presentation assets, not additional executable skills.
+    translated = skill_dir / "SKILL.en.md"
+    if source == "bundled" and language == "en" and translated.is_file():
+        return translated
+    return skill_dir / "SKILL.md"
+
+
+def _entry(skill_dir: Path, source: str, language: str = "zh") -> dict:
     skill_file = skill_dir / "SKILL.md"
     meta = _frontmatter(skill_file)
+    localized = _frontmatter(_content_file(skill_dir, source, language))
     skill_meta = meta.get("metadata")
     if not isinstance(skill_meta, dict):
         skill_meta = {}
@@ -160,7 +169,7 @@ def _entry(skill_dir: Path, source: str) -> dict:
             product_meta = {}
     return {
         "name": str(meta.get("name") or skill_dir.name),
-        "description": str(meta.get("description") or product_meta.get("description") or ""),
+        "description": str(localized.get("description") or meta.get("description") or product_meta.get("description") or ""),
         "domain": str(meta.get("domain") or skill_meta.get("domain") or product_meta.get("domain") or "general"),
         "version": str(meta.get("version") or skill_meta.get("version") or product_meta.get("version") or "1.0.0"),
         "risk_level": str(
@@ -173,12 +182,12 @@ def _entry(skill_dir: Path, source: str) -> dict:
     }
 
 
-def _iter_skills(root: Path, source: str):
+def _iter_skills(root: Path, source: str, language: str = "zh"):
     if not root.exists():
         return
     for child in sorted(root.iterdir()):
         if child.is_dir() and (child / "SKILL.md").is_file():
-            yield _entry(child, source)
+            yield _entry(child, source, language)
 
 
 def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
@@ -260,19 +269,19 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
         return {"success": True, "name": name, "source": "review_queue"}
 
     @router.get("")
-    def list_skills(request: Request, source: str = "all"):
+    def list_skills(request: Request, source: str = "all", language: Literal["en", "zh"] = "zh"):
         uid = _user_id(request)
         rows: list[dict] = []
         if source in {"all", "bundled"}:
-            rows.extend(_iter_skills(bundled_skills_path(config), "bundled") or [])
+            rows.extend(_iter_skills(bundled_skills_path(config), "bundled", language) or [])
         if source in {"all", "user"}:
-            rows.extend(_iter_skills(user_skills_path(config, uid), "user") or [])
+            rows.extend(_iter_skills(user_skills_path(config, uid), "user", language) or [])
         if source in {"all", "review_queue"}:
-            rows.extend(_iter_skills(candidate_skills_path(config, uid), "review_queue") or [])
+            rows.extend(_iter_skills(candidate_skills_path(config, uid), "review_queue", language) or [])
         return {"success": True, "skills": rows}
 
     @router.get("/{name}")
-    def get_skill(name: str, request: Request, source: str = "all"):
+    def get_skill(name: str, request: Request, source: str = "all", language: Literal["en", "zh"] = "zh"):
         uid = _user_id(request)
         normalized = _safe_name(name)
         roots = {
@@ -294,8 +303,8 @@ def create_skill_router(config: AgentRuntimeConfig) -> APIRouter:
         for skill_dir, source in candidates:
             skill_file = skill_dir / "SKILL.md"
             if skill_file.is_file():
-                payload = _entry(skill_dir, source)
-                payload["content"] = skill_file.read_text(encoding="utf-8")
+                payload = _entry(skill_dir, source, language)
+                payload["content"] = _content_file(skill_dir, source, language).read_text(encoding="utf-8")
                 return {"success": True, "skill": payload}
         raise HTTPException(status_code=404, detail="Skill not found")
 
