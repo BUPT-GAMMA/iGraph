@@ -35,6 +35,8 @@ type Props = {
   onCloseMobile: () => void;
   onNew: () => void;
   onNewProject: () => void;
+  onProjects?: () => void;
+  projectsActive?: boolean;
   onNewInProject: (id: string) => void;
   onProjectDatasets: (id: string) => void;
   onEditProject: (project: Project) => void;
@@ -71,7 +73,7 @@ function SessionRunIndicator({ status, unread, t }: { status?: string; unread?: 
   return <i className={`session-run-indicator is-static ${status || ''}`} role="status" aria-label={statusLabel} title={statusLabel} />;
 }
 
-export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, activeProjectId, userId, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onNewProject, onProjects, projectsActive, onNewInProject, onProjectDatasets, onEditProject, onDeleteProject, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
   const account = useAccount();
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
@@ -203,7 +205,11 @@ export function Sidebar({ projects, sessions, hasMoreSessions = false, loadingSe
     </nav>
     <div className="sidebar-scroll">
       <section className="sidebar-projects">
-        <div className="sidebar-section-head"><span>{t('Projects', '项目')}</span><button onClick={() => runAction(() => { onNewProject(); onCloseMobile(); })} title={t('Create project', '创建项目')} aria-label={t('Create project', '创建项目')}><Icon name="plus" size={15} /></button></div>
+        <div className="sidebar-section-head">
+          {onProjects ? <button type="button" className="sidebar-project-catalog-link" aria-current={projectsActive ? 'page' : undefined} onClick={() => { onProjects(); onCloseMobile(); }}>
+            <Icon name="folder" size={15} /><span>{t('My projects', '我的项目')}</span>
+          </button> : <span>{t('Projects', '项目')}</span>}
+          <button onClick={() => runAction(() => { onNewProject(); onCloseMobile(); })} title={t('Create project', '创建项目')} aria-label={t('Create project', '创建项目')}><Icon name="plus" size={15} /></button></div>
         <div className="project-list">
           {projects.length === 0 ? null : projects.map(project => {
             const expanded = expandedProjects.has(project.project_id);

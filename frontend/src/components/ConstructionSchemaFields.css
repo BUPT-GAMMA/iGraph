@@ -23,3 +23,14 @@
 .csv-bundle-name textarea { box-sizing: border-box; width: 100%; resize: vertical; min-height: 70px; padding: 9px 11px; border: 1px solid var(--border, #dbe3ec); border-radius: 6px; background: var(--bg, #fff); color: inherit; font: inherit; }
 [data-theme="dark"] .csv-bundle-name textarea { background: #111827; border-color: #334155; }
 @media (max-width: 720px) { .construction-schema-fields { margin: 0 15px 15px; }.schema-table-grid { grid-template-columns: 1fr; } }
+
+.csv-config-title { display: flex; align-items: center; gap: 9px; }
+.csv-config-title > svg { color: var(--accent); }
+.csv-bundle-dialog .csv-config-title > h2 { margin: 0; }
+.csv-config-basics { display: grid; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: 9px; }
+.csv-config-basics h3, .csv-config-section-title { margin: 0; font-size: 13px; }
+.csv-config-basics .csv-bundle-name { margin-bottom: 0; }
+.csv-bundle-body > .csv-config-section-title { margin-top: 8px; }
+.csv-upload-preview.source-data-preview { margin: 9px 0; padding: 7px 9px; }
+.csv-upload-preview summary { color: var(--accent-strong); font-size: 11px; font-weight: 650; cursor: pointer; }
+.csv-upload-preview .source-preview-table-scroll { margin-top: 8px; }

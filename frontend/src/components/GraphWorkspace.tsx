@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { createGraphCanvasState, GraphCanvas } from './GraphCanvas';
 import { MoleculeCanvas } from './MoleculeCanvas';
 import { GraphCoverage } from './GraphCoverage';
+import { GraphArchitectureLayer } from './GraphArchitectureLayer';
 import { graphIndex, previewGraph } from '../graphPreview';
 import { graphNodeLabel, financeNodeTypeLabel } from '../financeNodeLabels';
 import { normalizeHighlights } from '../graphAppearance';
@@ -111,6 +112,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
   if (!sameWorkspaceGraph(stableDataRef.current, data)) stableDataRef.current = data;
   const renderedData = stableDataRef.current;
   const [searchOpen, setSearchOpen] = useState(false);
+  const [graphLayer, setGraphLayer] = useState<'instances' | 'architecture'>('instances');
   const [query, setQuery] = useState('');
   const [layout, setLayout] = useState<LayoutMode>('force');
   const [connectedOnly, setConnectedOnly] = useState(false);
@@ -151,6 +153,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     if (id && index.nodes.has(id) && !preview.nodes.some(node => node.id === id) && !filterMatches && !depth) setFocusId(id);
   }, [selected, index, preview.nodes, filterMatches, depth]);
   const schemaMode = renderedData?.visualization_kind === 'schema';
+  const showLayerSwitch = !embedded && !schemaMode && renderedData?.schema_kind !== 'tables';
+  const architectureOpen = showLayerSwitch && graphLayer === 'architecture';
+  useEffect(() => setGraphLayer('instances'), [canvasIdentity]);
   const showMolecule = molecularCase && !schemaMode && renderedData?.schema_kind !== 'tables';
   const selectedId = String(selected?.id ?? '');
   const selectedInfo = selected ? index.nodes.get(String(selected.id)) : undefined;
@@ -159,7 +164,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
     : undefined;
   useEffect(() => {
     setSelectedDetail(null);
-    if (!selectedId || !sessionId || schemaMode || showMolecule) return;
+    if (!selectedId || !sessionId || schemaMode || showMolecule || architectureOpen) return;
     const controller = new AbortController();
     void visualizeGraph(sessionId, { node_names: [selectedId], include_community: false, max_nodes: 1 }, controller.signal)
       .then(result => {
@@ -170,7 +175,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
         if (!(cause && typeof cause === 'object' && 'name' in cause && cause.name === 'AbortError')) setSelectedDetail(null);
       });
     return () => controller.abort();
-  }, [datasetKey, schemaMode, selectedId, sessionId, showMolecule]);
+  }, [datasetKey, schemaMode, selectedId, sessionId, showMolecule, architectureOpen]);
   const locate = (id: string) => { setFocusId(id); const node = index.nodes.get(id); if (node) onSelect(node); };
   const changeTab = (nextTab: Tab) => {
     if (tab === 'Graph' && nextTab !== 'Graph') {
@@ -248,7 +253,12 @@ export const GraphWorkspace = memo(function GraphWorkspace({ data, view, dataset
               : view?.status === 'failed' ? <div className="graph-empty"><strong>{t('Failed to load graph', '图加载失败')}</strong><span>{view.error}</span></div>
                 : !data ? <div className="graph-empty"><div className="empty-icon small"><BrandLogo /></div><strong>{t('No graph yet', '暂无图')}</strong><span>{t('Load data or request a graph to see analysis results here.', '加载数据或发送建图请求后，这里会显示图分析结果。')}</span></div>
                   : tab === 'Graph' ? <>
-                    {showMolecule ? <MoleculeCanvas sessionId={sessionId} datasetKey={datasetKey} highlights={allHighlights} selected={selected} onSelect={onSelect} /> : <>
+                    {showLayerSwitch && <div className="graph-layer-switch" role="group" aria-label={t('Graph layers', '图可视化层')}>
+                      <button type="button" aria-pressed={graphLayer === 'instances'} onClick={() => setGraphLayer('instances')}><Icon name="graph" size={14} />{t('Instance layer', '实例层')}</button>
+                      <button type="button" aria-pressed={graphLayer === 'architecture'} onClick={() => setGraphLayer('architecture')}><Icon name="schema" size={14} />{t('Architecture layer', '架构层')}</button>
+                    </div>}
+                    {architectureOpen && renderedData ? <GraphArchitectureLayer key={canvasIdentity} data={renderedData} highlights={highlights} />
+                      : showMolecule ? <MoleculeCanvas sessionId={sessionId} datasetKey={datasetKey} highlights={allHighlights} selected={selected} onSelect={onSelect} /> : <>
                     <div className="graph-toolbar">
                       <button onClick={() => setSearchOpen(current => !current)} aria-pressed={searchOpen}><Icon name="search" size={14} /> {t('Search nodes', '搜索节点')}</button>
                       {onGraphQuery && <button onClick={() => setExploreOpen(current => !current)} aria-expanded={exploreOpen}><Icon name="spark" size={14} />{t('Explore graph', '图探索')}</button>}

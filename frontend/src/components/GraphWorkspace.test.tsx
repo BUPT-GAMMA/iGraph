@@ -643,3 +643,49 @@ describe('financial node language switching', () => {
     expect(container.querySelector('.data-list')?.textContent).toContain('Shareholding');
   });
 });
+
+it('switches to the architecture layer, highlights a relationship, and returns to the instance canvas', () => {
+  const graph = {
+    directed: true, total_nodes: 420, total_edges: 500, truncated: true,
+    nodes: [{ id: 'a', type: 'Person' }, { id: 'b', type: 'Company' }, { id: 'c', type: 'Company' }, { id: 'd', type: 'Location' }],
+    edges: [{ src: 'a', dst: 'b', type: 'owns', properties: { equity: .55 } }, { src: 'a', dst: 'c', type: 'owns' }],
+    highlights: { paths: [{ node_sequence: ['a', 'b'] }] },
+  };
+  const { container } = render(<I18nProvider initialLanguage="zh"><GraphWorkspace data={graph} tab="Graph"
+    onTab={vi.fn()} onSelect={vi.fn()} selected={null} collapsed={false} onToggle={vi.fn()} /></I18nProvider>);
+  fireEvent.click(screen.getByRole('button', { name: '架构层' }));
+  expect(screen.getByText('基于已加载样本')).toBeTruthy();
+  expect(container.querySelectorAll('.architecture-node')).toHaveLength(3);
+  expect(container.querySelectorAll('.architecture-link')).toHaveLength(1);
+  const relation = screen.getByRole('button', { name: 'owns · Person → Company' });
+  expect(relation.getAttribute('data-highlighted')).toBe('true');
+  fireEvent.keyDown(relation, { key: 'Enter' });
+  expect(relation.getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByText('Person → Company · 2 条关系')).toBeTruthy();
+  expect(screen.getByRole('button', { name: /节点类型 Location/ }).getAttribute('data-muted')).toBe('true');
+  fireEvent.change(screen.getByRole('searchbox', { name: '搜索节点类型或关系' }), { target: { value: 'owns' } });
+  expect(screen.queryByRole('button', { name: /节点类型 Location/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '实例层' }));
+  expect(container.querySelector('.graph-canvas')).toBeTruthy();
+  expect(container.querySelector('.architecture-canvas')).toBeNull();
+});
+
+
+it('moves architecture cards and their connected edges when dragged', () => {
+  const graph = { directed: true, nodes: [{ id: 'a', type: 'Company' }, { id: 'b', type: 'Person' }],
+    edges: [{ source: 'a', target: 'b', type: 'employs' }] };
+  const { container } = render(<I18nProvider initialLanguage="zh"><GraphWorkspace data={graph} tab="Graph" onTab={vi.fn()} onSelect={vi.fn()}
+    selected={null} collapsed={false} onToggle={vi.fn()} /></I18nProvider>);
+  fireEvent.click(screen.getByRole('button', { name: '架构层' }));
+  const node = screen.getByRole('button', { name: /节点类型 Company/ });
+  const line = container.querySelector('.architecture-link-line')!;
+  const prior = node.getAttribute('transform'), priorEdge = line.getAttribute('d');
+  for (const [type, x, y] of [['pointerdown', 10, 20], ['pointermove', 52, 39], ['pointerup', 52, 39]] as const) {
+    const event = new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y });
+    Object.defineProperty(event, 'pointerId', { value: 1 });
+    fireEvent(node, event);
+  }
+  expect(node.getAttribute('transform')).not.toBe(prior);
+  expect(line.getAttribute('d')).not.toBe(priorEdge);
+  expect(node.getAttribute('aria-pressed')).toBe('false');
+});

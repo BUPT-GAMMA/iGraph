@@ -8,6 +8,9 @@ import type { ConstructionState, CsvBundleSchema, Dataset } from '../types';
 import { constructionStatus, isMolecularGraph, isPrebuiltGraph, supportsConstruction } from '../construction';
 import { Icon } from './Icon';
 import { CsvBundleDialog } from './CsvBundleDialog';
+import { SourceDataDialog } from './SourceDataPreview';
+import './WorkspaceCatalog.css';
+import './GraphSourceCatalog.css';
 
 type Props = {
   datasets: Dataset[];
@@ -61,6 +64,24 @@ function sourceSummary(dataset: Dataset, t: Translate, formatNumber: (value: num
   return t(`${dataset.original_filename} · Ready to build`, `${dataset.original_filename} · 已就绪，等待构图`);
 }
 
+const sourceFormats = [
+  { extension: 'csv', icon: 'table', label: ['CSV tables', 'CSV 表格'] },
+  { extension: 'sql', icon: 'database', label: ['SQL dump', 'SQL 脚本'] },
+  { extension: 'txt', icon: 'file', label: ['Text', '文本'] },
+  { extension: 'pt', icon: 'graph', label: ['Saved graph', '已有图'] },
+] as const;
+const acceptedFiles = '.sql,.csv,.txt,.pt';
+
+function sourceBadge(dataset: Dataset, t: Translate) {
+  const status = constructionStatus(dataset);
+  if (status === 'failed' || status === 'error') return { tone: 'failed', label: t('Failed', '处理失败') };
+  if (status === 'building' || status === 'processing' || status === 'preparing') return { tone: 'running', label: t('Processing', '处理中') };
+  if (status === 'draft') return { tone: 'warning', label: t('Unsaved draft', '待保存') };
+  if (status === 'algorithm_unavailable') return { tone: 'warning', label: t('Unavailable', '算法待接入') };
+  if (status === 'ready') return { tone: 'ready', label: t('Ready', '已就绪') };
+  return { tone: 'neutral', label: t('Ready to build', '待构图') };
+}
+
 function sourceType(dataset: Dataset) {
   return (dataset.file_type || dataset.original_filename.split('.').pop() || 'FILE').replace(/^\./, '').toUpperCase();
 }
@@ -72,9 +93,21 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
   const inputRef = useRef<HTMLInputElement>(null);
   const [csvFiles, setCsvFiles] = useState<File[] | null>(null);
   const [selectionError, setSelectionError] = useState('');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'examples' | 'own'>('all');
+  const [query, setQuery] = useState('');
+  const [sourceSample, setSourceSample] = useState<Dataset | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
   const stateCallback = useRef(onStateChange);
   stateCallback.current = onStateChange;
   const sources = datasets.filter(dataset => supportsConstruction(dataset) || isPrebuiltGraph(dataset));
+  const text = query.trim().toLowerCase();
+  const visibleSources = sources.filter(dataset => {
+    const example = Boolean(dataset.metadata?.user_case_id);
+    if ((sourceFilter === 'examples' && !example) || (sourceFilter === 'own' && example)) return false;
+    const keywords = [dataset.name, labels.name(dataset.name), dataset.original_filename, sourceType(dataset)];
+    return !text || keywords.some(value => value.toLowerCase().includes(text));
+  });
   const monitored = sources.filter(dataset => !isPrebuiltGraph(dataset) && ['building', 'processing'].includes(constructionStatus(dataset)));
   const monitorSignature = monitored.map(dataset => `${dataset.project_id || 'personal'}:${dataset.dataset_id}`).sort().join('|');
 
@@ -93,8 +126,13 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
     return () => { disposed = true; controller.abort(); clearTimeout(timer); };
   }, [monitorSignature]);
 
-  function chooseFile() { inputRef.current?.click(); }
+  function chooseFile(accept = acceptedFiles) {
+    if (busy || !inputRef.current) return;
+    inputRef.current.accept = accept;
+    inputRef.current.click();
+  }
   function selected(files: FileList | null) {
+    if (busy) return;
     const chosen = Array.from(files || []);
     if (!chosen.length) return;
     if (chosen.some(file => !/\.(sql|csv|txt|pt)$/i.test(file.name))) {
@@ -109,58 +147,102 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
     setSelectionError(t('Multiple-file graph construction accepts CSV files only.', '多文件构图只能同时选择 CSV 文件。'));
   }
 
-  return <div className="create-graph-workspace">
-    <header className="create-graph-header">
-      <div className="create-graph-title">
-        <span className="context-icon"><Icon name="graph" size={23} /></span>
-        <div><h1>{t('Graph Construction Workspace', '构图工作台')}</h1></div>
-      </div>
-      <input ref={inputRef} type="file" hidden multiple accept=".sql,.csv,.txt,.pt" onChange={event => { selected(event.currentTarget.files); event.currentTarget.value = ''; }} />
-      <button className="primary-command create-graph-upload-button" onClick={chooseFile} disabled={busy}><Icon name="upload" size={16} /> {t('Upload source', '上传数据源')}</button>
+  return <div className="workspace-catalog graph-source-catalog">
+    <header className="catalog-page-head">
+      <span className="context-icon" aria-hidden="true"><Icon name="graph" size={23} /></span>
+      <h1>{t('Graph Construction Workspace', '构图工作台')}</h1>
+      <input ref={inputRef} type="file" hidden multiple accept={acceptedFiles} onChange={event => { selected(event.currentTarget.files); event.currentTarget.value = ''; }} />
+      <button type="button" className="primary-command" onClick={() => chooseFile()} disabled={busy}>
+        <Icon name="upload" size={16} />{t('Upload source', '上传数据源')}
+      </button>
     </header>
-
-    <div className="create-graph-content">
-      <section className="create-graph-intro" aria-labelledby="create-graph-intro-title">
-        <div className="create-graph-intro-copy">
-          <h2 id="create-graph-intro-title">{t('Turn a data source into an analysis-ready graph', '把数据源变成可以分析的图')}</h2>
-          {selectionError && <div className="csv-bundle-error" role="alert">{selectionError}</div>}
-          <button className="primary-command" onClick={chooseFile} disabled={busy}><Icon name="plus" size={16} /> {t('Choose source file', '选择源文件')}</button>
+    <div className="catalog-page-content">
+      <section className="graph-source-upload" aria-labelledby="graph-source-upload-title">
+        <h2 className="source-catalog-heading" id="graph-source-upload-title">{t('Upload or load data', '上传或加载数据')}</h2>
+        <div className="graph-source-formats">
+          {sourceFormats.map(format => <button key={format.extension} type="button" className="graph-source-format"
+            disabled={busy} onClick={() => chooseFile('.' + format.extension)}>
+            <Icon name={format.icon} size={19} /><span><b>{t(format.label[0], format.label[1])}</b><small>{'.' + format.extension}</small></span>
+          </button>)}
         </div>
-        <div className="create-graph-flow" aria-label={t('Graph construction workflow', '构图流程')}>
-          <div className="create-graph-step">
-            <div className="create-graph-step-head"><span>01</span><span className="create-graph-step-icon"><Icon name="file" size={20} /></span></div>
-            <div className="create-graph-step-copy"><strong>{t('Add a data source', '添加数据源')}</strong><small>SQL / CSV / TXT / PT</small></div>
-          </div>
-          <span className="create-graph-flow-arrow" aria-hidden="true"><Icon name="arrow-right" size={16} /></span>
-          <div className="create-graph-step">
-            <div className="create-graph-step-head"><span>02</span><span className="create-graph-step-icon"><Icon name="graph" size={20} /></span></div>
-            <div className="create-graph-step-copy"><strong>{t('Build or load a graph', '构图或载入现成图')}</strong></div>
-          </div>
-          <span className="create-graph-flow-arrow" aria-hidden="true"><Icon name="arrow-right" size={16} /></span>
-          <div className="create-graph-step">
-            <div className="create-graph-step-head"><span>03</span><span className="create-graph-step-icon"><Icon name="check" size={20} /></span></div>
-            <div className="create-graph-step-copy"><strong>{t('Select and analyze', '选择图并分析')}</strong></div>
-          </div>
-        </div>
+        <button type="button" className="graph-source-drop" data-dragging={dragging} disabled={busy} onClick={() => chooseFile()}
+          onDragEnter={event => {
+            event.preventDefault();
+            if (event.dataTransfer.types.includes('Files') && ++dragDepth.current === 1) setDragging(true);
+          }}
+          onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = busy ? 'none' : 'copy'; }}
+          onDragLeave={event => { event.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
+          onDrop={event => { event.preventDefault(); dragDepth.current = 0; setDragging(false); selected(event.dataTransfer.files); }}>
+          <Icon name="upload" size={23} />
+          <span><b>{t('Drop source files here', '拖拽源文件到这里')}</b>
+            <small>SQL / CSV / TXT / PT · {t('CSV supports multiple files', 'CSV 支持多文件')}</small></span>
+          <span className="graph-source-choose">{t('Choose source file', '选择源文件')}</span>
+        </button>
+        {selectionError && <div className="csv-bundle-error" role="alert">{selectionError}</div>}
       </section>
 
-      <section className="create-graph-sources" aria-labelledby="create-graph-sources-title">
-        <div className="create-graph-section-head"><div><h2 id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2></div><span>{t(`${formatNumber(sources.length)} available`, `${formatNumber(sources.length)} 个可用`)}</span></div>
-        {sources.length ? <div className="create-graph-source-grid">{sources.map(dataset => <article className="create-graph-source-card" key={dataset.dataset_id}>
-          <div className="create-graph-source-icon"><Icon name="database" size={20} /></div>
-          <div className="create-graph-source-copy"><div><strong title={labels.name(dataset.name)}>{labels.name(dataset.name)}</strong><span>{sourceType(dataset)}</span>{Boolean(dataset.metadata?.user_case_id) && <span>{t("Example", "示例")}</span>}</div><p>{sourceSummary(dataset, t, formatNumber)}</p>{dataset.description && <p title={labels.description(dataset.description)}>{labels.description(dataset.description)}</p>}</div>
-          <div className="create-graph-source-actions">
-            {isMolecularGraph(dataset) && <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy || dataset.status !== 'ready'} aria-label={t(`View graph build ${labels.name(dataset.name)}`, `查看构图 ${labels.name(dataset.name)}`)}>{t('View graph build', '查看构图')} <Icon name="graph" size={14} /></button>}
-            {isPrebuiltGraph(dataset)
-              ? <button className="secondary-command" onClick={() => onAnalyze?.(dataset)} disabled={busy || dataset.status !== 'ready' || !onAnalyze} aria-label={t(`Start analysis ${labels.name(dataset.name)}`, `开始分析 ${labels.name(dataset.name)}`)}>{t('Start analysis', '开始分析')} <Icon name="arrow-right" size={14} /></button>
-              : <button className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${localizedConstructionLabel(dataset, t)} ${labels.name(dataset.name)}`}>{localizedConstructionLabel(dataset, t)} <Icon name="arrow-right" size={14} /></button>}
-            {onDelete && <button className="plain-icon create-graph-delete" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete dataset', '删除数据集')} aria-label={t(`Delete dataset ${labels.name(dataset.name)}`, `删除数据集 ${labels.name(dataset.name)}`)}><Icon name="trash" size={16} /></button>}
+      <section className="graph-source-list" aria-labelledby="create-graph-sources-title">
+        <div className="source-catalog-head">
+          <h2 className="source-catalog-heading" id="create-graph-sources-title">{t('My graph sources', '我的构图数据源')}</h2>
+          <span className="source-catalog-count">{t(`${formatNumber(visibleSources.length)} available`, `${formatNumber(visibleSources.length)} 个可用`)}</span>
+        </div>
+        <div className="source-catalog-filters">
+          <div className="source-catalog-tabs" role="group" aria-label={t('Data source categories', '数据源分类')}>
+            {([
+              { id: 'all', label: t('All', '全部') },
+              { id: 'examples', label: t('Examples', '样例数据') },
+              { id: 'own', label: t('My uploads', '我的上传') },
+            ] as const).map(filter => <button key={filter.id} type="button" aria-pressed={sourceFilter === filter.id}
+              onClick={() => setSourceFilter(filter.id)}>{filter.label}</button>)}
           </div>
-        </article>)}</div> : <div className="create-graph-empty">
-          <span><Icon name="graph" size={34} /></span><strong>{t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong><button className="secondary-command" onClick={chooseFile} disabled={busy}>{t('Upload your first source', '上传第一个数据源')}</button>
+          <div className="source-catalog-search"><Icon name="search" size={15} />
+            <input type="search" aria-label={t('Search sources', '搜索数据源')} placeholder={t('Search sources', '搜索数据源')}
+              value={query} onChange={event => setQuery(event.target.value)} />
+          </div>
+        </div>
+        {visibleSources.length ? <div className="catalog-card-grid">{visibleSources.map(dataset => {
+          const name = labels.name(dataset.name);
+          const badge = sourceBadge(dataset, t);
+          const graphReady = isPrebuiltGraph(dataset) ? dataset.status === 'ready' : constructionStatus(dataset) === 'ready';
+          const buildLabel = localizedConstructionLabel(dataset, t);
+          return <article className="catalog-card graph-source-card" key={dataset.dataset_id} aria-label={name}>
+            <div className="catalog-card-head">
+              <span className="catalog-card-icon"><Icon name={isPrebuiltGraph(dataset) ? 'graph' : sourceType(dataset) === 'CSV' ? 'table' : 'file'} size={20} /></span>
+              <div><h3 title={name}>{name}</h3>
+                <div className="graph-source-type"><span>{sourceType(dataset)}</span>
+                  {Boolean(dataset.metadata?.user_case_id) && <span className="is-example">{t('Example', '示例')}</span>}</div>
+              </div>
+            </div>
+            {dataset.description && <p className="catalog-card-description" title={labels.description(dataset.description)}>{labels.description(dataset.description)}</p>}
+            <div className="catalog-card-meta">
+              <span title={sourceSummary(dataset, t, formatNumber)}>{sourceSummary(dataset, t, formatNumber)}</span>
+              <span className="catalog-status" data-tone={badge.tone}>{badge.label}</span>
+            </div>
+            <div className="catalog-card-actions">
+              {isMolecularGraph(dataset) && <button type="button" className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy || !graphReady}
+                aria-label={t(`View graph build ${name}`, `查看构图 ${name}`)}>{t('View graph build', '查看构图')}<Icon name="graph" size={14} /></button>}
+              {isPrebuiltGraph(dataset)
+                ? <button type="button" className="secondary-command" onClick={() => onAnalyze?.(dataset)} disabled={busy || !graphReady || !onAnalyze}
+                    aria-label={t(`Start analysis ${name}`, `开始分析 ${name}`)}>{t('Start analysis', '开始分析')}<Icon name="arrow-right" size={14} /></button>
+                : <button type="button" className={graphReady ? 'secondary-command' : 'primary-command'} onClick={() => onConstruct(dataset)}
+                    disabled={busy} aria-label={buildLabel + ' ' + name}>{buildLabel}<Icon name="arrow-right" size={14} /></button>}
+              {supportsConstruction(dataset) && <button type="button" className="secondary-command" onClick={() => setSourceSample(dataset)} disabled={busy}
+                aria-label={t(`Source data preview for ${name}`, `源数据示例 ${name}`)}><Icon name="table" size={14} />{t('Source data preview', '源数据示例')}</button>}
+              {onDelete && <button type="button" className="plain-icon create-graph-delete" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete dataset', '删除数据集')}
+                aria-label={t(`Delete dataset ${name}`, `删除数据集 ${name}`)}><Icon name="trash" size={16} /></button>}
+            </div>
+          </article>;
+        })}</div> : <div className="catalog-empty">
+          <span className="catalog-card-icon"><Icon name="graph" size={23} /></span>
+          <strong>{busy && sources.length === 0 ? t('Loading data sources…', '正在加载数据源…')
+            : sources.length ? t('No matching data sources', '没有匹配的数据源') : t('No graph-ready data sources yet', '还没有可构图的数据源')}</strong>
+          {!busy && !sources.length && <button type="button" className="secondary-command" onClick={() => chooseFile()}>{t('Upload your first source', '上传第一个数据源')}</button>}
         </div>}
       </section>
     </div>
-    <PopupPresence>{csvFiles && <CsvBundleDialog files={csvFiles} onCancel={() => setCsvFiles(null)} onSubmit={(files, schema, name) => { setCsvFiles(null); onUpload(files, schema, name); }} />}</PopupPresence>
+    <PopupPresence>{csvFiles && <CsvBundleDialog files={csvFiles} onCancel={() => setCsvFiles(null)} onSubmit={(files, schema, name) => {
+      setCsvFiles(null); onUpload(files, schema, name);
+    }} />}</PopupPresence>
+    <PopupPresence>{sourceSample && <SourceDataDialog key={sourceSample.dataset_id} dataset={sourceSample} onClose={() => setSourceSample(null)} />}</PopupPresence>
   </div>;
 }

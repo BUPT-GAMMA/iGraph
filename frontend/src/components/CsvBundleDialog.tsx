@@ -1,12 +1,14 @@
 import { Popup, PopupBackdrop } from './PopupMotion';
+import { csvParseRows } from 'd3';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
 import type { CsvBundleSchema, CsvBundleTableSchema, CsvForeignKey } from '../types';
 import { Icon } from './Icon';
+import { SourceRecordTable } from './SourceDataPreview';
 import './ConstructionSchemaFields.css';
 
 type DraftForeignKey = CsvForeignKey & { id: number };
-type DraftTable = Omit<CsvBundleTableSchema, 'foreign_keys'> & { foreign_keys: DraftForeignKey[] };
+type DraftTable = Omit<CsvBundleTableSchema, 'foreign_keys'> & { foreign_keys: DraftForeignKey[]; sample: Array<Record<string, unknown>> };
 
 type Props = {
   files: File[];
@@ -56,17 +58,25 @@ export function parseCsvHeader(text: string): string[] {
 }
 
 async function inspectFile(file: File): Promise<DraftTable> {
+  const sampleBytes = 1024 * 1024;
   const sample = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
     reader.onerror = () => reject(reader.error || new Error('CSV_HEADER_READ_FAILED'));
-    reader.readAsText(file.slice(0, 1024 * 1024), 'utf-8');
+    reader.readAsText(file.slice(0, sampleBytes), 'utf-8');
   });
   const columns = parseCsvHeader(sample);
   if (!columns.length || columns.some(column => !column) || new Set(columns).size !== columns.length) throw new Error(`INVALID_HEADER:${file.name}`);
   const name = tableName(file.name);
   const candidate = inferredPrimaryKey(name, columns);
-  return { file_name: file.name, name, columns, primary_key: candidate ? [candidate] : [], foreign_keys: [] };
+  let lastRow = 0;
+  const records = csvParseRows(sample, (row, index) => {
+    lastRow = index;
+    return index > 0 && index <= 5 ? row : null;
+  });
+  if (file.size > sampleBytes && lastRow <= records.length) records.pop();
+  const rows = records.map(row => Object.fromEntries(columns.slice(0, row.length).map((column, index) => [column, row[index]])));
+  return { file_name: file.name, name, columns, primary_key: candidate ? [candidate] : [], foreign_keys: [], sample: rows };
 }
 
 function suggestedRelationships(tables: DraftTable[], nextId: () => number) {
@@ -168,15 +178,25 @@ export function CsvBundleDialog({ files, onCancel, onSubmit }: Props) {
 
   return <PopupBackdrop className="csv-bundle-backdrop" role="presentation">
     <Popup.section className="csv-bundle-dialog" role="dialog" aria-modal="true" aria-labelledby="csv-bundle-title">
-      <header><div><span>{t('MULTI-TABLE CSV', '多表 CSV')}</span><h2 id="csv-bundle-title">{t('Configure primary and foreign keys', '配置主键与外键')}</h2></div><button onClick={onCancel} aria-label={t('Close', '关闭')}><Icon name="close" size={18} /></button></header>
+      <header><div className="csv-config-title"><Icon name="table" size={20} /><h2 id="csv-bundle-title">{t('Configure primary and foreign keys', '配置主键与外键')}</h2></div>
+        <button onClick={onCancel} aria-label={t('Close', '关闭')}><Icon name="close" size={18} /></button></header>
       <div className="csv-bundle-body">
-        <label className="csv-bundle-name">{t('Dataset name', '数据集名称')}<input value={datasetName} onChange={event => setDatasetName(event.target.value)} /></label>
-        <label className="csv-bundle-name">{t('Dataset description', '数据集描述')}<textarea rows={3} maxLength={4000} value={description} onChange={event => setDescription(event.target.value)} placeholder={t('Describe the data source, entities, and relationships.', '描述数据来源、实体含义和关系。')} /></label>
+        <section className="csv-config-basics">
+          <h3>{t('Basic information', '基本信息')}</h3>
+          <label className="csv-bundle-name">{t('Dataset name', '数据集名称')}<input value={datasetName} onChange={event => setDatasetName(event.target.value)} /></label>
+          <label className="csv-bundle-name">{t('Dataset description', '数据集描述')}<textarea rows={2} maxLength={4000} value={description} onChange={event => setDescription(event.target.value)} placeholder={t('Describe the data source, entities, and relationships.', '描述数据来源、实体含义和关系。')} /></label>
+        </section>
+        <h3 className="csv-config-section-title">{t('Source files and relationships', '源文件与关联关系')}</h3>
         <p className="csv-bundle-help">{t('Key suggestions use column names only; please review them.', '主外键建议仅基于列名，请核对。')}</p>
         <details className="csv-key-guide"><summary>{t('PK/FK configuration guide', 'PK/FK 配置说明')}</summary><p><b>PK · {t('Primary key', '主键')}</b> {t('Uniquely identifies one row (or a combination of columns). Values must be unique and non-null.', '唯一标识一条记录，可由多个字段组成；值必须唯一且不能为空。')}</p><p><b>FK · {t('Foreign key', '外键')}</b> {t('References another table’s key to create graph relationships. Composite key columns are paired in the displayed order.', '引用另一张表的键以生成图中的连接；复合键按界面显示的列顺序一一对应。')}</p><p>{t('Tables with a primary key create nodes. Tables without a primary key create edges using two foreign-key column groups to node tables; the first group is the source and the second is the target. A group can reference alternative target tables, with exactly one match per row. Other fields become edge properties. Blank PK stays blank.', '设置主键的表生成节点；无主键的表通过两组外键列生成边，第一组为起点，第二组为终点，目标表均须设置主键。同组可配置多个候选目标表，每条记录须唯一匹配。其他字段保留为边属性。主键留空不会自动补充。')}</p></details>
         {loading && <div className="csv-bundle-loading">{t('Reading CSV headers…', '正在读取 CSV 表头…')}</div>}
         {!loading && tables.map((table, tableIndex) => <article className="csv-table-card" key={table.file_name}>
           <div className="csv-table-head"><div><strong>{table.file_name}</strong><small>{table.columns.length} {t('columns', '列')}</small></div><label>{t('Table name', '表名')}<input value={table.name} onChange={event => renameTable(tableIndex, event.target.value)} /></label></div>
+          {table.sample.length > 0 && <details className="csv-upload-preview source-data-preview">
+            <summary>{t('Source data preview', '源数据示例')}</summary>
+            <SourceRecordTable label={t('Preview for ', '示例记录：') + table.file_name} columns={table.columns} rows={table.sample}
+              primaryKey={table.primary_key} foreignColumns={table.foreign_keys.flatMap(key => key.columns)} />
+          </details>}
           <fieldset><legend>{t('Primary key', '主键')} <small>{t('(multiple columns allowed; leave blank for an edge table)', '（可多选；关系表请留空）')}</small></legend><div className="csv-column-options">{table.columns.map(column => <label key={column}><input type="checkbox" checked={table.primary_key.includes(column)} onChange={event => replaceTable(tableIndex, current => ({ ...current, primary_key: event.target.checked ? [...current.primary_key, column] : current.primary_key.filter(value => value !== column) }))} />{column}</label>)}</div></fieldset>
           <p className="csv-bundle-help">{table.primary_key.length ? t('Node table: each row becomes a node.', '节点表：每条记录生成一个节点。') : t('Edge table: configure two foreign-key column groups for its endpoints; other fields become edge properties.', '关系表：配置两组外键列作为边的两端，其他字段作为边属性。')}</p>
           <div className="csv-field-summary" aria-label={t(`Field roles for ${table.name}`, `${table.name} 字段角色`)}>{table.columns.map(column => <span key={column}><code>{column}</code>{table.primary_key.includes(column) && <b>PK</b>}{table.foreign_keys.some(fk => fk.columns.includes(column)) && <b>FK</b>}{!table.primary_key.includes(column) && !table.foreign_keys.some(fk => fk.columns.includes(column)) && <small>{t('Attribute', '特征属性')}</small>}</span>)}</div>

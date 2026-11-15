@@ -34,6 +34,7 @@ import { constructionLabel, isMolecularGraph, isPrebuiltGraph, isPtGraph, suppor
 import { BrandLogo, Icon } from './components/Icon';
 import { ManagementPanel } from './components/ManagementPanel';
 import { DeleteProjectDialog, ProjectDialog } from './components/ProjectDialogs';
+import { ProjectCatalog } from './components/ProjectCatalog';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { AuthGate } from './components/AuthGate';
@@ -241,6 +242,7 @@ function App() {
   const [datasetProjectId, setDatasetProjectId] = useState<string | undefined>();
   const [constructionDataset, setConstructionDataset] = useState<Dataset | null>(null);
   const [createGraphOpen, setCreateGraphOpen] = useState(false);
+  const [projectsOpen, setProjectsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(() => parseWorkspaceRoute(window.location.search).kind === 'help');
   const [importProject, setImportProject] = useState<Project | null>(null);
   const [managementOpen, setManagementOpen] = useState(false);
@@ -458,6 +460,7 @@ function App() {
   function showWorkspaceHome(updateUrl = true, replaceUrl = false, message = '') {
     dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: null });
     setCreateGraphOpen(false);
+    setProjectsOpen(false);
     setHelpOpen(false);
     setConstructionDataset(null);
     setGraphOpen(false);
@@ -465,6 +468,23 @@ function App() {
     setMobileSidebarOpen(false);
     setWorkspaceError(message);
     if (updateUrl) writeWorkspaceRoute({ kind: 'home' }, replaceUrl);
+  }
+
+  function showProjects(updateUrl = true) {
+    showWorkspaceHome(false);
+    setProjectsOpen(true);
+    if (updateUrl && parseWorkspaceRoute(window.location.search).kind !== 'projects') {
+      writeWorkspaceRoute({ kind: 'projects' });
+    }
+  }
+
+  function showProjectEditor(project: Project | null = null) {
+    setProjectEditorTarget(project ? projects.find(item => item.project_id === project.project_id) || project : null);
+    setProjectEditor(project ? 'edit' : 'create');
+  }
+
+  function askDeleteProject(project: Project) {
+    setDeleteProjectTarget(projects.find(item => item.project_id === project.project_id) || project);
   }
 
   function showHelp() {
@@ -482,6 +502,7 @@ function App() {
     const identity = identityRef.current;
     dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: null });
     setCreateGraphOpen(true);
+    setProjectsOpen(false);
     setHelpOpen(false);
     setConstructionDataset(null);
     setGraphOpen(false);
@@ -610,7 +631,8 @@ function App() {
       showWorkspaceHome(true, true, t('This conversation does not exist or was deleted', '该会话不存在或已被删除'));
       return;
     }
-    if (id === conversationRef.current.activeSessionId && !createGraphOpen && listedSession) return;
+    if (id === conversationRef.current.activeSessionId && !createGraphOpen && !projectsOpen && listedSession) return;
+    setProjectsOpen(false);
     const session = listedSession || { session_id: id };
     setCreateGraphOpen(false);
     setHelpOpen(false);
@@ -817,6 +839,8 @@ function App() {
       showHelp();
     } else if (route.kind === 'create-graph') {
       await showCreateGraphWorkspace(false);
+    } else if (route.kind === 'projects') {
+      showProjects(false);
     } else if (route.kind === 'new-session') {
       const project = nextProjects.find(item => item.project_id === route.projectId);
       if (route.projectId && !project) showWorkspaceHome(true, true, tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
@@ -909,6 +933,8 @@ function App() {
         showHelp();
       } else if (route.kind === 'create-graph') {
         void showCreateGraphWorkspace(false);
+      } else if (route.kind === 'projects') {
+        showProjects(false);
       } else if (route.kind === 'session') {
         void selectSession(route.id, sessions, false, true);
       } else if (route.kind === 'new-session' && (!route.projectId || projects.some(project => project.project_id === route.projectId))) {
@@ -1148,6 +1174,7 @@ function App() {
     }, preferredModel);
     dispatchConversation({ type: 'OPEN_DRAFT', draft, preferredModel });
     setCreateGraphOpen(false);
+    setProjectsOpen(false);
     setHelpOpen(false);
     setConstructionDataset(null);
     setGraphOpen(false);
@@ -1216,7 +1243,7 @@ function App() {
     const created = response.project;
     const nextProjects = [...projects, created];
     setProjects(nextProjects); setProjectEditor(null); setProjectEditorTarget(null);
-    newTask(created.project_id, nextProjects);
+    if (!projectsOpen) newTask(created.project_id, nextProjects);
   }
   async function deleteCurrentProject() {
     if (!deleteProjectTarget) return;
@@ -2153,15 +2180,23 @@ function App() {
   const unreadCompletions = Object.fromEntries(Object.entries(conversation.viewsBySessionId)
     .filter(([, view]) => view.unreadCompletion)
     .map(([sessionId]) => [sessionId, true]));
+  const displayProjects = projects.map(project => ({ ...project,
+    name: localizeExampleName(project.name, userCases, t) || project.name,
+  }));
   return <UserCaseContext.Provider value={userCases}><div className="app-shell">
     {actionDialog}
     <TopBar onMenu={() => setMobileSidebarOpen(true)} onHome={() => showWorkspaceHome()} onModels={userId && !demoMode && cancelEnabled ? () => setModelsOpen(true) : undefined} />
     <PopupPresence key={`modelsOpen-${userId}`}>{modelsOpen && <ModelSettings key={userId} onClose={() => setModelsOpen(false)} onChanged={applyModelCatalog} />}</PopupPresence>
     <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={projects.map(project => ({ ...project, name: localizeExampleName(project.name, userCases, t) || project.name }))} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => { setProjectEditorTarget(null); setProjectEditor('create'); }} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={project => { setProjectEditorTarget(projects.find(item => item.project_id === project.project_id) || project); setProjectEditor('edit'); }} onDeleteProject={project => setDeleteProjectTarget(projects.find(item => item.project_id === project.project_id) || project)} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
+      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} projects={displayProjects} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} activeProjectId={createGraphOpen ? undefined : activeDraft?.projectId || undefined} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onNewProject={() => showProjectEditor()} onProjects={showProjects} projectsActive={projectsOpen} onNewInProject={id => newTask(id)} onProjectDatasets={id => void openDatasets(id)} onEditProject={showProjectEditor} onDeleteProject={askDeleteProject} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
-        {createGraphOpen ? <>
+        {projectsOpen ? <>
+          {workspaceError && <div className="workspace-error" role="alert">{workspaceError}</div>}
+          <ProjectCatalog projects={displayProjects} cases={userCases} busy={busy} onCreate={() => showProjectEditor()}
+            onOpen={id => void openProjectDraft(id)} onDatasets={id => void openDatasets(id)}
+            onEdit={showProjectEditor} onDelete={askDeleteProject} onExample={(id, question) => void selectUserCase(id, question)} />
+        </> : createGraphOpen ? <>
           {workspaceError && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {workspaceError}</div>}
           {constructionDataset
             ? <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} embedded onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} />

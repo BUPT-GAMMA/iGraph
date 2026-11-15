@@ -1,0 +1,21 @@
+.project-dialog.project-editor { width: min(100%, 520px); padding: 0; gap: 0; overflow: hidden; border-radius: 13px; }
+.project-editor .dialog-head { margin: 0; padding: 17px 20px; border-bottom: 1px solid var(--editor-line); }
+.project-editor .dialog-head > div { display: flex; align-items: center; gap: 10px; }
+.project-editor .dialog-head .project-editor-icon { display: grid; place-items: center; height: 31px; width: 31px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
+.project-editor .dialog-head h2 { margin: 0; font-size: 17px; }
+.project-editor { --editor-line: #dfe6f0; --editor-surface: #f8fafd; --editor-muted: #64748b; }
+[data-theme="dark"] .project-editor { --editor-line: #3a4a61; --editor-surface: #1e2b3d; --editor-muted: #a5b4cc; }
+.project-editor-fields { display: grid; gap: 17px; padding: 20px; }
+.project-editor-field { display: grid; gap: 7px; min-width: 0; }
+.project-editor-field label { font-size: 12px; font-weight: 650; }
+.project-editor-field > div > i { font-style: normal; color: #c0344e; margin-inline-start: 4px; }
+.project-editor-field small { margin-inline-start: 7px; color: var(--editor-muted); font-size: 11px; font-weight: 400; }
+.project-editor-input { position: relative; display: flex; border: 1px solid var(--editor-line); border-radius: 8px; background: var(--editor-surface); }
+.project-editor-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.project-editor .project-editor-input :is(input[type="text"], textarea) { margin: 0; width: 100%; min-width: 0; color: inherit; background: transparent; border: 0; box-shadow: none; outline: none; }
+.project-editor .project-editor-input input[type="text"] { min-height: 42px; padding: 10px 68px 10px 11px; }
+.project-editor .project-editor-input textarea { min-height: 103px; padding: 10px 11px 27px; resize: vertical; }
+.project-editor-count { position: absolute; pointer-events: none; right: 10px; bottom: 8px; font-size: 10px; font-variant-numeric: tabular-nums; color: var(--editor-muted); }
+.project-editor .dialog-actions { margin: 0; padding: 12px 20px; border-top: 1px solid var(--editor-line); }
+.project-editor .dialog-actions button { min-height: 36px; }
+.project-editor .dialog-error { margin: 0; }

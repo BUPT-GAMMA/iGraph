@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   openUserCase: vi.fn(),
   uploadDataset: vi.fn(),
   deleteDataset: vi.fn(),
+  createProject: vi.fn(),
 }));
 
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => undefined }) }));
@@ -21,6 +22,8 @@ vi.mock('./api', async () => ({
   getUserId: () => 'graph-user',
   validateUser: vi.fn().mockResolvedValue({ valid: true, default_model: 'model' }),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }),
+  listServerDatasets: vi.fn().mockResolvedValue({ datasets: [] }),
+  createProject: mocks.createProject,
   listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
   listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
   getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true }),
@@ -114,7 +117,7 @@ describe('actual App graph creation destination', () => {
     fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
     await screen.findByText('还没有可构图的数据源');
     const file = new File(['pt bytes'], pt.original_filename);
-    fireEvent.change(container.querySelector('.create-graph-workspace input[type="file"]')!, { target: { files: [file] } });
+    fireEvent.change(container.querySelector('.graph-source-catalog input[type="file"]')!, { target: { files: [file] } });
     const analyze = await screen.findByRole('button', { name: '开始分析 PT 验收图' });
     expect(mocks.uploadDataset).toHaveBeenCalledWith(null, file, undefined, undefined, undefined);
     expect(screen.queryByRole('region', { name: '构图编辑器' })).toBeNull();
@@ -246,7 +249,7 @@ describe('actual App graph creation destination', () => {
     fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
     await screen.findByText('还没有可构图的数据源');
     const file = new File(['id,to\na,b'], 'orders.csv', { type: 'text/csv' });
-    fireEvent.change(container.querySelector('.create-graph-workspace input[type="file"]')!, { target: { files: [file] } });
+    fireEvent.change(container.querySelector('.graph-source-catalog input[type="file"]')!, { target: { files: [file] } });
     const submit = await screen.findByRole('button', { name: '上传 1 张表' });
     await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(submit);
@@ -254,4 +257,22 @@ describe('actual App graph creation destination', () => {
     await waitFor(() => expect(mocks.uploadDataset).toHaveBeenCalledWith(null, [file], undefined, expect.objectContaining({ version: 'csv_bundle.v1' }), 'orders'));
     expect(screen.getByRole('region', { name: '构图编辑器' })).toBeTruthy();
   });
+});
+
+it('creates a new project from My projects and keeps the project catalog accessible by URL', async () => {
+  mocks.createProject.mockResolvedValueOnce({ project: { project_id: 'new-project', user_id: 'graph-user', name: '研究项目', dataset_count: 0 } });
+  render(<App />);
+  await screen.findByRole('heading', { name: '金融股权示例' });
+  fireEvent.click(screen.getByRole('button', { name: '我的项目' }));
+  await screen.findByRole('heading', { name: '样例项目' });
+  expect(window.location.search).toBe('?view=projects');
+  fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
+  const form = screen.getByRole('dialog', { name: '创建项目' });
+  fireEvent.change(within(form).getByLabelText('项目名称'), { target: { value: '研究项目' } });
+  fireEvent.click(within(form).getByRole('button', { name: '创建' }));
+  const created = await screen.findByRole('article', { name: '研究项目' });
+  fireEvent.click(within(created).getByRole('button', { name: '选择数据源' }));
+  await waitFor(() => expect(mocks.listDatasets).toHaveBeenCalledWith('new-project'));
+  expect(mocks.createProject).toHaveBeenCalledWith('研究项目', '');
+  expect(mocks.listDatasets).toHaveBeenCalledWith('new-project');
 });

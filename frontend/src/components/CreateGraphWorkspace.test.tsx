@@ -16,19 +16,14 @@ const datasets: Dataset[] = [
 ];
 
 describe('create graph workspace', () => {
-  it('shows a complete empty workbench with supported source upload', () => {
+  it('shows an empty catalog with the four supported formats and upload controls', () => {
     const { container } = render(<CreateGraphWorkspace datasets={[]} onUpload={vi.fn()} onConstruct={vi.fn()} />);
     expect(screen.getByRole('heading', { name: '构图工作台' })).toBeTruthy();
     expect(screen.getByText('还没有可构图的数据源')).toBeTruthy();
-    expect(container.querySelector('.create-graph-title p')).toBeNull();
-    expect(container.querySelector('.create-graph-intro-copy p')).toBeNull();
-    expect(container.querySelector('.create-graph-section-head p')).toBeNull();
-    expect(container.querySelector('.create-graph-kicker')).toBeNull();
-    expect(screen.getByText('SQL / CSV / TXT / PT')).toBeTruthy();
-    expect(screen.queryByText('结构与数据校验')).toBeNull();
-    expect(screen.queryByText('可复用的图数据')).toBeNull();
-    expect(container.querySelectorAll('.create-graph-step')).toHaveLength(3);
-    expect(container.querySelectorAll('.create-graph-step-icon')).toHaveLength(3);
+    for (const name of [/CSV 表格/, /SQL 脚本/, /文本/, /已有图/]) {
+      expect(screen.getByRole('button', { name })).toBeTruthy();
+    }
+    expect(screen.getByRole('button', { name: /拖拽源文件/ })).toBeTruthy();
     expect(container.querySelector('input[type="file"]')?.getAttribute('accept')).toBe('.sql,.csv,.txt,.pt');
     expect(container.querySelector('input[type="file"]')?.hasAttribute('multiple')).toBe(true);
   });
@@ -60,6 +55,20 @@ describe('create graph workspace', () => {
     fireEvent.change(input, { target: { files: [new File(['other'], 'other.pdf')] } });
     expect(screen.getByRole('alert').textContent).toContain('请选择 SQL、CSV、TXT 或 PT 文件');
     expect(onUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets users find examples and drag a source into the existing upload flow', () => {
+    const onUpload = vi.fn();
+    render(<CreateGraphWorkspace datasets={[datasets[0], { ...datasets[1], metadata: { ...datasets[1].metadata, user_case_id: 'demo' } }]}
+      onUpload={onUpload} onConstruct={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '样例数据' }));
+    expect(screen.getByRole('article', { name: '客户关系图' })).toBeTruthy();
+    expect(screen.queryByRole('article', { name: '订单源数据' })).toBeNull();
+    fireEvent.change(screen.getByRole('searchbox', { name: '搜索数据源' }), { target: { value: 'missing' } });
+    expect(screen.getByText('没有匹配的数据源')).toBeTruthy();
+    const file = new File(['sample text'], 'notes.txt');
+    fireEvent.drop(screen.getByRole('button', { name: /拖拽源文件/ }), { dataTransfer: { files: [file] } });
+    expect(onUpload).toHaveBeenCalledExactlyOnceWith(file);
   });
 
   it('does not offer failed PT uploads for analysis or construction', () => {
@@ -132,6 +141,10 @@ describe('create graph workspace', () => {
     expect(guide?.textContent).toContain('复合键按界面显示的列顺序');
     expect(screen.getByText('主外键建议仅基于列名，请核对。')).toBeTruthy();
     expect((screen.getByLabelText('数据集名称') as HTMLInputElement).value).toBe('customers and 1 more table');
+    const sample = (await screen.findByText('customers.csv')).closest('article')!.querySelector('summary')!;
+    fireEvent.click(sample);
+    const sampleRegion = screen.getByRole('region', { name: '示例记录：customers.csv' });
+    expect(sampleRegion.textContent).toContain('Alice');
     const submit = await screen.findByRole('button', { name: '上传 2 张表' });
     await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
     fireEvent.change(screen.getByLabelText('数据集描述'), { target: { value: '  客户及订单关系  ' } });
