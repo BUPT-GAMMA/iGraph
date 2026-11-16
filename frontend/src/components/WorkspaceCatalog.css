@@ -153,6 +153,3 @@
   .catalog-page-content { padding-top: 17px; gap: 19px; }
 }
 @media (prefers-reduced-motion: reduce) { .catalog-card { transition: none; } }
-
-.sidebar-section-head .sidebar-project-catalog-link { width: auto; height: auto; min-height: 27px; padding: 4px 6px; margin-inline-start: -6px; display: inline-flex; gap: 6px; align-items: center; color: inherit; font: inherit; }
-.sidebar-section-head .sidebar-project-catalog-link[aria-current="page"] { color: var(--accent-strong); background: var(--accent-soft); }

@@ -25,6 +25,7 @@ vi.mock('./api', async () => ({
   listServerDatasets: vi.fn().mockResolvedValue({ datasets: [] }),
   createProject: mocks.createProject,
   listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
+  listProjectConversations: vi.fn().mockResolvedValue({ conversations: [] }),
   listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
   getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true }),
   getUserCases: mocks.getUserCases,
@@ -54,7 +55,7 @@ it('keeps example questions and default project names localized after entering a
   await screen.findByRole('heading', { name: 'Start graph analysis in Character graph example' });
   fireEvent.click(await screen.findByRole('button', { name: 'Social circles' }));
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Inspect character relationships');
-  expect(screen.getByRole('button', { name: 'Create a conversation in Character graph example' })).toBeTruthy();
+  expect(within(screen.getByRole('complementary')).getByRole('button', { name: 'My projects' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '中文' }));
   fireEvent.click(screen.getByRole('button', { name: '江湖圈子' }));
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('检查人物关系');
@@ -145,7 +146,8 @@ describe('actual App graph creation destination', () => {
     expect(window.location.search).toBe('?new=1');
     expect(screen.getByRole('heading', { name: '金融股权示例' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: '天龙八部' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '在 天龙八部 中新建会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '我的项目' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始分析' }));
     await screen.findByRole('heading', { name: '开始在 天龙八部 中图分析' });
     fireEvent.click(screen.getByRole('button', { name: '创建你的图' }));
     await screen.findByRole('button', { name: '构图 订单关系' });
