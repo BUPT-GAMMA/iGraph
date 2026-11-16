@@ -153,3 +153,19 @@
   .catalog-page-content { padding-top: 17px; gap: 19px; }
 }
 @media (prefers-reduced-motion: reduce) { .catalog-card { transition: none; } }
+
+.construction-project-context {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px clamp(16px, 4vw, 52px);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--surface);
+  font-size: 12px;
+}
+.construction-project-context button { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; padding: 5px 0; color: var(--accent-strong); background: transparent; }
+.construction-project-context strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-weight: 600; }
+.construction-project-context button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }

@@ -242,6 +242,8 @@ function App() {
   const [datasetProjectId, setDatasetProjectId] = useState<string | undefined>();
   const [constructionDataset, setConstructionDataset] = useState<Dataset | null>(null);
   const [createGraphOpen, setCreateGraphOpen] = useState(false);
+  const [constructionProjectId, setConstructionProjectId] = useState<string | null>(null);
+  const constructionLoadRef = useRef(0);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(() => parseWorkspaceRoute(window.location.search).kind === 'help');
   const [importProject, setImportProject] = useState<Project | null>(null);
@@ -498,9 +500,19 @@ function App() {
     if (parseWorkspaceRoute(window.location.search).kind === 'help') writeWorkspaceRoute({ kind: 'home' });
   }
 
-  async function showCreateGraphWorkspace(updateUrl = true) {
+  function isConstructionRoute(projectId: string | null) {
+    const route = parseWorkspaceRoute(window.location.search);
+    return route.kind === 'create-graph' && (route.projectId || null) === projectId;
+  }
+
+  async function showCreateGraphWorkspace(projectId: string | null = null, updateUrl = true) {
     const identity = identityRef.current;
+    const epoch = accountEpochRef.current;
+    const request = ++constructionLoadRef.current;
+    const stale = () => accountIsStale(identity, epoch) || request !== constructionLoadRef.current
+      || Boolean(projectId && deletedProjectsRef.current.has(`${identity}:${projectId}`));
     dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: null });
+    setConstructionProjectId(projectId);
     setCreateGraphOpen(true);
     setProjectsOpen(false);
     setHelpOpen(false);
@@ -509,15 +521,16 @@ function App() {
     setDatasetOpen(false);
     setMobileSidebarOpen(false);
     setWorkspaceError('');
-    if (updateUrl) writeWorkspaceRoute({ kind: 'create-graph' });
+    if (updateUrl) writeWorkspaceRoute({ kind: 'create-graph', projectId: projectId || undefined });
     setBusy(true);
     try {
-      const response = await listProjectDatasets(null);
-      if (identityRef.current === identity) updateProjectDatasets(null, response.datasets || []);
+      const response = await listProjectDatasets(projectId);
+      if (stale()) return;
+      updateProjectDatasets(projectId, response.datasets || []);
     } catch (cause: any) {
-      if (identityRef.current === identity) setWorkspaceError(cause.message || tr('Could not load personal graph-construction sources', '个人构图数据源加载失败'));
+      if (!stale() && isConstructionRoute(projectId)) setWorkspaceError(cause.message || tr('Could not load graph-construction sources', '构图数据源加载失败'));
     } finally {
-      if (identityRef.current === identity) setBusy(false);
+      if (!stale()) setBusy(false);
     }
   }
 
@@ -838,7 +851,8 @@ function App() {
     if (route.kind === 'help') {
       showHelp();
     } else if (route.kind === 'create-graph') {
-      await showCreateGraphWorkspace(false);
+      if (route.projectId && !nextProjects.some(project => project.project_id === route.projectId)) showWorkspaceHome(true, true, tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
+      else await showCreateGraphWorkspace(route.projectId || null, false);
     } else if (route.kind === 'projects') {
       showProjects(false);
     } else if (route.kind === 'new-session') {
@@ -932,7 +946,8 @@ function App() {
       } else if (route.kind === 'help') {
         showHelp();
       } else if (route.kind === 'create-graph') {
-        void showCreateGraphWorkspace(false);
+        if (route.projectId && !projects.some(project => project.project_id === route.projectId)) showWorkspaceHome(true, true, tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
+        else void showCreateGraphWorkspace(route.projectId || null, false);
       } else if (route.kind === 'projects') {
         showProjects(false);
       } else if (route.kind === 'session') {
@@ -2019,22 +2034,28 @@ function App() {
   }
   async function addConstructionDataset(file: File | File[], schema?: CsvBundleSchema, name?: string) {
     const identity = identityRef.current;
+    const epoch = accountEpochRef.current;
+    const projectId = constructionProjectId;
+    const stale = () => accountIsStale(identity, epoch) || Boolean(projectId && deletedProjectsRef.current.has(`${identity}:${projectId}`));
     setBusy(true);
     setWorkspaceError('');
     try {
-      const response = await uploadProjectDataset(null, file, undefined, schema, name);
-      if (identityRef.current !== identity) return;
-      updateProjectDatasets(null, current => [
+      const response = await uploadProjectDataset(projectId, file, undefined, schema, name);
+      if (stale()) return;
+      updateProjectDatasets(projectId, current => [
         ...current.filter(item => item.dataset_id !== response.dataset.dataset_id),
         response.dataset,
       ]);
+      if (projectId) setProjects(current => current.map(project => project.project_id === projectId
+        ? { ...project, default_dataset_id: response.default_dataset_id ?? project.default_dataset_id } : project));
+      if (!isConstructionRoute(projectId)) return;
       if (isPtGraph(response.dataset)) setConstructionDataset(null);
       else if (supportsConstruction(response.dataset)) openConstruction(response.dataset);
       else setWorkspaceError(tr('The file was saved, but this workspace supports SQL, CSV, TXT, or PT files.', '此文件已保存，但此工作台仅支持 SQL、CSV、TXT 或 PT 文件。'));
     } catch (cause: any) {
-      if (identityRef.current === identity) setWorkspaceError(cause.message || tr('Could not upload the graph-construction source', '构图数据源上传失败'));
+      if (!stale() && isConstructionRoute(projectId)) setWorkspaceError(cause.message || tr('Could not upload the graph-construction source', '构图数据源上传失败'));
     } finally {
-      if (identityRef.current === identity) setBusy(false);
+      if (!accountIsStale(identity, epoch)) setBusy(false);
     }
   }
   function datasetUpdated(dataset: Dataset) {
@@ -2182,25 +2203,31 @@ function App() {
     .map(([sessionId]) => [sessionId, true]));
   const displayProjects = projects.map(project => ({ ...project,
     name: localizeExampleName(project.name, userCases, t) || project.name,
+    dataset_count: datasetsByProject[draftScopeKey(project.project_id)]?.length ?? project.dataset_count,
   }));
+  const constructionProject = displayProjects.find(project => project.project_id === constructionProjectId);
   return <UserCaseContext.Provider value={userCases}><div className="app-shell">
     {actionDialog}
     <TopBar onMenu={() => setMobileSidebarOpen(true)} onHome={() => showWorkspaceHome()} onModels={userId && !demoMode && cancelEnabled ? () => setModelsOpen(true) : undefined} />
     <PopupPresence key={`modelsOpen-${userId}`}>{modelsOpen && <ModelSettings key={userId} onClose={() => setModelsOpen(false)} onChanged={applyModelCatalog} />}</PopupPresence>
     <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onCreateGraph={() => void showCreateGraphWorkspace()} onHelp={() => showHelp()} helpActive={helpOpen} createGraphActive={createGraphOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onProjects={showProjects} projectsActive={projectsOpen} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
+      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onHelp={() => showHelp()} helpActive={helpOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onProjects={showProjects} projectsActive={projectsOpen || (createGraphOpen && Boolean(constructionProjectId))} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
         {projectsOpen ? <>
           {workspaceError && <div className="workspace-error" role="alert">{workspaceError}</div>}
           <ProjectCatalog projects={displayProjects} cases={userCases} busy={busy} onCreate={() => showProjectEditor()}
-            onOpen={id => void openProjectDraft(id)} onDatasets={id => void openDatasets(id)}
+            onOpen={id => void openProjectDraft(id)} onDatasets={id => void openDatasets(id)} onConstruct={id => void showCreateGraphWorkspace(id)}
             onEdit={showProjectEditor} onDelete={askDeleteProject} onExample={(id, question) => void selectUserCase(id, question)} />
         </> : createGraphOpen ? <>
+          <nav className="construction-project-context" aria-label={t('Project navigation', '项目导航')}>
+            <button type="button" onClick={() => showProjects()}><Icon name="arrow-left" size={15} />{t('Back to my projects', '返回我的项目')}</button>
+            {constructionProject && <><span aria-hidden="true">/</span><strong title={constructionProject.name}>{constructionProject.name}</strong></>}
+          </nav>
           {workspaceError && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {workspaceError}</div>}
           {constructionDataset
             ? <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} embedded onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} />
-            : <CreateGraphWorkspace datasets={datasetsByProject[draftScopeKey(null)] || []} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onAnalyze={analyzeSourceGraph} onDelete={removeDataset} onStateChange={constructionStateUpdated} />}
+            : <CreateGraphWorkspace key={constructionProjectId || 'personal'} datasets={datasetsByProject[draftScopeKey(constructionProjectId)] || []} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onAnalyze={analyzeSourceGraph} onDelete={removeDataset} onStateChange={constructionStateUpdated} />}
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
           {modelNotice?.sessionId === activeSession?.session_id && modelNotice && <div className="model-switch-notice" role="status">{t(`Next message: ${modelNotice.name}`, `下一条消息将使用：${modelNotice.name}`)}<button className="plain-icon" onClick={() => setModelNotice(null)} aria-label={t('Dismiss model notice', '关闭模型切换提示')}><Icon name="close" size={12} /></button></div>}

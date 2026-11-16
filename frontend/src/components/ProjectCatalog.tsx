@@ -12,12 +12,13 @@ type Props = {
   onCreate: () => void;
   onOpen: (id: string) => void;
   onDatasets: (id: string) => void;
+  onConstruct: (id: string) => void;
   onEdit: (project: Project) => void;
   onDelete: (project: Project) => void;
   onExample: (id: string, question?: string) => void;
 };
 
-export function ProjectCatalog({ projects, cases, busy, onCreate, onOpen, onDatasets, onEdit, onDelete, onExample }: Props) {
+export function ProjectCatalog({ projects, cases, busy, onCreate, onOpen, onDatasets, onConstruct, onEdit, onDelete, onExample }: Props) {
   const { language, t } = useI18n();
   const labels = useExampleLabels();
   const number = new Intl.NumberFormat(language);
@@ -52,10 +53,13 @@ export function ProjectCatalog({ projects, cases, busy, onCreate, onOpen, onData
               <span className="catalog-status" data-tone={hasData ? 'ready' : 'neutral'}>{hasData ? t('Data added', '已有数据源') : t('Awaiting data', '待添加数据源')}</span>
             </div>
             <div className="catalog-card-actions">
-              {hasData && <button type="button" className="secondary-command" disabled={busy} onClick={() => onOpen(project.project_id)}>
+              {hasData && <button type="button" className="primary-command" disabled={busy} onClick={() => onOpen(project.project_id)}>
                 <Icon name="arrow-right" size={15} />{t('Start analysis', '开始分析')}
               </button>}
-              <button type="button" className={hasData ? 'secondary-command' : 'primary-command'} disabled={busy} onClick={() => onDatasets(project.project_id)}>
+              <button type="button" className={hasData ? 'secondary-command' : 'primary-command'} disabled={busy} onClick={() => onConstruct(project.project_id)}>
+                <Icon name="graph-create" size={15} />{t('Create your graph', '创建你的图')}
+              </button>
+              <button type="button" className="secondary-command" disabled={busy} onClick={() => onDatasets(project.project_id)}>
                 <Icon name="database" size={15} />{hasData ? t('Project datasets', '项目数据集') : t('Select data source', '选择数据源')}
               </button>
               <details className="catalog-card-menu">

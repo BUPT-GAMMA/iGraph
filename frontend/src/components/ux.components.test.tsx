@@ -38,7 +38,7 @@ it('shows confirming at 100%, allows removal, and exposes failed-file retry', ()
   fireEvent.click(screen.getByRole('button', { name: '重试 x.csv' })); expect(onRetryAttachment).toHaveBeenCalledWith('x');
 });
 const sidebar = { sessions: [{ session_id: '1', title: 'One' }, { session_id: '2', title: 'Two' }], userId: 'admin', dark: false,
-  onTheme: noop, onMemory: noop, onSkills: noop, onCreateGraph: noop, mobileOpen: false, onCloseMobile: noop, onNew: noop, onProjects: noop, onSelect: noop, onDelete: noop, collapsed: false, onCollapse: noop };
+  onTheme: noop, onMemory: noop, onSkills: noop, mobileOpen: false, onCloseMobile: noop, onNew: noop, onProjects: noop, onSelect: noop, onDelete: noop, collapsed: false, onCollapse: noop };
 it('keeps pinned conversations scoped to the signed-in account', () => {
   const { container, rerender } = render(<Sidebar {...sidebar} />);
   fireEvent.click(screen.getByRole('button', { name: '置顶 Two' }));

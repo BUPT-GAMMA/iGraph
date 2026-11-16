@@ -21,7 +21,6 @@ const sidebarProps = {
   onTheme: noop,
   onMemory: noop,
   onSkills: noop,
-  onCreateGraph: noop,
   mobileOpen: false,
   onCloseMobile: noop,
   onNew: noop,
@@ -39,24 +38,13 @@ const graphProps = {
 };
 
 describe('docked panel controls', () => {
-  it('keeps create your graph as a permanent first-level destination', () => {
-    const onCreateGraph = vi.fn();
-    const onCloseMobile = vi.fn();
-    const { rerender } = render(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} onCloseMobile={onCloseMobile} collapsed={false} onCollapse={noop} />);
-
-    const entry = screen.getByRole('button', { name: '创建你的图' });
-    const newTask = screen.getByRole('button', { name: '新建任务' });
-    expect(entry.classList.contains('sidebar-primary-action')).toBe(true);
-    expect(newTask.classList.contains('sidebar-primary-action')).toBe(true);
-    expect(entry.querySelector('.sidebar-primary-action-icon')).toBeTruthy();
-    expect(newTask.querySelector('.sidebar-primary-action-icon')).toBeTruthy();
-    expect(entry.getAttribute('aria-current')).toBeNull();
-    fireEvent.click(entry);
-    expect(onCreateGraph).toHaveBeenCalledOnce();
-    expect(onCloseMobile).toHaveBeenCalledOnce();
-
-    rerender(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} createGraphActive collapsed={false} onCollapse={noop} />);
-    expect(screen.getByRole('button', { name: '创建你的图' }).getAttribute('aria-current')).toBe('page');
+  it('keeps New task and My projects while moving graph creation out of the sidebar', () => {
+    const onNew = vi.fn();
+    render(<Sidebar {...sidebarProps} onNew={onNew} collapsed={false} onCollapse={noop} />);
+    expect(screen.queryByRole('button', { name: '创建你的图' })).toBeNull();
+    expect(screen.getByRole('button', { name: '我的项目' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    expect(onNew).toHaveBeenCalledOnce();
   });
 
   it('removes the legacy sidebar version label and keeps a functional toggle', () => {

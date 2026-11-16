@@ -24,10 +24,8 @@ type Props = {
   onTheme: () => void;
   onMemory: () => void;
   onSkills: () => void;
-  onCreateGraph: () => void;
   onHelp?: () => void;
   helpActive?: boolean;
-  createGraphActive?: boolean;
   mobileOpen: boolean;
   onCloseMobile: () => void;
   onNew: () => void;
@@ -65,7 +63,7 @@ function SessionRunIndicator({ status, unread, t }: { status?: string; unread?: 
   return <i className={`session-run-indicator is-static ${status || ''}`} role="status" aria-label={statusLabel} title={statusLabel} />;
 }
 
-export function Sidebar({ sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, userId, dark, onTheme, onMemory, onSkills, onCreateGraph, onHelp, helpActive = false, createGraphActive = false, mobileOpen, onCloseMobile, onNew, onProjects, projectsActive = false, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, userId, dark, onTheme, onMemory, onSkills, onHelp, helpActive = false, mobileOpen, onCloseMobile, onNew, onProjects, projectsActive = false, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
   const account = useAccount();
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
@@ -108,12 +106,6 @@ export function Sidebar({ sessions, hasMoreSessions = false, loadingSessions = f
       <span className="sidebar-primary-action-icon sidebar-new-task-icon"><Icon name="plus" size={18} /></span>
       <span className="sidebar-primary-action-label">{t('New task', '新建任务')}</span>
     </button>
-    <nav className="sidebar-create-graph" aria-label={t('Graph construction workspace', '构图工作区')}>
-      <button className={`sidebar-primary-action ${createGraphActive ? 'active' : ''}`} aria-current={createGraphActive ? 'page' : undefined} onClick={() => { onCreateGraph(); onCloseMobile(); }}>
-        <span className="sidebar-primary-action-icon sidebar-create-graph-icon"><Icon name="graph-create" size={19} /></span>
-        <span className="sidebar-primary-action-label">{t('Create your graph', '创建你的图')}</span>
-      </button>
-    </nav>
     <nav className="sidebar-utilities" aria-label={t('Knowledge and capability management', '知识与能力管理')}>
       <button onClick={() => runAction(() => { onMemory(); onCloseMobile(); })}><Icon name="spark" size={16} /><span>{t('Memory', '记忆')}</span></button>
       <button onClick={() => runAction(() => { onSkills(); onCloseMobile(); })}><Icon name="cube" size={16} /><span>{t('Skills', '技能')}</span></button>
