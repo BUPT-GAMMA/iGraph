@@ -17,6 +17,7 @@ from backend.dataset_api import legacy_dataset_api_notice
 
 class BuildRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
+    model: ConstructionQuestionModel | None = None
 
 
 class ConstructionSettingsRequest(BaseModel):
@@ -71,7 +72,7 @@ def _sync_record_locked(directory, dataset, state):
         return latest
     construction = {key: state[key] for key in (
         "status", "revision", "node_count", "edge_count", "source_type",
-        "source_filename", "algorithm_available", "message", "directed", "build_id", "failure_code"
+        "source_filename", "algorithm_available", "message", "directed", "build_id", "failure_code", "model_config_id"
     ) if key in state}
     ready = state["status"] == "ready"
     metadata = {**latest.metadata, "construction": construction,
@@ -151,10 +152,11 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
     async def build(dataset_id: str, req: BuildRequest, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
         # Browser input never chooses a server-side path or another owner.
+        payload = {"source_path": dataset.storage_path, "source_filename": dataset.original_filename,
+                   **req.model_dump(exclude_none=True)}
         try:
             result = await graph.request("POST", f"/construction/{dataset_id}/build",
-                headers=headers(request, user.user_id, project_id), json_body={"source_path": dataset.storage_path,
-                    "source_filename": dataset.original_filename, "options": req.options},
+                headers=headers(request, user.user_id, project_id), json_body=payload,
                 timeout=construction_request_timeout(req.options))
         except httpx.TimeoutException:
             # Disconnecting this HTTP request does not cancel the engine-owned

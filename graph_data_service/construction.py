@@ -750,6 +750,8 @@ class ConstructionStore:
             "last_build_status": record.get("last_build_status"),
             "build_id": record.get("build_id"), "failure_code": record.get("failure_code"),
         }.items()}
+        if record.get("model_config_id"):
+            result["model_config_id"] = record["model_config_id"]
         if directory is not None:
             progress = _read_public_progress(Path(directory), record)
             if progress is not None:
@@ -884,6 +886,11 @@ class ConstructionStore:
             if _execution is not None:
                 record.update(build_id=_execution.build_id, executor_instance=_execution.instance_id,
                               request_fingerprint=_execution.fingerprint)
+                model = getattr(_execution, "model", None)
+                if model:
+                    record["model_config_id"] = model["config_id"]
+                else:
+                    record.pop("model_config_id", None)
             _atomic_json(directory / "record.json", record)
             try:
                 (directory / "construction-progress.json").unlink(missing_ok=True)
@@ -902,6 +909,10 @@ class ConstructionStore:
                     message = _TEXT_EXTRACTION_FAILURE_MESSAGES[code]
                 elif isinstance(code, str) and code.startswith("text_extraction_"):
                     message = "TXT 实体关系抽取未完整成功；未发布半成品图，源文件已保留，请检查文本或模型配置后重试。"
+                elif code == "MODEL_QUOTA_EXHAUSTED":
+                    message = "所选模型服务余额不足，源文件已保留，可更换模型后重试。"
+                elif isinstance(code, str) and code.startswith("MODEL_"):
+                    message = "所选模型当前不可用，源文件已保留，请检查模型服务后重试。"
                 elif code == "construction_time_budget_exhausted":
                     message = "构图超过时间预算；源文件已保留，可调整预算后重试。"
                 elif code == "csv_configuration_required":

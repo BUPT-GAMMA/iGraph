@@ -116,7 +116,7 @@ class ModelCallTests(unittest.IsolatedAsyncioTestCase):
         async def run_sync(fn, *args):
             return fn(*args)
         mod = "graph_data_service.construction_questions"
-        with patch(f"{mod}.resolve_question_model", new=AsyncMock(return_value=connection)) as resolve, \
+        with patch(f"{mod}.resolve_catalog_model", new=AsyncMock(return_value=connection)) as resolve, \
              patch(f"{mod}.ProviderGateway") as gateway:
             client = gateway.return_value
             client.context_window, client.output_limit = 25_000, 2500

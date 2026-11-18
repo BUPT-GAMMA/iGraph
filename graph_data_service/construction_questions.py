@@ -2,25 +2,19 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import unicodedata
 from collections import Counter
 from itertools import islice
 
-import httpx
-
-from execution_protocol import service_headers
 from graph_data_service.construction_schema import schema_foreign_key
+from graph_data_service.run_model import resolve_catalog_model
+from model_protocols import model_provider_error
 from graph_engine.model_support import ProviderGateway
 
 QUESTION_TIMEOUT_SECONDS = 90
 _PRIVATE_FIELD = re.compile(r"password|passwd|api.?key|access.?token|secret|credential|authorization|密码|密钥", re.I)
 _GENERATED_ID = re.compile(r"(?:row|entity|edge|fk|node)_[0-9a-f]{16,}$", re.I)
-_MODEL_ERRORS = {
-    "MODEL_CONFIG_CHANGED", "MODEL_DISABLED", "MODEL_NOT_CONFIGURED", "MODEL_REMOVED",
-    "MODEL_NOT_ALLOWED", "MODEL_PROVIDER_DISABLED", "MODEL_TOOLS_REQUIRED",
-}
 _SYSTEM = (
     'Generate four distinct starter questions an analyst can answer using the saved graph. '
     'Use only its known entity types, relationships and fields. Examples are partial: use real sample values '
@@ -139,37 +133,12 @@ def parse_questions(output):
     return {**zh, "translations": {"en": en}}
 
 
-async def resolve_question_model(user_id, selection):
-    url = os.getenv("AGENT_RUNTIME_URL", "http://agent-runtime:21112").rstrip("/")
-    async with httpx.AsyncClient(timeout=12, trust_env=False) as client:
-        response = await client.post(url + "/internal/model-catalog/resolve",
-                                     headers=service_headers(user_id), json=selection)
-    if response.status_code >= 400:
-        try:
-            code = response.json().get("detail", {}).get("code")
-        except (AttributeError, ValueError):
-            code = None
-        raise QuestionGenerationError(code if code in _MODEL_ERRORS else "QUESTION_MODEL_UNAVAILABLE")
-    return response.json()
-
-
 def question_provider_error(exc):
-    status = getattr(exc, "status_code", None)
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        body = body.get("error", body)
-    code = (body.get("type") or body.get("code")) if isinstance(body, dict) else None
-    if status == 402 or code in ("quota_not_enough", "insufficient_quota"):
-        return "MODEL_QUOTA_EXHAUSTED"
-    if status == 429:
-        return "MODEL_RATE_LIMITED"
-    if status in (401, 403):
-        return "MODEL_AUTH_FAILED"
-    return "QUESTION_GENERATION_FAILED"
+    return model_provider_error(getattr(exc, "status_code", None), getattr(exc, "body", None)) or "QUESTION_GENERATION_FAILED"
 
 
 async def generate_questions(graph, user_id, selection, logger, run_sync):
-    config = await resolve_question_model(user_id, selection)
+    config = await resolve_catalog_model(user_id, selection)
     gateway = ProviderGateway(model=config["model_id"], base_url=config["base_url"],
                               api_key=config["api_key"], temperature=0.2, logger=logger, resolved_config=config)
     try:

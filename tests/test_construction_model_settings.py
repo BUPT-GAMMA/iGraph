@@ -34,7 +34,7 @@ def test_blank_fields_preserve_config_and_custom_connection_reaches_llm():
     client = ToolCallingLLM()
     assert client.model == 'claude-opus-5-5'
     assert client._url == 'https://gateway.test/v1/chat/completions'
-    assert client._key == 'private-secret'
+    assert client._headers['Authorization'] == 'Bearer private-secret'
     assert client._resolved_ip is None
     assert 'private-secret' not in json.dumps(client.audit_metadata())
 
@@ -51,7 +51,7 @@ def test_model_only_keeps_existing_environment_connection():
     save_settings(ConstructionSettingsWrite(model='claude-opus-5-5'))
     client = ToolCallingLLM()
     assert client._url == 'https://server.test/v1/chat/completions'
-    assert client._key == 'server-secret'
+    assert client._headers['Authorization'] == 'Bearer server-secret'
     assert client._resolved_ip == '192.0.2.8'
 
 

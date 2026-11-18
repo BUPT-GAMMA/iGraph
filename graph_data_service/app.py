@@ -72,6 +72,7 @@ from graph_data_service.construction import ConstructionStore, ConstructionError
 from graph_data_service.construction_questions import (
     QUESTION_TIMEOUT_SECONDS, QuestionGenerationError, generate_questions, question_provider_error,
 )
+from graph_data_service.run_model import ModelResolutionError
 from graph_data_service.storage.nebula_backend import (
     NebulaGraphRepository,
     NebulaRepositoryError,
@@ -142,6 +143,7 @@ class ConstructionBuildReq(BaseModel):
     source_path: str | None = None
     source_filename: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
+    model: ConstructionQuestionModel | None = None
 
 
 class ConstructionSourceReq(BaseModel):
@@ -4800,7 +4802,11 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         check_source(req, grant)
         # An omitted path keeps the registered source/ready-result reuse contract.
         source_path = grant.source.source_path if req.source_path is not None else None
-        return await svc._construction_coordinator.build(uid, dataset_id, source_path, grant.source.source_filename, req.options)
+        model = req.model.model_dump() if req.model else None
+        if model is None:
+            return await svc._construction_coordinator.build(uid, dataset_id, source_path, grant.source.source_filename, req.options)
+        return await svc._construction_coordinator.build(uid, dataset_id, source_path, grant.source.source_filename,
+                                                         req.options, model=model)
 
     @app.post("/construction/{dataset_id}/preset")
     async def construction_preset(dataset_id: str, req: ConstructionPresetReq, request: Request):
@@ -4849,7 +4855,7 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             async with asyncio.timeout(QUESTION_TIMEOUT_SECONDS):
                 async with question_slots:
                     result = await generate_questions(graph, user_id, task["model"], question_log, run_sync)
-        except QuestionGenerationError as exc:
+        except (ModelResolutionError, QuestionGenerationError) as exc:
             code = exc.code
         except TimeoutError:
             code = "QUESTION_TIMEOUT"

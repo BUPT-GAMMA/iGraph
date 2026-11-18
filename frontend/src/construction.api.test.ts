@@ -35,9 +35,10 @@ describe('construction API boundaries', () => {
     const options: ConstructionBuildOptions = {
       query_count: 15, domain: '订单履约', domain_category: 'commerce', experience_enabled: false,
     };
-    await buildDatasetGraph(dataset, options);
+    const model = { config_id: 'chat-model-configuration', revision: 3 };
+    await buildDatasetGraph(dataset, options, model);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ options });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ options, model });
     expect(fetchMock.mock.calls[0][1].method).toBe('POST');
     expect(fetchMock.mock.calls[0][1].signal).toBeUndefined();
   });

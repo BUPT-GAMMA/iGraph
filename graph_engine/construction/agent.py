@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from graph_data_service.construction import _atomic_json, validate_graph
-from graph_engine.construction.llm import ConstructionLLMError, ToolCallingLLM, selected_model
+from graph_engine.construction.llm import ConstructionLLMError, ConstructionModelError, ToolCallingLLM, selected_model
 from graph_engine.construction.sources import CsvConfigurationError, initial_graph, load_source
 from graph_engine.construction.tools import TRANSFORM_NAMES, fidelity_errors, graph_schema, tool_specs, transform
 from graph_engine.construction.workload import evaluate_workload, generate_workload, validate_queries
@@ -513,6 +513,8 @@ def _extract_semantic_triples(text, llm, config, extraction_goal, progress, enti
                     continue
                 raise _SemanticTextError(exc.code, chunk_id=chunk.chunk_id,
                                          error_type=last_error_type) from None
+            except ConstructionModelError as exc:
+                raise _SemanticTextError(exc.code, chunk_id=chunk.chunk_id, error_type=type(exc).__name__) from None
             except Exception as exc:
                 last_error_type = type(exc).__name__
                 if attempt < 2 and _retryable_text_error(exc):
@@ -716,6 +718,8 @@ def _refine_semantic_graph(text, llm, config, entity_types, extracted, graph,
             return _text_completion(llm, messages, timeout)
         except ConstructionBudgetExceeded:
             raise
+        except ConstructionModelError as exc:
+            raise _SemanticTextError(exc.code, error_type=type(exc).__name__) from None
         except Exception as exc:
             raise _SemanticTextError("text_refine_llm_failed", error_type=type(exc).__name__) from None
 
@@ -1723,6 +1727,8 @@ class TabularConstructionSubAgent:
         except CsvConfigurationError as exc:
             report.update(error_type=type(exc).__name__, error=str(exc)[:2000])
             fail("csv_configuration_required")
+        except ConstructionModelError as exc:
+            fail(exc.code)
         except Exception as exc:
             # Internal sidecar has bounded diagnostic text; external build API
             # continues to return ConstructionStore's sanitized failure state.

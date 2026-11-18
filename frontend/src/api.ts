@@ -99,6 +99,7 @@ export function modelErrorMessage(code?: string | null) {
     MODEL_DISCOVERY_TOO_LARGE: tr('The model list is too large. Add a model ID manually.', '模型列表过大，请手动添加模型 ID'),
     MODEL_REMOVED: tr('Model configuration removed. Select another model.', '模型配置已删除，请选择其他模型'),
     MODEL_DISABLED: tr('Model disabled. Select another model.', '模型已停用，请选择其他模型'),
+    MODEL_UNAVAILABLE: tr('Could not load the selected model service. Try again.', '暂时无法读取所选模型服务，请稍后重试。'),
     MODEL_NOT_CONFIGURED: tr('Endpoint or API key not configured', '尚未配置接口地址或密钥'),
     MODEL_NOT_ALLOWED: tr('Model is not available for this account', '此账户不可使用该模型'),
     MODEL_TOOLS_REQUIRED: tr('Graph analysis requires tool calling', '图分析需要模型支持工具调用'),
@@ -431,23 +432,11 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
 function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
   return `${datasetScopeUrl(dataset.project_id)}/${encodeURIComponent(dataset.dataset_id)}/construction`;
 }
-export function getConstructionModels(signal?: AbortSignal) {
-  return json<{ models: string[]; default_model: string }>('/api/construction-models', { signal });
-}
-export type ConstructionModelSettings = { model: string; has_base_url: boolean; has_api_key: boolean; has_server_config: boolean };
-export function getConstructionModelSettings(signal?: AbortSignal) {
-  return json<ConstructionModelSettings>('/api/construction-model-settings', { signal });
-}
-export function saveConstructionModelSettings(settings: { model: string; base_url: string; api_key: string; clear_api_key: boolean }) {
-  return json<ConstructionModelSettings>('/api/construction-model-settings', modelJson('POST', settings));
-}
 export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionState>(constructionUrl(dataset), { signal });
 }
-export function buildDatasetGraph(dataset: Dataset, options: ConstructionBuildOptions = {}) {
-  return json<ConstructionState>(`${constructionUrl(dataset)}/build`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ options }),
-  });
+export function buildDatasetGraph(dataset: Dataset, options: ConstructionBuildOptions = {}, model?: ConstructionModelSelection) {
+  return json<ConstructionState>(`${constructionUrl(dataset)}/build`, modelJson('POST', { options, model }));
 }
 export function getSavedGraphResult(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>, signal?: AbortSignal) {
   return json<{ schema: ConstructionSchemaResponse['schema']; graph: GraphData }>(`${constructionUrl(dataset)}/result`, { signal });
@@ -455,7 +444,7 @@ export function getSavedGraphResult(dataset: Pick<Dataset, 'project_id' | 'datas
 export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionGraph>(`${constructionUrl(dataset)}/graph`, { signal });
 }
-export type QuestionModel = Pick<ModelConfiguration, 'config_id' | 'revision'>;
+export type ConstructionModelSelection = Pick<ModelConfiguration, 'config_id' | 'revision'>;
 export type ConstructionQuestions = ExampleQuestions & {
   dataset_id: string;
   revision: number;
@@ -468,7 +457,7 @@ export type ConstructionQuestions = ExampleQuestions & {
 export function getConstructionQuestions(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>, signal?: AbortSignal) {
   return json<ConstructionQuestions>(`${constructionUrl(dataset)}/questions`, { signal });
 }
-export function startConstructionQuestions(dataset: Dataset, baseRevision: number, model: QuestionModel) {
+export function startConstructionQuestions(dataset: Dataset, baseRevision: number, model: ConstructionModelSelection) {
   return json<ConstructionQuestions>(`${constructionUrl(dataset)}/questions`, modelJson('POST', { base_revision: baseRevision, model }));
 }
 export function getConstructionSchema(dataset: Dataset, signal?: AbortSignal) {
@@ -483,7 +472,7 @@ export function previewConstruction(dataset: Dataset, baseRevision: number, oper
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
   });
 }
-export function commitConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[], model?: QuestionModel) {
+export function commitConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[], model?: ConstructionModelSelection) {
   return json<ConstructionResult>(`${constructionUrl(dataset)}/commit`, modelJson('POST', {
     base_revision: baseRevision, operations, question_model: model,
   }));

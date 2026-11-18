@@ -180,10 +180,6 @@
 
 .construction-rename { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
 .construction-rename input { min-width:180px; padding:6px 10px; }
-.construction-model-settings { display:flex; flex-direction:column; gap:10px; margin:12px 0; padding:14px; border:1px solid var(--border); border-radius:10px; }
-.construction-model-settings small { line-height:1.5; color:var(--muted); }
-.construction-model-settings [role="alert"] { color:var(--danger, #c43d3d); }
-
 .construction-body { grid-template-columns: minmax(0, 1fr) minmax(282px, 338px); }
 .construction-controls { border-right: 0; border-left: 1px solid var(--construction-line); background: var(--construction-bg); }
 .construction-controls-heading { display: flex; align-items: center; gap: 7px; margin: 0 0 13px; font-size: 13px; font-weight: 700; }

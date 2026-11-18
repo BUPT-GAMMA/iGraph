@@ -15,10 +15,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from graph_engine.construction.settings import read_settings, owns_server_settings
+from graph_engine.construction.native_completion import native_request, native_response
+from model_protocols import generation_url, model_provider_error, protocol_for, request_headers
 
 
 class ConstructionLLMError(RuntimeError):
     pass
+
+
+class ConstructionModelError(ConstructionLLMError):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
 
 
 _DNS_OVERRIDE_LOCK = threading.Lock()
@@ -41,38 +49,47 @@ def selected_model(value=None):
 
 
 class ToolCallingLLM:
-    def __init__(self, *, model=None, timeout=120, tool_choice=None):
-        saved = read_settings()
-        self.model = model or saved.get("model") or os.getenv("GRAPH_CONSTRUCTION_MODEL") or os.getenv("LLM_MODEL") or DEFAULT_CONSTRUCTION_MODEL
+    def __init__(self, *, model=None, timeout=120, tool_choice=None, connection=None):
+        self._uses_catalog = connection is not None
+        self._protocol = protocol_for(connection or {})
+        self._output_limit = int(connection["max_output_tokens"]) if connection else 14_000
+        saved = read_settings() if connection is None else {}
+        self.model = (connection["model_id"] if connection is not None else
+                      model or saved.get("model") or os.getenv("GRAPH_CONSTRUCTION_MODEL") or os.getenv("LLM_MODEL") or DEFAULT_CONSTRUCTION_MODEL)
         # Some compatible providers reject required with nested operation
         # schemas. Auto preserves the complete schema; the agent still requires
         # actual tool calls within bounded workload/evolution attempts.
         self.tool_choice = tool_choice if tool_choice is not None else os.getenv("GRAPH_CONSTRUCTION_TOOL_CHOICE", "auto")
         if not isinstance(self.tool_choice, str) or self.tool_choice not in ("auto", "required"):
             raise ConstructionLLMError("construction_llm_invalid_tool_choice: expected auto or required")
-        providers = (
-            ("qwen", ("QWEN", "DASHSCOPE")),
-            ("deepseek", ("DEEPSEEK",)),
-            ("claude", ("CLAUDE", "ANTHROPIC")),
-            ("doubao", ("ARK", "DOUBAO")),
-            ("gpt", ("OPENAI",)),
-        )
-        prefixes = next((p for name, p in providers if self.model.startswith(name)), ("OPENAI",))
-        prefixes = ("GRAPH_CONSTRUCTION", *prefixes, "LLM")
-        self._key = next((os.environ[p + "_API_KEY"] for p in prefixes if os.getenv(p + "_API_KEY")), "")
-        base = next((os.environ[p + "_BASE_URL"] for p in prefixes if os.getenv(p + "_BASE_URL")), "")
-        if "base_url" in saved:
-            base, self._key = saved["base_url"], saved.get("api_key", "")
-        elif not owns_server_settings():
-            base, self._key = "", ""
-        if not self._key or not base:
-            raise ConstructionLLMError("construction_llm_unavailable: configure your construction model API URL and API key")
-        if not base.startswith(("https://", "http://")):
-            raise ConstructionLLMError("construction_llm_invalid_base_url")
-        self._url = base.rstrip("/") + "/chat/completions"
+        if connection is not None:
+            self._url = generation_url(connection)
+            self._headers = request_headers(connection)
+        else:
+            providers = (
+                ("qwen", ("QWEN", "DASHSCOPE")),
+                ("deepseek", ("DEEPSEEK",)),
+                ("claude", ("CLAUDE", "ANTHROPIC")),
+                ("doubao", ("ARK", "DOUBAO")),
+                ("gpt", ("OPENAI",)),
+            )
+            prefixes = next((p for name, p in providers if self.model.startswith(name)), ("OPENAI",))
+            prefixes = ("GRAPH_CONSTRUCTION", *prefixes, "LLM")
+            key = next((os.environ[p + "_API_KEY"] for p in prefixes if os.getenv(p + "_API_KEY")), "")
+            base = next((os.environ[p + "_BASE_URL"] for p in prefixes if os.getenv(p + "_BASE_URL")), "")
+            if "base_url" in saved:
+                base, key = saved["base_url"], saved.get("api_key", "")
+            elif not owns_server_settings():
+                base, key = "", ""
+            if not key or not base:
+                raise ConstructionLLMError("construction_llm_unavailable: configure your construction model API URL and API key")
+            if not base.startswith(("https://", "http://")):
+                raise ConstructionLLMError("construction_llm_invalid_base_url")
+            self._url = base.rstrip("/") + "/chat/completions"
+            self._headers = {"Authorization": "Bearer " + key}
         self._provider_host = urllib.parse.urlsplit(self._url).hostname
-        # A saved custom gateway must never inherit another gateway's DNS pin.
-        resolved_ip = "" if "base_url" in saved else os.getenv("GRAPH_CONSTRUCTION_RESOLVED_IP", "").strip()
+        # A user-selected connection must use its own DNS resolution.
+        resolved_ip = "" if connection is not None or "base_url" in saved else os.getenv("GRAPH_CONSTRUCTION_RESOLVED_IP", "").strip()
         if resolved_ip:
             try:
                 ipaddress.ip_address(resolved_ip)
@@ -117,19 +134,24 @@ class ToolCallingLLM:
                 socket.getaddrinfo = original
 
     def _request(self, body, *, timeout=None):
-        if self.model.startswith("deepseek-v4"):
-            # Extraction needs the final structured text within its output budget.
-            body = {**body, "thinking": {"type": "disabled"}}
-        body = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        request = urllib.request.Request(self._url, data=body, headers={
-            "Authorization": "Bearer " + self._key, "Content-Type": "application/json",
-        })
+        body["max_tokens"] = min(body["max_tokens"], self._output_limit)
         try:
+            if self._protocol != "openai-compatible":
+                body = native_request(self._protocol, body)
+            elif self.model.startswith("deepseek-v4"):
+                # Extraction needs the final structured text within its output budget.
+                body["thinking"] = {"type": "disabled"}
+            data = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            request = urllib.request.Request(self._url, data=data, headers={
+                **self._headers, "Content-Type": "application/json",
+            })
             with self._urlopen(request, timeout=min(self.timeout, timeout or self.timeout)) as response:
                 payload = response.read(4 * 1024 * 1024 + 1)
                 if len(payload) > 4 * 1024 * 1024:
                     raise ConstructionLLMError("construction_llm_response_too_large")
             document = json.loads(payload)
+            if self._protocol != "openai-compatible":
+                document = native_response(self._protocol, document)
             if document["choices"][0].get("finish_reason") == "length":
                 raise ConstructionLLMError("construction_llm_output_truncated")
             message = document["choices"][0]["message"]
@@ -152,9 +174,18 @@ class ToolCallingLLM:
                         for key, value in captured.items():
                             self.token_usage[key] += value
                 self.successful_calls += 1
-            # Keep only standard chat fields; never persist internal reasoning.
+            # Keep message fields needed for the next round of this construction run.
             return {k: message[k] for k in ("role", "content", "tool_calls") if k in message}
         except urllib.error.HTTPError as exc:
+            if self._uses_catalog:
+                with exc:
+                    try:
+                        document = json.loads(exc.read(16384))
+                    except (OSError, ValueError, RecursionError):
+                        document = None
+                code = model_provider_error(exc.code, document)
+                if code:
+                    raise ConstructionModelError(code) from None
             raise ConstructionLLMError(f"construction_llm_http_{exc.code}") from None
         except (urllib.error.URLError, TimeoutError):
             raise ConstructionLLMError("construction_llm_connection_or_timeout") from None

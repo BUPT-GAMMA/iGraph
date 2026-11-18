@@ -37,6 +37,7 @@ class BuildAttempt:
     dataset_id: str
     fingerprint: str
     state: dict
+    model: dict | None = None
     build_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     task: asyncio.Task | None = None
 
@@ -229,13 +230,15 @@ class ConstructionCoordinator:
         logger.info("construction_deduplicated build_id=%s", attempt.build_id)
         return attempt.snapshot()
 
-    async def build(self, user_id, dataset_id, source_path=None, source_filename=None, options=None):
+    async def build(self, user_id, dataset_id, source_path=None, source_filename=None, options=None, *, model=None):
         if self.closed:
             raise ConstructionError("construction_service_stopping", "服务正在关闭，请稍后重试。", 503)
         options = {} if options is None else copy.deepcopy(options)
         if not isinstance(options, dict):
             raise ConstructionError("invalid_operation", "options must be a JSON object.")
         _json_keys(options)
+        if model is not None and "construction_model" in options:
+            raise ConstructionError("invalid_construction_model", "只能选择一个构图模型。", 422)
         if "construction_model" in options:
             from graph_engine.construction.llm import selected_model
             from graph_engine.construction.settings import construction_identity
@@ -244,8 +247,10 @@ class ConstructionCoordinator:
                     selected_model(options["construction_model"])
             except ValueError:
                 raise ConstructionError("invalid_construction_model", "请选择服务器配置的构图模型。", 422) from None
-        fingerprint = hashlib.sha256(_json([str(source_path) if source_path is not None else None,
-                                           source_filename, options]).encode()).hexdigest()
+        request_identity = [str(source_path) if source_path is not None else None, source_filename, options]
+        if model is not None:
+            request_identity.append(model)
+        fingerprint = hashlib.sha256(_json(request_identity).encode()).hexdigest()
         key = (user_id, dataset_id)
         await self.restore()
         if self.closed:
@@ -270,7 +275,9 @@ class ConstructionCoordinator:
                 any(uid == user_id for uid, _ in self.active) or any(row["user_id"] == user_id for row in recovering)):
             logger.info("construction_capacity_rejected active=%s limit=%s", len(self.active), self.limit)
             raise ConstructionError("construction_capacity_exhausted", "构图资源繁忙，本次未启动，请稍后重试。", 429, retryable=True)
-        attempt = BuildAttempt(self, user_id, dataset_id, fingerprint, self.store._status(record))
+        attempt = BuildAttempt(self, user_id, dataset_id, fingerprint, self.store._status(record), model=model)
+        if model is not None:
+            attempt.state["model_config_id"] = model["config_id"]
         if source_filename:
             attempt.state.update(source_filename=source_filename, source_type=source_filename.rsplit(".", 1)[-1].lower())
             attempt.state["algorithm_available"] = attempt.state["source_type"] in self.store._algorithms
@@ -325,7 +332,7 @@ class ConstructionCoordinator:
         worker = WorkerProcess()
         task = asyncio.create_task(worker.run(
             {"build_id": attempt.build_id, "request_path": str(staging / "request.json"),
-             "deadline": time.monotonic() + duration},
+             "deadline": time.monotonic() + duration, "user_id": attempt.user_id, "model": attempt.model},
             command=[sys.executable, "-m", "graph_data_service.construction_worker"],
             pass_fds=tuple(lease_fds), lease_root=self.root / "workers", job_id=attempt.build_id))
         self.workers[attempt.build_id] = task

@@ -3,7 +3,7 @@ import { financeNodeLabel } from '../financeNodeLabels';
 import { useExampleLabels } from '../userCases';
 import { Popup, PopupBackdrop } from './PopupMotion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, getConstructionModels, renameProjectDataset, buildDatasetGraph, commitConstruction, getConstructionGraph, getConstructionSchema, getConstructionState, modelErrorMessage, previewConstruction, startConstructionQuestions, type ModelCatalog, type QuestionModel } from '../api';
+import { ApiError, renameProjectDataset, buildDatasetGraph, commitConstruction, getConstructionGraph, getConstructionSchema, getConstructionState, modelErrorMessage, previewConstruction, startConstructionQuestions, type ModelCatalog, type ConstructionModelSelection } from '../api';
 import { useI18n } from '../i18n';
 import type { Translate } from '../i18n';
 import { isGraphData } from '../types';
@@ -13,7 +13,6 @@ import { isPrebuiltGraph } from '../construction';
 import { SavedGraphConstructionPanel } from './SavedGraphConstructionPanel';
 import { Icon } from './Icon';
 import { DatasetDescriptionEditor } from './DatasetDescriptionEditor';
-import { ConstructionModelSettings } from './ConstructionModelSettings';
 import { ModelPicker } from './ModelPicker';
 import { useConstructionQuestions } from '../useConstructionQuestions';
 import { ConstructionSchemaFields } from './ConstructionSchemaFields';
@@ -279,9 +278,9 @@ type Props = {
   onStateChange?: (dataset: Dataset, state: ConstructionState) => void;
   onUse?: (dataset: Dataset) => void | Promise<void>;
   onDatasetUpdated?: (dataset: Dataset) => void;
-  questionModels?: ModelCatalog | null;
-  preferredQuestionModel?: string;
-  onManageQuestionModels?: () => void;
+  workspaceModels?: ModelCatalog | null;
+  preferredWorkspaceModel?: string;
+  onManageWorkspaceModels?: () => void;
   embedded?: boolean;
 };
 
@@ -290,7 +289,7 @@ export function GraphConstructionPanel(props: Props) {
 }
 
 function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChange, onUse, onDatasetUpdated,
-  questionModels, preferredQuestionModel, onManageQuestionModels, embedded = false }: Props) {
+  workspaceModels, preferredWorkspaceModel, onManageWorkspaceModels, embedded = false }: Props) {
   const { language, t } = useI18n();
   const labels = useExampleLabels();
   const translation = useRef(t);
@@ -299,19 +298,16 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
   const [datasetName, setDatasetName] = useState(dataset.name);
   const [nameInput, setNameInput] = useState(dataset.name);
   const [renaming, setRenaming] = useState(false);
-  const [constructionModel, setConstructionModel] = useState('deepseek-v4-pro');
-  const [constructionModels, setConstructionModels] = useState(['deepseek-v4-pro', 'claude-opus-5-5']);
-  const [modelSettingsDirty, setModelSettingsDirty] = useState(false);
   const [state, setState] = useState<ConstructionState | null>(null);
-  const [selectedQuestionModel, setSelectedQuestionModel] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState('');
   const [questionRefresh, setQuestionRefresh] = useState(0);
   const [questionSubmitting, setQuestionSubmitting] = useState(false);
   const [questionError, setQuestionError] = useState('');
   const questions = useConstructionQuestions(dataset, state?.status === 'ready' ? state.revision : 0, questionRefresh);
-  const usableModels = questionModels?.models.filter(item => item.enabled && !item.unavailable_reason) || [];
-  const requestedModel = selectedQuestionModel || questions?.model_config_id || preferredQuestionModel;
-  const questionModel = usableModels.find(item => item.config_id === requestedModel)
-    || usableModels.find(item => item.config_id === questionModels?.default_model) || usableModels[0];
+  const usableModels = workspaceModels?.models.filter(item => item.enabled && !item.unavailable_reason) || [];
+  const requestedModel = selectedModelId || questions?.model_config_id || state?.model_config_id || preferredWorkspaceModel;
+  const workspaceModel = usableModels.find(item => item.config_id === requestedModel)
+    || usableModels.find(item => item.config_id === workspaceModels?.default_model) || usableModels[0];
   const questionGenerating = questionSubmitting || questions?.status === 'generating';
   const questionFailure = questions?.status === 'failed' ? modelErrorMessage(questions.error_code)
     || (questions.error_code === 'QUESTION_TIMEOUT'
@@ -449,7 +445,7 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
       callbacks.current.onStateChange?.(callbacks.current.dataset, publishedState);
       const waiting = nextState.status === 'building' || nextState.status === 'not_built' && postPending.current;
       setMonitoringBuild(waiting);
-      setError(nextState.status === 'failed' ? nextState.message || translation.current('Graph construction failed. The source file is preserved; adjust the settings and try again.', '构图失败，源文件已保留。可调整参数后重试。') : '');
+      setError(nextState.status === 'failed' ? modelErrorMessage(nextState.failure_code) || nextState.message || translation.current('Graph construction failed. The source file is preserved; adjust the settings and try again.', '构图失败，源文件已保留。可调整参数后重试。') : '');
       if (!quiet || snapshot) {
         setSavedGraph(snapshot?.graph || null); setSavedSchema(assets?.schema || null); setSchemaWarning(assets?.warning || '');
         setPreview(null); setOperations([]); setConflict(false);
@@ -484,15 +480,6 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
   }, [dataset.dataset_id, dataset.project_id]);
 
   useEffect(() => { setDatasetName(dataset.name); setNameInput(dataset.name); }, [dataset.name]);
-  useEffect(() => {
-    const controller = new AbortController();
-    void getConstructionModels(controller.signal).then(result => {
-      if (!controller.signal.aborted && result.models.length) {
-        setConstructionModels(result.models); setConstructionModel(result.default_model);
-      }
-    }).catch(() => undefined);
-    return () => controller.abort();
-  }, [dataset.dataset_id, dataset.file_type]);
   async function renameDataset() {
     const name = nameInput.trim();
     if (!name || name.length > 120) { setError(t('Enter a name of 1–120 characters.', '请输入 1 到 120 字的数据集名称。')); return; }
@@ -545,7 +532,7 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
     } else setError(failure(cause, t));
   }
   async function build() {
-    if (postPending.current || isBuilding || modelSettingsDirty || !state || state.algorithm_available === false) return;
+    if (postPending.current || isBuilding || !state || state.algorithm_available === false) return;
     const count = Number(queryCount);
     if (!semanticTextMode && constructionMode === 'llm' && (!Number.isInteger(count) || count < 1 || count > 100)) {
       setError(t('The number of validation queries must be an integer from 1 to 100.', '验证查询数量必须是 1 到 100 之间的整数。')); return;
@@ -556,6 +543,11 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
     const selectedEntityTypes = [...new Set(entityTypes.split(/[,，、;；\n]+/).map(value => value.trim()).filter(Boolean))];
     if (semanticTextMode && (selectedEntityTypes.length > 12 || selectedEntityTypes.some(value => value.length > 30 || /[|｜<>\r]/.test(value)))) {
       setError(t('Enter up to 12 entity types, each no longer than 30 characters and without |, ｜, < or >.', '最多填写 12 种实体类型，每种不超过 30 字，且不能包含 |、｜、< 或 >。')); return;
+    }
+    const selection = modelSelection();
+    if ((semanticTextMode || constructionMode === 'llm') && !selection) {
+      setError(t('Choose an available model for AI construction.', '使用智能构图前，请在下方选择可用模型。'));
+      return;
     }
     const version = lifecycle.current;
     const attempt = ++buildAttempt.current;
@@ -573,13 +565,13 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
       // No AbortSignal: closing this view must not cancel the server-side build.
       const sourceDescription = domain.trim() || dataset.description?.trim() || '';
       const options: ConstructionBuildOptions = semanticTextMode
-        ? { domain: sourceDescription, txt_mode: 'entities', mode: 'llm', entity_types: selectedEntityTypes, construction_model: constructionModel, text_refine_enabled: textRefineEnabled, ...(textRefineEnabled ? { query_count: count } : {}) }
+        ? { domain: sourceDescription, txt_mode: 'entities', mode: 'llm', entity_types: selectedEntityTypes, text_refine_enabled: textRefineEnabled, ...(textRefineEnabled ? { query_count: count } : {}) }
         : constructionMode === 'llm'
-          ? { mode: 'llm', construction_model: constructionModel, query_count: count, domain: sourceDescription, domain_category: domainCategory, experience_enabled: experienceEnabled }
+          ? { mode: 'llm', query_count: count, domain: sourceDescription, domain_category: domainCategory, experience_enabled: experienceEnabled }
           : { mode: 'rules', domain: sourceDescription, experience_enabled: false };
       if (!semanticTextMode && sourceType === 'txt' && delimiter === '__lines__') options.txt_mode = 'lines';
       else if (!semanticTextMode && supportsDelimiter && delimiter) options.delimiter = delimiter;
-      const result = await buildDatasetGraph(dataset, options);
+      const result = selection ? await buildDatasetGraph(dataset, options, selection) : await buildDatasetGraph(dataset, options);
       if (!alive.current || version !== lifecycle.current || attempt !== buildAttempt.current || buildResolved.current) return;
       postPending.current = false;
       currentBuildId.current = result.build_id || null;
@@ -600,7 +592,7 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
       } else {
         setState(result); setMonitoringBuild(result.status === 'building');
         callbacks.current.onStateChange?.(callbacks.current.dataset, result);
-        if (result.status === 'failed') setError(result.message || t('Graph construction failed. The source file is preserved.', '构图失败，源文件已保留。'));
+        if (result.status === 'failed') setError(modelErrorMessage(result.failure_code) || result.message || t('Graph construction failed. The source file is preserved.', '构图失败，源文件已保留。'));
         else setNotice(result.message || (result.status === 'building'
           ? t('Graph construction is running on the server. You can close this window and check again later.', '构图正在服务器上运行，可以关闭此窗口后再查看。')
           : t('The source file is preserved. You can continue later.', '源文件已保留，可稍后继续。')));
@@ -661,11 +653,11 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
     } catch (cause) { if (alive.current) handleFailure(cause); }
     finally { if (alive.current) setBusy(''); }
   }
-  function questionSelection(): QuestionModel | undefined {
-    return questionModel && { config_id: questionModel.config_id, revision: questionModel.revision };
+  function modelSelection(): ConstructionModelSelection | undefined {
+    return workspaceModel && { config_id: workspaceModel.config_id, revision: workspaceModel.revision };
   }
   async function generateExamples() {
-    const selection = questionSelection();
+    const selection = modelSelection();
     if (!selection || state?.status !== 'ready' || questionGenerating) return;
     setQuestionError('');
     setQuestionSubmitting(true);
@@ -683,7 +675,7 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
     setBusy('save'); setError(''); setNotice('');
     try {
       setQuestionError('');
-      const selection = questionSelection();
+      const selection = modelSelection();
       const result = selection
         ? await commitConstruction(dataset, state.revision, operations, selection)
         : await commitConstruction(dataset, state.revision, operations);
@@ -787,10 +779,6 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
       <aside className="construction-controls" aria-label={t('Construction settings and optimization', '构图设置与优化')}>
         <div className="construction-controls-heading"><Icon name="database" size={16} />{t('Dataset & setup', '数据集与配置')}</div>
         <DatasetDescriptionEditor dataset={dataset} onSaved={onDatasetUpdated} disabled={editingBusy} />
-        <ConstructionModelSettings key={dataset.dataset_id} model={constructionModel} models={constructionModels} disabled={editingBusy}
-          onModelChange={setConstructionModel} onDirtyChange={setModelSettingsDirty} onSavedModel={model => {
-            setConstructionModel(model); setConstructionModels(current => [...new Set([...current, model])]);
-          }} />
         <div className="construction-source"><div><Icon name="file" size={18} /><strong>{t('Source file', '源文件')}</strong><b>{(state?.source_type || dataset.file_type).replace('.', '').toUpperCase()}</b></div>{!graph && <>
           <fieldset className="construction-build-options" disabled={editingBusy || !state || state.algorithm_available === false}>
             {!semanticTextMode && <><label className="construction-check"><input type="checkbox" role="switch" checked={constructionMode === 'llm'} onChange={event => setConstructionMode(event.target.checked ? 'llm' : 'rules')} aria-describedby="construction-mode-help" />{t('Use Agent to optimize the graph', '使用 Agent 优化构图')}</label><small id="construction-mode-help">{constructionMode === 'llm' ? t('Agent optimizes and validates the graph built from rules.', 'Agent 会优化并验证规则化方法构建的图。') : t('Build directly from primary and foreign keys (PK/FK), without automatic optimization.', '仅按主键和外键（PK/FK）构图，不进行自动优化。')}</small></>}
@@ -807,7 +795,7 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
             {!semanticTextMode && constructionMode === 'llm' && <><label className="construction-check"><input type="checkbox" checked={experienceEnabled} onChange={event => setExperienceEnabled(event.target.checked)} aria-describedby="construction-experience-help" />{t('Reuse domain experience', '复用领域经验')}</label>
             <small id="construction-experience-help">{t('Experience is reused only within graph construction for the same user and domain. New graphs still require validation. When disabled, this build neither reads nor writes experience.', '仅在构图模块内复用同一用户、同一领域的经验。新图仍需验收；关闭后，本次构图不读取或写入经验。')}</small></>}
           </fieldset>
-          <button className="primary-command" onClick={build} disabled={editingBusy || modelSettingsDirty || !state || state.algorithm_available === false}>{isBuilding ? t('Building graph…', '正在构图…') : state?.algorithm_available === false ? t('Construction algorithm unavailable', '构图算法待接入') : state?.status === 'failed' ? t('Rebuild graph', '重新构图') : t('Start construction', '开始构图')}</button>
+          <button className="primary-command" onClick={build} disabled={editingBusy || !state || state.algorithm_available === false}>{isBuilding ? t('Building graph…', '正在构图…') : state?.algorithm_available === false ? t('Construction algorithm unavailable', '构图算法待接入') : state?.status === 'failed' ? t('Rebuild graph', '重新构图') : t('Start construction', '开始构图')}</button>
           {(isBuilding || state?.algorithm_available === false || semanticTextMode) && <small>{isBuilding ? t('Construction continues on the server and its status is checked every 3 seconds. You can close this window and reopen it to view progress and results.', '构图在服务器持续运行，每 3 秒查询一次状态。关闭窗口后，可重新打开查看进度与结果。') : state?.algorithm_available === false ? t('Graph construction is not available for this file type yet. The source file is preserved.', '此文件类型的构图算法暂不可用，源文件已保留。') : t('The LLM extracts entities and relationships from line-based text to build the graph. Review semantic results manually.', '依据 LLM 从逐行文本中抽取实体与关系并构图；语义结果需要人工核对。')}</small>}
         </>}</div>
         <div className="construction-rule-heading"><strong>{t('Graph data optimization', '图数据优化')}</strong><span>{t(String(RULES.length) + ' operations', String(RULES.length) + ' 项操作')}</span></div>
@@ -834,15 +822,15 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
         </fieldset></form>}
       </aside>
     </div>
-    {questionModels && <section className="construction-question-settings" aria-label={t('Example question settings', '示例问题设置')}>
+    {workspaceModels !== undefined && <section className="construction-question-settings" aria-label={t('Graph workspace model', '构图与示例模型')}>
       <div className="construction-question-actions">
-        <strong>{t('Example question model', '示例问题模型')}</strong>
-        <ModelPicker model={questionModel?.config_id || ''} models={usableModels.map(item => item.config_id)}
-          customModels={questionModels.models} onModelChange={setSelectedQuestionModel}
-          label={t('Select example question model', '选择示例问题模型')} onManageModels={onManageQuestionModels}
+        <strong>{t('Graph workspace model', '构图与示例模型')}</strong>
+        <ModelPicker model={workspaceModel?.config_id || ''} models={usableModels.map(item => item.config_id)}
+          customModels={workspaceModels?.models} onModelChange={setSelectedModelId}
+          label={t('Select graph workspace model', '选择构图与示例模型')} onManageModels={workspaceModels ? onManageWorkspaceModels : undefined}
           disabled={editingBusy || questionGenerating} />
         {state?.status === 'ready' && !operations.length && <button type="button" className="secondary-command"
-          disabled={editingBusy || questionGenerating || !questionModel} onClick={() => void generateExamples()}>
+          disabled={editingBusy || questionGenerating || !workspaceModel} onClick={() => void generateExamples()}>
           {questions?.questions.length ? t('Regenerate questions', '重新生成问题') : t('Generate questions', '生成示例问题')}
         </button>}
       </div>
@@ -850,8 +838,8 @@ function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChan
         {questionError || (questionGenerating ? t('Generating four example questions…', '正在生成四个示例问题…')
           : questionFailure || (questions?.questions.length
             ? t(`4 questions generated with ${questions.model_name}`, `已用 ${questions.model_name} 生成 4 个问题`)
-            : questionModel ? t('Uses graph structure and samples to generate four questions after saving.', '保存后根据图结构和样本生成四个问题。')
-              : t('Add an available model in model services to generate questions.', '请在模型服务中配置可用模型。')))}
+            : workspaceModel ? t('Used for AI construction and for four example questions after saving.', '用于智能构图，以及保存后生成四个示例问题。')
+              : t('Add an available model in model services.', '请在模型服务中配置可用模型。')))}
       </span>
     </section>}
     <footer className="construction-footer"><div className="construction-save-info">{preview ? <><strong>{t(`${operations.length} ${operations.length === 1 ? 'change' : 'changes'} waiting to be saved`, `${operations.length} 项修改待保存`)}</strong><span>{t(`Nodes ${preview.summary.before.node_count} → ${preview.summary.after.node_count} · Edges ${preview.summary.before.edge_count} → ${preview.summary.after.edge_count}`, `节点 ${preview.summary.before.node_count} → ${preview.summary.after.node_count} · 边 ${preview.summary.before.edge_count} → ${preview.summary.after.edge_count}`)}</span><details><summary>{t('View change list', '查看修改清单')}</summary><ol>{operations.map((operation, index) => <li key={index}>{operationLabel(operation, t)}</li>)}</ol></details></> : <><strong>{state?.status === 'draft' ? t('Graph draft ready · Unsaved', '构图草稿已生成 · 待保存') : graph ? t('Graph construction result saved', '构图结果已保存') : t('Source file saved', '源文件已保存')}</strong><span>{state?.status === 'draft' ? t('Save the construction result before using this graph for analysis.', '点击保存构图结果后，即可使用此图进行分析。') : graph ? t('Use this graph in an analysis conversation.', '可将这张图用于会话分析。') : isBuilding ? t('Construction continues on the server. You can close this window and check again later.', '构图在服务器继续运行，可关闭窗口后再查看。') : state?.algorithm_available === false ? t('This file type cannot be constructed yet. You do not need to upload it again.', '此文件类型暂不可构图，无需重复上传。') : t('Review the source data and construction mode, then start construction.', '确认源数据与构图方式后即可开始构图。')}</span></>}</div><div className="construction-footer-actions">{operations.length > 0 && <><button className="secondary-command" disabled={editingBusy} onClick={() => void updatePreview(operations.slice(0, -1))}>{t('Undo last step', '撤销上一步')}</button><button className="secondary-command" disabled={editingBusy} onClick={() => void updatePreview([])}>{t('Restore all', '还原全部')}</button></>}{onUse && graph && state?.status === 'ready' && !operations.length ? <button className="primary-command" disabled={editingBusy} onClick={() => void useDataset()}><Icon name="arrow-right" size={15} />{busy === 'use' ? t('Applying…', '正在使用…') : embedded ? t('Start analysis', '开始分析') : t('Use in current conversation', '在当前会话使用')}</button> : <button className="primary-command" disabled={editingBusy || (!operations.length && state?.status !== 'draft') || conflict} onClick={() => void save()}><Icon name="check" size={15} />{busy === 'save' ? t('Saving…', '正在保存…') : state?.status === 'draft' ? t('Save construction result', '保存构图结果') : t('Save to dataset', '保存到数据集')}</button>}</div></footer>
