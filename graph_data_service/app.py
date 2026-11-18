@@ -4820,6 +4820,15 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         return await run_sync(copy_constructed_graph, svc._construction, uid, req.source_dataset_id,
             dataset_id, target_grant.source.source_path, target_grant.source.source_filename)
 
+    @app.get("/construction/{dataset_id}/result")
+    async def saved_graph_result(dataset_id: str, request: Request):
+        from asyncio import to_thread
+        from graph_data_service.saved_graph_preview import saved_graph_preview
+
+        grant = await svc._construction_access.authorize(construction_user(request),
+            scope=request.headers.get(SCOPE_HEADER), dataset_id=dataset_id, saved_graph=True)
+        return await to_thread(saved_graph_preview, Path(grant.source.source_path))
+
     @app.get("/construction/{dataset_id}/graph")
     async def constructed_graph(dataset_id: str, request: Request):
         uid, _ = await construction_grant(request, dataset_id)

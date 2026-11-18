@@ -448,6 +448,9 @@ export function buildDatasetGraph(dataset: Dataset, options: ConstructionBuildOp
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ options }),
   });
 }
+export function getSavedGraphResult(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>, signal?: AbortSignal) {
+  return json<{ schema: ConstructionSchemaResponse['schema']; graph: GraphData }>(`${constructionUrl(dataset)}/result`, { signal });
+}
 export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionGraph>(`${constructionUrl(dataset)}/graph`, { signal });
 }

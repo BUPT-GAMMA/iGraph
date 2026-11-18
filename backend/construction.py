@@ -105,6 +105,18 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
             result = {**result, "algorithm_available": available}
         return {**result, "source_filename": dataset.original_filename, "source_type": dataset.file_type}
 
+    @app.get("/api/personal-datasets/{dataset_id}/construction/result")
+    @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction/result")
+    async def saved_result(dataset_id: str, request: Request, project_id: str | None = None):
+        user = user_for(request)
+        if project_id:
+            project_for(project_id, user.user_id)
+        dataset = dataset_for(dataset_id, project_id, user.user_id)
+        if dataset.file_type not in {"npz", "pt"} or dataset.status != "ready":
+            raise HTTPException(422, {"code": "SAVED_GRAPH_UNAVAILABLE"})
+        return await graph.request("GET", f"/construction/{dataset_id}/result",
+                                   headers=headers(request, user.user_id, project_id), timeout=60)
+
     @app.get("/api/construction-models")
     async def models(request: Request):
         user = user_for(request)

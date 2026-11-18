@@ -24,6 +24,7 @@ class AccessRequest(BaseModel):
     scope: str | None = Field(default=None, min_length=1, max_length=256)
     dataset_id: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_-]+$")
     cleanup: bool = False
+    saved_graph: bool = False
 
 
 class SourceRecord(BaseModel):

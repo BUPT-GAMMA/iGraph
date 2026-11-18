@@ -34,6 +34,12 @@ export function HelpPipeline() {
         ? t('A PT graph already contains graph structure. Follow these four steps to upload and analyze it; no reconstruction or construction-model connection is needed.', 'PT 图文件已包含图结构。按以下四步上传并分析，无需重新构图，也无需配置构图模型连接。')
         : t('Choose your file format and follow the six steps below. Uploading preserves the source; save the graph draft before using it for analysis. Already have a PT graph? Select PT to follow the shorter upload workflow.', '选择文件类型，按以下六步完成操作。上传会保留源文件；构图生成草稿后，需要保存才能用于分析。已有 PT 图文件时，选择 PT 查看直接上传流程。')}</p>
     </header>
+    <aside className="help-pipeline-shortcut" aria-label={t('View an existing graph', '查看已有图')}>
+      <h3>{t('View a saved graph', '查看已保存的图')}</h3>
+      <p>{t('Open “My projects” in the sidebar. On the project card, choose “Create your graph”. Under “My graph sources”, use “Examples” or search by name.', '在侧栏打开“我的项目”，点击目标项目卡片上的“创建你的图”。在“我的构图数据源”中可切换到“样例数据”，也可按名称搜索。')}</p>
+      <p>{t('For Ownership Look-Through Analysis, click “View construction result”. “Graph schema” shows types, fields, directions and counts across the whole graph. Select a type to highlight its connections. Switch to “Graph instances” to inspect individual nodes. Large graphs show the sample size separately.', '以“金融股权穿透分析”为例，点击“查看构图结果”。“构图结构（Schema）”展示全图的类型、字段、关系方向和数量，点选类型可高亮关联。“实例图”可查看具体节点及其属性，大图会单独标出样本数量。')}</p>
+      <p>{t('For a graph saved from CSV, SQL or TXT, click “View graph build” to reopen its saved construction. The molecular example also opens with “View graph build” and includes its molecular structure.', '从 CSV、SQL 或 TXT 构建并保存的图，点击“查看构图”可重新打开保存结果。分子示例同样从“查看构图”进入，还可查看分子结构。')}</p>
+    </aside>
     <div className="help-format-picker" role="group" aria-label={t('Source file format', '源文件类型')}>
       {(['txt', 'sql', 'csv', 'pt'] as const).map(value => <button type="button" key={value} aria-pressed={format === value} onClick={() => setFormat(value)}>
         <strong>{value.toUpperCase()}</strong><span>{value === 'txt' ? t('Text & documents', '文本与文档') : value === 'sql' ? t('Relational data', '关系型数据') : value === 'pt' ? t('Ready-made graph', '现成图文件') : t('One or more tables', '单表或多表')}</span>
@@ -45,7 +51,7 @@ export function HelpPipeline() {
     <ol className="help-pipeline-steps" aria-label={t(`${format.toUpperCase()} to graph analysis`, `${format.toUpperCase()} 到图分析的操作步骤`)}>
       <li>
         <h3>{t('Prepare and upload your source', '准备并上传源文件')}</h3>
-        <p>{t('Open “Create your graph” in the sidebar, then choose “Upload source” or “Choose source file”.', '在侧栏打开“创建你的图”，点击“上传数据源”或“选择源文件”。')}</p>
+        <p>{t('Under “My projects”, open “Create your graph” on the destination project card. Choose “Upload source” or “Choose source file”. For a new project, choose “New project” first.', '从“我的项目”进入目标项目卡片的“创建你的图”，点击“上传数据源”或“选择源文件”。首次创建项目时，先点击“新建项目”。')}</p>
         {isPt ? <ul>
           <li>{t('Select one .pt file containing a single graph: a PyTorch Geometric Data object or a supported graph dictionary with edge_index and node data (such as num_nodes). Model checkpoint weights alone are not a graph.', '选择一个包含单图的 .pt 文件：PyTorch Geometric Data 对象，或包含 edge_index 和节点信息（如 num_nodes）的图字典。仅包含模型权重的 checkpoint 不是图数据。')}</li>
           <li>{t('Node IDs, names, features, and labels depend on what the file contains. Names and relationship meanings cannot be recovered from numeric IDs alone. Multi-graph classification collections use the separate graph-classification workflow.', '节点 ID、名称、特征与标签取决于文件内容；仅有数字 ID 时无法还原人物名称或关系语义。多图分类集合需要使用独立的图分类流程。')}</li>
@@ -61,12 +67,12 @@ export function HelpPipeline() {
           <li>{t('Tables with a primary key create nodes. For edge tables, leave the primary key blank and use “Add relationship” to configure two foreign-key column groups to node tables. Other fields become edge properties. Then click “Upload … tables”.', '设置主键的表生成节点。关系表的主键留空，点击“添加关系”配置两组指向节点表的外键列，其他字段作为边属性，再点击“上传 … 张表”。')}</li>
           <li><code>orders.customer_id → customers.customer_id</code>{t(' is an example foreign-key mapping. Check that the referenced values exist in the target table.', ' 是外键映射的例子；请确认引用值在目标表中存在。')}</li>
         </ul>}
-        <p>{isPt ? t('After upload, the PT file appears in “My graph sources” with a “Start analysis” button.', '上传后，PT 文件会显示在“我的构图数据源”中，并提供“开始分析”按钮。') : t('The file appears in “My graph sources”. Open “Build graph” if the construction workspace is not already open. You can use “Rename dataset” to change its display name.', '文件会出现在“我的构图数据源”中。若未自动进入工作台，点击“构图”；可通过“重命名数据集”修改显示名称。')}</p>
+        <p>{isPt ? t('After upload, find the PT file in this project’s “My graph sources”. A ready single graph offers “View construction result” and “Start analysis”.', '上传后，在当前项目的“我的构图数据源”中找到 PT 文件。就绪的单图提供“查看构图结果”和“开始分析”。') : t('The file appears in “My graph sources”. Open “Build graph” if the construction workspace is not already open. You can use “Rename dataset” to change its display name.', '文件会出现在“我的构图数据源”中。若未自动进入工作台，点击“构图”；可通过“重命名数据集”修改显示名称。')}</p>
       </li>
       {isPt ? <li>
         <h3>{t('Check the uploaded graph source', '确认已上传的图数据源')}</h3>
         <p>{t('Confirm the filename and PT badge in “My graph sources”. The upload is stored immediately and remains after refresh. PT imports do not produce a construction draft and do not need “Save construction result”.', '在“我的构图数据源”中确认文件名称和 PT 标记。文件上传后即存储，刷新后仍会保留。PT 导入不产生构图草稿，无需点击“保存构图结果”。')}</p>
-        <p>{t('The graph loader validates the file when the analysis session loads it. If loading fails, check the supported PT structure, node count, and edge endpoints; do not rename an unrelated file to .pt.', '分析会话载入图时会校验文件。加载失败时，请检查 PT 结构、节点数量和边端点是否合法；不要将其他格式直接改名为 .pt。')}</p>
+        <p>{t('Choose “View construction result” to inspect a supported single graph. For larger files or unsupported PT encodings, use the source card’s “Start analysis” action.', '点击“查看构图结果”可查看支持预览的单图。超出预览大小限制或编码暂不支持预览时，可从数据源卡片点击“开始分析”。')}</p>
       </li> : <><li>
         <h3>{t('Choose the construction method and model', '选择构图方式与模型')}</h3>
         {isText ? <>
@@ -99,12 +105,9 @@ export function HelpPipeline() {
       </li></>}
       <li>
         <h3>{t('Select the saved graph for a conversation', '将已保存的图用于会话')}</h3>
-        {isPt && <p>{t('Click “Start analysis” on the PT source card to open a standalone task with that dataset selected. Confirm the filename beside the message composer before sending a question.', '在 PT 数据源卡片点击“开始分析”，打开已选中该数据集的独立任务。发送问题前，确认输入框旁显示了该数据集名称。')}</p>}
-        <p>{t('Click “New task”, then the database / “Dataset” button in the message composer. For a standalone task, select the saved graph from “Personal datasets”. Confirm that its name appears beside the composer.', '点击“新建任务”，再点击输入框旁的数据库图标／“数据集”按钮。独立任务可在“个人数据集”中选择已保存的图，并确认输入框旁显示了该数据集名称。')}</p>
-        {isPt ? <p>{t('To analyze a PT graph inside a project, open “Project datasets” → “Add dataset” and upload the PT file there, then select it in a conversation belonging to that project.', '若要在项目内分析 PT 图，请在“项目数据集”→“添加数据集”中上传该 PT 文件，再在该项目的会话中选中它。')}</p> : <>
-        <p>{t('To work inside a project, open that project’s datasets, choose “Load constructed graph”, and click “Load into project”. This creates an independent copy. Start a conversation in that project and select the imported dataset.', '若在项目内分析，打开该项目的数据集面板，点击“加载已构图数据”，再点击“加载到项目”，生成独立副本。随后在该项目中新建会话并选择导入的数据集。')}</p>
-        <p>{t('When the construction panel is opened from a conversation, a saved graph can also be attached with “Use in current conversation”.', '从会话中打开构图面板时，已保存的图也可通过“在当前会话使用”直接载入。')}</p>
-        </>}
+        {isPt ? <p>{t('Click “Start analysis” on the PT source card to open a task in the same project with that graph selected.', '在 PT 数据源卡片点击“开始分析”，会打开当前项目的任务，并自动选中这张图。')}</p>
+          : <p>{t('In “My projects”, click “Start analysis” on the same project card. Use the dataset button beside the message box to select the saved graph under “Project datasets”.', '返回“我的项目”，点击同一张项目卡片的“开始分析”。通过输入框旁的数据集按钮，在“项目数据集”中选中刚保存的图。')}</p>}
+        <p>{t('Check the dataset name beside the message box before sending your question.', '发送问题前，核对输入框旁显示的数据集名称。')}</p>
       </li>
       <li>
         <h3>{t('Choose an analysis model and ask a question', '选择分析模型并提问')}</h3>
@@ -125,12 +128,12 @@ export function HelpPipeline() {
         <dt>{t('The PT file cannot be loaded', 'PT 文件无法加载')}</dt>
         <dd>{t('Check that this is a supported single-graph object, not model weights or a multi-graph collection. Invalid edges or inconsistent node fields must be corrected in the source file before uploading again.', '请确认文件是支持的单图对象，而非模型权重或多图集合。无效边、节点字段长度不一致等问题，需要修正源文件后重新上传。')}</dd>
         <dt>{t('The PT source is missing in a project', '项目中找不到 PT 数据源')}</dt>
-        <dd>{t('“Create your graph” uploads to personal datasets. Use “Start analysis” for a standalone task, or upload the PT file through that project’s “Add dataset” button.', '“创建你的图”上传到个人数据集。可点击“开始分析”创建独立任务，或在目标项目中通过“添加数据集”上传 PT 文件。')}</dd>
+        <dd>{t('Return to “My projects” and reopen “Create your graph” on the card you uploaded to. Choose “All” and clear the source search.', '回到“我的项目”，从上传时所选的项目卡片重新进入“创建你的图”。选择“全部”并清空数据源搜索条件。')}</dd>
         </> : <>
         <dt>{t('The build cannot start or fails', '无法开始构图或构图失败')}</dt>
         <dd>{t('Save any pending model settings and check the URL, Key, and model ID. For SQL, check the dialect and data statements; for CSV, check headers and key mappings. The source is retained, so inspect the error before choosing “Rebuild graph”.', '先保存尚未提交的模型配置，检查 URL、Key 和模型 ID。SQL 检查语法与数据语句，CSV 检查表头与主外键映射。源文件会保留，可先查看报错，再点击“重新构图”。')}</dd>
         <dt>{t('The graph is missing from the analysis picker', '分析时找不到已构的图')}</dt>
-        <dd>{t('Confirm that you saved the construction result. A personal graph must be loaded into the target project before a conversation in that project can use it. Uploading a file or typing its name alone does not select it.', '确认已点击“保存构图结果”。在项目会话中使用个人图之前，需要先将图加载到该项目。仅上传文件或在问题中写出名称，不等于已选中数据集。')}</dd>
+        <dd>{t('Check the saved status, then open the same project’s analysis task and select the graph from “Project datasets”. If the source is in your personal library, use “Load constructed graph” in the project’s dataset panel to import it.', '确认已保存构图结果，然后打开同一项目的分析任务，在“项目数据集”中选择它。如果图来自个人数据集，可在项目数据集面板用“加载已构图数据”导入。')}</dd>
         <dt>{t('The graph has no relationships', '图中没有关系')}</dt>
         <dd>{t('For natural-language TXT, check that AI entity extraction is selected. For SQL or CSV, check foreign keys and matching values. Review the source and settings rather than assuming every table row should connect.', '自然语言 TXT 应选择智能实体抽取；SQL、CSV 应检查外键和引用值是否匹配。请核对源数据与设置，不应默认所有记录都存在连接。')}</dd>
         </>}

@@ -43,6 +43,17 @@ describe('create graph workspace', () => {
     expect(screen.queryByText(/现成图数据集无需构图/)).toBeNull();
   });
 
+  it('opens the saved finance snapshot inside its project without building or starting a task', () => {
+    const finance = { dataset_id: 'finance', project_id: 'p', name: '金融股权穿透分析', file_type: 'npz',
+      original_filename: 'finance-risk.npz', status: 'ready', metadata: { construction: { revision: 2 } } };
+    const onConstruct = vi.fn(), onAnalyze = vi.fn();
+    render(<CreateGraphWorkspace datasets={[finance]} onUpload={vi.fn()} onConstruct={onConstruct} onAnalyze={onAnalyze} />);
+    fireEvent.click(screen.getByRole('button', { name: '查看构图结果 金融股权穿透分析' }));
+    expect(onConstruct).toHaveBeenCalledExactlyOnceWith(finance);
+    expect(onAnalyze).not.toHaveBeenCalled();
+    expect(mocks.state).not.toHaveBeenCalled();
+  });
+
   it('accepts a PT file without CSV configuration and prevents mixed or unsupported uploads', () => {
     const onUpload = vi.fn();
     const { container } = render(<CreateGraphWorkspace datasets={[]} onUpload={onUpload} onConstruct={vi.fn()} />);

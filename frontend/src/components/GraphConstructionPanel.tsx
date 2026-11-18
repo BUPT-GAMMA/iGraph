@@ -8,8 +8,8 @@ import type { Translate } from '../i18n';
 import { isGraphData } from '../types';
 import type { ConstructionBuildOptions, ConstructionDomainCategory, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaPropertyPath, ConstructionSchemaResponse, ConstructionState, Dataset, GraphData } from '../types';
 import { GraphWorkspace } from './GraphWorkspace';
-import { isMolecularGraph } from '../construction';
-import { MolecularConstructionPanel } from './MolecularConstructionPanel';
+import { isPrebuiltGraph } from '../construction';
+import { SavedGraphConstructionPanel } from './SavedGraphConstructionPanel';
 import { Icon } from './Icon';
 import { DatasetDescriptionEditor } from './DatasetDescriptionEditor';
 import { ConstructionModelSettings } from './ConstructionModelSettings';
@@ -279,7 +279,7 @@ type Props = {
 };
 
 export function GraphConstructionPanel(props: Props) {
-  return isMolecularGraph(props.dataset) ? <MolecularConstructionPanel dataset={props.dataset} onClose={props.onClose} embedded={props.embedded} /> : <EditableGraphConstructionPanel {...props} />;
+  return isPrebuiltGraph(props.dataset) ? <SavedGraphConstructionPanel key={JSON.stringify([props.dataset.project_id, props.dataset.dataset_id])} dataset={props.dataset} onClose={props.onClose} embedded={props.embedded} /> : <EditableGraphConstructionPanel {...props} />;
 }
 
 function EditableGraphConstructionPanel({ dataset, onClose, onSaved, onStateChange, onUse, onDatasetUpdated, embedded = false }: Props) {

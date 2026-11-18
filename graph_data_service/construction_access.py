@@ -23,11 +23,11 @@ class ConstructionAccessClient:
 
     async def authorize(self, user_id: str, *, session_id: str | None = None,
                         scope: str | None = None, dataset_id: str | None = None,
-                        cleanup: bool = False) -> AccessGrant:
+                        cleanup: bool = False, saved_graph: bool = False) -> AccessGrant:
         if not user_id or (session_id is None and scope is None):
             raise HTTPException(403, {"code": "DATASET_SCOPE_REQUIRED"})
         try:
-            body = AccessRequest(session_id=session_id, scope=scope, dataset_id=dataset_id, cleanup=cleanup)
+            body = AccessRequest(session_id=session_id, scope=scope, dataset_id=dataset_id, cleanup=cleanup, saved_graph=saved_graph)
         except ValidationError:
             raise HTTPException(422, {"code": "INVALID_DATASET_SCOPE"}) from None
         try:
@@ -37,7 +37,7 @@ class ConstructionAccessClient:
                 async with httpx.AsyncClient(base_url=self.base_url, timeout=AUTHORIZATION_TIMEOUT_SECONDS,
                                              trust_env=False, transport=self.transport) as client:
                     response = await client.post("/internal/construction/access", headers=service_headers(user_id),
-                                                 json=body.model_dump())
+                                                 json=body.model_dump(exclude=set() if saved_graph else {"saved_graph"}))
             if response.status_code in {401, 403, 404, 409, 422}:
                 # Only this typed applicability result is public, after the
                 # authority has verified live ownership. Never relay its body.

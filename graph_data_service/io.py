@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, BinaryIO, Dict, List, Optional, Union
 
 import numpy as np
 
@@ -384,7 +384,8 @@ def _as_label_array(v: Any) -> Optional[np.ndarray]:
     return arr.astype(np.float32)
 
 
-def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
+def load_graph_data_pt(path: str | BinaryIO, graph_cls: type["GraphData"], *,
+                       preview_limits: tuple[int, int] | None = None) -> "GraphData":
     """
     从 PyTorch Geometric 单图 .pt 文件（TAGLAS 格式）加载 GraphData。
 
@@ -403,7 +404,19 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
         ) from e
 
     from graph_data_service.pt_compat import load_pt_payload
-    data = load_pt_payload(path)
+    if preview_limits is not None:
+        # Only standard tensor containers and PyG's built-in single-graph records.
+        try:
+            from torch_geometric.data import Data
+            from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
+            from torch_geometric.data.storage import GlobalStorage
+            graph_types = [Data, DataEdgeAttr, DataTensorAttr, GlobalStorage]
+        except ImportError:
+            graph_types = []
+        with torch.serialization.safe_globals(graph_types):
+            data = torch.load(path, map_location="cpu", weights_only=True)
+    else:
+        data = load_pt_payload(path)
 
     if isinstance(data, dict):
         keys = set(data)
@@ -486,6 +499,11 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
         raise ValueError(
             f"无法从 .pt 单图文件确定节点数（需要 num_nodes、x、y 或 edge_index）: {path}"
         )
+
+    if preview_limits is not None and (num_nodes > preview_limits[0]
+            or (edge_array is not None and edge_array.size > 2 * preview_limits[1])):
+        from graph_data_service.construction import ConstructionError
+        raise ConstructionError("saved_graph_too_large", "This graph exceeds the interactive preview limit.", 413)
 
     # ── node name maps ──────────────────────────────────────────────
     id2node: Optional[Dict[int, str]] = None
@@ -724,7 +742,7 @@ def load_graph_data_pt(path: str, graph_cls: type["GraphData"]) -> "GraphData":
     name = (
         str(raw_name)
         if isinstance(raw_name, str) and raw_name
-        else os.path.splitext(os.path.basename(path))[0]
+        else os.path.splitext(os.path.basename(path.name if hasattr(path, "read") else path))[0]
     )
 
     # PyG Data.is_directed() is structural, so only explicit stored flags set

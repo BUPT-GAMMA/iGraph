@@ -5,7 +5,7 @@ import { getConstructionState } from '../api';
 import { useI18n } from '../i18n';
 import type { Translate } from '../i18n';
 import type { ConstructionState, CsvBundleSchema, Dataset } from '../types';
-import { constructionStatus, isMolecularGraph, isPrebuiltGraph, supportsConstruction } from '../construction';
+import { canViewSavedGraph, constructionStatus, isMolecularGraph, isPrebuiltGraph, supportsConstruction } from '../construction';
 import { Icon } from './Icon';
 import { CsvBundleDialog } from './CsvBundleDialog';
 import { SourceDataDialog } from './SourceDataPreview';
@@ -219,8 +219,10 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
               <span className="catalog-status" data-tone={badge.tone}>{badge.label}</span>
             </div>
             <div className="catalog-card-actions">
-              {isMolecularGraph(dataset) && <button type="button" className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy || !graphReady}
-                aria-label={t(`View graph build ${name}`, `查看构图 ${name}`)}>{t('View graph build', '查看构图')}<Icon name="graph" size={14} /></button>}
+              {canViewSavedGraph(dataset) && <button type="button" className="secondary-command" onClick={() => onConstruct(dataset)} disabled={busy}
+                aria-label={(isMolecularGraph(dataset) ? t('View graph build', '查看构图') : t('View construction result', '查看构图结果')) + ' ' + name}>
+                <Icon name="graph" size={14} />{isMolecularGraph(dataset) ? t('View graph build', '查看构图') : t('View construction result', '查看构图结果')}
+              </button>}
               {isPrebuiltGraph(dataset)
                 ? <button type="button" className="secondary-command" onClick={() => onAnalyze?.(dataset)} disabled={busy || !graphReady || !onAnalyze}
                     aria-label={t(`Start analysis ${name}`, `开始分析 ${name}`)}>{t('Start analysis', '开始分析')}<Icon name="arrow-right" size={14} /></button>
