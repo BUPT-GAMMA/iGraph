@@ -1,4 +1,4 @@
-import type { BorylationAnalysisStep, UserCase } from './userCases';
+import type { BorylationAnalysisStep, ExampleQuestions, UserCase } from './userCases';
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionSourcePreview, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
@@ -453,6 +453,9 @@ export function getSavedGraphResult(dataset: Pick<Dataset, 'project_id' | 'datas
 }
 export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionGraph>(`${constructionUrl(dataset)}/graph`, { signal });
+}
+export function getConstructionQuestions(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>, signal?: AbortSignal) {
+  return json<ExampleQuestions & { dataset_id: string; revision: number }>(`${constructionUrl(dataset)}/questions`, { signal });
 }
 export function getConstructionSchema(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionSchemaResponse>(`${constructionUrl(dataset)}/schema`, { signal });

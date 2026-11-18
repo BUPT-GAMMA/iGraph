@@ -1,10 +1,11 @@
 import { RemoteGraphQueryResult } from './RemoteGraphQueryResult';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { MarkdownContent } from './MarkdownContent';
-import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
+import type { ArtifactRef, Dataset, Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { editableLatestTurn } from '../latestTurn';
-import { localizeUserCase, nextExampleQuestion, type UserCase } from '../userCases';
+import { localizeQuestions, nextExampleQuestion, type UserCase } from '../userCases';
+import { useConstructionQuestions } from '../useConstructionQuestions';
 import { ExampleQuestionButton } from './ExampleQuestionButton';
 import { answerVersions } from '../answerVersions';
 import { FileTypeIcon } from './FileTypeIcon';
@@ -175,6 +176,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   emptyProjectName?: string;
   emptyContent?: ReactNode;
   exampleCase?: UserCase;
+  questionDataset?: Dataset;
   onOpenGraph: () => void;
   runTools?: ToolCall[];
   plan?: Plan | null;
@@ -190,7 +192,7 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, emptyContent, exampleCase, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, emptyContent, exampleCase, questionDataset, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
   const { t } = useI18n();
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const latestTurn = editableLatestTurn(messages);
@@ -199,9 +201,11 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
   useEffect(() => { setEditingKey(null); }, [editableKey]);
   const [versionSelection, setVersionSelection] = useState<Record<string, string>>({});
   const composerAvailable = inputProps.interaction.kind === 'composer';
-  const localizedExample = exampleCase ? localizeUserCase(exampleCase, t) : undefined;
+  const generated = useConstructionQuestions(questionDataset);
+  const examples = generated ?? exampleCase;
+  const localizedExample = examples ? localizeQuestions(examples, t) : undefined;
   const exampleQuestions = localizedExample?.questions;
-  const exampleSuggestion = !editingKey ? nextExampleQuestion(exampleCase, messages, t) : undefined;
+  const exampleSuggestion = !editingKey ? nextExampleQuestion(examples, messages, t, Boolean(generated)) : undefined;
   const scrollRef = useRef<HTMLDivElement>(null);
   const sticksToBottomRef = useRef(true);
   const initializedRef = useRef(false);

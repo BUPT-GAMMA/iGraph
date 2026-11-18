@@ -38,6 +38,8 @@ describe('create graph workspace', () => {
     expect(onConstruct).toHaveBeenNthCalledWith(2, datasets[1]);
     fireEvent.click(screen.getByRole('button', { name: '开始分析 Cora' }));
     expect(onAnalyze).toHaveBeenCalledWith(datasets[2]);
+    fireEvent.click(screen.getByRole('button', { name: '开始分析 客户关系图' }));
+    expect(onAnalyze).toHaveBeenLastCalledWith(datasets[1]);
     expect(onConstruct).toHaveBeenCalledTimes(2);
     expect(screen.getByText('3 个可用')).toBeTruthy();
     expect(screen.queryByText(/现成图数据集无需构图/)).toBeNull();

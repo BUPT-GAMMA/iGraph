@@ -446,7 +446,7 @@ describe('GraphWorkspace visualization layers', () => {
   });
 
   it('compacts long schema relationship labels while preserving the full accessible label', async () => {
-    const relationshipType = 'fk_0c224b281af28bb360380a3a9fb22c3c694bef04';
+    const relationshipType = 'a_long_named_relationship_between_posts_and_tags';
     const { container } = render(<GraphWorkspace
       data={{
         visualization_kind: 'schema',

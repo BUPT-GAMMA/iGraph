@@ -25,7 +25,8 @@ from typing import Callable
 
 import graph_engine.paths as paths
 from graph_engine.analysis_policy import numeric_weight
-from graph_data_service.construction_schema import source_schema_tables
+from graph_data_service.construction_schema import schema_foreign_key, source_schema_tables
+from graph_data_service.construction_questions import graph_questions
 
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
@@ -251,14 +252,17 @@ def graph_schema(graph: dict) -> dict:
         item = {"id": edge_id, "type": type_name, "source_type": source_type,
                 "target_type": target_type, "relationship_count": len(rows),
                 "property_paths": property_paths}
+        fk = next((key for row in rows if (key := schema_foreign_key(row)) is not None), None) if type_name.startswith("fk_") else None
+        if fk:
+            item["foreign_key"] = fk
         edge_types.append(item)
         schema_edges.append({
             "id": edge_id,
             "source": source_type,
             "target": target_type,
             "type": type_name,
-            "label": type_name,
-            "properties": {"schema_kind": "edge_type", "type_name": type_name,
+            "label": (", ".join(fk["columns"]) + " → " + fk["ref_table"] + "." + ", ".join(fk["ref_columns"])) if fk else type_name,
+            "properties": {"schema_kind": "edge_type", "type_name": type_name, **({"foreign_key": fk} if fk else {}),
                            "source_type": source_type, "target_type": target_type,
                            "relationship_count": len(rows), "property_paths": property_paths},
         })
@@ -921,6 +925,15 @@ class ConstructionStore:
             _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
         return {"dataset_id": dataset_id, "revision": record["revision"], "graph": copy.deepcopy(graph)}
 
+    def questions(self, user_id, dataset_id):
+        record = self._read(self._directory(user_id, dataset_id), dataset_id)
+        if record["status"] != "ready" or record.get("graph") is None:
+            _fail("Save the constructed graph before using its questions.", "graph_not_ready", 409)
+        questions = record.get("example_questions")
+        if questions is None:
+            questions = graph_questions(record["graph"])
+        return {"dataset_id": dataset_id, "revision": record["revision"], **questions}
+
     def schema(self, user_id, dataset_id):
         """Return a freshly aggregated schema; the persisted instance graph is untouched."""
         directory = self._directory(user_id, dataset_id)
@@ -953,6 +966,7 @@ class ConstructionStore:
                       "base_revision": base_revision, "revision": base_revision + 1, "graph": graph, "summary": summary}
             if commit:
                 record.pop("draft_graph", None)
+                record["example_questions"] = graph_questions(graph)
                 record.update(graph=graph, status="ready", last_build_status="ready", message="构图结果已保存，可用于分析。", revision=base_revision + 1, updated_at=datetime.now(timezone.utc).isoformat())
                 if receipt is not None:
                     record["commit_receipt"] = {**receipt, "result": result}

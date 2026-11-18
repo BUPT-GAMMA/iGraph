@@ -1,8 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { architectureHighlights, buildGraphArchitecture } from './graphArchitecture';
+import { schemaEdgeLabel } from './graphAppearance';
 import type { GraphData } from './types';
 
 describe('architecture projection', () => {
+  it('shows FK roles in both languages while keeping parallel relationships distinct in both layers', () => {
+    const edges = ['fk_464ac5706e769fd8efe7b986bec5bb7b9cf4e13c','fk_8cc261eadd35b2bfa6c388bc4a9d7e0f53ecf913'].map(type => ({
+      source: 'h', target: 'c', type, relationship_count: 2,
+    }));
+    const graph: GraphData = { directed: true, nodes: [{ id: 'h', type: 'holding' }, { id: 'c', type: 'company' }], edges };
+    for (const data of [graph, { ...graph, visualization_kind: 'schema' }]) {
+      const zh = buildGraphArchitecture(data, (_, chinese) => chinese);
+      expect(new Set(zh.relations.map(edge => edge.label))).toEqual(new Set(['被持股企业', '企业股东']));
+      expect(new Set(zh.relations.map(edge => edge.id)).size).toBe(2);
+      expect(buildGraphArchitecture(data, english => english).relations.map(edge => edge.label)).toContain('Corporate shareholder');
+    }
+    expect(schemaEdgeLabel(edges[0], false, (_, chinese) => chinese)).toBe('被持股企业 · 2');
+    const generic = { type: 'fk_' + 'a'.repeat(40), properties: { foreign_key: { table: 'sales', columns: ['buyer_id'], ref_table: 'buyers', ref_columns: ['id'] } } };
+    expect(schemaEdgeLabel(generic)).toBe('buyer_id → buyers.id');
+  });
   it('keeps direction, parallel relationship types and self-relations while projecting the actual result', () => {
     const data: GraphData = {
       directed: true, total_nodes: 100, total_edges: 200, truncated: true,

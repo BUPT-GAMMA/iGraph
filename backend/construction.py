@@ -171,6 +171,13 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
         user, _ = owned(dataset_id, request, project_id)
         return await graph.request("GET", f"/construction/{dataset_id}/graph", headers=headers(request, user.user_id, project_id))
 
+    @app.get("/api/personal-datasets/{dataset_id}/construction/questions")
+    @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction/questions")
+    async def read_questions(dataset_id: str, request: Request, project_id: str | None = None):
+        user, _ = owned(dataset_id, request, project_id)
+        return await graph.request("GET", f"/construction/{dataset_id}/questions",
+                                   headers=headers(request, user.user_id, project_id))
+
     @app.get("/api/personal-datasets/{dataset_id}/construction/schema")
     @app.get("/api/datasets/{dataset_id}/construction/schema", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction/schema")

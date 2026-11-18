@@ -4834,6 +4834,11 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         uid, _ = await construction_grant(request, dataset_id)
         return await run_sync(svc.do_get_constructed_graph, dataset_id, uid)
 
+    @app.get("/construction/{dataset_id}/questions")
+    async def construction_questions(dataset_id: str, request: Request):
+        uid, _ = await construction_grant(request, dataset_id)
+        return await run_sync(svc._construction.questions, uid, dataset_id)
+
     @app.get("/construction/{dataset_id}/schema")
     async def constructed_schema(dataset_id: str, request: Request):
         uid, _ = await construction_grant(request, dataset_id)

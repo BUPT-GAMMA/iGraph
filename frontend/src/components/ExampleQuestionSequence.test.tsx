@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import * as api from '../api';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatPane, type ChatPaneProps } from './ChatPane';
 import { I18nProvider, useI18n } from '../i18n';
 import type { Message } from '../types';
 import type { UserCase } from '../userCases';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const novel: UserCase = { id: 'novel', name: '小说', filename: 'novel.npz', available: true, description: '',
   questions: ['小说问题一？', '小说问题二？', '小说问题三？', '小说问题四？'],
   translations: { en: { name: 'Novel', description: '', questions: ['Novel one?', 'Novel two?', 'Novel three?', 'Novel four?'] } } };
@@ -118,6 +119,28 @@ describe('example question progression in the actual chat composer', () => {
     rerender(<Harness {...props} onEditLatest={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '修改提示词' }));
     expect(screen.queryByRole('button', { name: '填入下一示例问题' })).toBeNull();
+  });
+
+  it('uses the saved graph from the first Tab and continues after a custom question without leaking examples on a switch', async () => {
+    const dataset = { dataset_id: 'stations', project_id: 'rail', name: 'Rail', original_filename: 'rail.csv',
+      file_type: 'csv', status: 'ready', metadata: { construction: { status: 'ready', revision: 2 } } };
+    const questions = { dataset_id: 'stations', revision: 2, questions: ['云桥站有哪些线路？', '哪条线路耗时最长？'],
+      question_titles: ['车站线路', '比较耗时'], translations: { en: { questions: ['Which routes serve Yunqiao?', 'Which route takes longest?'] } } };
+    const load = vi.spyOn(api, 'getConstructionQuestions').mockResolvedValueOnce(questions)
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const sent = vi.fn();
+    const { rerender } = render(<Harness sent={sent} exampleCase={undefined} questionDataset={dataset} />);
+    await screen.findByRole('button', { name: '填入下一示例问题' });
+    expect(load).toHaveBeenCalledWith({ project_id: 'rail', dataset_id: 'stations' }, expect.any(AbortSignal));
+    fireEvent.keyDown(textbox(), { key: 'Tab' });
+    expect(textbox().value).toBe(questions.questions[0]);
+    fireEvent.keyDown(textbox(), { key: 'Enter' });
+    expect(sent).toHaveBeenCalledExactlyOnceWith(questions.questions[0]);
+    rerender(<Harness exampleCase={undefined} questionDataset={dataset} messages={[...turn(questions.questions[0]), ...turn('自定义追问')]} />);
+    fireEvent.click(screen.getByText('English'));
+    expect(textbox().placeholder).toBe(questions.translations.en.questions[1]);
+    rerender(<Harness exampleCase={undefined} questionDataset={{ ...dataset, dataset_id: 'elsewhere' }} />);
+    expect(screen.queryByRole('button', { name: 'Fill in the next example question' })).toBeNull();
   });
 
   it('lets touch and mouse users fill the same question without auto-sending', () => {

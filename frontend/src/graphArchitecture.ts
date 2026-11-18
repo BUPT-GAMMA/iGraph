@@ -1,4 +1,6 @@
 import type { GraphData, Highlight } from './types';
+import { tr, type Translate } from './i18n';
+import { relationshipDisplayName } from './relationshipLabels';
 import { endpoint } from './graphPreview';
 import { highlightNodeIds } from './graphExploration';
 import { highlightEdgePairs, highlightedEdgeColor } from './graphAppearance';
@@ -65,7 +67,7 @@ function count(value: unknown) {
   return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
-function fromSchema(data: GraphData): GraphArchitecture {
+function fromSchema(data: GraphData, t: Translate): GraphArchitecture {
   const directed = Boolean(data.directed);
   const byId = new Map<string, string>();
   const nodes = data.nodes.map(node => {
@@ -82,7 +84,7 @@ function fromSchema(data: GraphData): GraphArchitecture {
     const props = properties(edge);
     const type = named(props.type_name, edgeType(edge));
     relations.push({
-      ...pair, id: relationId(pair.source, type, pair.target), type, label: named(edge.label, type),
+      ...pair, id: relationId(pair.source, type, pair.target), type, label: relationshipDisplayName(edge, t) ?? named(edge.label, type),
       count: count(props.relationship_count ?? edge.relationship_count), fields: schemaFields(props),
     });
   }
@@ -93,8 +95,8 @@ function fromSchema(data: GraphData): GraphArchitecture {
   };
 }
 
-export function buildGraphArchitecture(data: GraphData): GraphArchitecture {
-  if (data.visualization_kind === 'schema') return fromSchema(data);
+export function buildGraphArchitecture(data: GraphData, t: Translate = tr): GraphArchitecture {
+  if (data.visualization_kind === 'schema') return fromSchema(data, t);
   const byId = new Map<string, string>();
   const nodes = new Map<string, ArchitectureNode>();
   const relations = new Map<string, ArchitectureRelation>();
@@ -124,7 +126,7 @@ export function buildGraphArchitecture(data: GraphData): GraphArchitecture {
     if (!pair) return;
     const type = edgeType(edge);
     const id = relationId(pair.source, type, pair.target);
-    const current = relations.get(id) || { ...pair, id, type, label: type, count: 0, fields: [] };
+    const current = relations.get(id) || { ...pair, id, type, label: relationshipDisplayName(edge, t) ?? type, count: 0, fields: [] };
     add(current, edge);
     relations.set(id, current);
     edgeCount += 1;

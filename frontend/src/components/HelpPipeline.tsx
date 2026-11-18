@@ -107,6 +107,7 @@ export function HelpPipeline() {
         <h3>{t('Select the saved graph for a conversation', '将已保存的图用于会话')}</h3>
         {isPt ? <p>{t('Click “Start analysis” on the PT source card to open a task in the same project with that graph selected.', '在 PT 数据源卡片点击“开始分析”，会打开当前项目的任务，并自动选中这张图。')}</p>
           : <p>{t('In “My projects”, click “Start analysis” on the same project card. Use the dataset button beside the message box to select the saved graph under “Project datasets”.', '返回“我的项目”，点击同一张项目卡片的“开始分析”。通过输入框旁的数据集按钮，在“项目数据集”中选中刚保存的图。')}</p>}
+        {!isPt && <p>{t('You can also click “Start analysis” on the saved source card. Click a suggested question or press Tab in the empty message box to fill “Next example”. Edit it or press Enter to send. Further examples appear after the answer.', '也可以直接点击已保存数据源卡片上的“开始分析”。点击推荐问题，或在空输入框按 Tab 填入“下一示例”，可先修改，再按 Enter 发送。收到回答后可继续下一题。')}</p>}
         <p>{t('Check the dataset name beside the message box before sending your question.', '发送问题前，核对输入框旁显示的数据集名称。')}</p>
       </li>
       <li>

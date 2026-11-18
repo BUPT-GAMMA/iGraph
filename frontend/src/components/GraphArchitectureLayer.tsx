@@ -80,7 +80,7 @@ function shortLabel(value: string, max: number) {
 export function GraphArchitectureLayer({ data, highlights }: { data: GraphData; highlights: Highlight[] }) {
   const { language, t } = useI18n();
   const formatter = useMemo(() => new Intl.NumberFormat(language), [language]);
-  const graph = useMemo(() => buildGraphArchitecture(data), [data]);
+  const graph = useMemo(() => buildGraphArchitecture(data, t), [data, t]);
   const result = useMemo(() => architectureHighlights(data, highlights), [data, highlights]);
   const [query, setQuery] = useState('');
   const [selection, setSelection] = useState<Selection | null>(null);

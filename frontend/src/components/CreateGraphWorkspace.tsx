@@ -228,6 +228,9 @@ export function CreateGraphWorkspace({ datasets, busy = false, onUpload, onConst
                     aria-label={t(`Start analysis ${name}`, `开始分析 ${name}`)}>{t('Start analysis', '开始分析')}<Icon name="arrow-right" size={14} /></button>
                 : <button type="button" className={graphReady ? 'secondary-command' : 'primary-command'} onClick={() => onConstruct(dataset)}
                     disabled={busy} aria-label={buildLabel + ' ' + name}>{buildLabel}<Icon name="arrow-right" size={14} /></button>}
+              {graphReady && supportsConstruction(dataset) && onAnalyze && <button type="button" className="secondary-command"
+                onClick={() => onAnalyze(dataset)} disabled={busy} aria-label={t(`Start analysis ${name}`, `开始分析 ${name}`)}>
+                {t('Start analysis', '开始分析')}<Icon name="arrow-right" size={14} /></button>}
               {supportsConstruction(dataset) && <button type="button" className="secondary-command" onClick={() => setSourceSample(dataset)} disabled={busy}
                 aria-label={t(`Source data preview for ${name}`, `源数据示例 ${name}`)}><Icon name="table" size={14} />{t('Source data preview', '源数据示例')}</button>}
               {onDelete && <button type="button" className="plain-icon create-graph-delete" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete dataset', '删除数据集')}
