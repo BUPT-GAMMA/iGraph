@@ -69,7 +69,9 @@ from graph_data_service.session import GraphSession, UploadFileRecord
 from construction_access import ConstructionQuestionModel, ConstructionQuestionRequest, DATASET_TOOLS, SCOPE_HEADER
 from graph_data_service.construction_access import ConstructionAccessClient
 from graph_data_service.construction import ConstructionStore, ConstructionError, to_graph_data
-from graph_data_service.construction_questions import QUESTION_TIMEOUT_SECONDS, QuestionGenerationError, generate_questions
+from graph_data_service.construction_questions import (
+    QUESTION_TIMEOUT_SECONDS, QuestionGenerationError, generate_questions, question_provider_error,
+)
 from graph_data_service.storage.nebula_backend import (
     NebulaGraphRepository,
     NebulaRepositoryError,
@@ -4855,8 +4857,9 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             code = "QUESTION_INTERRUPTED"
             raise
         except Exception as exc:
-            code = "QUESTION_GENERATION_FAILED"
-            question_log.warning("construction_questions_failed dataset=%s error_type=%s", dataset_id, type(exc).__name__)
+            code = question_provider_error(exc)
+            question_log.warning("construction_questions_failed dataset=%s code=%s error_type=%s",
+                                 dataset_id, code, type(exc).__name__)
         finally:
             await run_sync(svc._construction.finish_questions, user_id, dataset_id, revision, task["id"], result, code)
 

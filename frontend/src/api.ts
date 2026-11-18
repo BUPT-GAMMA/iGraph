@@ -106,6 +106,7 @@ export function modelErrorMessage(code?: string | null) {
     MODEL_SELECTION_CHANGED: tr('The model changed in another page. Refresh this conversation before sending.', '模型已在其他页面更改，请重新打开此会话后再发送'),
     MODEL_IN_USE: tr('An active task uses this model. Wait for it to finish or stop it before deleting.', '有活动任务正在使用此模型，请等待结束或停止任务后再删除'),
     MODEL_AUTH_FAILED: tr('Authentication failed. Check the API key.', '认证失败，请检查 API Key'),
+    MODEL_QUOTA_EXHAUSTED: tr('The model provider has insufficient balance. Choose another model or check the provider balance.', '模型服务余额不足，请更换模型或检查服务额度。'),
     MODEL_RATE_LIMITED: tr('Rate limit or quota reached', '调用频率或额度受限'),
     MODEL_TEST_FAILED: tr('The endpoint rejected this model or tool protocol. Check configuration.', '接口拒绝了该型号或工具协议，请检查配置'),
     MODEL_CONNECTION_FAILED: tr('Could not connect to the model endpoint', '无法连接模型接口'),

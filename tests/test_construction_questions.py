@@ -11,6 +11,7 @@ from graph_data_service.construction_questions import (
     generate_questions,
     graph_question_context,
     parse_questions,
+    question_provider_error,
 )
 from graph_data_service.construction_schema import schema_foreign_key
 
@@ -48,6 +49,13 @@ class ConstructionQuestionsTests(unittest.TestCase):
         for broken in ("wrong", json.dumps(model_output()[:3]), json.dumps([model_output()[0]] * 4)):
             with self.assertRaisesRegex(QuestionGenerationError, "QUESTION_OUTPUT_INVALID"):
                 parse_questions(broken)
+
+    def test_reports_provider_quota_without_exposing_its_response(self):
+        class ProviderError(Exception):
+            status_code = 405
+            body = {"error": {"type": "quota_not_enough", "message": "upstream detail"}}
+
+        self.assertEqual(question_provider_error(ProviderError()), "MODEL_QUOTA_EXHAUSTED")
 
     def test_save_and_regeneration_are_revision_and_owner_scoped(self):
         with TemporaryDirectory() as tmp:

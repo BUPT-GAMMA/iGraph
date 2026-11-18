@@ -153,6 +153,21 @@ async def resolve_question_model(user_id, selection):
     return response.json()
 
 
+def question_provider_error(exc):
+    status = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        body = body.get("error", body)
+    code = (body.get("type") or body.get("code")) if isinstance(body, dict) else None
+    if status == 402 or code in ("quota_not_enough", "insufficient_quota"):
+        return "MODEL_QUOTA_EXHAUSTED"
+    if status == 429:
+        return "MODEL_RATE_LIMITED"
+    if status in (401, 403):
+        return "MODEL_AUTH_FAILED"
+    return "QUESTION_GENERATION_FAILED"
+
+
 async def generate_questions(graph, user_id, selection, logger, run_sync):
     config = await resolve_question_model(user_id, selection)
     gateway = ProviderGateway(model=config["model_id"], base_url=config["base_url"],
