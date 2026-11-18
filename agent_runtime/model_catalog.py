@@ -279,6 +279,18 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
                 raise ControlError('MODEL_REMOVED', 422)
             return dict(data)
 
+    def resolve_for_completion(self, uid, config_id, revision):
+        """Resolve the current, selectable model for an independent completion."""
+        with self.store.transaction(uid, '__models__') as conn:
+            self._ensure_personal_providers(conn, uid)
+            row = self._row(conn, uid, config_id)
+            reason = self._reason(conn, uid, row)
+            if reason:
+                raise ControlError(reason, 422)
+            if row['revision'] != revision:
+                raise ControlError('MODEL_CONFIG_CHANGED')
+            return dict(row['data'])
+
     def test_configuration(self, uid, cid, revision):
         with self.store.transaction(uid, '__models__') as conn:
             self._ensure_personal_providers(conn, uid)

@@ -124,13 +124,16 @@ describe('example question progression in the actual chat composer', () => {
   it('uses the saved graph from the first Tab and continues after a custom question without leaking examples on a switch', async () => {
     const dataset = { dataset_id: 'stations', project_id: 'rail', name: 'Rail', original_filename: 'rail.csv',
       file_type: 'csv', status: 'ready', metadata: { construction: { status: 'ready', revision: 2 } } };
-    const questions = { dataset_id: 'stations', revision: 2, questions: ['云桥站有哪些线路？', '哪条线路耗时最长？'],
+    const questions = { dataset_id: 'stations', revision: 2, status: 'ready' as const, questions: ['云桥站有哪些线路？', '哪条线路耗时最长？'],
       question_titles: ['车站线路', '比较耗时'], translations: { en: { questions: ['Which routes serve Yunqiao?', 'Which route takes longest?'] } } };
-    const load = vi.spyOn(api, 'getConstructionQuestions').mockResolvedValueOnce(questions)
+    const load = vi.spyOn(api, 'getConstructionQuestions')
+      .mockResolvedValueOnce({ dataset_id: 'stations', revision: 2, status: 'generating', questions: [] })
+      .mockResolvedValueOnce(questions)
       .mockImplementationOnce(() => new Promise(() => {}));
     const sent = vi.fn();
     const { rerender } = render(<Harness sent={sent} exampleCase={undefined} questionDataset={dataset} />);
-    await screen.findByRole('button', { name: '填入下一示例问题' });
+    expect(await screen.findByText('正在根据这张图生成示例问题…')).toBeTruthy();
+    await screen.findByRole('button', { name: '填入下一示例问题' }, { timeout: 3500 });
     expect(screen.getByRole('region', { name: '基于这张图的问题' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /车站线路.*云桥站有哪些线路/ })).toBeTruthy();
     expect(load).toHaveBeenCalledWith({ project_id: 'rail', dataset_id: 'stations' }, expect.any(AbortSignal));

@@ -454,8 +454,21 @@ export function getSavedGraphResult(dataset: Pick<Dataset, 'project_id' | 'datas
 export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionGraph>(`${constructionUrl(dataset)}/graph`, { signal });
 }
+export type QuestionModel = Pick<ModelConfiguration, 'config_id' | 'revision'>;
+export type ConstructionQuestions = ExampleQuestions & {
+  dataset_id: string;
+  revision: number;
+  status: 'not_generated' | 'generating' | 'ready' | 'failed';
+  model_config_id?: string | null;
+  model_name?: string;
+  error_code?: string | null;
+};
+
 export function getConstructionQuestions(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>, signal?: AbortSignal) {
-  return json<ExampleQuestions & { dataset_id: string; revision: number }>(`${constructionUrl(dataset)}/questions`, { signal });
+  return json<ConstructionQuestions>(`${constructionUrl(dataset)}/questions`, { signal });
+}
+export function startConstructionQuestions(dataset: Dataset, baseRevision: number, model: QuestionModel) {
+  return json<ConstructionQuestions>(`${constructionUrl(dataset)}/questions`, modelJson('POST', { base_revision: baseRevision, model }));
 }
 export function getConstructionSchema(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionSchemaResponse>(`${constructionUrl(dataset)}/schema`, { signal });
@@ -469,10 +482,10 @@ export function previewConstruction(dataset: Dataset, baseRevision: number, oper
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
   });
 }
-export function commitConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[]) {
-  return json<ConstructionResult>(`${constructionUrl(dataset)}/commit`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
-  });
+export function commitConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[], model?: QuestionModel) {
+  return json<ConstructionResult>(`${constructionUrl(dataset)}/commit`, modelJson('POST', {
+    base_revision: baseRevision, operations, question_model: model,
+  }));
 }
 export async function visualizeGraph(sessionId: string, options: Record<string, unknown> = {}, signal?: AbortSignal): Promise<GraphData> {
   const value = await json<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/visualize`, {

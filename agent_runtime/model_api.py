@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from execution_protocol import require_service
+from construction_access import ConstructionQuestionModel
 from agent_runtime.execution_store import ControlError, TERMINAL
 
 
@@ -148,6 +149,11 @@ def create_model_router(catalog, db, controller=None):
     @router.put('/internal/model-catalog/default')
     async def default(req: ModelDefault, request: Request):
         return await asyncio.to_thread(catalog.set_default, identity(request), req.config_id)
+
+    @router.post('/internal/model-catalog/resolve')
+    async def resolve_completion(req: ConstructionQuestionModel, request: Request):
+        data = await asyncio.to_thread(catalog.resolve_for_completion, identity(request), req.config_id, req.revision)
+        return JSONResponse(data, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
 
     @router.post('/internal/model-catalog/test')
     async def test(req: ModelTest, request: Request):

@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -26,7 +27,7 @@ from typing import Callable
 import graph_engine.paths as paths
 from graph_engine.analysis_policy import numeric_weight
 from graph_data_service.construction_schema import schema_foreign_key, source_schema_tables
-from graph_data_service.construction_questions import QUESTION_VERSION, graph_questions
+from graph_data_service.construction_questions import QUESTION_TIMEOUT_SECONDS
 
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
@@ -925,14 +926,58 @@ class ConstructionStore:
             _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
         return {"dataset_id": dataset_id, "revision": record["revision"], "graph": copy.deepcopy(graph)}
 
+    @staticmethod
+    def _question_status(record):
+        task = record.get("question_generation", {})
+        status = task.get("status", "not_generated")
+        code = task.get("error_code")
+        if status == "generating" and time.time() > task["expires_at"]:
+            status, code = "failed", "QUESTION_TIMEOUT"
+        return {"dataset_id": record["dataset_id"], "revision": record["revision"],
+                "status": status, "questions": [],
+                **record.get("generated_questions", {}),
+                "model_config_id": task.get("model", {}).get("config_id"),
+                "error_code": code}
+
+    @staticmethod
+    def _queue_questions(record, model):
+        task = {"id": uuid.uuid4().hex, "model": model, "status": "generating",
+                "expires_at": time.time() + QUESTION_TIMEOUT_SECONDS + 20}
+        record["question_generation"] = task
+        return task
+
     def questions(self, user_id, dataset_id):
         record = self._read(self._directory(user_id, dataset_id), dataset_id)
         if record["status"] != "ready" or record.get("graph") is None:
             _fail("Save the constructed graph before using its questions.", "graph_not_ready", 409)
-        questions = record.get("example_questions")
-        if questions is None or record.get("example_questions_version") != QUESTION_VERSION:
-            questions = graph_questions(record["graph"])
-        return {"dataset_id": dataset_id, "revision": record["revision"], **questions}
+        return self._question_status(record)
+
+    def start_questions(self, user_id, dataset_id, base_revision, model):
+        with self._write_lock(user_id, dataset_id) as directory:
+            record = self._read(directory, dataset_id)
+            if record["status"] != "ready" or record.get("graph") is None:
+                _fail("Save the constructed graph before generating questions.", "graph_not_ready", 409)
+            if record["revision"] != base_revision:
+                _fail("The dataset has changed. Refresh before generating questions.", "revision_conflict", 409)
+            current = self._question_status(record)
+            if current["status"] == "generating":
+                if record["question_generation"]["model"] != model:
+                    _fail("Example questions are already being generated.", "QUESTION_GENERATION_BUSY", 409)
+                return current, None, None
+            task = self._queue_questions(record, model)
+            _atomic_json(directory / "record.json", record)
+            return self._question_status(record), task, record["graph"]
+
+    def finish_questions(self, user_id, dataset_id, revision, task_id, result, error_code):
+        with self._write_lock(user_id, dataset_id) as directory:
+            record = self._read(directory, dataset_id)
+            task = record.get("question_generation", {})
+            if record["status"] != "ready" or record["revision"] != revision or task.get("id") != task_id:
+                return
+            task.update(status="ready" if result is not None else "failed", error_code=error_code)
+            if result is not None:
+                record["generated_questions"] = result
+            _atomic_json(directory / "record.json", record)
 
     def schema(self, user_id, dataset_id):
         """Return a freshly aggregated schema; the persisted instance graph is untouched."""
@@ -945,7 +990,8 @@ class ConstructionStore:
                 "schema": {**graph_schema(graph),
                            "source_tables": source_schema_tables(directory, record.get("source_tables"))}}
 
-    def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None):
+    def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None,
+                 question_model=None):
         if type(base_revision) is not int or base_revision < 1:
             _fail("base_revision must be a positive integer.")
         with self._write_lock(user_id, dataset_id) as directory:
@@ -966,9 +1012,11 @@ class ConstructionStore:
                       "base_revision": base_revision, "revision": base_revision + 1, "graph": graph, "summary": summary}
             if commit:
                 record.pop("draft_graph", None)
-                record["example_questions"] = graph_questions(graph)
-                record["example_questions_version"] = QUESTION_VERSION
+                for key in ("example_questions", "example_questions_version", "generated_questions", "question_generation"):
+                    record.pop(key, None)
                 record.update(graph=graph, status="ready", last_build_status="ready", message="构图结果已保存，可用于分析。", revision=base_revision + 1, updated_at=datetime.now(timezone.utc).isoformat())
+                if question_model is not None:
+                    result["question_generation"] = self._queue_questions(record, question_model)
                 if receipt is not None:
                     record["commit_receipt"] = {**receipt, "result": result}
                 _atomic_json(directory / "record.json", record, before_replace=before_commit)

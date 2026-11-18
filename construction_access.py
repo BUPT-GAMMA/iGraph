@@ -27,6 +27,18 @@ class AccessRequest(BaseModel):
     saved_graph: bool = False
 
 
+class ConstructionQuestionModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    config_id: str = Field(min_length=1, max_length=256)
+    revision: int = Field(ge=0)
+
+
+class ConstructionQuestionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    base_revision: int = Field(ge=1)
+    model: ConstructionQuestionModel
+
+
 class SourceRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     dataset_id: str

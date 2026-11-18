@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from backend.service_client import forwarded_headers
 from execution_protocol import service_headers
-from construction_access import scope_headers
+from construction_access import ConstructionQuestionModel, ConstructionQuestionRequest, scope_headers
 from backend.dataset_api import legacy_dataset_api_notice
 
 
@@ -29,6 +29,7 @@ class ConstructionSettingsRequest(BaseModel):
 class SaveRequest(BaseModel):
     base_revision: int = Field(ge=1)
     operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    question_model: ConstructionQuestionModel | None = None
 
 
 class EditRequest(BaseModel):
@@ -178,6 +179,14 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
         return await graph.request("GET", f"/construction/{dataset_id}/questions",
                                    headers=headers(request, user.user_id, project_id))
 
+    @app.post("/api/personal-datasets/{dataset_id}/construction/questions")
+    @app.post("/api/projects/{project_id}/datasets/{dataset_id}/construction/questions")
+    async def generate_questions(dataset_id: str, req: ConstructionQuestionRequest, request: Request,
+                                 project_id: str | None = None):
+        user, _ = owned(dataset_id, request, project_id)
+        return await graph.request("POST", f"/construction/{dataset_id}/questions",
+                                   headers=headers(request, user.user_id, project_id), json_body=req.model_dump())
+
     @app.get("/api/personal-datasets/{dataset_id}/construction/schema")
     @app.get("/api/datasets/{dataset_id}/construction/schema", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
     @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction/schema")
@@ -209,7 +218,7 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
     async def commit(dataset_id: str, req: SaveRequest, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
         result = await graph.request("POST", f"/construction/{dataset_id}/commit",
-            headers=headers(request, user.user_id, project_id), json_body=req.model_dump())
+            headers=headers(request, user.user_id, project_id), json_body=req.model_dump(exclude_none=True))
         saved_graph = result.get("graph", {})
         sync_record(directory, dataset, {**dataset.metadata.get("construction", {}),
             "status": "ready", "revision": result["revision"],

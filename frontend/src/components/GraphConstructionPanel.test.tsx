@@ -1,15 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError } from '../api';
+import { ApiError, type ModelCatalog } from '../api';
 import type { ConstructionOperation, Dataset } from '../types';
 import { GraphConstructionPanel } from './GraphConstructionPanel';
 
-const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn(), rename: vi.fn(), settings: vi.fn(), saveSettings: vi.fn(), models: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn(), rename: vi.fn(), settings: vi.fn(), saveSettings: vi.fn(), models: vi.fn(), questions: vi.fn(), generate: vi.fn() }));
 vi.mock('../api', async importOriginal => ({
   ...await importOriginal<typeof import('../api')>(),
   getConstructionModelSettings: mocks.settings, saveConstructionModelSettings: mocks.saveSettings, getConstructionModels: mocks.models, renameProjectDataset: mocks.rename, getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
   getConstructionSourcePreview: mocks.source,
   previewConstruction: mocks.preview, commitConstruction: mocks.commit,
+  getConstructionQuestions: mocks.questions, startConstructionQuestions: mocks.generate,
 }));
 vi.mock('./GraphWorkspace', () => ({ GraphWorkspace: ({ data, onSelect }: any) => <div aria-label="测试图画布">{data.nodes.map((node: any) => <button key={node.id} data-node-id={node.id} onClick={() => onSelect(node)}>图节点 {node.label ?? node.id}</button>)}<span>{data.edges.map((edge: any) => `${edge.source} → ${edge.target}`).join(', ')}</span></div> }));
 
@@ -41,6 +42,7 @@ beforeEach(() => {
   mocks.source.mockResolvedValue({ dataset_id: 'd1', tables: [], warnings: [] });
   mocks.preview.mockResolvedValue(result);
   mocks.commit.mockResolvedValue({ ...result, status: 'ready' });
+  mocks.questions.mockResolvedValue({ dataset_id: 'd1', revision: 3, status: 'not_generated', questions: [] });
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
@@ -885,6 +887,31 @@ describe('explicit construction publishing', () => {
     expect(mocks.commit).toHaveBeenCalledWith(expect.objectContaining({ dataset_id: 'd1' }), 2, []);
     expect(screen.getByRole('button', { name: '在当前会话使用' })).toBeTruthy();
   });
+  it('uses the chosen chat configuration for examples on save and lets saved graphs regenerate', async () => {
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'draft', revision: 2, algorithm_available: true });
+    const questionModels: ModelCatalog = { default_model: 'model-a', models: [
+      { config_id: 'model-a', model_id: 'model-a', upstream_model_id: 'first', display_name: 'First model',
+        provider: 'openai-compatible', provider_name: 'Test provider', base_url: 'https://example.test', source: 'custom', enabled: true,
+        tools: true, vision: false, has_api_key: true, context_window: 24000, max_output_tokens: 4096, revision: 1 },
+      { config_id: 'model-b', model_id: 'model-b', upstream_model_id: 'second', display_name: 'Second model',
+        provider: 'anthropic', provider_name: 'Test provider', base_url: 'https://example.test', source: 'custom', enabled: true,
+        tools: true, vision: false, has_api_key: true, context_window: 24000, max_output_tokens: 4096, revision: 5 },
+    ] };
+    const onSaved = vi.fn();
+    render(<GraphConstructionPanel dataset={dataset} questionModels={questionModels} onClose={vi.fn()} onSaved={onSaved} />);
+    await screen.findByText('草稿 · 待保存');
+    fireEvent.click(screen.getByRole('button', { name: '选择示例问题模型' }));
+    fireEvent.click(screen.getByRole('button', { name: /Second model/ }));
+    fireEvent.click(screen.getByRole('button', { name: '保存构图结果' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(mocks.commit).toHaveBeenCalledWith(dataset, 2, [], { config_id: 'model-b', revision: 5 });
+
+    mocks.generate.mockResolvedValue({ status: 'generating', revision: 3, dataset_id: 'd1', questions: [] });
+    fireEvent.click(screen.getByRole('button', { name: '生成示例问题' }));
+    await waitFor(() => expect(mocks.generate).toHaveBeenCalledWith(dataset, 3, { config_id: 'model-b', revision: 5 }));
+    expect(mocks.commit).toHaveBeenCalledOnce();
+  });
+
   it('submits the chosen construction model for semantic TXT', async () => {
     const txt = { ...dataset, file_type: 'txt', original_filename: 'novel.txt', status: 'source_ready' };
     mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true });

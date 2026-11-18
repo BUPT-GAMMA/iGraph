@@ -1,13 +1,9 @@
-import { useActionDialog } from './useActionDialog';
-import { Popup, PopupBackdrop, PopupPresence } from './PopupMotion';
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
-import { modelErrorMessage, type CustomModel } from '../api';
+import { useEffect, useId, useLayoutEffect, useRef } from 'react';
+import type { CustomModel } from '../api';
 import type { AttachmentRef, DraftAttachment } from '../types';
 import { Icon } from './Icon';
 import { FileTypeIcon } from './FileTypeIcon';
-import { ModelProviderIcon } from './ModelProviderIcon';
-import { selectRepresentativeModels } from './modelProviders';
+import { ModelPicker } from './ModelPicker';
 import { useI18n, type Translate } from '../i18n';
 import { ContextWindow, type ContextModel } from './ContextWindow';
 import type { ExampleQuestionSuggestion } from '../userCases';
@@ -80,26 +76,10 @@ export type ComposerProps = {
 
 export function Composer({ contextSessionId, contextModel, value, model, models, customModels = [], activeDatasetName, exampleSuggestion, onRemoteGraph, onChange, onModelChange, onDataset, onSend, onUpload, onRemoveAttachment, onRetryAttachment, attachments, loading, uploading, disabled, sendBlocked = false, runtimeControlsDisabled = false, sendBlockedReason, canCancel = false, cancellation, onCancel, focusRequest, onManageModels, onSaveCustomModel, onDeleteCustomModel }: ComposerProps) {
   const { t } = useI18n();
-  const { askConfirm, actionDialog } = useActionDialog();
   const inputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
   const cannotSend = disabled || uploading || sendBlocked || attachments.some(item => 'status' in item && ['uploading', 'failed', 'needs_reselect'].includes(item.status));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const composerRef = useRef<HTMLDivElement>(null);
-  const modelMenuRef = useRef<HTMLDivElement>(null);
-  const modelPickerRef = useRef<HTMLDivElement>(null);
-  const [modelOpen, setModelOpen] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
-  const [savingModel, setSavingModel] = useState(false);
-  const [modelError, setModelError] = useState('');
-  const [customDraft, setCustomDraft] = useState({ model_id: '', base_url: '', api_key: '' });
-  const modelOptions = models.length ? models : [model].filter(Boolean);
-  const currentCustom = customModels.find(item => item.model_id === model);
-  const modelLabel = (item: CustomModel) => item.upstream_model_id ? item.display_name || item.upstream_model_id : item.model_id;
-  const customGroups = new Map<string, CustomModel[]>();
-  for (const item of customModels) { const key = item.provider_name || t('Custom models', '自定义模型'); customGroups.set(key, [...(customGroups.get(key) || []), item]); }
-  const customIds = new Set(customModels.map(item => item.model_id));
-  const builtInOptions = selectRepresentativeModels(modelOptions.filter(option => !customIds.has(option)), model);
   const runControl = canCancel;
   const stopping = cancellation === 'requested' || cancellation === 'stopping' || cancellation === 'saving';
   const runControlLabel = t('Stop current task', '终止当前任务');
@@ -131,87 +111,6 @@ export function Composer({ contextSessionId, contextModel, value, model, models,
     return () => { observer?.disconnect(); window.removeEventListener('resize', resize); };
   }, []);
   useEffect(() => { if (!disabled) textareaRef.current?.focus(); }, [focusRequest, disabled]);
-  useLayoutEffect(() => {
-    if (!modelOpen) return;
-    const composer = composerRef.current;
-    const picker = modelPickerRef.current;
-    const menu = modelMenuRef.current;
-    if (!composer || !picker || !menu) return;
-    const mainColumn = composer.closest<HTMLElement>('.main-column');
-    const positionMenu = () => {
-      const bounds = composer.getBoundingClientRect();
-      if (bounds.width <= 0) return;
-      const previousTranslate = menu.style.translate;
-      menu.style.translate = 'none';
-      // Short model names shrink the trigger. Keep its menu inside the composer
-      // instead of letting right alignment extend into the clipped sidebar.
-      menu.style.maxWidth = `${Math.max(0, bounds.width - 16)}px`;
-      menu.style.maxHeight = '';
-      menu.style.transform = 'none';
-      // Keep the upward-opening list below the chat's clipped top edge in short windows.
-      const top = Math.max(0, mainColumn?.getBoundingClientRect().top ?? 0);
-      const availableHeight = Math.max(0, menu.getBoundingClientRect().bottom - top - 8);
-      const cssMaxHeight = getComputedStyle(menu).maxHeight;
-      menu.style.maxHeight = cssMaxHeight && cssMaxHeight !== 'none'
-        ? `min(${cssMaxHeight}, ${availableHeight}px)` : `${availableHeight}px`;
-      const menuBounds = menu.getBoundingClientRect();
-      const left = Math.max(bounds.left + 8, Math.min(menuBounds.left, bounds.right - 8 - menuBounds.width));
-      menu.style.transform = `translateX(${left - menuBounds.left}px)`;
-      menu.style.translate = previousTranslate;
-    };
-    positionMenu();
-    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(positionMenu);
-    observer?.observe(composer);
-    observer?.observe(picker);
-    if (mainColumn) observer?.observe(mainColumn);
-    window.addEventListener('resize', positionMenu);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', positionMenu); };
-  }, [modelOpen]);
-  useEffect(() => {
-    if (!modelOpen) return;
-    function closeOnOutside(event: MouseEvent) {
-      if (!modelPickerRef.current?.contains(event.target as Node)) setModelOpen(false);
-    }
-    function closeOnEscape(event: KeyboardEvent) { if (event.key === 'Escape') setModelOpen(false); }
-    document.addEventListener('mousedown', closeOnOutside);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => { document.removeEventListener('mousedown', closeOnOutside); document.removeEventListener('keydown', closeOnEscape); };
-  }, [modelOpen]);
-  useEffect(() => {
-    if (!configOpen) return;
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !savingModel) setConfigOpen(false);
-    }
-    document.addEventListener('keydown', closeOnEscape);
-    return () => document.removeEventListener('keydown', closeOnEscape);
-  }, [configOpen, savingModel]);
-  function openCustomModelDialog() {
-    setModelOpen(false);
-    setModelError('');
-    setConfigOpen(true);
-  }
-  function closeCustomModelDialog() {
-    if (savingModel) return;
-    setModelError('');
-    setConfigOpen(false);
-  }
-  async function saveCustom() {
-    if (!onSaveCustomModel) return;
-    setModelError(''); setSavingModel(true);
-    try {
-      await onSaveCustomModel({ ...customDraft, display_name: customDraft.model_id });
-      setCustomDraft({ model_id: '', base_url: '', api_key: '' });
-      setConfigOpen(false);
-    } catch (cause: any) { setModelError(cause.message || t('Could not save the custom model', '自定义模型保存失败')); }
-    finally { setSavingModel(false); }
-  }
-  async function removeCustom(modelId: string) {
-    if (!onDeleteCustomModel || !await askConfirm(t('Delete this custom model configuration?', '确认删除这个自定义模型配置吗？'))) return;
-    setModelError('');
-    try { await onDeleteCustomModel(modelId); }
-    catch (cause: any) { setModelError(cause.message || t('Could not delete the custom model', '自定义模型删除失败')); }
-  }
-  function chooseModel(next: string) { setModelOpen(false); if (next !== model) onModelChange(next); }
   return <div className="composer-wrap" onDragOver={event => {
     if (event.dataTransfer.types.includes('Files')) event.preventDefault();
   }} onDrop={event => {
@@ -232,7 +131,7 @@ export function Composer({ contextSessionId, contextModel, value, model, models,
           <button type="button" onClick={() => onRemoveAttachment(id)} aria-label={t(`Remove ${attachment.filename}`, `移除 ${attachment.filename}`)} title={t('Remove attachment', '移除附件')} disabled={disabled || loading || runtimeControlsDisabled}><Icon name="close" size={13} /></button>
         </div>;
       })}</div> : null}
-    <div ref={composerRef} className="composer">
+    <div className="composer">
       <textarea ref={textareaRef} value={value} disabled={disabled} rows={2}
         aria-label={t('Message', '消息')}
         aria-describedby={visibleSuggestion ? suggestionHintId : undefined}
@@ -259,22 +158,8 @@ export function Composer({ contextSessionId, contextModel, value, model, models,
         <button className="plain-icon composer-upload" onClick={() => inputRef.current?.click()} title={t('Upload graph file', '上传图文件')} aria-label={t('Upload graph file', '上传图文件')} disabled={disabled || runtimeControlsDisabled}><Icon name="plus" size={20} /></button>
         {onRemoteGraph && <button className="composer-dataset" onClick={onRemoteGraph} disabled={disabled || uploading || runtimeControlsDisabled}><Icon name="database" size={12} />{t('Remote databases', '远程数据库')}</button>}
         <button data-testid="local-dataset-selector" className={`composer-dataset ${activeDatasetName ? 'is-loaded' : ''}`} onClick={() => onDataset()} disabled={disabled || uploading || runtimeControlsDisabled} title={activeDatasetName ? t(`Current dataset: ${activeDatasetName}`, `当前数据集：${activeDatasetName}`) : t('Select project dataset', '选择项目数据集')}><Icon name="database" size={12} /><span>{activeDatasetName || t('Dataset', '数据集')}</span></button>
-        <div ref={modelPickerRef} className={`composer-model ${modelOpen ? 'is-open' : ''}`}>
-          <button type="button" className="composer-model-trigger" onClick={() => setModelOpen(current => !current)} disabled={disabled || loading || runtimeControlsDisabled || (modelOptions.length === 0 && !onManageModels)} aria-label={t('Select model', '选择模型')} aria-expanded={modelOpen}>
-            <span className="composer-model-icon"><ModelProviderIcon modelId={currentCustom?.upstream_model_id || model} size={13} /></span>
-            <span className="composer-model-value">{currentCustom ? modelLabel(currentCustom) : model}</span>
-            <span className="composer-model-chevron"><Icon name="chevron" size={10} /></span>
-          </button>
-          <PopupPresence>{modelOpen ? <Popup.div variant="popover" ref={modelMenuRef} className="composer-model-menu" role="group" aria-label={t('Available models', '可用模型')}>
-            {!!builtInOptions.length && <div className="composer-model-section">{t('Models', '模型')}</div>}
-            {builtInOptions.map(option => <button type="button" aria-pressed={option === model} className={`composer-model-option ${option === model ? 'is-selected' : ''}`} key={option} onClick={() => chooseModel(option)}><span className="composer-option-mark"><ModelProviderIcon modelId={option} size={15} /></span><span>{option}</span>{option === model ? <Icon name="check" size={14} /> : null}</button>)}
-            {Array.from(customGroups, ([name, items]) => <div key={name}><div className="composer-model-section">{name}</div>{items.map(item => <div className={`composer-custom-model-row ${item.model_id === model ? 'is-selected' : ''}`} key={item.model_id}>
-              <button type="button" aria-pressed={item.model_id === model} className="composer-model-option" disabled={!!item.unavailable_reason} title={modelErrorMessage(item.unavailable_reason) || item.upstream_model_id || item.model_id} onClick={() => chooseModel(item.model_id)}><span className="composer-option-mark custom"><ModelProviderIcon modelId={item.upstream_model_id || item.model_id} size={15} /></span><span className="composer-model-label">{modelLabel(item)}{item.upstream_model_id && item.display_name !== item.upstream_model_id && <small>{item.upstream_model_id}</small>}</span>{item.model_id === model ? <Icon name="check" size={14} /> : null}</button>
-              {!onManageModels && onDeleteCustomModel && <button type="button" className="composer-model-delete" disabled={item.model_id === model} onClick={() => void removeCustom(item.model_id)} aria-label={t(`Delete custom model ${item.model_id}`, `删除自定义模型 ${item.model_id}`)}><Icon name="trash" size={14} /></button>}
-            </div>)}</div>)}
-            {onManageModels ? <button type="button" className="composer-model-config" onClick={() => { setModelOpen(false); onManageModels(); }}><Icon name="cube" size={15} />{t('Manage model services', '管理模型服务')}</button> : onSaveCustomModel ? <button type="button" className="composer-model-config" onClick={openCustomModelDialog}><Icon name="edit" size={15} /> {t('Configure custom model', '配置自定义模型')}</button> : null}
-          </Popup.div> : null}</PopupPresence>
-        </div>
+        <ModelPicker model={model} models={models} customModels={customModels} disabled={disabled || loading || runtimeControlsDisabled}
+          onModelChange={onModelChange} onManageModels={onManageModels} onSaveCustomModel={onSaveCustomModel} onDeleteCustomModel={onDeleteCustomModel} />
         <div className="composer-spacer" />
         <span className="auto-mode" role="status">{cancellationLabel || t('◉ Auto', '◉ 自动')}</span>
         <button
@@ -287,18 +172,5 @@ export function Composer({ contextSessionId, contextModel, value, model, models,
       </div>
       <ContextWindow sessionId={contextSessionId} model={contextModel} loading={loading} />
     </div>
-    {actionDialog}
-    <PopupPresence>{configOpen ? <PopupBackdrop className="modal-backdrop custom-model-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeCustomModelDialog(); }}>
-      <Popup.form className="project-dialog custom-model-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-model-dialog-title" onSubmit={(event: FormEvent) => { event.preventDefault(); void saveCustom(); }}>
-        <div className="dialog-head"><div><span>{t('Custom model', '自定义模型')}</span><h2 id="custom-model-dialog-title">{t('Configure custom model', '配置自定义模型')}</h2></div><button type="button" className="dialog-close" title={t('Close', '关闭')} aria-label={t('Close custom model settings', '关闭自定义模型配置')} onClick={closeCustomModelDialog} disabled={savingModel}><Icon name="close" size={17} /></button></div>
-        <div className="custom-model-fields">
-          <label className="custom-model-wide">{t('Model ID', '模型 ID')}<input type="text" autoFocus autoComplete="off" value={customDraft.model_id} onChange={event => setCustomDraft(current => ({ ...current, model_id: event.target.value }))} placeholder={t('For example: deepseek-chat or llama-3.1-8b', '例如：deepseek-chat 或 llama-3.1-8b')} /></label>
-          <label className="custom-model-wide">{t('API endpoint', '接口地址')}<input type="url" autoComplete="url" value={customDraft.base_url} onChange={event => setCustomDraft(current => ({ ...current, base_url: event.target.value }))} placeholder="https://api.example.com/v1" /></label>
-          <label className="custom-model-wide">{t('API key', '访问密钥')}<input type="password" autoComplete="new-password" value={customDraft.api_key} onChange={event => setCustomDraft(current => ({ ...current, api_key: event.target.value }))} placeholder={t('Enter API key', '输入访问密钥')} /></label>
-        </div>
-        {modelError ? <div className="dialog-error">{modelError}</div> : null}
-        <div className="dialog-actions"><button type="button" className="secondary-command" onClick={closeCustomModelDialog} disabled={savingModel}>{t('Cancel', '取消')}</button><button type="submit" className="primary-command" disabled={savingModel || !customDraft.model_id.trim() || !customDraft.base_url.trim() || !customDraft.api_key.trim()}>{savingModel ? t('Saving…', '保存中…') : t('Save model', '保存模型')}</button></div>
-      </Popup.form>
-    </PopupBackdrop> : null}</PopupPresence>
   </div>;
 }

@@ -9,6 +9,7 @@ import anyio
 import httpx
 import hashlib
 import json
+import logging
 import os
 import shutil
 import threading
@@ -18,7 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import numpy as np
@@ -65,9 +66,10 @@ from graph_data_service.rag import LightweightRAG
 from graph_data_service.property_graph import UnsupportedPropertyGraphAppend, require_lossless_append
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
 from graph_data_service.session import GraphSession, UploadFileRecord
-from construction_access import DATASET_TOOLS, SCOPE_HEADER
+from construction_access import ConstructionQuestionModel, ConstructionQuestionRequest, DATASET_TOOLS, SCOPE_HEADER
 from graph_data_service.construction_access import ConstructionAccessClient
 from graph_data_service.construction import ConstructionStore, ConstructionError, to_graph_data
+from graph_data_service.construction_questions import QUESTION_TIMEOUT_SECONDS, QuestionGenerationError, generate_questions
 from graph_data_service.storage.nebula_backend import (
     NebulaGraphRepository,
     NebulaRepositoryError,
@@ -156,6 +158,7 @@ class ConstructionSaveReq(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base_revision: int = Field(strict=True, ge=1)
     operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    question_model: ConstructionQuestionModel | None = None
 
 
 class ConstructionPresetReq(BaseModel):
@@ -2157,7 +2160,8 @@ class GraphDataService:
     def do_preview_graph_optimization(self, dataset_id: str, base_revision: int, operations: list, user_id: str = "") -> dict:
         return self._construction.optimize(user_id, dataset_id, base_revision, operations)
 
-    def do_commit_graph_optimization(self, dataset_id: str, base_revision: int, operations: list, user_id: str = "") -> dict:
+    def do_commit_graph_optimization(self, dataset_id: str, base_revision: int, operations: list, user_id: str = "",
+                                     *, question_model=None) -> dict:
         context = job_context.get()
         def before_commit():
             if context:
@@ -2170,7 +2174,7 @@ class GraphDataService:
             proof = self._construction._directory(user_id, dataset_id) / "record.json"
             self._execution_host.prepare_commit(context, proof)
         result = self._construction.optimize(user_id, dataset_id, base_revision, operations, commit=True,
-                                              before_commit=before_commit, receipt=receipt)
+                                              before_commit=before_commit, receipt=receipt, question_model=question_model)
         if context:
             job = self._job_manager.status(context.job_id)
             if job:
@@ -4834,10 +4838,42 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         uid, _ = await construction_grant(request, dataset_id)
         return await run_sync(svc.do_get_constructed_graph, dataset_id, uid)
 
+    question_slots = asyncio.Semaphore(4)
+    question_log = logging.getLogger("igraph.construction.questions")
+
+    async def complete_questions(user_id, dataset_id, revision, task, graph):
+        result, code = None, None
+        try:
+            async with asyncio.timeout(QUESTION_TIMEOUT_SECONDS):
+                async with question_slots:
+                    result = await generate_questions(graph, user_id, task["model"], question_log, run_sync)
+        except QuestionGenerationError as exc:
+            code = exc.code
+        except TimeoutError:
+            code = "QUESTION_TIMEOUT"
+        except asyncio.CancelledError:
+            code = "QUESTION_INTERRUPTED"
+            raise
+        except Exception as exc:
+            code = "QUESTION_GENERATION_FAILED"
+            question_log.warning("construction_questions_failed dataset=%s error_type=%s", dataset_id, type(exc).__name__)
+        finally:
+            await run_sync(svc._construction.finish_questions, user_id, dataset_id, revision, task["id"], result, code)
+
     @app.get("/construction/{dataset_id}/questions")
     async def construction_questions(dataset_id: str, request: Request):
         uid, _ = await construction_grant(request, dataset_id)
         return await run_sync(svc._construction.questions, uid, dataset_id)
+
+    @app.post("/construction/{dataset_id}/questions", status_code=202)
+    async def start_construction_questions(dataset_id: str, req: ConstructionQuestionRequest,
+                                           request: Request, background: BackgroundTasks):
+        uid, _ = await construction_grant(request, dataset_id)
+        status, task, graph = await run_sync(svc._construction.start_questions, uid, dataset_id,
+                                             req.base_revision, req.model.model_dump())
+        if task:
+            background.add_task(complete_questions, uid, dataset_id, req.base_revision, task, graph)
+        return status
 
     @app.get("/construction/{dataset_id}/schema")
     async def constructed_schema(dataset_id: str, request: Request):
@@ -4860,16 +4896,24 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         return await run_sync(svc.do_preview_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
 
     @app.post("/construction/{dataset_id}/commit")
-    async def construction_commit(dataset_id: str, req: ConstructionSaveReq, request: Request):
+    async def construction_commit(dataset_id: str, req: ConstructionSaveReq, request: Request,
+                                  background: BackgroundTasks):
         uid = construction_user(request)
         if request.headers.get("X-Run-ID") and svc._execution_host:
             sid = request.headers.get("X-Session-ID", "")
             if not sid:
                 raise HTTPException(422, {"code": "INVALID_EXECUTION_IDENTITY"})
-            return await controlled_tool(sid, "commit_graph_optimization", {"dataset_id": dataset_id, **req.model_dump()}, request)
+            return await controlled_tool(sid, "commit_graph_optimization",
+                {"dataset_id": dataset_id, "base_revision": req.base_revision, "operations": req.operations}, request)
         uid, _ = await construction_grant(request, dataset_id)
         svc._construction_coordinator.ensure_writable(uid, dataset_id)
-        return await run_sync(svc.do_commit_graph_optimization, dataset_id, req.base_revision, req.operations, uid)
+        model = req.question_model.model_dump() if req.question_model else None
+        result = await run_sync(svc.do_commit_graph_optimization, dataset_id, req.base_revision, req.operations, uid,
+                                question_model=model)
+        task = result.pop("question_generation", None)
+        if task:
+            background.add_task(complete_questions, uid, dataset_id, result["revision"], task, result["graph"])
+        return result
 
     @app.delete("/construction/{dataset_id}")
     async def construction_delete(dataset_id: str, request: Request):

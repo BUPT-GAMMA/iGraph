@@ -62,6 +62,13 @@ class ProviderGateway:
         else:
             self.client = AsyncOpenAI(api_key=api_key or 'local-no-auth', base_url=root, timeout=timeout)
 
+    async def aclose(self):
+        if self.protocol == 'gemini':
+            await self.client.aio.aclose()
+            self.client.close()
+        else:
+            await self.client.close()
+
     async def invoke_text(
         self,
         messages: list[dict[str, str]],

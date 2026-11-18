@@ -100,6 +100,7 @@ export function HelpPipeline() {
         <div className="help-pipeline-callout">
           <p>{t('To fill an extraction gap, choose “Add node” or “Add relationship” under graph data optimization. For a relationship, select its source and target, enter the type, and record the supporting text or source. Read the direction as “source is the [relationship] of target”. Click “Apply and preview”; use “Undo last step” if needed, then “Save to dataset”.', '发现抽取遗漏时，可在图数据优化中选择“添加节点”或“添加关系”。添加关系时选择起点与终点，填写类型和依据；方向按“起点是终点的某种关系”理解。点击“应用并预览”，需要时可“撤销上一步”，确认后点击“保存到数据集”。')}</p>
           <strong>{t('Save explicitly before analysis', '先手动保存，再进行分析')}</strong>
+          <p>{t('Choose an example question model from the same model services used by chat. After saving, it uses the graph structure and samples to generate four questions. You can regenerate questions with another model from the saved result.', '在构图页选择「示例问题模型」，可用模型与对话页一致。保存后，模型依据图结构和样本生成四个问题。也可以在已保存的结果里换模型重新生成。')}</p>
           <p>{t('Click “Save construction result” and wait for “Saved · Version …”. A draft is not yet an analysis-ready dataset. Later edits also need “Save to dataset”; previewing a change does not save it.', '点击“保存构图结果”，等待显示“已保存 · 版本 …”。草稿尚不能作为就绪数据集分析。后续修改也需要点击“保存到数据集”，仅预览不会保存修改。')}</p>
         </div>
       </li></>}

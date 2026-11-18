@@ -201,7 +201,8 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
   useEffect(() => { setEditingKey(null); }, [editableKey]);
   const [versionSelection, setVersionSelection] = useState<Record<string, string>>({});
   const composerAvailable = inputProps.interaction.kind === 'composer';
-  const generated = useConstructionQuestions(questionDataset);
+  const questions = useConstructionQuestions(questionDataset);
+  const generated = questions?.questions.length ? questions : undefined;
   const examples = generated ?? exampleCase;
   const localizedExample = examples ? localizeQuestions(examples, t) : undefined;
   const exampleQuestions = localizedExample?.questions;
@@ -267,7 +268,9 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
             disabled={Boolean(inputProps.disabled || inputProps.loading || inputProps.uploading || inputProps.sendBlocked)} onClick={() => inputProps.onChange(question)}>
             <strong>{localizedExample?.question_titles?.[index]}</strong><span>{question}</span>
           </button>)}</div>
-        </section> : composerAvailable && !emptyContent ? <div className={exampleQuestions?.length ? "example-suggestions" : "suggestions"}>{exampleQuestions?.length ? exampleQuestions.map((question, index) => <ExampleQuestionButton key={question} title={localizedExample?.question_titles?.[index] || question} question={question} disabled={Boolean(inputProps.disabled || inputProps.loading || inputProps.uploading || inputProps.sendBlocked)} onSelect={() => inputProps.onChange(question)} />) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
+        </section> : composerAvailable && !emptyContent && questions?.status === 'generating'
+          ? <p role="status">{t('Generating example questions for this graph…', '正在根据这张图生成示例问题…')}</p>
+          : composerAvailable && !emptyContent ? <div className={exampleQuestions?.length ? "example-suggestions" : "suggestions"}>{exampleQuestions?.length ? exampleQuestions.map((question, index) => <ExampleQuestionButton key={question} title={localizedExample?.question_titles?.[index] || question} question={question} disabled={Boolean(inputProps.disabled || inputProps.loading || inputProps.uploading || inputProps.sendBlocked)} onSelect={() => inputProps.onChange(question)} />) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
         const versions = isAssistant ? answerVersions(message, messages) : [message];

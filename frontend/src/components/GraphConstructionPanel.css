@@ -129,6 +129,14 @@
 .construction-panel.has-graph .construction-controls { padding: 16px; }
 .construction-panel .workspace-tabs { flex-shrink: 0; }
 .construction-panel .graph-toolbar { flex-shrink: 0; }
+.construction-question-settings { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 24px; border-top: 1px solid var(--construction-line); background: var(--construction-soft); }
+.construction-question-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.construction-question-actions strong { font-size: 12px; }
+.construction-question-actions .composer-model { min-width: 120px; max-width: 230px; }
+.construction-question-status { color: var(--construction-muted); font-size: 12px; overflow-wrap: anywhere; }
+.construction-question-status[role="alert"] { color: var(--construction-text); font-weight: 600; }
+@media (max-width: 720px) { .construction-question-settings { padding: 10px 12px; } }
+
 .construction-footer { padding: 17px 24px; display: flex; align-items: center; justify-content: space-between; gap: 15px; border-top: 1px solid var(--construction-line); background: var(--construction-bg); }
 .construction-save-info { display: grid; gap: 4px; font-size: 12px; min-width: 0; }
 .construction-save-info > span { color: var(--construction-muted); font-size: 11px; }
