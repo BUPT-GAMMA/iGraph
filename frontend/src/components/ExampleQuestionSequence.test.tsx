@@ -131,6 +131,8 @@ describe('example question progression in the actual chat composer', () => {
     const sent = vi.fn();
     const { rerender } = render(<Harness sent={sent} exampleCase={undefined} questionDataset={dataset} />);
     await screen.findByRole('button', { name: '填入下一示例问题' });
+    expect(screen.getByRole('region', { name: '基于这张图的问题' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /车站线路.*云桥站有哪些线路/ })).toBeTruthy();
     expect(load).toHaveBeenCalledWith({ project_id: 'rail', dataset_id: 'stations' }, expect.any(AbortSignal));
     fireEvent.keyDown(textbox(), { key: 'Tab' });
     expect(textbox().value).toBe(questions.questions[0]);

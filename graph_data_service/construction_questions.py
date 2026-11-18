@@ -8,6 +8,8 @@ from itertools import islice
 
 from graph_data_service.construction_schema import schema_foreign_key
 
+QUESTION_VERSION = 2
+
 _NAME_KEYS = ("name", "名称", "姓名", "title", "标题", "label", "chn_nm", "idv_nm", "eng_nm", "value")
 _GENERATED_ID = re.compile(r"(?:row|entity|edge|fk|node)_[0-9a-f]{16,}$", re.I)
 _MEASURE_FIELD = re.compile(r"price|amount|weight|score|rate|ratio|rto|pct|cost|duration|距离|数量|金额|价格|评分|占比|比例", re.I)
@@ -30,6 +32,11 @@ def _name(node):
     by_key = {key.casefold(): value for key, value in fields.items() if _short(value)}
     for key in _NAME_KEYS:
         if key in by_key:
+            return by_key[key].strip()
+    # Prefer a readable source key when a row uses a generated graph identity.
+    table = str(node["type"]).casefold().removesuffix("s")
+    for key in (table + "_id", "id"):
+        if key in by_key and not _GENERATED_ID.fullmatch(by_key[key]) and len(by_key[key]) <= 32:
             return by_key[key].strip()
     identity = node["id"]
     return identity if _short(identity) and not _GENERATED_ID.fullmatch(identity) else None
@@ -71,10 +78,82 @@ def _relation(edge):
     return None
 
 
+_ORDER_ROLES = {name: role for role, names in {
+    "customer": ("customer", "customers"), "order": ("order", "orders"),
+    "line": ("order_items", "order_item", "order_lines", "order_line", "order_details", "order_detail"),
+    "product": ("product", "products"),
+}.items() for name in names}
+
+
+def _order_starters(nodes, edges, node_types, add):
+    """Ground retail questions in joined rows, including CSV line items modeled as edges."""
+    if not {"customer", "order", "product"}.issubset({_ORDER_ROLES.get(t.casefold()) for t in node_types}):
+        return
+    by_id = {n["id"]: n for n in nodes}
+    roles = {key: _ORDER_ROLES.get(n["type"].casefold()) for key, n in by_id.items()}
+    customers, line_orders, line_products = {}, {}, {}
+    rows = []
+    for edge in edges:
+        source, target = edge["source"], edge["target"]
+        pair = roles.get(source), roles.get(target)
+        if _ORDER_ROLES.get(edge["type"].casefold()) == "line" and edge["properties"].get("row_endpoints"):
+            if set(pair) == {"order", "product"}:
+                order, product = (source, target) if pair[0] == "order" else (target, source)
+                rows.append((order, product, _fields(edge)))
+            continue
+        if pair not in {("order", "customer"), ("line", "order"), ("line", "product")}:
+            continue
+        fk = schema_foreign_key(edge)
+        if not fk or [col.casefold() for col in fk["columns"]] != [pair[1] + "_id"]:
+            continue
+        if pair[0] == "order":
+            customers[source] = target
+        elif pair[1] == "order":
+            line_orders[source] = target
+        else:
+            line_products[source] = target
+    rows.extend((order, line_products[line], _fields(by_id[line])) for line, order in line_orders.items() if line in line_products)
+    purchases = [(order, product, data) for order, product, data in rows if order in customers]
+    if not purchases:
+        return
+    names = (_name(by_id[customers[order]]) for order, _, _ in purchases)
+    example = next((name for name in names if name), None)
+    if example:
+        add("追踪客户购买记录", "Trace a customer's purchases",
+            f"「{example}」下过哪些订单，分别买了什么商品？请列出订单号和商品名称，并展示从客户到商品的连接路径。",
+            f"Which orders did “{example}” place and which products were in each? List the order IDs and product names and show the paths from customer to product.")
+    priced_customers = {customers[order] for order, _, data in purchases
+                        if _number(data.get("quantity")) is not None and _number(data.get("unit_price")) is not None}
+    if len(priced_customers) > 1:
+        add("比较客户订单金额", "Compare customer order totals",
+            "按订单明细的数量乘以单价汇总，每位客户的订单商品金额是多少？按金额排序，并列出各自的订单作为依据。",
+            "Using quantity times unit price for each order line, what is each customer's total ordered merchandise value? Rank customers and list the orders behind each total.")
+    quantities = {product for _, product, data in purchases if _number(data.get("quantity")) is not None}
+    if len(quantities) > 1:
+        add("比较商品订购量", "Compare product demand",
+            "按订单明细中的实际数量汇总，哪种商品订购量最高？列出各商品的总数量、涉及的订单数和下单客户数。",
+            "Which product has the highest total quantity ordered? Show quantities, distinct orders and distinct customers for each product.")
+    first_product = {}
+    for order, product, _ in purchases:
+        name = _name(by_id[product])
+        if not name:
+            continue
+        other = first_product.setdefault(order, name)
+        if name != other:
+            add("查找同单商品", "Find products ordered together",
+                f"「{other}」和「{name}」在哪些订单里一起出现？列出这些订单的客户，并找找还有哪些商品组合。",
+                f"Which orders contain both “{other}” and “{name}”? Show their customers and find other product pairs ordered together.")
+            break
+
+
 def graph_questions(graph):
     zh, en, zh_titles, en_titles = [], [], [], []
+    result = {"questions": zh, "question_titles": zh_titles,
+              "translations": {"en": {"questions": en, "question_titles": en_titles}}}
 
     def add(zh_title, en_title, chinese, english):
+        if len(zh) >= 4:
+            return
         zh_titles.append(zh_title)
         en_titles.append(en_title)
         zh.append(chinese)
@@ -83,6 +162,9 @@ def graph_questions(graph):
     nodes, edges = graph["nodes"], graph["edges"]
     if nodes:
         node_types = Counter(n["type"] for n in nodes)
+        _order_starters(nodes, edges, node_types, add)
+        if len(zh) == 4:
+            return result
         common = node_types.most_common(1)[0][0]
         degree = Counter()
         neighbors = {}
@@ -167,5 +249,4 @@ def graph_questions(graph):
             add("比较记录完整度", "Compare field coverage",
                 f"「{common}」节点有哪些共有字段？找出字段缺失或取值不同的记录，并列出依据。",
                 f"Which fields do “{common}” nodes share? Show records with missing or differing values and cite the fields.")
-    return {"questions": zh, "question_titles": zh_titles,
-            "translations": {"en": {"questions": en, "question_titles": en_titles}}}
+    return result

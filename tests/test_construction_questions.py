@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from graph_data_service.construction import ConstructionError, ConstructionStore, graph_schema
 from graph_data_service.construction_questions import graph_questions
 from graph_data_service.construction_schema import schema_foreign_key
+from graph_engine.construction.sources import ForeignKey, RelationalSource, Table, initial_graph
 
 
 def stations():
@@ -33,6 +34,33 @@ class ConstructionQuestionsTests(unittest.TestCase):
         graph["edges"][0]["properties"]["evidence"] = "source passage"
         self.assertTrue(any("原文片段" in q for q in graph_questions(graph)["questions"]))
 
+    def test_order_questions_follow_joined_rows_with_or_without_a_line_primary_key(self):
+        def ref(column, table):
+            return ForeignKey([column], table, [column])
+
+        customers = Table("customers", ["customer_id", "name"],
+                          [{"customer_id": "C8", "name": "Ada"}, {"customer_id": "C9", "name": "Lin"}], ["customer_id"])
+        products = Table("products", ["product_id", "name"],
+                         [{"product_id": "P1", "name": "Pen"}, {"product_id": "P2", "name": "Paper"}], ["product_id"])
+        orders = Table("orders", ["order_id", "customer_id"],
+                       [{"order_id": "A", "customer_id": "C8"}, {"order_id": "B", "customer_id": "C9"}],
+                       ["order_id"], [ref("customer_id", "customers")])
+        fields = ["order_id", "line_no", "product_id", "quantity", "unit_price"]
+        values = [("A", 1, "P1", 1, 10), ("A", 2, "P2", 2, 4), ("B", 1, "P1", 1, 10)]
+        for key in (["order_id", "line_no"], []):
+            with self.subTest(primary_key=key):
+                items = Table("order_items", fields, [dict(zip(fields, row)) for row in values],
+                              key, [ref("order_id", "orders"), ref("product_id", "products")])
+                source = RelationalSource({t.name: t for t in (customers, items, orders, products)}, _csv_mode=True)
+                graph = initial_graph(source)
+                result = graph_questions(graph)
+                self.assertIn("Ada", result["questions"][0])
+                self.assertIn("数量乘以单价", result["questions"][1])
+                self.assertIn("订购量最高", result["questions"][2])
+                self.assertTrue(all(p in result["translations"]["en"]["questions"][3] for p in ("Pen", "Paper")))
+                graph["edges"] = []
+                self.assertNotIn("追踪客户购买记录", graph_questions(graph)["question_titles"])
+
     def test_save_reload_revision_and_owner(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -49,6 +77,10 @@ class ConstructionQuestionsTests(unittest.TestCase):
             record_path = store._directory("owner", "rail") / "record.json"
             record = json.loads(record_path.read_text(encoding="utf-8"))
             self.assertEqual(record["example_questions"]["questions"], first["questions"])
+            record["example_questions"] = {"questions": ["obsolete examples"]}
+            record.pop("example_questions_version")
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+            self.assertEqual(store.questions("owner", "rail"), first)
             del record["example_questions"]
             record_path.write_text(json.dumps(record), encoding="utf-8")
             self.assertEqual(store.questions("owner", "rail"), first)

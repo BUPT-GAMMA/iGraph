@@ -26,7 +26,7 @@ from typing import Callable
 import graph_engine.paths as paths
 from graph_engine.analysis_policy import numeric_weight
 from graph_data_service.construction_schema import schema_foreign_key, source_schema_tables
-from graph_data_service.construction_questions import graph_questions
+from graph_data_service.construction_questions import QUESTION_VERSION, graph_questions
 
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
@@ -930,7 +930,7 @@ class ConstructionStore:
         if record["status"] != "ready" or record.get("graph") is None:
             _fail("Save the constructed graph before using its questions.", "graph_not_ready", 409)
         questions = record.get("example_questions")
-        if questions is None:
+        if questions is None or record.get("example_questions_version") != QUESTION_VERSION:
             questions = graph_questions(record["graph"])
         return {"dataset_id": dataset_id, "revision": record["revision"], **questions}
 
@@ -967,6 +967,7 @@ class ConstructionStore:
             if commit:
                 record.pop("draft_graph", None)
                 record["example_questions"] = graph_questions(graph)
+                record["example_questions_version"] = QUESTION_VERSION
                 record.update(graph=graph, status="ready", last_build_status="ready", message="构图结果已保存，可用于分析。", revision=base_revision + 1, updated_at=datetime.now(timezone.utc).isoformat())
                 if receipt is not None:
                     record["commit_receipt"] = {**receipt, "result": result}

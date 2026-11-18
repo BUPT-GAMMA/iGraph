@@ -4,6 +4,7 @@ import type { ConstructionState, Dataset } from './types';
 
 const mocks = vi.hoisted(() => ({
   listDatasets: vi.fn(),
+  questions: vi.fn(),
   listProjects: vi.fn(),
   getUserCases: vi.fn(),
   openUserCase: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('./api', async () => ({
   getUserCases: mocks.getUserCases,
   openUserCase: mocks.openUserCase,
   listProjectDatasets: mocks.listDatasets,
+  getConstructionQuestions: mocks.questions,
   uploadProjectDataset: mocks.uploadDataset,
   deleteProjectDataset: mocks.deleteDataset,
 }));
@@ -118,6 +120,22 @@ describe('actual App graph creation destination', () => {
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(example.translations.en.questions[0]);
     expect(screen.getByRole('button', { name: 'View full question: Ring systems' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '中文' }));
+  });
+
+  it.each(['?project=sales', '?project=sales&new=1'])('restores the only ready graph and its real questions from %s', async search => {
+    const graph: Dataset = { ...source, project_id: 'sales', dataset_id: 'orders-built', name: '订单图',
+      status: 'ready', metadata: { construction: { status: 'ready', revision: 2 } } };
+    mocks.listProjects.mockResolvedValue({ projects: [{ project_id: 'sales', user_id: 'graph-user',
+      name: '订单项目', dataset_count: 2, default_dataset_id: null }] });
+    mocks.listDatasets.mockResolvedValue({ datasets: [graph, { ...source, project_id: 'sales' }], default_dataset_id: null });
+    const question = '张三下过哪些订单？';
+    mocks.questions.mockResolvedValue({ dataset_id: graph.dataset_id, revision: 2, questions: [question], question_titles: ['客户购买记录'] });
+    window.history.replaceState({}, '', '/' + search);
+    render(<I18nProvider initialLanguage="zh"><App /></I18nProvider>);
+    const section = await screen.findByRole('region', { name: '基于这张图的问题' });
+    fireEvent.click(within(section).getByRole('button', { name: /张三下过哪些订单/ }));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(question);
+    expect(screen.getByRole('button', { name: '订单图' })).toBeTruthy();
   });
 
   it('retains a PT upload in the source library and binds it to an analysis draft without construction', async () => {

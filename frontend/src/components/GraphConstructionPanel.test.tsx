@@ -45,6 +45,14 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('graph construction workflow', () => {
+  it('starts analysis from the saved result inside the project workspace', async () => {
+    const use = vi.fn();
+    mocks.state.mockResolvedValue({ dataset_id: dataset.dataset_id, status: 'draft', revision: 2, algorithm_available: true });
+    render(<GraphConstructionPanel embedded dataset={dataset} onClose={vi.fn()} onSaved={vi.fn()} onUse={use} />);
+    fireEvent.click(await screen.findByRole('button', { name: '保存构图结果' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始分析' }));
+    expect(use).toHaveBeenCalledWith(expect.objectContaining({ dataset_id: dataset.dataset_id, status: 'ready' }));
+  });
   it('previews a manual relationship with named endpoints and saves only on request', async () => {
     await openPanel();
     fireEvent.click(screen.getByRole('button', { name: /添加关系/ }));

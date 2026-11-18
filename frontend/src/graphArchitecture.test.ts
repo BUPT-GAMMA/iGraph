@@ -17,7 +17,23 @@ describe('architecture projection', () => {
     }
     expect(schemaEdgeLabel(edges[0], false, (_, chinese) => chinese)).toBe('被持股企业 · 2');
     const generic = { type: 'fk_' + 'a'.repeat(40), properties: { foreign_key: { table: 'sales', columns: ['buyer_id'], ref_table: 'buyers', ref_columns: ['id'] } } };
-    expect(schemaEdgeLabel(generic)).toBe('buyer_id → buyers.id');
+    expect(schemaEdgeLabel(generic, false, (_, chinese) => chinese)).toBe('买方');
+    expect(schemaEdgeLabel(generic, false, english => english)).toBe('Buyer');
+  });
+  it('shows the same order roles on source tables, constructed schema, and live graph edges', () => {
+    const zh = (_en: string, chinese: string) => chinese;
+    for (const [source, column, target, label] of [
+      ['orders', 'customer_id', 'customers', '下单客户'], ['order_items', 'order_id', 'orders', '所属订单'],
+      ['order_items', 'product_id', 'products', '订购商品'],
+    ]) {
+      const fk = { table: source, columns: [column], ref_table: target, ref_columns: [column] };
+      const type = 'fk_' + '1'.repeat(40);
+      const table = { source, target, type: column + ' → ' + column, properties: { schema_kind: 'foreign_key', ...fk } };
+      expect(schemaEdgeLabel(table, false, zh)).toBe(label);
+      const edge = { type, src: 'a', dst: 'b', properties: { foreign_key: fk } };
+      expect(schemaEdgeLabel({ ...edge, properties: { schema_kind: 'edge_type', type_name: type, foreign_key: fk } }, false, zh)).toBe(label);
+      expect(buildGraphArchitecture({ directed: true, nodes: [{ id: 'a', type: source }, { id: 'b', type: target }], edges: [edge] }, zh).relations[0].label).toBe(label);
+    }
   });
   it('keeps direction, parallel relationship types and self-relations while projecting the actual result', () => {
     const data: GraphData = {

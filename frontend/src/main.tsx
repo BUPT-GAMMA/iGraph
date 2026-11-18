@@ -20,7 +20,7 @@ import { RunRecovery } from './RunRecovery';
 import { RunCancellation } from './RunCancellation';
 import { editableLatestTurn } from './latestTurn';
 import { getCapabilities } from './api';
-import { refreshEmptyDraftModel, draftScopeKey, conversationReducer, createSessionView, initialConversationState, latestMessageGraph, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
+import { availableDraftModel, refreshEmptyDraftModel, draftScopeKey, conversationReducer, createSessionView, initialConversationState, latestMessageGraph, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import { contextHighlights } from './graphContext';
 import { DatasetPanel } from './components/DatasetPanel';
 import { ConstructedDatasetPicker } from './components/ConstructedDatasetPicker';
@@ -898,6 +898,39 @@ function App() {
     }
   }
 
+  useEffect(() => {
+    if (!modelCatalog || !activeDraft || activeDraft.modelSelectedByUser ||
+        (activeDraft.phase !== 'editing' && activeDraft.phase !== 'failed')) return;
+    const model = availableDraftModel(modelCatalog, activeDraft.model);
+    if (model !== activeDraft.model) dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId,
+      draftId: activeDraft.draftId, patch: { model, error: undefined } });
+  }, [modelCatalog, activeDraft]);
+
+  const draftProjectId = activeDraft?.projectId ?? null;
+  const draftSources = activeDraftKey ? datasetsByProject[activeDraftKey] : undefined;
+  const loadDraftSources = Boolean(activeDraftKey && (draftProjectId || activeDraft?.activeDatasetId) && !draftSources);
+  useEffect(() => {
+    if (!loadDraftSources || !userId || demoMode) return;
+    const controller = new AbortController();
+    listProjectDatasets(draftProjectId, controller.signal).then(response => {
+      if (controller.signal.aborted || identityRef.current !== userId) return;
+      updateProjectDatasets(draftProjectId, response.datasets || []);
+      if (draftProjectId) setProjects(current => current.map(item => item.project_id === draftProjectId
+        ? { ...item, default_dataset_id: response.default_dataset_id ?? item.default_dataset_id } : item));
+    }).catch(() => { /* The dataset picker retries on demand. */ });
+    return () => controller.abort();
+  }, [loadDraftSources, draftProjectId, userId, demoMode]);
+
+  useEffect(() => {
+    if (!activeDraft?.projectId || activeDraft.activeDatasetId || activeDraft.phase !== 'editing' ||
+        activeDraft.attachments.length || !draftSources) return;
+    const ready = draftSources.filter(source => source.status === 'ready');
+    const selected = ready.find(source => source.dataset_id === draftProject?.default_dataset_id)
+      ?? (ready.length === 1 ? ready[0] : undefined);
+    if (selected) dispatchConversation({ type: 'PATCH_DRAFT', projectId: activeDraft.projectId, draftId: activeDraft.draftId,
+      patch: { activeDatasetId: selected.dataset_id } });
+  }, [activeDraft, draftProject?.default_dataset_id, draftSources]);
+
   useLayoutEffect(() => bindRequestAccount(userId), [userId]);
   useEffect(() => {
     if (!userId || demoMode) return;
@@ -1181,7 +1214,7 @@ function App() {
       return;
     }
     const existing = conversationRef.current.draftsByScope[draftScopeKey(projectId)] || readStoredDraft(userId, projectId);
-    const preferredModel = activeSession?.model || defaultModel;
+    const preferredModel = availableDraftModel(modelCatalog, activeSession?.model || defaultModel);
     const draft = refreshEmptyDraftModel(existing || {
       draftId: randomUUID(), projectId, phase: 'editing', text: '',
       model: preferredModel,
@@ -2047,7 +2080,8 @@ function App() {
         response.dataset,
       ]);
       if (projectId) setProjects(current => current.map(project => project.project_id === projectId
-        ? { ...project, default_dataset_id: response.default_dataset_id ?? project.default_dataset_id } : project));
+        ? { ...project, default_dataset_id: response.default_dataset_id ?? project.default_dataset_id,
+          dataset_count: (project.dataset_count ?? datasetsByProject[draftScopeKey(projectId)]?.length ?? 0) + 1 } : project));
       if (!isConstructionRoute(projectId)) return;
       if (isPtGraph(response.dataset)) setConstructionDataset(null);
       else if (supportsConstruction(response.dataset)) openConstruction(response.dataset);
@@ -2226,7 +2260,7 @@ function App() {
           </nav>
           {workspaceError && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {workspaceError}</div>}
           {constructionDataset
-            ? <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} embedded onClose={() => setConstructionDataset(null)} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} />
+            ? <GraphConstructionPanel key={constructionDataset.dataset_id} dataset={constructionDataset} embedded onClose={() => setConstructionDataset(null)} onUse={analyzeSourceGraph} onSaved={constructionSaved} onStateChange={constructionStateUpdated} onDatasetUpdated={datasetUpdated} />
             : <CreateGraphWorkspace key={constructionProjectId || 'personal'} datasets={datasetsByProject[draftScopeKey(constructionProjectId)] || []} busy={busy} onUpload={addConstructionDataset} onConstruct={openConstruction} onAnalyze={analyzeSourceGraph} onDelete={removeDataset} onStateChange={constructionStateUpdated} />}
         </> : <>
           {error && <div className="workspace-error" role="alert"><Icon name="close" size={14} /> {error}</div>}
