@@ -2462,6 +2462,12 @@ REPORTING_TOOLS: List[dict] = [
 
 INTERNAL_TOOLS: List[dict] = [
     {
+        "name": "set_session_config",
+        "description": "设置当前 MCP 会话的模型配置。",
+        "inputSchema": {"type": "object", "properties": {"llm_model": {"type": "string"}}},
+        "category": "internal",
+    },
+    {
         "name": "register_session",
         "description": "将当前 MCP 会话绑定到业务会话 ID，并在 GraphData 侧创建会话。",
         "inputSchema": {

@@ -1,7 +1,9 @@
 import unittest
+from unittest.mock import patch
 
 from pydantic import ValidationError
-from graph_data_service.playground import Scenario, _reply_prefix, expand_graph
+from graph_data_service.playground import Decision, Scenario, _reply_prefix, expand_graph, planner_tool_catalog
+from graph_data_service.tool_catalog import INTERNAL_TOOLS, get_all_public_tools
 
 
 def scenario():
@@ -34,11 +36,38 @@ class PlaygroundGraphTest(unittest.TestCase):
         value = scenario()
         value["questions"][0]["tool"] = "imaginary"
         with self.assertRaises(ValidationError):
-            Scenario.model_validate(value)
+            Decision.model_validate({"action": "propose", "reply": "Review the questions.", "plan": value},
+                                    context={"tools": planner_tool_catalog({})})
         value = scenario()
         value["relations"][0]["target"] = "Unknown"
         with self.assertRaises(ValidationError):
             Scenario.model_validate(value)
+
+    def test_planner_knows_all_registered_tools_and_checks_availability(self):
+        native = {"workspace_list": {"category": "workspace", "description": "List workspace files."}}
+        with patch.dict("os.environ", {"MCP_ENABLE_REPORTING_TOOLS": "false"}):
+            tools = planner_tool_catalog(native)
+        expected = {t["name"] for t in [*get_all_public_tools(include_reporting=True), *INTERNAL_TOOLS]}
+        self.assertEqual(set(tools), expected | native.keys())
+        plan = scenario()
+        for name in ("get_node_type_counts", "triangle_count", "finance_control_chain", "get_constructed_graph", "train"):
+            plan["questions"][0]["tool"] = name
+            self.assertEqual(Scenario.model_validate(plan, context={"tools": tools}).questions[0].tool, name)
+        for name in ("register_session", "set_session_config", "create_analysis_report"):
+            plan["questions"][0]["tool"] = name
+            with self.assertRaises(ValidationError):
+                Scenario.model_validate(plan, context={"tools": tools})
+        # A previously approved question stays readable if its tool is disabled later.
+        self.assertEqual(Scenario.model_validate(plan).questions[0].tool, "create_analysis_report")
+
+    def test_low_share_entities_keep_every_example_referenced_in_questions(self):
+        value = scenario()
+        value["entities"][0]["share"] = 100
+        names = ["Quartz", "Onyx", "Jade", "Amber", "Slate", "Flint"]
+        value["entities"][1].update(share=1, examples=names)
+        graph = expand_graph(Scenario.model_validate(value), "rare labs")
+        self.assertEqual(len(graph["nodes"]), 100)
+        self.assertTrue(set(names) <= {n["properties"]["name"] for n in graph["nodes"] if n["type"] == "Lab"})
 
     def test_stream_only_exposes_visible_reply(self):
         self.assertEqual(_reply_prefix('{"reply":"校'), "校")

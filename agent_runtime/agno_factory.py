@@ -20,13 +20,37 @@ from agent_runtime.loop_guard import loop_guard_tool_hook, loop_guard_post_hook
 from agent_runtime.instructions import instructions_for
 from agent_runtime.learning import create_learning_machine, completed_turn_learning_hook
 from agent_runtime.model_factory import allowed_model, create_model
-from agent_runtime.skills_runtime import build_skills
+from agent_runtime.skills_runtime import ReadableSkills, build_skills
 from agent_runtime.cancellation_compat import ControlledAgent, cancellable_tool_hook
 from agent_runtime.construction_state import construction_tool_hook
 from agent_runtime.remote_graph.source_scope import source_scope_hooks
 
 
 AGENT_ID = "igraph-agent"
+
+
+def native_tool_groups(remote_executor=None, remote_binding=None):
+    return {
+        "workspace": create_workspace_tools(),
+        "agent_notes": [update_agent_notes],
+        "remote_database": register_remote_graph_tools(remote_executor, remote_binding),
+    }
+
+
+def describe_agent_tools(config):
+    """Describe registered callables without reading an account's files, memories or graph."""
+    groups = native_tool_groups()
+    groups["skills"] = ReadableSkills(loaders=[]).get_tools()
+    learning = create_learning_machine(config, planning_mode="auto")
+    if learning:
+        groups["learning"] = learning.get_tools(user_id="catalog", session_id="catalog")
+    descriptions = {}
+    for category, tools in groups.items():
+        for tool in tools:
+            name = getattr(tool, "name", None) or tool.__name__
+            description = getattr(tool, "description", None) or tool.__doc__ or ""
+            descriptions[name] = {"category": category, "description": description.strip().split("\n")[0]}
+    return descriptions
 
 
 class IGraphFactoryInput(BaseModel):
@@ -90,8 +114,7 @@ def create_igraph_factory(
                       **({'remote_graph_binding': remote_binding} if remote_binding else {})} or None,
             tools=[create_graph_tools(config, response_language=options.response_language,
                                       **({'playground': True} if (custom_model or {}).get('source') == 'playground' else {})),
-                   *create_workspace_tools(), update_agent_notes,
-                   *register_remote_graph_tools(remote_executor, remote_binding)],
+                   *(tool for group in native_tool_groups(remote_executor, remote_binding).values() for tool in group)],
             skills=build_skills(config, user_id, remote_binding),
             learning=learning,
             instructions=instructions_for(

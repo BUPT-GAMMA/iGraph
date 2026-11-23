@@ -10,20 +10,36 @@ import httpx
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StringConstraints, model_validator
+from pydantic import BaseModel, Field, StringConstraints, ValidationInfo, model_validator
 
 from execution_protocol import service_headers
 from graph_data_service.construction import ConstructionError, _atomic_json, validate_graph
 from graph_data_service.construction_questions import question_provider_error
-from graph_data_service.tool_catalog import GRAPH_TOOLS
+from graph_data_service.tool_catalog import INTERNAL_TOOLS, get_all_public_tools
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=72)]
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
 Value = Name | int | float | bool
 Properties = Annotated[dict[Name, Annotated[list[Value], Field(min_length=1, max_length=10)]], Field(max_length=8)]
-SUPPORTED = {"get_graph_info", "get_node_info", "get_edge_info", "get_neighbors", "search_node", "search_edge",
-             "shortest_path", "node_centrality", "community_detection", "find_cycles", "subgraph_extraction"}
-CAPABILITIES = {t["name"]: t["description"].split("\n")[0][:180] for t in GRAPH_TOOLS if t["name"] in SUPPORTED}
+
+
+def planner_tool_catalog(agent_tools):
+    """Compact reference for the planner, separate from the provider's callable-tool limit."""
+    catalog = dict(agent_tools)
+    enabled = {item["name"] for item in get_all_public_tools()}
+    for spec in [*get_all_public_tools(include_graph_ml=True, include_reporting=True), *INTERNAL_TOOLS]:
+        schema = spec["inputSchema"]
+        entry = {"category": spec["category"], "description": spec["description"].strip().split("\n")[0][:280]}
+        if schema.get("required"):
+            entry["required"] = schema["required"]
+        modes = {key: field["enum"] for key, field in schema.get("properties", {}).items()
+                 if key in ("algorithm", "method", "mode", "task", "task_type", "metric") and field.get("enum")}
+        if modes:
+            entry["modes"] = modes
+        if spec["category"] != "internal" and spec["name"] not in enabled:
+            entry["enabled"] = False
+        catalog[spec["name"]] = entry
+    return catalog
 
 
 class Entity(BaseModel):
@@ -55,14 +71,20 @@ class Scenario(BaseModel):
     relations: list[Relation] = Field(min_length=1, max_length=14)
 
     @model_validator(mode="after")
-    def check_plan(self):
+    def check_plan(self, info: ValidationInfo):
         types = {e.type for e in self.entities}
         pairs = {(r.source, r.type, r.target) for r in self.relations}
         used = {t for r in self.relations for t in (r.source, r.target)}
         if len(types) != len(self.entities) or types != used or len(pairs) != len(self.relations):
             raise ValueError("Each distinct entity type must participate in a named relationship")
-        if any(q.tool not in CAPABILITIES for q in self.questions):
+        # Validate new proposals against the tools actually described for this turn. Previously
+        # accepted plans remain readable and buildable after a deployment changes its tool set.
+        catalog = (info.context or {}).get("tools")
+        if catalog is not None and any(q.tool not in catalog for q in self.questions):
             raise ValueError("Unknown analysis tool")
+        if catalog is not None and any(catalog[q.tool].get("enabled") is False or
+                                       catalog[q.tool]["category"] == "internal" for q in self.questions):
+            raise ValueError("Primary question tool is unavailable")
         for lang in ("zh", "en"):
             if len({getattr(q, lang).casefold() for q in self.questions}) != len(self.questions):
                 raise ValueError("Duplicate question")
@@ -98,8 +120,16 @@ SYSTEM = """You are iGraph's Playground scenario designer. Collaborate turn by t
 Use the latest request, prior discussion and previous plan. Preserve any questions or constraints the user
 has not asked to change. Ask one targeted clarification when the scenario is too vague. Otherwise propose
 a concrete plan immediately. Suggest about four distinct questions by default. Each must be answerable with
-the listed iGraph tool, the proposed entity and edge types, their properties and the synthetic topology.
-Use questions about comparisons, paths, key nodes or connections. Never assume outside data or real findings.
+the proposed entity and edge types, properties and synthetic topology. The tools object describes the full
+iGraph catalog. Pick the most specific registered tool for each question (e.g. get_node_type_counts for
+counts by type). Select tools according to the user's goal, including graph learning, finance, construction,
+visualization, reporting and graph algorithms when their inputs exist. Use required parameters and modes
+to check feasibility. For a report include prior analysis. For learning or domain tools ensure the sample
+can supply the required labels, features or domain properties. A fresh example has no uploads, trained
+models, prior runs, remote database or private user memory. Explain missing prerequisites or propose a
+grounded alternative. Workspace, skill, memory, job and internal tools may support a workflow but are not
+evidence about a graph. Never select disabled or internal tools as a primary question tool.
+Do not assume a particular path exists or a particular node ranks first. Never assume real-world findings.
 Use action confirm ONLY when confirmable is true and the latest user explicitly approves building the CURRENT
 graph now. An instruction to proceed with this version or to make the example now is approval; never ask twice.
 Questions about building, hypothetical statements, negations, deferrals and requests for revisions
@@ -108,8 +138,10 @@ Output one JSON object with reply FIRST, then action (clarify/propose/confirm), 
 Reply is a short conversational message; the UI displays the question list separately. Do not claim to have built a graph.
 A plan has title, summary, questions [{zh,en,tool}], entities [{type,examples,share,properties}],
 relations [{type,source,target,pattern,properties}]. Give each question equivalent zh and en text and exactly one
-registered tool name. Source/target must exactly match entity types. Choose meaningful business relation names.
-Examples are 2–8 distinct fictional node names per type. Share is the relative number of nodes in a 100-node
+registered tool name. When a question refers to a named node, copy its literal example name in BOTH
+languages so users can find the same node. Source/target must exactly match entity types. Choose meaningful
+business relation names. Examples are 2–8 distinct fictional node names per type. Share is an integer
+from 1 to 100 giving the relative number of nodes in a 100-node
 sample; properties map field names to arrays of representative scalar values, including actual JSON numbers
 for measurements. Identify properties needed by the questions. For relations choose pattern one (one target
 per source), many or clustered. All types must participate. Use a single type with a self-type relation when
@@ -138,17 +170,19 @@ async def plan_events(uid, req):
     try:
         async with httpx.AsyncClient(timeout=12, trust_env=False) as resolver:
             response = await resolver.get(runtime + "/internal/playground/connection/resolve",
-                params={"revision": req.connection_revision}, headers=service_headers(uid))
+                params={"revision": req.connection_revision, "include_tools": "true"}, headers=service_headers(uid))
             if response.status_code >= 400:
                 detail = response.json().get("detail", {})
                 yield _event(error=detail.get("code", "MODEL_UNAVAILABLE") if isinstance(detail, dict) else "MODEL_UNAVAILABLE")
                 return
             config = response.json()
             key, model, url = config["api_key"], config["model"], config["base_url"]
+            agent_tools = config["agent_tools"]
     except (httpx.HTTPError, ValueError, KeyError):
         yield _event(error="MODEL_UNAVAILABLE")
         return
-    context = {"tools": CAPABILITIES, "ui_language": req.language, "latest_request": req.message,
+    tools = planner_tool_catalog(agent_tools)
+    context = {"tools": tools, "ui_language": req.language, "latest_request": req.message,
                "previous": req.previous.model_dump() if req.previous else None,
                "confirmable": req.confirmable, "history": req.history}
     messages = [{"role": "system", "content": SYSTEM},
@@ -171,7 +205,7 @@ async def plan_events(uid, req):
                         last = reply
                         yield _event(reply=reply)
             clean = re.sub(r'^\s*```(?:json)?\s*|\s*```\s*$', '', raw.strip(), flags=re.I)
-            decision = Decision.model_validate_json(clean)
+            decision = Decision.model_validate_json(clean, context={"tools": tools})
             if decision.action == "confirm" and not (req.previous and req.confirmable):
                 raise ValueError("No proposal to build")
             yield _event(decision=decision.model_dump(), model_name=model)
@@ -187,10 +221,11 @@ async def plan_events(uid, req):
 def expand_graph(plan: Scenario, seed: str):
     rng = random.Random(seed)
     groups, nodes, edges = {}, [], []
-    # Give each type at least two nodes, then distribute the remainder by largest remainder.
+    # Every named example can appear in a proposed question, including those in low-share types.
     total = sum(e.share for e in plan.entities)
-    pool = 100 - 2 * len(plan.entities)
-    counts = [2 + pool * e.share // total for e in plan.entities]
+    minimums = [max(2, len(set(e.examples))) for e in plan.entities]
+    pool = 100 - sum(minimums)
+    counts = [minimum + pool * e.share // total for e, minimum in zip(plan.entities, minimums)]
     remainders = sorted(range(len(counts)), key=lambda i: -(pool * plan.entities[i].share % total))
     for i in remainders[:100 - sum(counts)]:
         counts[i] += 1

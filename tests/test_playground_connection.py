@@ -20,7 +20,8 @@ class PlaygroundConnectionTest(unittest.TestCase):
             root = Path(tmp)
             store = ExecutionStore(create_engine(f"sqlite:///{root / 'db'}", connect_args={"check_same_thread": False}))
             store.migrate()
-            catalog = ModelCatalog(store, SimpleNamespace(remote_graph_secret_key="", remote_graph_secret_key_file=root / "key"))
+            catalog = ModelCatalog(store, SimpleNamespace(remote_graph_secret_key="", remote_graph_secret_key_file=root / "key",
+                                                          embedding_model=""))
             app = FastAPI()
             @app.exception_handler(ControlError)
             async def error(request, exc):
@@ -30,6 +31,7 @@ class PlaygroundConnectionTest(unittest.TestCase):
             with TestClient(app) as client:
                 client.headers.update({"X-User-ID": "alice", "X-iGraph-Service-Key": "service-only"})
                 self.assertFalse(client.get(url).json()["configured"])
+                self.assertEqual(client.get(url).json()["model"], "deepseek-v4-flash-0731-ga")
                 form = {"revision": 0, "model": "gpt-5.4-mini", "base_url": "https://model.test/v1"}
                 self.assertEqual(client.put(url, json=form).status_code, 422)
                 key = "alice-private-example"
@@ -46,6 +48,11 @@ class PlaygroundConnectionTest(unittest.TestCase):
                 with store.transaction("alice", "__models__") as db:
                     self.assertNotIn(key, str(catalog._preference(db, "alice")))
                 self.assertEqual(client.get(url + "/resolve?revision=1").json()["api_key"], key)
+                self.assertEqual(client.get(url).json()["model"], form["model"])
+                descriptors = client.get(url + "/resolve?revision=1&include_tools=true").json()["agent_tools"]
+                self.assertTrue({"workspace_list", "get_skill_instructions", "describe_remote_graph",
+                                 "update_agent_notes", "update_user_memory"} <= descriptors.keys())
+                self.assertNotIn("agent_tools", client.get(url).json())
                 self.assertEqual(client.put(url, json={**form, "revision": 1, "base_url": "https://other.test/v1"}).status_code, 422)
                 client.headers.update({"X-User-ID": "bob"})
                 self.assertFalse(client.get(url).json()["configured"])

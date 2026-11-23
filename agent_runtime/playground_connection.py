@@ -1,5 +1,6 @@
 """Personal Playground credentials kept in account preferences and resolved only for the owning user."""
 import re
+from functools import cache
 
 from fastapi.responses import JSONResponse
 from fastapi import Request
@@ -11,7 +12,7 @@ from agent_runtime.provider_catalog import validate_base_url
 from agent_runtime.remote_graph.secrets import SecretBox
 
 DEFAULT_URL = "https://tokensave.pro/v1"
-DEFAULT_MODEL = "gpt-5.4-mini"
+DEFAULT_MODEL = "deepseek-v4-flash-0731-ga"
 PROJECT_MODEL = "playground:personal"
 
 
@@ -34,6 +35,11 @@ def sync_project_model(catalog, db, uid, saved):
 
 
 def install_connection(router, catalog, identity):
+    @cache
+    def agent_tools():
+        from agent_runtime.agno_factory import describe_agent_tools
+        return describe_agent_tools(catalog.config)
+
     def connection(uid, *, update=None, revision=None, resolve=False, clear=False):
         with catalog.store.transaction(uid, "__models__") as db:
             preferences = catalog._preference(db, uid)
@@ -89,7 +95,9 @@ def install_connection(router, catalog, identity):
         return await to_thread.run_sync(lambda: connection(uid, clear=True, revision=revision))
 
     @router.get("/internal/playground/connection/resolve")
-    async def resolve(revision: int, request: Request):
+    async def resolve(revision: int, request: Request, include_tools: bool = False):
         uid = identity(request)
         result = await to_thread.run_sync(lambda: connection(uid, resolve=True, revision=revision))
+        if include_tools:
+            result["agent_tools"] = await to_thread.run_sync(agent_tools)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})

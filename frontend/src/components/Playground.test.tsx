@@ -8,7 +8,7 @@ vi.mock('../api', async importOriginal => ({ ...await importOriginal<typeof impo
   listPlaygrounds: vi.fn(), getPlayground: vi.fn(), getPlaygroundConnection: vi.fn(),
   sendPlaygroundTurn: vi.fn(), savePlaygroundConnection: vi.fn() }));
 
-const connection = { revision: 0, configured: false, base_url: 'https://tokensave.pro/v1', model: 'gpt-5.4-mini' };
+const connection = { revision: 0, configured: false, base_url: 'https://tokensave.pro/v1', model: 'deepseek-v4-flash-0731-ga' };
 const state = { id: 'one', revision: 2, status: 'draft' as const, messages: [{ role: 'user' as const, text: 'Campus collaboration' }],
   plan: null, live_reply: '', error: null, confirmable: true, confirmed: false, result: null };
 
@@ -23,6 +23,7 @@ describe('Playground', () => {
     const key = await screen.findByLabelText('API Key');
     expect(screen.queryByRole('textbox', { name: 'Message the scenario agent' })).toBeNull();
     expect((screen.getByLabelText('API URL') as HTMLInputElement).value).toBe(connection.base_url);
+    expect((screen.getByLabelText('Model ID') as HTMLInputElement).value).toBe(connection.model);
     fireEvent.change(key, { target: { value: 'personal-test-value' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save connection' }));
     await screen.findByRole('textbox', { name: 'Message the scenario agent' });
