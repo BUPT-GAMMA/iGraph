@@ -39,6 +39,7 @@ class PlaygroundConnectionTest(unittest.TestCase):
                 mid = saved.json()["config_id"]
                 selected = next(m for m in catalog.list("alice")["models"] if m["config_id"] == mid)
                 self.assertIsNone(selected["unavailable_reason"])
+                self.assertEqual(selected["context_window"], 131072)
                 self.assertNotIn(key, str(selected))
                 self.assertEqual(catalog.resolve("alice", {"config_id": mid, "revision": selected["revision"]})["api_key"], key)
                 self.assertFalse(any(m["config_id"] == mid for m in catalog.list("bob")["models"]))

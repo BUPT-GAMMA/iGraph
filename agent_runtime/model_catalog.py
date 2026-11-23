@@ -74,6 +74,9 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
         with self.store.transaction(uid, '__models__') as conn:
             pref = self._preference(conn, uid)
             # Old callers may still send roles/allow-lists; they grant no privileges.
+            if pref.get('playground', {}).get('ciphertext'):
+                from agent_runtime.playground_connection import sync_project_model
+                sync_project_model(self, conn, uid, pref['playground'])
             pref.pop("is_admin", None)
             pref.pop("allowed", None)
             pref.setdefault('default_model', next(iter(allowed), ''))
