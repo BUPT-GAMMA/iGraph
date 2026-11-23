@@ -178,7 +178,6 @@ export function Playground({ onConnectionSaved, onPending, onReady, onOpen }: Pr
         {!scene.messages.length && !loading && connection?.configured && !connectionOpen && <div className="playground-welcome">
           <span className="playground-mark"><Icon name="compass" size={28} /></span>
           <h2>{t('What would you like to explore?', '你想探索什么场景？')}</h2>
-          <p>{t('Describe a scenario and shape the questions together. Once you confirm, iGraph will create a project with a 100-node sample graph.', '说说你的场景，和 iGraph 一起调整分析问题。确认后，系统会创建一个带有 100 个模拟节点的项目。')}</p>
           <div className="playground-starters">{[
             t('Find bottlenecks in a supply chain', '我想找出供应链中的关键瓶颈'),
             t('Explore collaborations between research teams', '我想分析科研团队之间的合作关系'),

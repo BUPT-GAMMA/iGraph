@@ -14,7 +14,6 @@
 .playground-welcome { margin: clamp(18px, 7vh, 74px) 0 12px; }
 .playground-welcome .playground-mark { width: 54px; height: 54px; border-radius: 16px; margin-bottom: 18px; }
 .playground-welcome h2 { font-size: clamp(23px, 3.2vw, 34px); line-height: 1.25; letter-spacing: -.04em; }
-.playground-welcome p { max-width: 560px; margin-top: 12px; line-height: 1.75; color: var(--text-secondary); }
 .playground-starters { display: flex; flex-wrap: wrap; gap: 9px; margin: 20px 0; }
 .playground-starters button, .playground-confirm { padding: 8px 12px; color: var(--accent); border: 1px solid var(--border); background: var(--surface); border-radius: 8px; }
 .playground-starters button { display: inline-flex; align-items: center; gap: 8px; text-align: start; }
