@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
 from graph_data_service.playground import (
-    Decision, Scenario, _reply_prefix, _validated_decision, expand_graph, planner_tool_catalog, requested_question_count,
+    Decision, Scenario, _planner_options, _reply_prefix, _validated_decision, expand_graph,
+    planner_tool_catalog, requested_question_count,
 )
 from graph_data_service.tool_catalog import INTERNAL_TOOLS, get_all_public_tools
 
@@ -84,6 +85,14 @@ class PlaygroundGraphTest(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertEqual(requested_question_count(message), count)
 
+    def test_flash_planner_reserves_its_budget_for_json_on_supported_endpoints(self):
+        model = "deepseek-v4-flash-0731-ga"
+        options = _planner_options(model, "https://tokensave.pro/v1")
+        self.assertEqual(options["extra_body"]["thinking"], {"type": "disabled"})
+        self.assertEqual(options["model"], model)
+        self.assertNotIn("extra_body", _planner_options("custom", "https://tokensave.pro/v1"))
+        self.assertNotIn("extra_body", _planner_options(model, "https://relay.example/v1"))
+
     def test_repair_count_once_and_validate_the_repaired_plan(self):
         plan = scenario()
         expected = {"action": "propose", "reply": "Review this question.", "plan": plan}
@@ -101,6 +110,9 @@ class PlaygroundGraphTest(unittest.TestCase):
         prompt = json.loads(create.call_args.kwargs["messages"][-1]["content"])
         self.assertEqual(prompt["latest_request"], request["latest_request"])
         self.assertIn("exactly 1", prompt["internal_validation"]["issues"][0]["issue"])
+        asyncio.run(_validated_decision('{"reply":', client, {}, request, context))
+        truncated = json.loads(create.call_args.kwargs["messages"][-1]["content"])
+        self.assertNotIn("rejected_draft", truncated["internal_validation"])
         create.reset_mock()
         self.assertEqual(asyncio.run(_validated_decision(correct, client, {}, request, context)), decision)
         create.assert_not_awaited()

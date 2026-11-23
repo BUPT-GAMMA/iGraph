@@ -10,6 +10,7 @@ import re
 import httpx
 from datetime import datetime, timezone
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, StringConstraints, ValidationError, ValidationInfo, model_validator
 
@@ -200,6 +201,14 @@ def _planner_messages(context):
             {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
 
 
+def _planner_options(model, base_url):
+    options = {"model": model, "max_completion_tokens": 5200, "response_format": {"type": "json_object"}}
+    if model == "deepseek-v4-flash-0731-ga" and urlsplit(base_url).hostname in {"tokensave.pro", "api.deepseek.com"}:
+        # This endpoint counts reasoning tokens against the JSON completion budget.
+        options.update(max_completion_tokens=8192, extra_body={"thinking": {"type": "disabled"}})
+    return options
+
+
 def _reply_prefix(raw):
     # Only expose the user-facing JSON string; incomplete escapes and the schema stay private.
     match = re.match(r'^\s*(?:```(?:json)?\s*)?\{\s*"reply"\s*:\s*"((?:[^"\\]|\\.)*)', raw, re.S | re.I)
@@ -237,7 +246,7 @@ async def plan_events(uid, req):
                "confirmable": req.confirmable, "history": req.history}
     try:
         async with asyncio.timeout(155), AsyncOpenAI(api_key=key, base_url=url, timeout=150, max_retries=0) as client:
-            options = {"model": model, "max_completion_tokens": 5200, "response_format": {"type": "json_object"}}
+            options = _planner_options(model, url)
             stream = await client.chat.completions.create(messages=_planner_messages(context), stream=True, **options)
             raw = last = ""
             async with stream:
@@ -275,8 +284,11 @@ async def _validated_decision(raw, client, options, context, validation):
     try:
         return parse(raw)
     except ValidationError as exc:
-        issues = [{"field": e["loc"], "issue": e["msg"]} for e in exc.errors(include_input=False)[:6]]
-    correction = {**context, "internal_validation": {"issues": issues, "rejected_draft": raw}}
+        errors = exc.errors(include_input=False)
+        feedback = {"issues": [{"field": e["loc"], "issue": e["msg"]} for e in errors[:6]]}
+        if all(e["type"] != "json_invalid" for e in errors):
+            feedback["rejected_draft"] = raw
+    correction = {**context, "internal_validation": feedback}
     repaired = await client.chat.completions.create(**options, messages=_planner_messages(correction))
     content = repaired.choices[0].message.content if repaired.choices else None
     try:
