@@ -23,7 +23,7 @@ def backend(tmp_path, monkeypatch):
             return {'remote_graph': None}
         return {'success': True}
     monkeypatch.setattr(module.ServiceClient, 'request', request)
-    config = replace(BackendConfig.from_env(), supported_ids_file=tmp_path / 'ids.txt')
+    config = replace(BackendConfig.from_env(), supported_ids_file=tmp_path / 'ids.txt', auth_enabled=False)
     with TestClient(module.create_app(config)) as client:
         yield client, calls
 

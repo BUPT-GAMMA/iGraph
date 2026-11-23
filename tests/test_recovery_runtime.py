@@ -235,7 +235,8 @@ def test_real_factory_background_run_replays_through_public_backend(database, tm
                 yield Response()
 
         config = replace(BackendConfig.from_env(), users_file=tmp_path / 'users.json', projects_file=tmp_path / 'projects.json',
-                         supported_ids_file=tmp_path / 'missing-seed.txt', custom_models_file=tmp_path / 'models.json')
+                         supported_ids_file=tmp_path / 'missing-seed.txt', custom_models_file=tmp_path / 'models.json',
+                         auth_enabled=False)
         UserDirectory(config.users_file, config.supported_ids_file, 'admin').save(UserRecord(user_id='admin', roles=['admin']))
         monkeypatch.setattr(backend_app, 'ServiceClient', LoopbackServiceClient)
         bff = backend_app.create_app(config)

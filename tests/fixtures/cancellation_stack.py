@@ -102,7 +102,8 @@ async def cancellation_stack(root: Path, url: str, *, learning=False, training_e
         # exercised. Keep this setup budget separate from the tests' bounded
         # cancellation/exit assertions.
         config = replace(BackendConfig.from_env(), agent_runtime_url=url + '/runtime', graph_engine_url=url + '/graph',
-                         request_timeout=request_timeout, stream_timeout=120, supported_ids_file=root / 'unused.txt')
+                         request_timeout=request_timeout, stream_timeout=120, supported_ids_file=root / 'unused.txt',
+                         auth_enabled=False)
         users = UserDirectory(config.users_file, config.supported_ids_file, 'admin')
         users.save(UserRecord(user_id='admin', roles=['admin']))
         users.save(UserRecord(user_id='alice', roles=[]))
