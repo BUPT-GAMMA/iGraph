@@ -94,16 +94,19 @@ class PlaygroundGraphTest(unittest.TestCase):
         create = AsyncMock(return_value=reply)
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
         context = {"tools": planner_tool_catalog({}), "question_count": 1}
-        decision = asyncio.run(_validated_decision(wrong, client, {}, [], context))
+        request = {"latest_request": "One question about teams."}
+        decision = asyncio.run(_validated_decision(wrong, client, {}, request, context))
         self.assertEqual(len(decision.plan.questions), 1)
         create.assert_awaited_once()
-        self.assertIn("exactly 1", create.call_args.kwargs["messages"][-1]["content"])
+        prompt = json.loads(create.call_args.kwargs["messages"][-1]["content"])
+        self.assertEqual(prompt["latest_request"], request["latest_request"])
+        self.assertIn("exactly 1", prompt["internal_validation"]["issues"][0]["issue"])
         create.reset_mock()
-        self.assertEqual(asyncio.run(_validated_decision(correct, client, {}, [], context)), decision)
+        self.assertEqual(asyncio.run(_validated_decision(correct, client, {}, request, context)), decision)
         create.assert_not_awaited()
         reply.choices[0].message.content = wrong
         with self.assertRaises(ValidationError):
-            asyncio.run(_validated_decision(wrong, client, {}, [], context))
+            asyncio.run(_validated_decision(wrong, client, {}, request, context))
         create.assert_awaited_once()
 
     def test_stream_only_exposes_visible_reply(self):

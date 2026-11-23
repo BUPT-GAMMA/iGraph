@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import random
 import re
@@ -16,6 +17,8 @@ from execution_protocol import service_headers
 from graph_data_service.construction import ConstructionError, _atomic_json, validate_graph
 from graph_data_service.construction_questions import question_provider_error
 from graph_data_service.tool_catalog import INTERNAL_TOOLS, get_all_public_tools
+
+log = logging.getLogger(__name__)
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=72)]
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
@@ -150,8 +153,15 @@ has not asked to change. Ask one targeted clarification when the scenario is too
 a concrete plan immediately. Follow the user's requested question count and topics exactly, including on
 the first turn. On revisions preserve the count unless the user asks to change it. Use four only when
 the user gives no number or specific list and there is no existing proposal. Each must be answerable with
-the proposed entity and edge types, properties and synthetic topology. The tools object describes the full
-iGraph catalog. Pick the most specific registered tool for each question (e.g. get_node_type_counts for
+the proposed entity and edge types, properties and synthetic topology. Start from the decision the user
+is trying to make. Phrase each question in their domain language so it is clear who or what is affected and
+why an answer matters. Pick a tool after choosing the question. Include a topology metric only if its
+meaning follows from these particular relationship types and directions. Never translate a structural
+measure into observed volume, travel time, capacity, cost or causation without data for that quantity.
+Respect explicitly missing data and the supplied relationship directions. Do not invent new links, fields
+or past observations to make a favorite algorithm fit. Frame unverified alternatives as candidates, identify
+missing prerequisites or ask for clarification. Do not pad a proposal with generic network statistics.
+The tools object describes the full iGraph catalog. Pick the most specific registered tool (e.g. get_node_type_counts for
 counts by type). Select tools according to the user's goal, including graph learning, finance, construction,
 visualization, reporting and graph algorithms when their inputs exist. Use required parameters and modes
 to check feasibility. For a report include prior analysis. For learning or domain tools ensure the sample
@@ -164,8 +174,11 @@ Use action confirm ONLY when confirmable is true and the latest user explicitly 
 graph now. An instruction to proceed with this version or to make the example now is approval; never ask twice.
 Questions about building, hypothetical statements, negations, deferrals and requests for revisions
 are not confirmation. If a turn changes the plan, propose the changed plan for approval first.
-Output one JSON object with reply FIRST, then action (clarify/propose/confirm), then plan (null unless propose).
-Reply is a short conversational message; the UI displays the question list separately. Do not claim to have built a graph.
+Return one JSON object matching output_schema, with reply FIRST, then action (clarify/propose/confirm),
+then plan (null unless propose).
+Reply directly to latest_request. The UI displays the question list separately. If internal_validation is
+present, use it privately to replace the rejected draft. The user has not seen that draft. Do not mention
+schema errors, retries or corrections to it. Do not claim to have built a graph.
 A plan has title, summary, questions [{zh,en,tool}], entities [{type,examples,share,properties}],
 relations [{type,source,target,pattern,properties}]. Give each question equivalent zh and en text and exactly one
 registered tool name. When a question refers to a named node, copy its literal example name in BOTH
@@ -180,6 +193,11 @@ appropriate. Do not require real identities, uploads, or any data unavailable in
 
 def _event(**data):
     return json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def _planner_messages(context):
+    return [{"role": "system", "content": SYSTEM},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
 
 
 def _reply_prefix(raw):
@@ -213,15 +231,14 @@ async def plan_events(uid, req):
         return
     tools = planner_tool_catalog(agent_tools)
     validation = {"tools": tools, "question_count": requested_question_count(req.message)}
-    context = {**validation, "ui_language": req.language, "latest_request": req.message,
+    context = {**validation, "output_schema": Decision.model_json_schema(), "ui_language": req.language,
+               "latest_request": req.message,
                "previous": req.previous.model_dump() if req.previous else None,
                "confirmable": req.confirmable, "history": req.history}
-    messages = [{"role": "system", "content": SYSTEM},
-                {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
     try:
         async with asyncio.timeout(155), AsyncOpenAI(api_key=key, base_url=url, timeout=150, max_retries=0) as client:
             options = {"model": model, "max_completion_tokens": 5200, "response_format": {"type": "json_object"}}
-            stream = await client.chat.completions.create(messages=messages, stream=True, **options)
+            stream = await client.chat.completions.create(messages=_planner_messages(context), stream=True, **options)
             raw = last = ""
             async with stream:
                 async for chunk in stream:
@@ -235,7 +252,7 @@ async def plan_events(uid, req):
                     if reply and reply != last and len(reply) <= 1600:
                         last = reply
                         yield _event(reply=reply)
-            decision = await _validated_decision(raw, client, options, messages, validation)
+            decision = await _validated_decision(raw, client, options, context, validation)
             if decision.action == "confirm" and not (req.previous and req.confirmable):
                 raise ValueError("No proposal to build")
             yield _event(decision=decision.model_dump(), model_name=model)
@@ -248,7 +265,7 @@ async def plan_events(uid, req):
         yield _event(error=code if code != "QUESTION_GENERATION_FAILED" else "PLAYGROUND_MODEL_FAILED")
 
 
-async def _validated_decision(raw, client, options, messages, validation):
+async def _validated_decision(raw, client, options, context, validation):
     def parse(content):
         if len(content) > 48000:
             raise ValueError("Oversize decision")
@@ -259,11 +276,16 @@ async def _validated_decision(raw, client, options, messages, validation):
         return parse(raw)
     except ValidationError as exc:
         issues = [{"field": e["loc"], "issue": e["msg"]} for e in exc.errors(include_input=False)[:6]]
-    feedback = "Correct the JSON proposal. Preserve the user's topics and requested count. Validation: " + json.dumps(issues)
-    repaired = await client.chat.completions.create(**options, messages=[
-        *messages, {"role": "assistant", "content": raw}, {"role": "user", "content": feedback}])
+    correction = {**context, "internal_validation": {"issues": issues, "rejected_draft": raw}}
+    repaired = await client.chat.completions.create(**options, messages=_planner_messages(correction))
     content = repaired.choices[0].message.content if repaired.choices else None
-    return parse(content or "")
+    try:
+        return parse(content or "")
+    except ValidationError as exc:
+        errors = [(e["loc"][:3], e["type"]) for e in exc.errors(include_input=False)[:6]]
+        log.warning("Invalid Playground plan after repair: %s; finish=%s", errors,
+                    getattr(repaired.choices[0], "finish_reason", None) if repaired.choices else None)
+        raise
 
 
 def expand_graph(plan: Scenario, seed: str):
