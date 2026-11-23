@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import HTTPException
-from backend.playground import ScenarioStore, Turn, defers_build
+from backend.playground import ScenarioStore, Turn, permits_build
 from backend.playground_context import HISTORY_CHARS, planning_history
 from backend.projects import ProjectDirectory
 from backend.project_datasets import ProjectDatasetDirectory
@@ -13,11 +13,14 @@ from backend.project_datasets import ProjectDatasetDirectory
 class PlaygroundStoreTest(unittest.TestCase):
     def test_free_form_build_and_deferral_intent(self):
         for message in ("这两道题就定了，请按这个方案现在把示例图建出来吧。", "可以了，按这个版本建图",
-                        "没问题，直接生成示例图吧", "不用再调整问题了，请开始构图", "Looks good, go ahead and build it."):
-            self.assertFalse(defers_build(message), message)
+                        "没问题，直接生成示例图吧", "不用再调整问题了，请开始构图", "Looks good, go ahead and build it.",
+                        "就按这个方案开始吧", "Looks good, go ahead."):
+            self.assertTrue(permits_build(message), message)
         for message in ("先不要构图，再调整问题", "如果我说开始构图会发生什么？", "请先删除最后一个问题再生成图",
-                        "Don't build the graph yet", "After I approve, build the graph"):
-            self.assertTrue(defers_build(message), message)
+                        "Don't build the graph yet", "After I approve, build the graph",
+                        "请把项目名字定为社区供书保障演练，给我看最终方案，两道问题按我们商量的范围。",
+                        "Show me the final proposal.", "请把第二题改为供货问题，然后开始构图。", "解释一下构图"):
+            self.assertFalse(permits_build(message), message)
 
     def test_context_remains_scoped_and_an_interrupted_revision_cannot_build_the_old_plan(self):
         with tempfile.TemporaryDirectory() as tmp:

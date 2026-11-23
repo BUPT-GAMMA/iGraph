@@ -287,7 +287,11 @@ def _event(**data):
 
 
 def _planner_messages(context):
-    return [{"role": "system", "content": SYSTEM},
+    instructions = SYSTEM
+    if context.get("confirmable") is False:
+        instructions += ("\nThis is a design turn. Only propose or clarify is available. Apply the user's edits "
+                         "and show the proposal when they ask to review it. Publication is unavailable on this turn.")
+    return [{"role": "system", "content": instructions},
             {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
 
 
@@ -398,6 +402,8 @@ async def plan_events(uid, req):
     displayed = [getattr(q, req.language) for q in req.previous.questions] if req.previous else []
     previous = req.previous.model_dump() if req.previous else None
     schema = Decision.model_json_schema()
+    if not req.confirmable:
+        schema["properties"]["action"]["enum"] = ["clarify", "propose"]
     if previous:
         # Omitting a field on revision retains its validated previous value.
         schema["$defs"]["Scenario"].pop("required", None)

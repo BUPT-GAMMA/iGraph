@@ -35,11 +35,25 @@ DEFER_BUILD = re.compile(
     r"调整|修改|改成|改为|换成|换个|替换|增加|添加|删除|去掉|删掉|补充|"
     r"\b(?:if|when|once|after|before|until|wait|maybe|later|instead|unless|without|change|replace|revise|add|remove|why|how|whether|not)\b|n['’]t\b",
     re.I)
+BUILD_INTENT = re.compile(
+    r"(?:开始|直接|现在|请|可以|就|照此|帮我|按.{1,12}).{0,18}"
+    r"(?:(?:构建|创建|生成|绘制|搭建|画|建|构).{0,7}图|图.{0,5}(?:建|构|生成|画))|"
+    r"^\s*(?:构图|建图|生成示例图|开建)(?:吧|好了|即可|就行)?[！!。\s]*$|"
+    r"^(?:就|请)?按(?:这个|当前|这版)(?:方案|版本)?(?:开始|生成|建起来)(?:吧|了)?[！!。\s]*$|"
+    r"(?:没问题|确认|定了|可以了).{0,10}(?:开始|生成|建起来)(?:吧|了|[！!。\s]*$)|"
+    r"\b(?:build|generate|create|construct|draw)\s+(?:(?:the|this|that|a|an|sample|example|demo|scenario)\s+)*(?:graph|network|it)\b|"
+    r"\b(?:go ahead|proceed)\s+(?:and|with)\s+(?:the\s+)?(?:build|construction|graph)\b|"
+    r"^(?:(?:looks good|approved|yes)[,.!\s]+)?(?:go ahead|proceed)(?: now)?[.!\s]*$",
+    re.I)
 
 
 def defers_build(message):
     normalized = re.sub(r"(?:不用|无需|不必|不需要|不再)(?:再)?(?:调整|修改|改动|改|添加|补充)(?:问题)?(?:了)?", "", message)
     return bool(DEFER_BUILD.search(normalized))
+
+
+def permits_build(message):
+    return not defers_build(message) and bool(BUILD_INTENT.search(message))
 
 
 class Turn(BaseModel):
@@ -181,8 +195,9 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
     async def run(uid, doc, req, analysis_model):
         try:
             if not doc["confirmed"]:
+                can_confirm = doc["confirmable"] and permits_build(req.message)
                 payload = {"connection_revision": req.connection_revision, "language": req.language, "message": req.message.strip(),
-                           "previous": doc["plan"], "confirmable": doc["confirmable"] and not defers_build(req.message),
+                           "previous": doc["plan"], "confirmable": can_confirm,
                            "notes": doc.get("notes", []), "tools_reviewed": doc.get("tools_reviewed", False),
                            "history": planning_history(doc["messages"], req.language, bootstrap=not doc.get("notes"))}
                 decision = model_name = None
@@ -220,7 +235,7 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                     store.update(uid, doc, notes=notes, confirmable=False, live_reply="", status="draft",
                                  messages=[*doc["messages"], response])
                     return
-                if action != "confirm" or not doc["confirmable"] or not doc["plan"]:
+                if action != "confirm" or not can_confirm or not doc["plan"]:
                     fail("PLAYGROUND_NEEDS_PLAN")
                 store.update(uid, doc, confirmed=True, status="building", deadline=time.time() + LEASE_SECONDS, live_reply="",
                              messages=[*doc["messages"], response])
