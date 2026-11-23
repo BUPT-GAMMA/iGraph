@@ -17,6 +17,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.construction import sync_record
+from backend.playground_context import planning_history
 from construction_access import scope_headers
 from execution_protocol import service_headers
 
@@ -34,22 +35,11 @@ DEFER_BUILD = re.compile(
     r"调整|修改|改成|改为|换成|换个|替换|增加|添加|删除|去掉|删掉|补充|"
     r"\b(?:if|when|once|after|before|until|wait|maybe|later|instead|unless|without|change|replace|revise|add|remove|why|how|whether|not)\b|n['’]t\b",
     re.I)
-BUILD_COMMAND = re.compile(
-    r"(?:开始|直接|现在|请|可以|就|照此|按.{1,12}|帮我).{0,18}"
-    r"(?:(?:构建|创建|生成|绘制|搭建|画|建|构).{0,7}图|图.{0,5}(?:建|构|生成|画))|"
-    r"(?:构图|建图|生成示例图|开建)(?:吧|好了|即可|就行|[！!。\s]*$)|"
-    r"(?:没问题|确认|定了|可以了).{0,10}(?:开始|生成|建起来)(?:吧|了|[！!。\s]*$)|"
-    r"\b(?:build|generate|create|construct|draw)\s+(?:(?:the|this|that|a|an|sample|example|demo|scenario)\s+)*(?:graph|network|it)\b|"
-    r"\b(?:go ahead|proceed)\s+(?:and|with)\s+(?:the\s+)?(?:build|construction|graph)\b", re.I)
 
 
 def defers_build(message):
     normalized = re.sub(r"(?:不用|无需|不必|不需要|不再)(?:再)?(?:调整|修改|改动|改|添加|补充)(?:问题)?(?:了)?", "", message)
     return bool(DEFER_BUILD.search(normalized))
-
-
-def approves_current_plan(message):
-    return not defers_build(message) and bool(BUILD_COMMAND.search(message))
 
 
 class Turn(BaseModel):
@@ -97,7 +87,7 @@ class ScenarioStore:
             return None
         doc = json.loads(row[0])
         if doc["status"] in IN_PROGRESS and time.time() > doc.get("deadline", 0):
-            doc.update(status="failed", live_reply="", error="PLAYGROUND_INTERRUPTED")
+            doc.update(status="failed", confirmable=doc["confirmed"], live_reply="", error="PLAYGROUND_INTERRUPTED")
             self._save(db, uid, doc)
         return doc
 
@@ -129,8 +119,9 @@ class ScenarioStore:
                 return doc, False
             if doc["revision"] != req.revision or doc["status"] in IN_PROGRESS or doc["result"]:
                 fail("PLAYGROUND_CHANGED")
-            explicit = (req.confirm or message.casefold().strip("。.!！ ") in CONFIRM
-                        or doc["confirmable"] and approves_current_plan(message))
+            # Free-form messages may revise the scope and ask to build in the same sentence.
+            # Let the planner resolve those against the conversation before authorizing publication.
+            explicit = req.confirm or message.casefold().strip("。.!！ ") in CONFIRM
             if (explicit or doc["confirmed"]) and not doc["confirmable"]:
                 fail("PLAYGROUND_NEEDS_PLAN")
             if not (doc["status"] == "failed" and doc["messages"][-1]["text"] == message):
@@ -192,8 +183,10 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
             if not doc["confirmed"]:
                 payload = {"connection_revision": req.connection_revision, "language": req.language, "message": req.message.strip(),
                            "previous": doc["plan"], "confirmable": doc["confirmable"] and not defers_build(req.message),
-                           "history": [{"role": m["role"], "content": m["text"][:1600]} for m in doc["messages"][:-1][-12:]]}
+                           "notes": doc.get("notes", []),
+                           "history": planning_history(doc["messages"], req.language, bootstrap=not doc.get("notes"))}
                 decision = model_name = None
+                notes = doc.get("notes", [])
                 last = 0.0
                 async with asyncio.timeout(175), graph.stream("POST", "/internal/playground/plan",
                         headers=service_headers(uid), json_body=payload) as stream:
@@ -209,6 +202,7 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                         if event.get("decision"):
                             decision = event["decision"]
                             model_name = event["model_name"]
+                            notes = event.get("notes", notes)
                 if not decision:
                     fail("PLAYGROUND_INVALID_REPLY", 502)
                 action = decision["action"]
@@ -216,11 +210,11 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                 if action == "propose":
                     plan = decision["plan"]
                     response["questions"] = plan["questions"]
-                    store.update(uid, doc, plan=plan, plan_model=model_name, confirmable=True, live_reply="",
+                    store.update(uid, doc, plan=plan, plan_model=model_name, notes=notes, confirmable=True, live_reply="",
                                  status="draft", messages=[*doc["messages"], response])
                     return
                 if action == "clarify":
-                    store.update(uid, doc, confirmable=False, live_reply="", status="draft",
+                    store.update(uid, doc, notes=notes, confirmable=False, live_reply="", status="draft",
                                  messages=[*doc["messages"], response])
                     return
                 if action != "confirm" or not doc["confirmable"] or not doc["plan"]:
@@ -236,7 +230,7 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
             if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
                 code = "PLAYGROUND_TIMEOUT"
             log.warning("Playground turn failed turn=%s code=%s error=%s", doc["turn_id"], code, type(exc).__name__)
-            store.update(uid, doc, status="failed", live_reply="", error=code)
+            store.update(uid, doc, status="failed", confirmable=doc["confirmed"], live_reply="", error=code)
 
     @app.get("/api/playground")
     def list_scenarios(request: Request):

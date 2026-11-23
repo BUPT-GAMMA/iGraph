@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, StringConstraints, ValidationError, ValidationInfo, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, StringConstraints, ValidationError, ValidationInfo, model_validator
 
+from backend.playground_context import MAX_NOTES, ContextUpdate, ScenarioNote
 from execution_protocol import service_headers
 from graph_data_service.construction import ConstructionError, _atomic_json, validate_graph
 from graph_data_service.construction_questions import question_provider_error
@@ -102,14 +103,25 @@ class Decision(BaseModel):
     reply: str = Field(min_length=1, max_length=1600)
     action: Literal["clarify", "propose", "confirm"]
     plan: Scenario | None = None
+    context_update: ContextUpdate | None = None
+    _notes: list[ScenarioNote] = PrivateAttr(default_factory=list)
 
     @model_validator(mode="after")
     def check_action(self, info: ValidationInfo):
         if (self.action == "propose") != (self.plan is not None):
             raise ValueError("Return a plan only for a proposal")
-        count = (info.context or {}).get("question_count")
+        validation = info.context or {}
+        count = validation.get("question_count")
         if self.plan and count is not None and len(self.plan.questions) != count:
             raise ValueError(f"The user requested exactly {count} questions")
+        if "notes" in validation:
+            if self.context_update is None:
+                raise ValueError("Return context_update with retire and remember lists")
+            if self.action == "confirm" and (self.context_update.retire or self.context_update.remember):
+                raise ValueError("Show a revised proposal before building if the scenario changed")
+            self._notes = self.context_update.apply(validation["notes"], validation["user_messages"])
+            if self.action == "propose" and not self._notes:
+                raise ValueError("Record the user's scenario goal with an exact supporting quote")
         return self
 
 
@@ -120,6 +132,7 @@ class PlanRequest(BaseModel):
     history: list[dict[str, str]] = Field(max_length=12)
     previous: Scenario | None = None
     confirmable: bool = False
+    notes: list[ScenarioNote] = Field(default_factory=list, max_length=MAX_NOTES)
 
 
 _COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
@@ -175,14 +188,27 @@ Use action confirm ONLY when confirmable is true and the latest user explicitly 
 graph now. An instruction to proceed with this version or to make the example now is approval; never ask twice.
 Questions about building, hypothetical statements, negations, deferrals and requests for revisions
 are not confirmation. If a turn changes the plan, propose the changed plan for approval first.
+active_notes is this conversation's durable working memory. Integrate it with the latest request, the
+numbered questions in history and the previous plan. A user's later correction overrides older input.
+For every action return context_update {retire:[existing note IDs], remember:[{kind,text,quote}]}.
+Keep unchanged notes implicitly. Record the user's business goals, actual data and relationship directions,
+missing data, constraints, and explicit choices about questions, including rejected topics and what replaced
+them. Resolve "the second question" against the displayed proposal and name its topic in the note. Use a
+short exact quote from the latest user request as evidence, preserving its language and punctuation. On
+the first memory update, quotes may also come from supplied earlier user turns. Do not record invented
+sample data, assistant suggestions, or instructions to build as user facts. Retire superseded notes. On
+a change of scenario, retire facts that no longer apply. Consolidate within 32 notes. Empty lists express
+no change. For confirm both lists must be empty. Ground the actual proposed questions and graph in the
+updated facts. Do not revive an excluded topic unless the user explicitly brings it back.
 Return one JSON object matching output_schema, with reply FIRST, then action (clarify/propose/confirm),
-then plan (null unless propose).
+then plan (null unless propose) and context_update. Keep this working memory private.
 Reply directly to latest_request. The UI displays the question list separately. If internal_validation is
 present, use it privately to replace the rejected draft. The user has not seen that draft. Do not mention
 schema errors, retries or corrections to it. Do not claim to have built a graph.
 A plan has title, summary, questions [{zh,en,tool}], entities [{type,examples,share,properties}],
 relations [{type,source,target,pattern,properties}]. Give each question equivalent zh and en text and exactly one
-registered tool name. When a question refers to a named node, copy its literal example name in BOTH
+registered tool name. Every question object must have the three literal keys "zh", "en" and "tool",
+even when the conversation uses a single language. When a question refers to a named node, copy its literal example name in BOTH
 languages so users can find the same node. Source/target must exactly match entity types. Choose meaningful
 business relation names. Examples are 2–8 distinct fictional node names per type. Share is an integer
 from 1 to 100 giving the relative number of nodes in a 100-node
@@ -239,8 +265,13 @@ async def plan_events(uid, req):
         yield _event(error="MODEL_UNAVAILABLE")
         return
     tools = planner_tool_catalog(agent_tools)
-    validation = {"tools": tools, "question_count": requested_question_count(req.message)}
-    context = {**validation, "output_schema": Decision.model_json_schema(), "ui_language": req.language,
+    user_messages = [req.message]
+    if not req.notes:
+        user_messages.extend(m["content"] for m in req.history if m["role"] == "user")
+    count = requested_question_count(req.message)
+    validation = {"tools": tools, "question_count": count, "notes": req.notes, "user_messages": user_messages}
+    context = {"tools": tools, "question_count": count, "output_schema": Decision.model_json_schema(), "ui_language": req.language,
+               "active_notes": [dict(id=i, **note.model_dump()) for i, note in enumerate(req.notes, 1)],
                "latest_request": req.message,
                "previous": req.previous.model_dump() if req.previous else None,
                "confirmable": req.confirmable, "history": req.history}
@@ -264,7 +295,8 @@ async def plan_events(uid, req):
             decision = await _validated_decision(raw, client, options, context, validation)
             if decision.action == "confirm" and not (req.previous and req.confirmable):
                 raise ValueError("No proposal to build")
-            yield _event(decision=decision.model_dump(), model_name=model)
+            yield _event(decision=decision.model_dump(exclude={"context_update"}), model_name=model,
+                         notes=[note.model_dump() for note in decision._notes])
     except ValueError:
         yield _event(error="PLAYGROUND_INVALID_REPLY")
     except TimeoutError:
@@ -294,7 +326,8 @@ async def _validated_decision(raw, client, options, context, validation):
     try:
         return parse(content or "")
     except ValidationError as exc:
-        errors = [(e["loc"][:3], e["type"]) for e in exc.errors(include_input=False)[:6]]
+        errors = [(e["loc"][:4] if e["loc"][:2] == ("plan", "questions") else e["loc"][:3], e["type"])
+                  for e in exc.errors(include_input=False)[:6]]
         log.warning("Invalid Playground plan after repair: %s; finish=%s", errors,
                     getattr(repaired.choices[0], "finish_reason", None) if repaired.choices else None)
         raise
