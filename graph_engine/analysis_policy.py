@@ -6,6 +6,7 @@ matching the existing tool contract. Unreviewed algorithms reject multigraphs.
 
 import math
 from numbers import Real
+from graph_engine.extended_tools import EXTENDED_RETRIEVAL_NAMES, EXTENDED_THEORY_NAMES
 
 
 def numeric_weight(value):
@@ -18,6 +19,8 @@ def numeric_weight(value):
 
 
 MULTIGRAPH_POLICIES = {
+    **{name: 'native' for name in EXTENDED_RETRIEVAL_NAMES},
+    **{name: 'unsupported' for name in EXTENDED_THEORY_NAMES},
     'shortest_path': 'minimum_weight_per_pair',
     'all_shortest_paths': 'minimum_weight_per_pair',
     'maximum_flow': 'sum_weights_per_pair',

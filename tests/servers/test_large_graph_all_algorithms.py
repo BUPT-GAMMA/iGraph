@@ -8,6 +8,7 @@ import networkx as nx
 import pytest
 
 from graph_data_service.compute import GraphCompute, NX_TOOL_NAMES
+from graph_engine.extended_tools import EXTENDED_TOOL_NAMES
 from graph_data_service.large_graph.algorithms import LargeGraphAlgorithms
 from graph_data_service.large_graph.compatibility import (
     LARGE_GRAPH_ALGORITHM_NAMES,
@@ -114,7 +115,7 @@ def _large_kernel_summary(
         ).run(algorithm, parameters)["summary"]
 
 
-def test_every_small_graph_algorithm_has_large_path_capability(tmp_path: Path) -> None:
+def test_partitioned_algorithms_and_bounded_only_extensions_are_explicit(tmp_path: Path) -> None:
     router = ComputeRouter(
         ResourceManager(tmp_path, memory_reserve_ratio=0, disk_reserve_bytes=0)
     )
@@ -131,9 +132,11 @@ def test_every_small_graph_algorithm_has_large_path_capability(tmp_path: Path) -
         if callable(getattr(GraphCompute, name, None))
     } - non_algorithm_methods
 
-    assert public_graph_compute_algorithms == NX_TOOL_NAMES
-    assert NX_TOOL_NAMES == set(SMALL_GRAPH_ALGORITHM_MODES)
-    assert NX_TOOL_NAMES == LargeGraphAlgorithms.SUPPORTED
+    partitioned_tools = NX_TOOL_NAMES - EXTENDED_TOOL_NAMES
+    assert public_graph_compute_algorithms == partitioned_tools
+    assert partitioned_tools == set(SMALL_GRAPH_ALGORITHM_MODES)
+    assert partitioned_tools == LargeGraphAlgorithms.SUPPORTED
+    assert not EXTENDED_TOOL_NAMES & LargeGraphAlgorithms.SUPPORTED
     assert set(router.capabilities) == LARGE_GRAPH_ALGORITHM_NAMES
     assert SMALL_GRAPH_CONCRETE_ALGORITHM_COUNT == 109
     assert all(
@@ -145,7 +148,7 @@ def test_every_small_graph_algorithm_has_large_path_capability(tmp_path: Path) -
         ["algorithm"]["enum"]
     ) == LARGE_GRAPH_ALGORITHM_NAMES
 
-    for algorithm in NX_TOOL_NAMES:
+    for algorithm in partitioned_tools:
         assert callable(getattr(LargeGraphAlgorithms, algorithm, None)), algorithm
         modes = SMALL_GRAPH_ALGORITHM_MODES[algorithm]
         if not modes:

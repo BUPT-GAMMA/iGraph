@@ -34,6 +34,7 @@ from graph_data_service.data_pipeline import GraphBuilder
 from graph_data_service.dataset_registry import DatasetRegistry
 from graph_data_service.reporting import build_analysis_report
 from graph_data_service.tool_catalog import GRAPH_ML_TOOLS, REPORTING_TOOLS, get_all_public_tools
+from graph_engine.extended_tools import EXTENDED_TOOL_NAMES, extended_size_error, validate_extended_arguments
 from graph_data_service.codec import (
     edge_type_values_for_graph,
     graph_ml_readiness_for_graph,
@@ -4346,6 +4347,18 @@ class GraphDataService:
 
     def _route_large_graph_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any], user_id: str):
         """Choose a representation before any legacy executor can materialise it."""
+        if tool_name in EXTENDED_TOOL_NAMES:
+            try:
+                validate_extended_arguments(tool_name, arguments)
+            except ValueError as exc:
+                return {"success": False, "code": "INVALID_ARGUMENT", "tool": tool_name, "error": str(exc)}
+            session = self.get_required(session_id, user_id=user_id)
+            # Reject unsupported representations before materializing topology.
+            if session.is_remote:
+                return {"success": False, "code": "EXTENDED_TOOL_LOCAL_GRAPH_REQUIRED", "tool": tool_name,
+                        "error": "此工具当前仅支持本地内存图；Nebula/分区图没有对应执行实现。"}
+            summary = session.graph_summary()
+            return extended_size_error(tool_name, summary.num_nodes, summary.num_edges)
         if tool_name in NX_TOOL_NAMES:
             session = self.get_required(session_id, user_id=user_id)
             graph_summary = session.graph_summary()
