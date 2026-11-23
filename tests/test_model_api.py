@@ -19,6 +19,7 @@ from agent_runtime.execution_store import ExecutionStore, ControlError
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     monkeypatch.setenv('IGRAPH_CONTROL_SERVICE_KEY', 'model-api-test-only')
+    monkeypatch.setenv('IGRAPH_ADMIN_USER_ID', 'alice')
     monkeypatch.setenv('QWEN_API_KEY', 'deployment-secret')
     monkeypatch.setenv('QWEN_BASE_URL', 'https://test.example/v1')
     store = ExecutionStore(create_engine(f'sqlite:///{tmp_path}/controls.db', connect_args={'check_same_thread': False}))
@@ -206,5 +207,6 @@ def test_default_credentials_are_owned_by_each_user_and_not_cached(api):
     assert response.status_code == 200 and response.json()['api_key'] == 'deployment-secret'
     assert response.headers['cache-control'] == 'no-store'
     catalog.bootstrap('bob', ['qwen3.6-plus'], is_admin=True)
+    assert all(p['base_url'] != 'https://test.example/v1' for p in catalog.list_providers('bob')['providers'])
     denied = client.get(path, headers={'X-User-ID': 'bob'})
     assert denied.status_code == 404 and 'deployment-secret' not in denied.text
