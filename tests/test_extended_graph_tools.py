@@ -100,6 +100,10 @@ def test_triangle_clustering_core_and_onion_answers():
     triangles = run("triangle_count", graph)
     assert triangles["triangle_count"] == 1
     assert scores(triangles) == {"A": 1, "B": 1, "C": 1, "D": 0}
+    page = run("triangle_count", graph, limit=1, offset=3)
+    assert scores(page) == {"D": 0} and page["truncated"]
+    assert page["count_scope"] == "full_graph"
+    assert page["sum_of_node_triangle_counts"] == 3 * page["triangle_count"] == 3
     assert scores(run("node_clustering", graph))["C"] == pytest.approx(1 / 3)
     assert scores(run("core_numbers", graph)) == {"A": 2, "B": 2, "C": 2, "D": 1}
     assert scores(run("onion_layers", graph)) == {"A": 2, "B": 2, "C": 2, "D": 1}

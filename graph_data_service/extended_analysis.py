@@ -153,7 +153,9 @@ def _hits(graph):
 def _theory(name, graph, a):
     if name == "triangle_count":
         values = nx.triangles(graph)
-        return {**_scores(values, a), "triangle_count": sum(values.values()) // 3}
+        memberships = sum(values.values())
+        return {**_scores(values, a), "triangle_count": memberships // 3,
+                "sum_of_node_triangle_counts": memberships, "count_scope": "full_graph"}
     functions = {"node_clustering": nx.clustering, "square_clustering": nx.square_clustering,
                  "core_numbers": nx.core_number, "onion_layers": nx.onion_layers,
                  "structural_constraint": nx.constraint, "effective_size": nx.effective_size}
