@@ -1,4 +1,4 @@
-type IconName = 'key' | 'log-out' | 'refresh' | 'eye' | 'eye-off' | 'list-check' | 'star' | 'pulse' | 'schema' | 'arrow-left' | 'info' | 'tool' | 'message' | 'pin' | 'plus' | 'search' | 'project' | 'folder' | 'folder-open' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'graph-create' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
+type IconName = 'key' | 'log-out' | 'refresh' | 'eye' | 'eye-off' | 'list-check' | 'star' | 'pulse' | 'schema' | 'arrow-left' | 'info' | 'tool' | 'message' | 'pin' | 'plus' | 'search' | 'compass' | 'project' | 'folder' | 'folder-open' | 'spark' | 'database' | 'settings' | 'moon' | 'sun' | 'send' | 'upload' | 'panel' | 'panel-left-open' | 'panel-left-close' | 'panel-right-open' | 'panel-right-close' | 'graph' | 'graph-create' | 'table' | 'cube' | 'file' | 'trash' | 'close' | 'check' | 'chevron' | 'copy' | 'edit' | 'move' | 'more' | 'arrow-right';
 
 export function BrandLogo() {
   return <><img className="brand-logo brand-logo-light" src="/figures/igraph_light.png" alt="" aria-hidden="true" /><img className="brand-logo brand-logo-dark" src="/figures/igraph_dark.png" alt="" aria-hidden="true" /></>;
@@ -22,6 +22,13 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     message: <><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-1 1v-9.5A8.5 8.5 0 0 1 11.5 3h1a8.5 8.5 0 0 1 8.5 8.5Z" /><path d="M7 9h10M7 13h7" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
     search: <><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></>,
+    compass: <>
+      <circle cx="12" cy="12" r="9.5" />
+      <g transform="rotate(38 12 12)">
+        <path d="M12 5.25 15 12l-3 6.75L9 12Z" fill="currentColor" fillOpacity=".12" strokeWidth="1.5" />
+        <path d="M12 5.25 15 12H9Z" fill="currentColor" stroke="none" />
+      </g>
+    </>,
     project: <><circle cx="6" cy="12" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="18" cy="18" r="2" /><path d="m8 11 8-4M8 13l8 4" /></>,
     folder: <><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-11Z" /></>,
     'folder-open': <><path d="M3 16.5v-10A1.5 1.5 0 0 1 4.5 5H9l2 2h7.5A1.5 1.5 0 0 1 20 8.5V10" /><path d="M4.3 19h14.4a1.5 1.5 0 0 0 1.44-1.08L22 11.5H7.1a1.5 1.5 0 0 0-1.43 1.05L3 19Z" /></>,

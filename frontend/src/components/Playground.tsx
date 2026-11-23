@@ -158,7 +158,7 @@ export function Playground({ onConnectionSaved, onPending, onReady, onOpen }: Pr
   const result = scene.result;
   return <section className="playground" aria-label={t('Playground', '场景广场')}>
     <header className="playground-head">
-      <span className="playground-mark"><Icon name="project" size={22} /></span>
+      <span className="playground-mark"><Icon name="compass" size={22} /></span>
       <h1>{t('Playground', '场景广场')}</h1>
       <div className="playground-history">
         {connection?.configured && <button type="button" className="secondary-command" disabled={busy} onClick={() => setConnectionOpen(open => !open)} aria-expanded={connectionOpen}><Icon name="settings" size={15} />{t('Model connection', '模型连接')}</button>}
@@ -176,7 +176,7 @@ export function Playground({ onConnectionSaved, onPending, onReady, onOpen }: Pr
         {connectionError && <div role="alert">{t('Could not load the model connection.', '模型连接配置加载失败。')} <button type="button" className="text-button" onClick={() => setConnectionLoad(n => n + 1)}>{t('Retry', '重试')}</button></div>}
         {connection && (!connection.configured || connectionOpen) && <PlaygroundConnectionForm key={connection.revision} connection={connection} onSaved={next => { onConnectionSaved?.(); setConnection(next); setConnectionOpen(false); setError(''); }} onCancel={() => setConnectionOpen(false)} />}
         {!scene.messages.length && !loading && connection?.configured && !connectionOpen && <div className="playground-welcome">
-          <span className="playground-mark"><Icon name="project" size={28} /></span>
+          <span className="playground-mark"><Icon name="compass" size={28} /></span>
           <h2>{t('What would you like to explore?', '你想探索什么场景？')}</h2>
           <p>{t('Describe a scenario and shape the questions together. Once you confirm, iGraph will create a project with a 100-node sample graph.', '说说你的场景，和 iGraph 一起调整分析问题。确认后，系统会创建一个带有 100 个模拟节点的项目。')}</p>
           <div className="playground-starters">{[
