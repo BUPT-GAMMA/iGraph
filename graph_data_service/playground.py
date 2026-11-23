@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, PrivateAttr, StringConstraints, ValidationError, ValidationInfo, model_validator
 
-from backend.playground_context import MAX_NOTES, ContextUpdate, ScenarioNote, source_excerpts
+from backend.playground_context import MAX_NOTES, ContextUpdate, ScenarioNote, remember_request, source_excerpts
 from execution_protocol import service_headers
 from graph_data_service.construction import ConstructionError, _atomic_json, validate_graph
 from graph_data_service.construction_questions import question_provider_error
@@ -122,9 +122,29 @@ class Decision(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def inherit_unchanged_plan_fields(cls, value, info: ValidationInfo):
-        previous = (info.context or {}).get("previous")
-        if previous and isinstance(value, dict) and value.get("action") == "propose" and isinstance(value.get("plan"), dict):
-            return {**value, "plan": {**previous, **value["plan"]}}
+        if not isinstance(value, dict):
+            return value
+        validation = info.context or {}
+        previous = validation.get("previous")
+        plan = value.get("plan")
+        if isinstance(plan, dict) and value.get("action") in {"propose", "confirm"}:
+            plan = {**(previous or {}), **plan}
+            if value["action"] == "confirm":
+                edits = value.get("context_update") or {}
+                if (validation.get("can_confirm") and plan == previous and isinstance(edits, dict)
+                        and not edits.get("remember") and not edits.get("retire")):
+                    return {**value, "plan": None}
+                # A changed proposal must be shown before the backend may publish a project.
+                reply = ("Please review the updated questions and confirm when you are ready to build."
+                         if validation.get("language") == "en" else "请查看更新后的问题，确认后即可构图。")
+                value = {**value, "action": "propose", "reply": reply}
+            value = {**value, "plan": plan}
+        if value.get("action") in {"propose", "clarify"} and value.get("context_update") is not None:
+            try:
+                update = ContextUpdate.model_validate(value["context_update"])
+            except ValidationError:
+                update = None
+            value = {**value, "context_update": update}
         return value
 
     @model_validator(mode="after")
@@ -136,14 +156,26 @@ class Decision(BaseModel):
         if self.plan and count is not None and len(self.plan.questions) != count:
             raise ValueError(f"The user requested exactly {count} questions")
         if "notes" in validation:
-            if self.context_update is None:
-                raise ValueError("Return context_update with retire and remember lists")
-            if self.action == "confirm" and (self.context_update.retire or self.context_update.remember):
-                raise ValueError("Show a revised proposal before building if the scenario changed")
-            self._notes = self.context_update.apply(validation["notes"], validation["excerpts"],
-                                                    validation.get("displayed_questions", []))
-            if self.action == "propose" and not self._notes:
-                raise ValueError("Record the user's scenario goal with an exact supporting quote")
+            previous = validation["notes"]
+            if self.action == "confirm":
+                if (not validation.get("can_confirm") or self.context_update
+                        and (self.context_update.retire or self.context_update.remember)):
+                    raise ValueError("The user is revising the scenario. Show a revised proposal before building")
+                self._notes = previous
+            else:
+                notes = None
+                if self.context_update is not None:
+                    try:
+                        notes = self.context_update.apply(previous, validation["excerpts"],
+                                                          validation.get("displayed_questions", []))
+                    except ValueError:
+                        pass
+                current = validation.get("current_excerpts", validation["excerpts"])
+                if notes is None:
+                    notes = remember_request(previous, current)
+                elif not notes and self.action == "propose":
+                    notes = remember_request([], current)
+                self._notes = notes
         return self
 
 
@@ -232,7 +264,8 @@ inherited. If a target is renamed, update its entity examples and affected quest
 lists never mean unchanged. New scenarios require the entire plan.
 Reply directly to latest_request. The UI displays the question list separately. If internal_validation is
 present, use it privately to replace the rejected draft. The user has not seen that draft. Do not mention
-schema errors, retries or corrections to it. Do not claim to have built a graph.
+schema errors, retries or corrections to it. In a proposal, describe the business changes in ordinary
+language and leave tool identifiers to the analysis step. Do not claim to have built a graph.
 A plan has title, summary, questions [{zh,en,tool}], entities [{type,examples,share,properties}],
 relations [{type,source,target,pattern,properties}]. Give each question equivalent zh and en text and exactly one
 registered tool name. Every question object must have the three literal keys "zh", "en" and "tool",
@@ -369,7 +402,8 @@ async def plan_events(uid, req):
         # Omitting a field on revision retains its validated previous value.
         schema["$defs"]["Scenario"].pop("required", None)
     validation = {"tools": tools, "question_count": count, "notes": req.notes, "excerpts": excerpts,
-                  "displayed_questions": displayed, "previous": previous}
+                  "displayed_questions": displayed, "previous": previous, "language": req.language,
+                  "can_confirm": bool(req.previous and req.confirmable), "current_excerpts": source_excerpts([req.message])}
     context = {"tools": tools, "question_count": count, "output_schema": schema, "ui_language": req.language,
                "active_notes": [dict(id=i, **note.model_dump()) for i, note in enumerate(req.notes, 1)],
                "user_excerpts": dict(enumerate(excerpts, 1)),

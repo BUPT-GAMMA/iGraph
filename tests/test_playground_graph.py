@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
-from backend.playground_context import MAX_NOTES, ScenarioNote, source_excerpts
+from backend.playground_context import MAX_NOTES, ContextUpdate, ScenarioNote, source_excerpts
 from graph_data_service.playground import (
     Decision, Scenario, _planner_options, _reply_prefix, _review_tools, _validated_decision, expand_graph,
     planner_tool_catalog, requested_question_count,
@@ -120,15 +120,31 @@ class PlaygroundGraphTest(unittest.TestCase):
         note = {"kind": "constraint", "source": 1}
         reply = {"action": "clarify", "reply": "哪些字段可以用？"}
         def parse(previous, delete, add):
-            return Decision.model_validate({**reply, "context_update": {"retire": delete, "remember": add}},
-                                           context={"notes": previous, "excerpts": ["没有运费"]})
+            return ContextUpdate(retire=delete, remember=add).apply(previous, ["没有运费"], [])
         for retire, remember in [([3], []), ([], [{**note, "source": 2}]), ([], [{**note, "previous_question": 1}])]:
-            with self.subTest(retire=retire, remember=remember), self.assertRaises(ValidationError):
+            with self.subTest(retire=retire, remember=remember), self.assertRaises(ValueError):
                 parse([], retire, remember)
         full = [ScenarioNote(kind="constraint", quote=f"User fact {i}") for i in range(MAX_NOTES)]
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(ValueError):
             parse(full, [], [note])
-        self.assertEqual(len(parse(full, [1], [note])._notes), MAX_NOTES)
+        self.assertEqual(len(parse(full, [1], [note])), MAX_NOTES)
+        malformed = {**reply, "context_update": {"retire": [99], "remember": [{"kind": "goal", "source": 91}]}}
+        grounded = Decision.model_validate(malformed, context={"notes": full[:1], "excerpts": ["没有运费"]})
+        self.assertEqual(grounded._notes, [full[0], ScenarioNote(kind="user_request", quote="没有运费")])
+
+    def test_model_returning_approval_and_revisions_only_proposes_the_new_version(self):
+        previous = Scenario.model_validate(scenario()).model_dump()
+        validation = {"previous": previous, "notes": [], "excerpts": ["Change the campus name and build."],
+                      "language": "en", "can_confirm": False}
+        mixed = {"action": "confirm", "reply": "I built it.", "plan": {"title": "New campus"},
+                 "context_update": {"retire": [78], "remember": []}}
+        decision = Decision.model_validate(mixed, context=validation)
+        self.assertEqual(decision.action, "propose")
+        self.assertNotIn("built it", decision.reply)
+        self.assertEqual(decision.plan.title, "New campus")
+        self.assertEqual(decision._notes[0].quote, validation["excerpts"][0])
+        known = {**mixed, "plan": previous, "context_update": {"retire": [], "remember": []}}
+        self.assertEqual(Decision.model_validate(known, context={**validation, "can_confirm": True}).action, "confirm")
 
     def test_source_excerpts_are_verbatim_and_bounded_across_languages(self):
         messages = ["没有里程。保留第二题。", "Keep question two. Use only dates!", "abc def " * 70]

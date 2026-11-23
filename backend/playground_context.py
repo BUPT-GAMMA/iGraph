@@ -14,7 +14,7 @@ Kind = Literal["goal", "graph_fact", "constraint", "question_choice"]
 
 
 class ScenarioNote(BaseModel):
-    kind: Kind
+    kind: Kind | Literal["user_request"]
     quote: NoteText
     # Only text from the displayed proposal can be attached to the user's own words.
     question: str | None = Field(default=None, max_length=400)
@@ -41,6 +41,14 @@ def source_excerpts(user_messages):
                 excerpts.append(text[:end].strip())
                 text = text[end:].strip()
     return list(dict.fromkeys(excerpts))
+
+
+def remember_request(previous, excerpts):
+    """Keep the current user's words if a model's memory edits cannot be grounded."""
+    notes = list(previous)
+    quotes = {note.quote for note in notes}
+    notes.extend(ScenarioNote(kind="user_request", quote=quote) for quote in excerpts if quote not in quotes)
+    return notes[-MAX_NOTES:]
 
 
 class ContextUpdate(BaseModel):
