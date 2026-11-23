@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, PrivateAttr, StringConstraints, ValidationError, ValidationInfo, model_validator
 
-from backend.playground_context import MAX_NOTES, ContextUpdate, ScenarioNote
+from backend.playground_context import MAX_NOTES, ContextUpdate, ScenarioNote, source_excerpts
 from execution_protocol import service_headers
 from graph_data_service.construction import ConstructionError, _atomic_json, validate_graph
 from graph_data_service.construction_questions import question_provider_error
@@ -85,8 +85,10 @@ class Scenario(BaseModel):
         # Validate new proposals against the tools actually described for this turn. Previously
         # accepted plans remain readable and buildable after a deployment changes its tool set.
         catalog = (info.context or {}).get("tools")
-        if catalog is not None and any(q.tool not in catalog for q in self.questions):
-            raise ValueError("Unknown analysis tool")
+        if catalog is not None:
+            unknown = [q.tool for q in self.questions if q.tool not in catalog]
+            if unknown:
+                raise ValueError(f"Use registered tool names from tools in place of {unknown!r}")
         if catalog is not None and any(catalog[q.tool].get("enabled") is False or
                                        catalog[q.tool]["category"] == "internal" for q in self.questions):
             raise ValueError("Primary question tool is unavailable")
@@ -106,6 +108,14 @@ class Decision(BaseModel):
     context_update: ContextUpdate | None = None
     _notes: list[ScenarioNote] = PrivateAttr(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def inherit_unchanged_plan_fields(cls, value, info: ValidationInfo):
+        previous = (info.context or {}).get("previous")
+        if previous and isinstance(value, dict) and value.get("action") == "propose" and isinstance(value.get("plan"), dict):
+            return {**value, "plan": {**previous, **value["plan"]}}
+        return value
+
     @model_validator(mode="after")
     def check_action(self, info: ValidationInfo):
         if (self.action == "propose") != (self.plan is not None):
@@ -119,7 +129,8 @@ class Decision(BaseModel):
                 raise ValueError("Return context_update with retire and remember lists")
             if self.action == "confirm" and (self.context_update.retire or self.context_update.remember):
                 raise ValueError("Show a revised proposal before building if the scenario changed")
-            self._notes = self.context_update.apply(validation["notes"], validation["user_messages"])
+            self._notes = self.context_update.apply(validation["notes"], validation["excerpts"],
+                                                    validation.get("displayed_questions", []))
             if self.action == "propose" and not self._notes:
                 raise ValueError("Record the user's scenario goal with an exact supporting quote")
         return self
@@ -190,18 +201,23 @@ Questions about building, hypothetical statements, negations, deferrals and requ
 are not confirmation. If a turn changes the plan, propose the changed plan for approval first.
 active_notes is this conversation's durable working memory. Integrate it with the latest request, the
 numbered questions in history and the previous plan. A user's later correction overrides older input.
-For every action return context_update {retire:[existing note IDs], remember:[{kind,text,quote}]}.
+For every action return context_update {retire:[existing active note IDs], remember:[{kind,source,previous_question}]}.
 Keep unchanged notes implicitly. Record the user's business goals, actual data and relationship directions,
 missing data, constraints, and explicit choices about questions, including rejected topics and what replaced
-them. Resolve "the second question" against the displayed proposal and name its topic in the note. Use a
-short exact quote from the latest user request as evidence, preserving its language and punctuation. On
-the first memory update, quotes may also come from supplied earlier user turns. Do not record invented
+them. For "keep/drop the second question" set kind to question_choice and previous_question to 2; the
+server attaches its exact displayed text. Use null for other notes or references to a new question.
+Choose the integer source ID in user_excerpts whose exact text expresses the fact or preference.
+On first use these include prior user turns. Omit transient instructions to wait or build. Do not record invented
 sample data, assistant suggestions, or instructions to build as user facts. Retire superseded notes. On
 a change of scenario, retire facts that no longer apply. Consolidate within 32 notes. Empty lists express
 no change. For confirm both lists must be empty. Ground the actual proposed questions and graph in the
 updated facts. Do not revive an excluded topic unless the user explicitly brings it back.
 Return one JSON object matching output_schema, with reply FIRST, then action (clarify/propose/confirm),
 then plan (null unless propose) and context_update. Keep this working memory private.
+When previous exists, omit unchanged fields from plan. Include a complete replacement for each changed
+field. For example, changing only the title needs just {"title":"..."} in plan; all omitted fields are
+inherited. If a target is renamed, update its entity examples and affected questions together. Empty
+lists never mean unchanged. New scenarios require the entire plan.
 Reply directly to latest_request. The UI displays the question list separately. If internal_validation is
 present, use it privately to replace the rejected draft. The user has not seen that draft. Do not mention
 schema errors, retries or corrections to it. Do not claim to have built a graph.
@@ -215,7 +231,10 @@ from 1 to 100 giving the relative number of nodes in a 100-node
 sample; properties map field names to arrays of representative scalar values, including actual JSON numbers
 for measurements. Identify properties needed by the questions. For relations choose pattern one (one target
 per source), many or clustered. All types must participate. Use a single type with a self-type relation when
-appropriate. Do not require real identities, uploads, or any data unavailable in the sample."""
+appropriate. Bind a primary tool's inputs to the question itself. A common-neighbor intersection needs
+two nodes or an explicit comparison of pairs; counting distinct destinations reached through an
+intermediate type instead requires traversal and aggregation. Triangle counts require a meaningful
+three-link closure in this scenario. Do not require real identities, uploads, or any data unavailable in the sample."""
 
 
 def _event(**data):
@@ -231,7 +250,7 @@ def _planner_options(model, base_url):
     options = {"model": model, "max_completion_tokens": 5200, "response_format": {"type": "json_object"}}
     if model == "deepseek-v4-flash-0731-ga" and urlsplit(base_url).hostname in {"tokensave.pro", "api.deepseek.com"}:
         # This endpoint counts reasoning tokens against the JSON completion budget.
-        options.update(max_completion_tokens=8192, extra_body={"thinking": {"type": "disabled"}})
+        options.update(max_completion_tokens=8192, temperature=0.2, extra_body={"thinking": {"type": "disabled"}})
     return options
 
 
@@ -268,12 +287,21 @@ async def plan_events(uid, req):
     user_messages = [req.message]
     if not req.notes:
         user_messages.extend(m["content"] for m in req.history if m["role"] == "user")
+    excerpts = source_excerpts(user_messages)
     count = requested_question_count(req.message)
-    validation = {"tools": tools, "question_count": count, "notes": req.notes, "user_messages": user_messages}
-    context = {"tools": tools, "question_count": count, "output_schema": Decision.model_json_schema(), "ui_language": req.language,
+    displayed = [getattr(q, req.language) for q in req.previous.questions] if req.previous else []
+    previous = req.previous.model_dump() if req.previous else None
+    schema = Decision.model_json_schema()
+    if previous:
+        # Omitting a field on revision retains its validated previous value.
+        schema["$defs"]["Scenario"].pop("required", None)
+    validation = {"tools": tools, "question_count": count, "notes": req.notes, "excerpts": excerpts,
+                  "displayed_questions": displayed, "previous": previous}
+    context = {"tools": tools, "question_count": count, "output_schema": schema, "ui_language": req.language,
                "active_notes": [dict(id=i, **note.model_dump()) for i, note in enumerate(req.notes, 1)],
+               "user_excerpts": dict(enumerate(excerpts, 1)),
                "latest_request": req.message,
-               "previous": req.previous.model_dump() if req.previous else None,
+               "previous": previous,
                "confirmable": req.confirmable, "history": req.history}
     try:
         async with asyncio.timeout(155), AsyncOpenAI(api_key=key, base_url=url, timeout=150, max_retries=0) as client:

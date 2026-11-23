@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
-from backend.playground_context import MAX_NOTES, ScenarioNote
+from backend.playground_context import MAX_NOTES, ScenarioNote, source_excerpts
 from graph_data_service.playground import (
     Decision, Scenario, _planner_options, _reply_prefix, _validated_decision, expand_graph,
     planner_tool_catalog, requested_question_count,
@@ -95,38 +95,58 @@ class PlaygroundGraphTest(unittest.TestCase):
         self.assertNotIn("extra_body", _planner_options(model, "https://relay.example/v1"))
 
     def test_context_preserves_unchanged_user_facts_and_replaces_rejected_topics(self):
-        notes = [ScenarioNote(kind="constraint", text="No order volumes", quote="没有订单量"),
-                 ScenarioNote(kind="question_choice", text="Compare costs", quote="想比较成本")]
-        message = "去掉成本题，只看站点停运影响，保留第一题。"
-        validation = {"notes": notes, "user_messages": [message]}
+        notes = [ScenarioNote(kind="constraint", quote="没有订单量"),
+                 ScenarioNote(kind="question_choice", quote="想比较成本")]
+        excerpts = source_excerpts(["去掉成本题。只看站点停运影响。保留第一题。"])
+        validation = {"notes": notes, "excerpts": excerpts, "displayed_questions": ["哪个站停运会影响图书馆？"]}
         update = {"retire": [2], "remember": [
-            {"kind": "question_choice", "text": "Exclude the cost comparison", "quote": "去掉成本题"},
-            {"kind": "goal", "text": "Assess station closures", "quote": "只看站点停运影响"}]}
+            {"kind": "question_choice", "source": 1},
+            {"kind": "goal", "source": 2, "text": "Exclude all warehouses"},
+            {"kind": "question_choice", "source": 3, "previous_question": 1}]}
         reply = {"action": "clarify", "reply": "要看哪一站？", "context_update": update}
         output = Decision.model_validate(reply, context=validation)._notes
         self.assertEqual(output[0], notes[0])
         self.assertNotIn(notes[1], output)
-        self.assertEqual(output[-1].quote, "只看站点停运影响")
+        self.assertEqual(output[-1].question, "哪个站停运会影响图书馆？")
+        self.assertNotIn("Exclude all warehouses", str(output))
         unchanged = {"action": "clarify", "reply": "继续", "context_update": {"retire": [], "remember": []}}
         for _ in range(20):
-            output = Decision.model_validate(unchanged, context={"notes": output, "user_messages": ["继续"]})._notes
-        self.assertEqual([n.text for n in output], ["No order volumes", "Exclude the cost comparison", "Assess station closures"])
+            output = Decision.model_validate(unchanged, context={"notes": output, "excerpts": ["继续"]})._notes
+        self.assertEqual([n.quote for n in output], ["没有订单量", *excerpts])
         with self.assertRaises(ValidationError):
             Decision.model_validate({**reply, "action": "confirm"}, context=validation)
 
     def test_context_rejects_invented_evidence_invalid_ids_and_overflow(self):
-        note = {"kind": "constraint", "text": "No transport costs", "quote": "没有运费"}
+        note = {"kind": "constraint", "source": 1}
         reply = {"action": "clarify", "reply": "哪些字段可以用？"}
         def parse(previous, delete, add):
             return Decision.model_validate({**reply, "context_update": {"retire": delete, "remember": add}},
-                                           context={"notes": previous, "user_messages": ["没有运费"]})
-        for retire, remember in [([3], []), ([], [{**note, "quote": "没有里程"}])]:
+                                           context={"notes": previous, "excerpts": ["没有运费"]})
+        for retire, remember in [([3], []), ([], [{**note, "source": 2}]), ([], [{**note, "previous_question": 1}])]:
             with self.subTest(retire=retire, remember=remember), self.assertRaises(ValidationError):
                 parse([], retire, remember)
-        full = [ScenarioNote(**{**note, "text": f"User fact {i}"}) for i in range(MAX_NOTES)]
+        full = [ScenarioNote(kind="constraint", quote=f"User fact {i}") for i in range(MAX_NOTES)]
         with self.assertRaises(ValidationError):
             parse(full, [], [note])
         self.assertEqual(len(parse(full, [1], [note])._notes), MAX_NOTES)
+
+    def test_source_excerpts_are_verbatim_and_bounded_across_languages(self):
+        messages = ["没有里程。保留第二题。", "Keep question two. Use only dates!", "abc def " * 70]
+        excerpts = source_excerpts(messages)
+        self.assertEqual(excerpts[:4], ["没有里程。", "保留第二题。", "Keep question two.", "Use only dates!"])
+        self.assertTrue(all(len(s) <= 200 and any(s in m for m in messages) for s in excerpts))
+
+    def test_title_only_revision_keeps_displayed_questions_and_graph_and_revalidates_changes(self):
+        previous = Scenario.model_validate(scenario()).model_dump()
+        proposal = {"action": "propose", "reply": "Title updated.", "plan": {"title": "Campus"}}
+        updated = Decision.model_validate(proposal, context={"previous": previous}).plan.model_dump()
+        self.assertEqual(updated, {**previous, "title": "Campus"})
+        proposal["plan"] = {"entities": []}
+        with self.assertRaises(ValidationError):
+            Decision.model_validate(proposal, context={"previous": previous})
+        proposal["plan"] = {"title": "Campus"}
+        with self.assertRaises(ValidationError):
+            Decision.model_validate(proposal)
 
     def test_repair_count_once_and_validate_the_repaired_plan(self):
         plan = scenario()
