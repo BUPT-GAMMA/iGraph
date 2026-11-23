@@ -1,8 +1,13 @@
+import asyncio
+import json
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
-from graph_data_service.playground import Decision, Scenario, _reply_prefix, expand_graph, planner_tool_catalog
+from graph_data_service.playground import (
+    Decision, Scenario, _reply_prefix, _validated_decision, expand_graph, planner_tool_catalog, requested_question_count,
+)
 from graph_data_service.tool_catalog import INTERNAL_TOOLS, get_all_public_tools
 
 
@@ -68,6 +73,38 @@ class PlaygroundGraphTest(unittest.TestCase):
         graph = expand_graph(Scenario.model_validate(value), "rare labs")
         self.assertEqual(len(graph["nodes"]), 100)
         self.assertTrue(set(names) <= {n["properties"]["name"] for n in graph["nodes"] if n["type"] == "Lab"})
+
+    def test_only_explicit_totals_constrain_the_question_count(self):
+        cases = {"I need two topology questions: first count triangles.": 2,
+                 "只保留两道题，确认前先不要构图。": 2, "请先给四个能用图回答的问题。": 4,
+                 "我想要两个节点和三个关系。": None, "Add two more questions.": None,
+                 "Suggest two or three questions.": None, "Don't suggest two questions.": None,
+                 "先不要生成四道题。": None}
+        for message, count in cases.items():
+            with self.subTest(message=message):
+                self.assertEqual(requested_question_count(message), count)
+
+    def test_repair_count_once_and_validate_the_repaired_plan(self):
+        plan = scenario()
+        expected = {"action": "propose", "reply": "Review this question.", "plan": plan}
+        correct = json.dumps(expected)
+        plan["questions"].append({"zh": "哪些团队合作？", "en": "Which teams collaborate?", "tool": "get_neighbors"})
+        wrong = json.dumps(expected)
+        reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=correct))])
+        create = AsyncMock(return_value=reply)
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        context = {"tools": planner_tool_catalog({}), "question_count": 1}
+        decision = asyncio.run(_validated_decision(wrong, client, {}, [], context))
+        self.assertEqual(len(decision.plan.questions), 1)
+        create.assert_awaited_once()
+        self.assertIn("exactly 1", create.call_args.kwargs["messages"][-1]["content"])
+        create.reset_mock()
+        self.assertEqual(asyncio.run(_validated_decision(correct, client, {}, [], context)), decision)
+        create.assert_not_awaited()
+        reply.choices[0].message.content = wrong
+        with self.assertRaises(ValidationError):
+            asyncio.run(_validated_decision(wrong, client, {}, [], context))
+        create.assert_awaited_once()
 
     def test_stream_only_exposes_visible_reply(self):
         self.assertEqual(_reply_prefix('{"reply":"校'), "校")
