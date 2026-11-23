@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from pydantic import ValidationError
 from backend.playground_context import MAX_NOTES, ScenarioNote, source_excerpts
 from graph_data_service.playground import (
-    Decision, Scenario, _planner_options, _reply_prefix, _validated_decision, expand_graph,
+    Decision, Scenario, _planner_options, _reply_prefix, _review_tools, _validated_decision, expand_graph,
     planner_tool_catalog, requested_question_count,
 )
 from graph_data_service.tool_catalog import INTERNAL_TOOLS, get_all_public_tools
@@ -147,6 +147,35 @@ class PlaygroundGraphTest(unittest.TestCase):
         proposal["plan"] = {"title": "Campus"}
         with self.assertRaises(ValidationError):
             Decision.model_validate(proposal)
+
+    def test_tool_review_binds_common_neighbors_to_two_named_inputs_and_reuses_unchanged_work(self):
+        plan = Scenario.model_validate(scenario())
+        req = SimpleNamespace(previous=None, tools_reviewed=False)
+        matched = {"unit": "lab", "evidence": "Compare the neighborhoods.", "tool": "get_common_neighbors",
+                   "endpoints": ["Quartz", "Onyx"]}
+        reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"matches": [matched]})))])
+        create = AsyncMock(return_value=reply)
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        tools = planner_tool_catalog({})
+        def review():
+            return asyncio.run(_review_tools(client, {}, plan, req, [], tools, 5))
+        self.assertTrue(review())
+        self.assertEqual(plan.questions[0].tool, "get_neighbors")
+        plan.questions[0].en = "Which teams work with both Quartz and Onyx?"
+        self.assertTrue(review())
+        self.assertEqual(plan.questions[0].tool, "get_common_neighbors")
+        req.previous = plan.model_copy(deep=True)
+        req.tools_reviewed = True
+        plan.title = "New title"
+        plan.questions[0].tool = "node_centrality"
+        create.reset_mock()
+        self.assertTrue(review())
+        create.assert_not_awaited()
+        self.assertEqual(plan.questions[0].tool, "get_common_neighbors")
+        req.tools_reviewed = False
+        reply.choices[0].message.content = '{"matches":[]}'
+        self.assertFalse(review())
+        self.assertEqual(plan.questions[0].tool, "get_common_neighbors")
 
     def test_repair_count_once_and_validate_the_repaired_plan(self):
         plan = scenario()

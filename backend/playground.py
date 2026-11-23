@@ -183,10 +183,11 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
             if not doc["confirmed"]:
                 payload = {"connection_revision": req.connection_revision, "language": req.language, "message": req.message.strip(),
                            "previous": doc["plan"], "confirmable": doc["confirmable"] and not defers_build(req.message),
-                           "notes": doc.get("notes", []),
+                           "notes": doc.get("notes", []), "tools_reviewed": doc.get("tools_reviewed", False),
                            "history": planning_history(doc["messages"], req.language, bootstrap=not doc.get("notes"))}
                 decision = model_name = None
                 notes = doc.get("notes", [])
+                reviewed = False
                 last = 0.0
                 async with asyncio.timeout(175), graph.stream("POST", "/internal/playground/plan",
                         headers=service_headers(uid), json_body=payload) as stream:
@@ -203,6 +204,7 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                             decision = event["decision"]
                             model_name = event["model_name"]
                             notes = event.get("notes", notes)
+                            reviewed = event.get("tools_reviewed", False)
                 if not decision:
                     fail("PLAYGROUND_INVALID_REPLY", 502)
                 action = decision["action"]
@@ -210,7 +212,8 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                 if action == "propose":
                     plan = decision["plan"]
                     response["questions"] = plan["questions"]
-                    store.update(uid, doc, plan=plan, plan_model=model_name, notes=notes, confirmable=True, live_reply="",
+                    store.update(uid, doc, plan=plan, plan_model=model_name, notes=notes, tools_reviewed=reviewed,
+                                 confirmable=True, live_reply="",
                                  status="draft", messages=[*doc["messages"], response])
                     return
                 if action == "clarify":
