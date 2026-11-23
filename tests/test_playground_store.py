@@ -4,12 +4,20 @@ import uuid
 from pathlib import Path
 
 from fastapi import HTTPException
-from backend.playground import ScenarioStore, Turn
+from backend.playground import ScenarioStore, Turn, approves_current_plan
 from backend.projects import ProjectDirectory
 from backend.project_datasets import ProjectDatasetDirectory
 
 
 class PlaygroundStoreTest(unittest.TestCase):
+    def test_free_form_build_and_deferral_intent(self):
+        for message in ("这两道题就定了，请按这个方案现在把示例图建出来吧。", "可以了，按这个版本建图",
+                        "没问题，直接生成示例图吧", "不用再调整问题了，请开始构图", "Looks good, go ahead and build it."):
+            self.assertTrue(approves_current_plan(message), message)
+        for message in ("先不要构图，再调整问题", "如果我说开始构图会发生什么？", "请先删除最后一个问题再生成图",
+                        "Don't build the graph yet", "After I approve, build the graph"):
+            self.assertFalse(approves_current_plan(message), message)
+
     def test_revision_ownership_and_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ScenarioStore(Path(tmp) / "scenarios.sqlite")

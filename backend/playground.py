@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import time
 import uuid
@@ -24,6 +25,31 @@ IN_PROGRESS = {"thinking", "building"}
 CONFIRM = {"确认好问题了，开始构图", "确认问题，开始构图", "确认构图", "开始构图",
            "confirm and build", "build the example graph", "build the graph"}
 LEASE_SECONDS = 210
+# Unambiguous commands can commit the currently displayed proposal without another model round trip.
+# Defer questions, quoted commands, and combined revision/build instructions to the dialogue planner.
+DEFER_BUILD = re.compile(
+    r"[?？“”「」`\"]|如果|假[如设]|例如|比如|确认[后时]|之后再|之前|等我|等到|等一下|稍后|明天|以后|晚点|不是现在|暂[时缓停]|"
+    r"先别|先不|别.{0,5}(?:构|建|生成|画)|不(?:要|急|用|想|能|需要|打算).{0,8}(?:构|建|生成|画)|"
+    r"还没|尚未|能否|是否|怎么|如何|为什么|可不可以|吗[。！\s]*$|"
+    r"调整|修改|改成|改为|换成|换个|替换|增加|添加|删除|去掉|删掉|补充|"
+    r"\b(?:if|when|once|after|before|until|wait|maybe|later|instead|unless|without|change|replace|revise|add|remove|why|how|whether|not)\b|n['’]t\b",
+    re.I)
+BUILD_COMMAND = re.compile(
+    r"(?:开始|直接|现在|请|可以|就|照此|按.{1,12}|帮我).{0,18}"
+    r"(?:(?:构建|创建|生成|绘制|搭建|画|建|构).{0,7}图|图.{0,5}(?:建|构|生成|画))|"
+    r"(?:构图|建图|生成示例图|开建)(?:吧|好了|即可|就行|[！!。\s]*$)|"
+    r"(?:没问题|确认|定了|可以了).{0,10}(?:开始|生成|建起来)(?:吧|了|[！!。\s]*$)|"
+    r"\b(?:build|generate|create|construct|draw)\s+(?:(?:the|this|that|a|an|sample|example|demo|scenario)\s+)*(?:graph|network|it)\b|"
+    r"\b(?:go ahead|proceed)\s+(?:and|with)\s+(?:the\s+)?(?:build|construction|graph)\b", re.I)
+
+
+def defers_build(message):
+    normalized = re.sub(r"(?:不用|无需|不必|不需要|不再)(?:再)?(?:调整|修改|改动|改|添加|补充)(?:问题)?(?:了)?", "", message)
+    return bool(DEFER_BUILD.search(normalized))
+
+
+def approves_current_plan(message):
+    return not defers_build(message) and bool(BUILD_COMMAND.search(message))
 
 
 class Turn(BaseModel):
@@ -103,7 +129,8 @@ class ScenarioStore:
                 return doc, False
             if doc["revision"] != req.revision or doc["status"] in IN_PROGRESS or doc["result"]:
                 fail("PLAYGROUND_CHANGED")
-            explicit = req.confirm or message.casefold().strip("。.!！ ") in CONFIRM
+            explicit = (req.confirm or message.casefold().strip("。.!！ ") in CONFIRM
+                        or doc["confirmable"] and approves_current_plan(message))
             if (explicit or doc["confirmed"]) and not doc["confirmable"]:
                 fail("PLAYGROUND_NEEDS_PLAN")
             if not (doc["status"] == "failed" and doc["messages"][-1]["text"] == message):
@@ -164,7 +191,7 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
         try:
             if not doc["confirmed"]:
                 payload = {"connection_revision": req.connection_revision, "language": req.language, "message": req.message.strip(),
-                           "previous": doc["plan"], "confirmable": doc["confirmable"],
+                           "previous": doc["plan"], "confirmable": doc["confirmable"] and not defers_build(req.message),
                            "history": [{"role": m["role"], "content": m["text"][:1600]} for m in doc["messages"][:-1][-12:]]}
                 decision = model_name = None
                 last = 0.0
