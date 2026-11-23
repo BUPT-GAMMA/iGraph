@@ -36,6 +36,24 @@ export type ModelConfiguration = CustomModel & {
   max_output_tokens: number;
   unavailable_reason?: string | null;
 };
+export type PlaygroundConnection = { configured: boolean; base_url: string; model: string; revision: number };
+export const getPlaygroundConnection = () => json<PlaygroundConnection>('/api/playground/connection');
+export const savePlaygroundConnection = (input: { base_url: string; api_key: string; model: string; revision: number }) =>
+  json<PlaygroundConnection>('/api/playground/connection', modelJson('PUT', input));
+export type PlaygroundQuestion = { en: string; zh: string; tool: string };
+export type PlaygroundState = {
+  id: string; revision: number; status: 'draft' | 'thinking' | 'building' | 'ready' | 'failed';
+  messages: { role: 'user' | 'assistant'; text: string; questions?: PlaygroundQuestion[] }[];
+  plan: { title: string; summary: string; questions: PlaygroundQuestion[] } | null;
+  confirmable: boolean; confirmed: boolean; live_reply: string; error: string | null;
+  turn_id?: string;
+  result: { project: Project; dataset_id: string; node_count: number; edge_count: number; available?: boolean } | null;
+};
+export const listPlaygrounds = () => json<{ scenarios: { id: string; title: string }[] }>('/api/playground');
+export const getPlayground = (id: string, signal?: AbortSignal) => json<PlaygroundState>(`/api/playground/${encodeURIComponent(id)}`, { signal });
+export const sendPlaygroundTurn = (id: string, input: { turn_id: string; revision: number; message: string; language: 'zh' | 'en';
+  confirm: boolean; connection_revision: number }) => json<PlaygroundState>(`/api/playground/${encodeURIComponent(id)}/turns`, modelJson('POST', input));
+
 export type ModelCatalog = { models: ModelConfiguration[]; default_model: string };
 export const listModels = () => json<ModelCatalog>('/api/models');
 

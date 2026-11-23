@@ -86,6 +86,9 @@ def create_model_router(catalog, db, controller=None):
             raise ControlError('MISSING_USER_IDENTITY', 401)
         return uid
 
+    from agent_runtime.playground_connection import install_connection
+    install_connection(router, catalog, identity)
+
     async def session(uid, sid):
         from agno.os.middleware.user_scope import session_matches_component
         record = await asyncio.to_thread(db.get_session, session_id=sid, user_id=uid)

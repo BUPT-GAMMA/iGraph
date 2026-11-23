@@ -5574,6 +5574,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
                 "dataset": _project_dataset_row(dataset) if dataset else None,
                 "construction_required": dataset is not None}
 
+    from backend.playground import install_playground
+    install_playground(app, path=settings.projects_file.with_name("playground.sqlite3"), graph=graph, runtime=runtime,
+        directory=project_datasets, projects=projects, user_for=lambda request: current_user(request, users),
+        project_row=_project_row, launch=own_launch)
+
     install_constructed_import_routes(app, graph=graph, directory=project_datasets, projects=projects,
         user_for=lambda request: current_user(request, users), project_for=project_or_404,
         dataset_row=_project_dataset_row)

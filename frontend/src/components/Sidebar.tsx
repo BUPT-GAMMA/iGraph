@@ -24,6 +24,8 @@ type Props = {
   onTheme: () => void;
   onMemory: () => void;
   onSkills: () => void;
+  onPlayground?: () => void;
+  playgroundActive?: boolean;
   onHelp?: () => void;
   helpActive?: boolean;
   mobileOpen: boolean;
@@ -63,7 +65,7 @@ function SessionRunIndicator({ status, unread, t }: { status?: string; unread?: 
   return <i className={`session-run-indicator is-static ${status || ''}`} role="status" aria-label={statusLabel} title={statusLabel} />;
 }
 
-export function Sidebar({ sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, userId, dark, onTheme, onMemory, onSkills, onHelp, helpActive = false, mobileOpen, onCloseMobile, onNew, onProjects, projectsActive = false, onSelect, onDelete, collapsed, onCollapse }: Props) {
+export function Sidebar({ sessions, hasMoreSessions = false, loadingSessions = false, sessionListError = '', onLoadMoreSessions, runStatuses = {}, unreadCompletions = {}, activeId, userId, dark, onTheme, onMemory, onSkills, onPlayground, playgroundActive, onHelp, helpActive = false, mobileOpen, onCloseMobile, onNew, onProjects, projectsActive = false, onSelect, onDelete, collapsed, onCollapse }: Props) {
   const { language, toggleLanguage, t } = useI18n();
   const account = useAccount();
   const [pinState, setPinState] = useState(() => ({ userId, ids: readPins(userId) }));
@@ -107,6 +109,7 @@ export function Sidebar({ sessions, hasMoreSessions = false, loadingSessions = f
       <span className="sidebar-primary-action-label">{t('New task', '新建任务')}</span>
     </button>
     <nav className="sidebar-utilities" aria-label={t('Knowledge and capability management', '知识与能力管理')}>
+      {onPlayground && <button className={playgroundActive ? 'active' : ''} aria-current={playgroundActive ? 'page' : undefined} onClick={() => { onPlayground(); onCloseMobile(); }}><Icon name="project" size={16} /><span>{t('Playground', '场景广场')}</span></button>}
       <button onClick={() => runAction(() => { onMemory(); onCloseMobile(); })}><Icon name="spark" size={16} /><span>{t('Memory', '记忆')}</span></button>
       <button onClick={() => runAction(() => { onSkills(); onCloseMobile(); })}><Icon name="cube" size={16} /><span>{t('Skills', '技能')}</span></button>
       {onHelp && <button className={helpActive ? 'active' : ''} aria-current={helpActive ? 'page' : undefined} onClick={() => { onHelp(); onCloseMobile(); }}><Icon name="file" size={16} /><span>{t('Help', '帮助')}</span></button>}

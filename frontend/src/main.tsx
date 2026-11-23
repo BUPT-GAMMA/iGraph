@@ -34,12 +34,13 @@ import { canOpenConstruction, constructionLabel, isPrebuiltGraph, isPtGraph, sup
 import { BrandLogo, Icon } from './components/Icon';
 import { ManagementPanel } from './components/ManagementPanel';
 import { DeleteProjectDialog, ProjectDialog } from './components/ProjectDialogs';
+import { Playground } from './components/Playground';
 import { ProjectCatalog } from './components/ProjectCatalog';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { AuthGate } from './components/AuthGate';
 import { ModelSettings } from './components/ModelSettings';
-import { listModels, getSessionModel, modelErrorMessage, type ModelCatalog } from './api';
+import { getPlayground, listModels, getSessionModel, modelErrorMessage, type ModelCatalog } from './api';
 import { parseWorkspaceRoute, writeWorkspaceRoute } from './navigation';
 import { migrateGeneralDraft, readRecoveredDrafts, recoveredDraftsKey } from './draftMigration';
 import { I18nProvider, tr, useI18n } from './i18n';
@@ -244,6 +245,8 @@ function App() {
   const [createGraphOpen, setCreateGraphOpen] = useState(false);
   const [constructionProjectId, setConstructionProjectId] = useState<string | null>(null);
   const constructionLoadRef = useRef(0);
+  const pendingScenarios = useRef(new Set<string>());
+  const [playgroundOpen, setPlaygroundOpen] = useState(() => parseWorkspaceRoute(window.location.search).kind === 'playground');
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(() => parseWorkspaceRoute(window.location.search).kind === 'help');
   const [importProject, setImportProject] = useState<Project | null>(null);
@@ -463,6 +466,7 @@ function App() {
     dispatchConversation({ type: 'SET_ACTIVE_SESSION', sessionId: null });
     setCreateGraphOpen(false);
     setProjectsOpen(false);
+    setPlaygroundOpen(false);
     setHelpOpen(false);
     setConstructionDataset(null);
     setGraphOpen(false);
@@ -471,6 +475,37 @@ function App() {
     setWorkspaceError(message);
     if (updateUrl) writeWorkspaceRoute({ kind: 'home' }, replaceUrl);
   }
+
+  function showPlayground(updateUrl = true) {
+    showWorkspaceHome(false);
+    setPlaygroundOpen(true);
+    if (updateUrl && parseWorkspaceRoute(window.location.search).kind !== 'playground') writeWorkspaceRoute({ kind: 'playground' });
+  }
+
+  function rememberPlaygroundProject(project: Project) {
+    setProjects(current => [project, ...current.filter(item => item.project_id !== project.project_id)]);
+  }
+
+  useEffect(() => {
+    if (!projectsOpen || !pendingScenarios.current.size) return;
+    let disposed = false;
+    let timer: number;
+    const poll = async () => {
+      for (const id of [...pendingScenarios.current]) {
+        try {
+          const scene = await getPlayground(id);
+          if (disposed) return;
+          if (scene.result && scene.result.available !== false) rememberPlaygroundProject(scene.result.project);
+          if (scene.status !== 'building' && scene.status !== 'thinking') pendingScenarios.current.delete(id);
+        } catch (cause) {
+          if (!disposed && cause instanceof ApiError && cause.status === 404) pendingScenarios.current.delete(id);
+        }
+      }
+      if (!disposed && pendingScenarios.current.size) timer = window.setTimeout(poll, 1300);
+    };
+    void poll();
+    return () => { disposed = true; window.clearTimeout(timer); };
+  }, [projectsOpen, userId]);
 
   function showProjects(updateUrl = true) {
     showWorkspaceHome(false);
@@ -515,6 +550,7 @@ function App() {
     setConstructionProjectId(projectId);
     setCreateGraphOpen(true);
     setProjectsOpen(false);
+    setPlaygroundOpen(false);
     setHelpOpen(false);
     setConstructionDataset(null);
     setGraphOpen(false);
@@ -646,6 +682,7 @@ function App() {
     }
     if (id === conversationRef.current.activeSessionId && !createGraphOpen && !projectsOpen && listedSession) return;
     setProjectsOpen(false);
+    setPlaygroundOpen(false);
     const session = listedSession || { session_id: id };
     setCreateGraphOpen(false);
     setHelpOpen(false);
@@ -853,6 +890,8 @@ function App() {
     } else if (route.kind === 'create-graph') {
       if (route.projectId && !nextProjects.some(project => project.project_id === route.projectId)) showWorkspaceHome(true, true, tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
       else await showCreateGraphWorkspace(route.projectId || null, false);
+    } else if (route.kind === 'playground') {
+      showPlayground(false);
     } else if (route.kind === 'projects') {
       showProjects(false);
     } else if (route.kind === 'new-session') {
@@ -981,6 +1020,8 @@ function App() {
       } else if (route.kind === 'create-graph') {
         if (route.projectId && !projects.some(project => project.project_id === route.projectId)) showWorkspaceHome(true, true, tr('This project does not exist or was deleted', '该项目不存在或已被删除'));
         else void showCreateGraphWorkspace(route.projectId || null, false);
+      } else if (route.kind === 'playground') {
+        showPlayground(false);
       } else if (route.kind === 'projects') {
         showProjects(false);
       } else if (route.kind === 'session') {
@@ -1223,6 +1264,7 @@ function App() {
     dispatchConversation({ type: 'OPEN_DRAFT', draft, preferredModel });
     setCreateGraphOpen(false);
     setProjectsOpen(false);
+    setPlaygroundOpen(false);
     setHelpOpen(false);
     setConstructionDataset(null);
     setGraphOpen(false);
@@ -2245,10 +2287,14 @@ function App() {
     <TopBar onMenu={() => setMobileSidebarOpen(true)} onHome={() => showWorkspaceHome()} onModels={userId && !demoMode && cancelEnabled ? () => setModelsOpen(true) : undefined} />
     <PopupPresence key={`modelsOpen-${userId}`}>{modelsOpen && <ModelSettings key={userId} onClose={() => setModelsOpen(false)} onChanged={applyModelCatalog} />}</PopupPresence>
     <div ref={bodyRef} className={`app-body ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${activeSession && !createGraphOpen ? graphOpen ? 'has-graph-workspace' : 'has-collapsed-graph-workspace' : 'graph-workspace-closed'}`} style={layoutStyle}>
-      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onHelp={() => showHelp()} helpActive={helpOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onProjects={showProjects} projectsActive={projectsOpen || (createGraphOpen && Boolean(constructionProjectId))} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
+      <Sidebar hasMoreSessions={Boolean(sessionCursor)} loadingSessions={loadingSessions} sessionListError={sessionListError} onLoadMoreSessions={() => void loadMoreSessions()} sessions={sessions} runStatuses={runStatuses} unreadCompletions={unreadCompletions} activeId={createGraphOpen ? undefined : activeSession?.session_id} userId={userId} dark={dark} onTheme={() => setDark(current => !current)} onMemory={() => openManagement('memory')} onSkills={() => openManagement('skills')} onPlayground={() => showPlayground()} playgroundActive={playgroundOpen} onHelp={() => showHelp()} helpActive={helpOpen} mobileOpen={mobileSidebarOpen} onCloseMobile={() => setMobileSidebarOpen(false)} onNew={() => newTask()} onProjects={showProjects} projectsActive={projectsOpen || (createGraphOpen && Boolean(constructionProjectId))} onSelect={id => selectSession(id)} onDelete={deleteTask} collapsed={sidebarCollapsed} onCollapse={() => { if (window.innerWidth <= 720) setMobileSidebarOpen(false); else setSidebarCollapsed(current => !current); }} />
       {!sidebarCollapsed && <ColumnDivider side="sidebar" value={sidebarWidth} minimum={SIDEBAR_MIN} maximum={SIDEBAR_MAX} onPointerDown={beginResize} onNudge={nudgeResize} onReset={resetResize} />}
       <div className="main-column">
-        {projectsOpen ? <>
+        {playgroundOpen ? <>
+          {workspaceError && <div className="workspace-error" role="alert">{workspaceError}</div>}
+          <Playground key={userId} onPending={id => pendingScenarios.current.add(id)}
+            onReady={rememberPlaygroundProject} onOpen={project => void openProjectDraft(project.project_id, [project, ...projects.filter(p => p.project_id !== project.project_id)])} />
+        </> : projectsOpen ? <>
           {workspaceError && <div className="workspace-error" role="alert">{workspaceError}</div>}
           <ProjectCatalog projects={displayProjects} cases={userCases} busy={busy} onCreate={() => showProjectEditor()}
             onOpen={id => void openProjectDraft(id)} onDatasets={id => void openDatasets(id)} onConstruct={id => void showCreateGraphWorkspace(id)}

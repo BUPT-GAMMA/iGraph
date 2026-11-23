@@ -118,15 +118,22 @@ class ProjectDatasetDirectory:
         original_filename: str,
         content: bytes | Path,
         description: str = "",
+        dataset_id: str | None = None,
     ) -> ProjectDatasetRecord:
         description = self._description(description)
         with self._lock:
             records = self._load()
-            dataset_id = str(uuid.uuid4())
+            retryable = dataset_id is not None
+            dataset_id = str(uuid.UUID(dataset_id)) if dataset_id else str(uuid.uuid4())
+            if retryable and dataset_id in records:
+                existing = records[dataset_id]
+                if existing.user_id != user_id or existing.project_id != project_id:
+                    raise ValueError("Dataset owner changed")
+                return existing
             safe_name = self._safe_filename(original_filename)
             scope_dir = project_id or ("personal-" + uuid.uuid5(uuid.NAMESPACE_URL, user_id).hex)
             dataset_dir = self.storage_root / scope_dir / "datasets" / dataset_id
-            dataset_dir.mkdir(parents=True, exist_ok=False)
+            dataset_dir.mkdir(parents=True, exist_ok=retryable)
             source_path = dataset_dir / safe_name
             fd, tmp_name = tempfile.mkstemp(prefix="source-", dir=str(dataset_dir))
             try:

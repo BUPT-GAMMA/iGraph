@@ -66,6 +66,8 @@ from graph_data_service.rag import LightweightRAG
 from graph_data_service.property_graph import UnsupportedPropertyGraphAppend, require_lossless_append
 from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, NodeSearchRequest
 from graph_data_service.session import GraphSession, UploadFileRecord
+from fastapi.responses import StreamingResponse
+from graph_data_service.playground import PlanRequest as PlaygroundPlanRequest
 from construction_access import ConstructionQuestionModel, ConstructionQuestionRequest, DATASET_TOOLS, SCOPE_HEADER
 from graph_data_service.construction_access import ConstructionAccessClient
 from graph_data_service.construction import ConstructionStore, ConstructionError, to_graph_data
@@ -4743,6 +4745,21 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
             invalid = True
         if invalid:
             raise HTTPException(403, {"code": "invalid_source", "message": "数据源与已授权数据集不匹配。"})
+
+    @app.post("/internal/playground/plan")
+    async def playground_plan(req: PlaygroundPlanRequest, request: Request):
+        uid = construction_user(request)
+        from graph_data_service.playground import plan_events
+        return StreamingResponse(plan_events(uid, req), media_type="application/x-ndjson")
+
+    @app.post("/construction/{dataset_id}/playground")
+    async def playground_publish(dataset_id: str, request: Request):
+        require_service(request)
+        uid, grant = await construction_grant(request, dataset_id)
+        if not grant.scope.startswith("project:") or grant.source is None:
+            raise HTTPException(403, {"code": "DATASET_SCOPE_REQUIRED"})
+        from graph_data_service.playground import publish_graph
+        return await run_sync(publish_graph, svc._construction, uid, dataset_id, grant.source)
 
     @app.get("/construction/models")
     async def construction_models_route(request: Request):

@@ -6,6 +6,8 @@ describe('workspace navigation', () => {
     expect(parseWorkspaceRoute('')).toEqual({ kind: 'home' });
     expect(parseWorkspaceRoute('?view=create-graph')).toEqual({ kind: 'create-graph' });
     expect(parseWorkspaceRoute('?view=create-graph&project=supply')).toEqual({ kind: 'create-graph', projectId: 'supply' });
+    expect(parseWorkspaceRoute('?view=playground')).toEqual({ kind: 'playground' });
+    expect(workspaceRouteUrl('https://example.test/?session=old', { kind: 'playground' })).toBe('/?view=playground');
     expect(parseWorkspaceRoute('?view=help')).toEqual({ kind: 'help' });
     expect(parseWorkspaceRoute('?project=project-1')).toEqual({ kind: 'project', id: 'project-1' });
     expect(parseWorkspaceRoute('?project=project-1&new=1')).toEqual({ kind: 'new-session', projectId: 'project-1' });

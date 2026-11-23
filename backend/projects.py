@@ -23,6 +23,7 @@ class ProjectRecord:
     created_at: float = 0.0
     updated_at: float = 0.0
     delete_status: str | None = None
+    scenario_pending: bool = False
 
 
 class ProjectDirectory:
@@ -70,7 +71,7 @@ class ProjectDirectory:
 
     def list(self, user_id: str) -> list[ProjectRecord]:
         projects = [item for item in self._load().values()
-                    if item.user_id == user_id and not item.delete_status and not self.is_legacy_default(item)]
+                    if item.user_id == user_id and not item.delete_status and not item.scenario_pending and not self.is_legacy_default(item)]
         return sorted(projects, key=lambda item: (-item.updated_at, item.name.lower()))
 
     def get(self, project_id: str, user_id: str) -> ProjectRecord | None:
@@ -91,6 +92,33 @@ class ProjectDirectory:
             )
             records[project.project_id] = project
             self._write(records)
+            return project
+
+    def stage_scenario(self, user_id: str, project_id: str, name: str, description: str) -> ProjectRecord:
+        with self._lock:
+            records = self._load()
+            project = records.get(project_id)
+            if project is None:
+                now = time.time()
+                project = ProjectRecord(project_id, user_id, name, description, created_at=now, updated_at=now,
+                                        scenario_pending=True)
+                records[project_id] = project
+                self._write(records)
+            if project.user_id != user_id:
+                raise ValueError("Project owner changed")
+            return project
+
+    def publish_scenario(self, project_id: str, user_id: str, dataset_id: str) -> ProjectRecord:
+        with self._lock:
+            records = self._load()
+            project = records.get(project_id)
+            if not project or project.user_id != user_id or project.delete_status:
+                raise ValueError("Project is unavailable")
+            if project.scenario_pending:
+                project.default_dataset_id = dataset_id
+                project.scenario_pending = False
+                project.updated_at = time.time()
+                self._write(records)
             return project
 
     def ensure_user_case(self, user_id: str, case_id: str, name: str, description: str) -> ProjectRecord:
