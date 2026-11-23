@@ -45,6 +45,16 @@ BUILD_INTENT = re.compile(
     r"\b(?:go ahead|proceed)\s+(?:and|with)\s+(?:the\s+)?(?:build|construction|graph)\b|"
     r"^(?:(?:looks good|approved|yes)[,.!\s]+)?(?:go ahead|proceed)(?: now)?[.!\s]*$",
     re.I)
+APPROVAL_CLAUSE = re.compile(
+    r"(?:the |these |those )?(?:questions|proposal|plan)(?: are| is)? (?:confirmed|approved)|"
+    r"looks good|approved|yes|okay|ok|没问题|可以了|"
+    r"(?:这些|这[一二两三四五六1-6]道)?(?:问题|题|方案)(?:就)?(?:确认(?:好了|好|了)?|定了)|"
+    r"(?:就)?按(?:屏幕上|刚才|当前)?(?:这|那|这个|这版)?(?:[一二两三四五六1-6]道)?(?:问题|题|方案|版本)", re.I)
+PUBLISH_CLAUSE = re.compile(
+    r"(?:please )?(?:go ahead and )?(?:build|generate|create|construct|draw) "
+    r"(?:(?:the|this|that|a|an|sample|example|demo|scenario) )*(?:graph|network|it)(?: now)?|"
+    r"(?:请|现在|直接|帮我|可以)*(?:(?:开始)?(?:构图|建图)|(?:生成|构建|创建)(?:这个|这张)?(?:示例图|样例图|图)|"
+    r"(?:把)?(?:这个|这张)?(?:示例图|样例图|图)(?:建出来|建起来|生成出来))(?:吧|即可|就行)?", re.I)
 
 
 def defers_build(message):
@@ -54,6 +64,12 @@ def defers_build(message):
 
 def permits_build(message):
     return not defers_build(message) and bool(BUILD_INTENT.search(message))
+
+
+def approves_without_edits(message):
+    clauses = [part.strip() for part in re.split(r"[，,。.!！;；]+", message) if part.strip()]
+    return bool(clauses and PUBLISH_CLAUSE.fullmatch(clauses[-1])
+                and all(APPROVAL_CLAUSE.fullmatch(part) for part in clauses[:-1]))
 
 
 class Turn(BaseModel):
@@ -135,7 +151,8 @@ class ScenarioStore:
                 fail("PLAYGROUND_CHANGED")
             # Free-form messages may revise the scope and ask to build in the same sentence.
             # Let the planner resolve those against the conversation before authorizing publication.
-            explicit = req.confirm or message.casefold().strip("。.!！ ") in CONFIRM
+            explicit = (req.confirm or message.casefold().strip("。.!！ ") in CONFIRM
+                        or doc["confirmable"] and approves_without_edits(message))
             if (explicit or doc["confirmed"]) and not doc["confirmable"]:
                 fail("PLAYGROUND_NEEDS_PLAN")
             if not (doc["status"] == "failed" and doc["messages"][-1]["text"] == message):

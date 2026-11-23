@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import HTTPException
-from backend.playground import ScenarioStore, Turn, permits_build
+from backend.playground import ScenarioStore, Turn, approves_without_edits, permits_build
 from backend.playground_context import HISTORY_CHARS, planning_history
 from backend.projects import ProjectDirectory
 from backend.project_datasets import ProjectDatasetDirectory
@@ -41,6 +41,14 @@ class PlaygroundStoreTest(unittest.TestCase):
             self.assertEqual(store.read("alice", tid)["notes"], notes)
             with self.assertRaises(HTTPException):
                 store.begin("alice", tid, turn("开始构图", 2))
+
+    def test_standalone_approvals_publish_only_the_displayed_revision(self):
+        for text in ["The questions are confirmed. Go ahead and build the example graph.",
+                     "就按屏幕上这两道题，请帮我把这个示例图建出来吧。", "没问题，开始构图。"]:
+            self.assertTrue(approves_without_edits(text), text)
+        for text in ["Show me the final proposal.", "If approved, build the graph.", "Do not build the graph.",
+                     "只保留山茶馆，现在开始构图。", "把项目名改为供书保障演练，给我看最终方案。"]:
+            self.assertFalse(approves_without_edits(text), text)
 
     def test_long_and_legacy_history_keep_original_request_and_displayed_question_numbers(self):
         messages = [{"role": "user", "text": "最初目标"}]
