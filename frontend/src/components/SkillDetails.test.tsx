@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { SkillDetails } from './SkillDetails';
+import { I18nProvider, LANGUAGE_STORAGE_KEY } from '../i18n';
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('../api', () => ({ apiFetch }));
 beforeEach(() => {
@@ -36,4 +37,16 @@ it('does not show an old response after changing the selected skill', async () =
   await waitFor(() => expect(screen.getByText('第二个 Skill 正文')).toBeTruthy());
   resolveOld(response('过期正文'));
   await waitFor(() => expect(screen.queryByText('过期正文')).toBeNull());
+});
+
+it('ignores an older language response after switching the open reader', async () => {
+  let resolveChinese!: (value: Response) => void;
+  apiFetch.mockReturnValueOnce(new Promise<Response>(resolve => { resolveChinese = resolve; }))
+    .mockResolvedValueOnce(response('# English instructions'));
+  render(<I18nProvider initialLanguage="zh"><SkillDetails skill={{ name: 'graph-helper', source: 'bundled' }} onClose={vi.fn()} /></I18nProvider>);
+  fireEvent(window, new StorageEvent('storage', { key: LANGUAGE_STORAGE_KEY, newValue: 'en' }));
+  await screen.findByText('# English instructions');
+  await act(async () => { resolveChinese(response('# 过期中文内容')); });
+  expect(screen.queryByText('# 过期中文内容')).toBeNull();
+  expect(screen.getByText('# English instructions')).toBeTruthy();
 });

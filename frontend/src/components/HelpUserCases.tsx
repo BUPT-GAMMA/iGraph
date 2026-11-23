@@ -62,7 +62,7 @@ export function HelpUserCases() {
     <header className="help-cases-intro">
       <span className="help-pipeline-kicker">{t('WATCH & EXPLORE', '观看演示 · 亲手体验')}</span>
       <h2>{t('Three graphs, three ways to explore', '三个案例，体验图分析')}</h2>
-      <p>{t('Each walkthrough follows four example questions. Watch the video, then choose the matching example on the home page to try it yourself. After each answer, press Tab in the empty message box to fill the next question.', '每个视频按顺序演示四个问题。观看后，在首页选择对应示例图即可亲手体验；每次回答完成后，在空白输入框按 Tab 可填入下一题。')}</p>
+      <p>{t('To follow a walkthrough, open “New task” and choose the matching example. After each answer, press Tab in the empty message box to fill the next question. To inspect the saved graph, open “My projects” and choose “Create your graph” on its project card.', '要跟着视频提问，在“新建任务”中选择对应示例图。每次回答完成后，在空白输入框按 Tab 可填入下一题。要查看保存的图，请在“我的项目”中点击对应项目卡片的“创建你的图”。')}</p>
     </header>
     {cases.length > 0 ? <>
       <nav className="help-case-jumps" aria-label={t('Jump to a case', '跳转到案例')}>

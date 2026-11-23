@@ -154,6 +154,8 @@ services:
       GRAPH_ENGINE_URL: http://graph-engine-api:21111
       IGRAPH_CONTROL_SERVICE_KEY: ${IGRAPH_CONTROL_SERVICE_KEY:?Set a shared random IGRAPH_CONTROL_SERVICE_KEY in .env}
       BACKEND_USERS_FILE: /data/backend/users.json
+      BACKEND_AUTH_ENABLED: "true"
+      BACKEND_AUTH_DATABASE: /data/backend/auth.sqlite3
       BACKEND_PROJECTS_FILE: /data/backend/projects.json
       BACKEND_SERVER_DATASETS_DIR: ${BACKEND_SERVER_DATASETS_DIR:-/data/server_datasets}
       BACKEND_SERVER_DATASET_PREPROCESS_MIN_BYTES: ${BACKEND_SERVER_DATASET_PREPROCESS_MIN_BYTES:-67108864}

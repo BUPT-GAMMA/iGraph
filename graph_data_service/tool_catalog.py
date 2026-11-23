@@ -18,6 +18,7 @@ from typing import List
 
 from graph_engine.construction_catalog import CONSTRUCTION_TOOLS
 from graph_engine.finance_catalog import FINANCE_TOOLS
+from graph_engine.extended_tools import EXTENDED_TOOLS
 from graph_engine.borylation_catalog import BORYLATION_TOOLS
 from graph_engine.tool_execution import get_tool_execution_metadata
 from graph_engine.analysis_policy import MULTIGRAPH_POLICIES
@@ -2488,6 +2489,7 @@ INTERNAL_TOOLS: List[dict] = [
 from graph_data_service.kinship import TOOL as KINSHIP_TOOL
 GRAPH_TOOLS.append(KINSHIP_TOOL)
 GRAPH_TOOLS.extend(FINANCE_TOOLS)
+GRAPH_TOOLS.extend(EXTENDED_TOOLS)
 GRAPH_TOOLS.extend(BORYLATION_TOOLS)
 
 for _tool_spec in [*GRAPH_TOOLS, *GRAPH_ML_TOOLS, *REPORTING_TOOLS, *INTERNAL_TOOLS]:

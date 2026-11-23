@@ -335,7 +335,7 @@ class TabularConstructionAgentTest(unittest.TestCase):
         csv = self.root / "customers.csv"
         csv.write_text("customer_id,name\nc1,Alice\nc2,Bob\n", encoding="utf-8")
         store = register_builtin_algorithms(ConstructionStore(self.root))
-        result = store.build("u1", "csv1", csv, csv.name, {"mode": "rules", "query_count": 7})
+        result = store.build("u1", "csv1", csv, csv.name, {"mode": "rules", "query_count": 7, "primary_key": ["customer_id"]})
         self.assertEqual(result["status"], "draft")
         graph = store.graph("u1", "csv1")["graph"]
         self.assertEqual({n["type"] for n in graph["nodes"]}, {"customers"})

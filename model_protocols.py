@@ -38,6 +38,20 @@ def request_headers(data):
     return {'Authorization': 'Bearer ' + key} if key else {}
 
 
+def model_provider_error(status, body):
+    """Identify common provider failures without forwarding the response body."""
+    error = body.get("error", body) if isinstance(body, dict) else None
+    if status == 402 or isinstance(error, dict) and any(
+        error.get(field) in ("quota_not_enough", "insufficient_quota") for field in ("type", "code")
+    ):
+        return "MODEL_QUOTA_EXHAUSTED"
+    if status == 429:
+        return "MODEL_RATE_LIMITED"
+    if status in (401, 403):
+        return "MODEL_AUTH_FAILED"
+    return None
+
+
 def generation_url(data):
     protocol = protocol_for(data)
     base = api_base(data['base_url'], protocol)

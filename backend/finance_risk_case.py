@@ -1,5 +1,6 @@
 """Questions supplied for the saved finance risk graph."""
 FINANCE_RISK_CASE = {'id': 'finance_risk',
+ 'personal_graph': True,
  'name': '金融股权穿透分析',
  'filename': 'finance-risk.npz',
  'description': '由机构、个人及持股关系三张表构成的股权关系图，连接企业与股东，保留持股比例等信息。',

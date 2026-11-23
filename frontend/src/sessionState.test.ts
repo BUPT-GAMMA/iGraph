@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { conversationReducer, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
+import { availableDraftModel, conversationReducer, initialConversationState, selectBottomInteraction, selectMessages, selectRunGate, selectRunTools } from './sessionState';
 import type { ConversationState } from './sessionState';
 import type { StreamBatch, StreamEvent } from './types';
+
+it('uses a current account configuration when an automatic draft inherited a removed or legacy model', () => {
+  const model = (config_id: string, upstream_model_id: string, enabled = true) => ({
+    config_id, upstream_model_id, enabled, revision: 1, source: 'custom' as const, model_id: config_id, display_name: config_id,
+    base_url: '', tools: true, vision: false, context_window: 1000, max_output_tokens: 100,
+  });
+  const catalog = { default_model: 'cfg-main', models: [model('old', 'legacy', false), model('cfg-main', 'flash'), model('cfg-historical', 'historical')] };
+  expect(availableDraftModel(catalog, 'missing')).toBe('cfg-main');
+  expect(availableDraftModel(catalog, 'old')).toBe('cfg-main');
+  expect(availableDraftModel(catalog, 'historical')).toBe('cfg-historical');
+  expect(availableDraftModel(catalog, 'cfg-historical')).toBe('cfg-historical');
+  expect(availableDraftModel(null, 'offline')).toBe('offline');
+});
 
 function session(state: ConversationState, sessionId: string) {
   return conversationReducer(state, { type: 'ENSURE_SESSION', sessionId, accessedAt: 1 });

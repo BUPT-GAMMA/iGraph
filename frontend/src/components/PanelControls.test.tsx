@@ -15,21 +15,16 @@ afterEach(() => {
 });
 
 const sidebarProps = {
-  projects: [],
   sessions: [],
   userId: 'tester',
   dark: false,
   onTheme: noop,
   onMemory: noop,
   onSkills: noop,
-  onCreateGraph: noop,
   mobileOpen: false,
   onCloseMobile: noop,
   onNew: noop,
-  onNewProject: noop,
-  onNewInProject: noop, onProjectDatasets: noop,
-  onEditProject: noop,
-  onDeleteProject: noop,
+  onProjects: noop,
   onSelect: noop,
   onDelete: noop,
 };
@@ -43,24 +38,13 @@ const graphProps = {
 };
 
 describe('docked panel controls', () => {
-  it('keeps create your graph as a permanent first-level destination', () => {
-    const onCreateGraph = vi.fn();
-    const onCloseMobile = vi.fn();
-    const { rerender } = render(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} onCloseMobile={onCloseMobile} collapsed={false} onCollapse={noop} />);
-
-    const entry = screen.getByRole('button', { name: '创建你的图' });
-    const newTask = screen.getByRole('button', { name: '新建任务' });
-    expect(entry.classList.contains('sidebar-primary-action')).toBe(true);
-    expect(newTask.classList.contains('sidebar-primary-action')).toBe(true);
-    expect(entry.querySelector('.sidebar-primary-action-icon')).toBeTruthy();
-    expect(newTask.querySelector('.sidebar-primary-action-icon')).toBeTruthy();
-    expect(entry.getAttribute('aria-current')).toBeNull();
-    fireEvent.click(entry);
-    expect(onCreateGraph).toHaveBeenCalledOnce();
-    expect(onCloseMobile).toHaveBeenCalledOnce();
-
-    rerender(<Sidebar {...sidebarProps} onCreateGraph={onCreateGraph} createGraphActive collapsed={false} onCollapse={noop} />);
-    expect(screen.getByRole('button', { name: '创建你的图' }).getAttribute('aria-current')).toBe('page');
+  it('keeps New task and My projects while moving graph creation out of the sidebar', () => {
+    const onNew = vi.fn();
+    render(<Sidebar {...sidebarProps} onNew={onNew} collapsed={false} onCollapse={noop} />);
+    expect(screen.queryByRole('button', { name: '创建你的图' })).toBeNull();
+    expect(screen.getByRole('button', { name: '我的项目' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
+    expect(onNew).toHaveBeenCalledOnce();
   });
 
   it('removes the legacy sidebar version label and keeps a functional toggle', () => {
@@ -90,63 +74,37 @@ describe('docked panel controls', () => {
     expect(onNew).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: '切换到英文' })).toBeTruthy();
   });
-  it('highlights a selected conversation without highlighting its parent project', () => {
-    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
-    const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '会话一' }];
-    const { container, rerender } = render(<Sidebar {...sidebarProps} projects={projects} sessions={sessions} activeId="session-1" collapsed={false} onCollapse={noop} />);
-
-    expect(container.querySelector('.project-row-main small')).toBeNull();
-    expect(container.querySelector('.project-row')?.classList.contains('selected')).toBe(false);
-    expect(container.querySelector('.project-session-row')?.classList.contains('selected')).toBe(true);
-
-    rerender(<Sidebar {...sidebarProps} projects={projects} sessions={sessions} activeProjectId="project-1" collapsed={false} onCollapse={noop} />);
-    expect(container.querySelector('.project-row')?.classList.contains('selected')).toBe(true);
-    expect(container.querySelector('.project-session-row')?.classList.contains('selected')).toBe(false);
+  it('opens the project catalog from a single entry and closes the mobile sidebar', () => {
+    const onProjects = vi.fn();
+    const onCloseMobile = vi.fn();
+    const { container, rerender } = render(<Sidebar {...sidebarProps} onProjects={onProjects} onCloseMobile={onCloseMobile} mobileOpen collapsed={false} onCollapse={noop} />);
+    const entry = screen.getByRole('button', { name: '我的项目' });
+    expect(entry.getAttribute('aria-current')).toBeNull();
+    expect(container.querySelector('.sidebar-projects')?.querySelectorAll('button')).toHaveLength(1);
+    expect(container.querySelector('.project-list, .project-tree-node')).toBeNull();
+    fireEvent.click(entry);
+    expect(onProjects).toHaveBeenCalledOnce();
+    expect(onCloseMobile).toHaveBeenCalledOnce();
+    rerender(<Sidebar {...sidebarProps} projectsActive collapsed={false} onCollapse={noop} />);
+    expect(screen.getByRole('button', { name: '我的项目' }).getAttribute('aria-current')).toBe('page');
   });
 
-  it('switches between closed and open folder icons with the project tree state', () => {
-    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 0 }];
-    const { container } = render(<Sidebar {...sidebarProps} projects={projects} sessions={[]} collapsed={false} onCollapse={noop} />);
-
-    expect(container.querySelector('.project-row-icon path')?.getAttribute('d')).toContain('M3 6.5');
-    fireEvent.click(screen.getByRole('button', { name: '项目一' }));
-    expect(container.querySelector('.project-row-icon path')?.getAttribute('d')).toContain('M3 16.5');
-  });
-
-  it('opens project actions in a floating menu and dispatches each action', () => {
-    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 0 }];
-    const onEditProject = vi.fn();
-    const onDeleteProject = vi.fn();
-    render(<Sidebar {...sidebarProps} projects={projects} sessions={[]} collapsed={false} onCollapse={noop} onEditProject={onEditProject} onDeleteProject={onDeleteProject} />);
-
-    const trigger = screen.getByRole('button', { name: '项目一 项目操作' });
-    expect(Array.from(trigger.closest('.project-row')!.querySelectorAll('.project-inline-action')).map(button => button.getAttribute('aria-label'))).toEqual([
-      '项目一 项目数据集',
-      '项目一 项目操作',
-      '在 项目一 中新建会话',
-    ]);
-    fireEvent.click(trigger);
-    const menu = screen.getByRole('menu', { name: '项目一 项目操作' });
-    expect(menu.parentElement).toBe(document.body);
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    fireEvent.click(screen.getByRole('menuitem', { name: '编辑项目' }));
-    expect(onEditProject).toHaveBeenCalledWith(projects[0]);
-    expect(screen.queryByRole('menu')).toBeNull();
-
-    fireEvent.click(trigger);
-    fireEvent.click(screen.getByRole('menuitem', { name: '删除项目' }));
-    expect(onDeleteProject).toHaveBeenCalledWith(projects[0]);
-  });
-
-  it('lists independent conversations once and keeps project conversations in their project', () => {
-    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
+  it('lists project and independent conversations once in recents and keeps their actions', () => {
     const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '会话一' }, { session_id: 'standalone', project_id: null, title: '独立对话' }];
-    const { container } = render(<Sidebar {...sidebarProps} projects={projects} sessions={sessions} activeId="session-1" collapsed={false} onCollapse={noop} />);
+    const onSelect = vi.fn();
+    const onDelete = vi.fn();
+    const { container } = render(<Sidebar {...sidebarProps} sessions={sessions} activeId="session-1" onSelect={onSelect} onDelete={onDelete} collapsed={false} onCollapse={noop} />);
     expect(container.querySelector('.sidebar-recents')?.textContent).toContain('独立对话');
-    expect(container.querySelector('.sidebar-recents')?.textContent).not.toContain('会话一');
-    expect(container.querySelector('.project-session-list')?.textContent).toContain('会话一');
+    expect(container.querySelector('.sidebar-recents')?.textContent).toContain('会话一');
     expect(screen.getAllByText('独立对话')).toHaveLength(1);
     expect(screen.getAllByText('会话一')).toHaveLength(1);
+    expect(container.querySelector('.session-row.selected')?.textContent).toContain('会话一');
+    expect(screen.getByRole('button', { name: '我的项目' }).getAttribute('aria-current')).toBeNull();
+    fireEvent.click(screen.getByText('会话一'));
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith('session-1');
+    fireEvent.click(screen.getAllByRole('button', { name: '删除任务' })[0]);
+    expect(onDelete).toHaveBeenCalledExactlyOnceWith('session-1');
+    expect(onSelect).toHaveBeenCalledOnce();
   });
 
   it('uses a spinner for active replies and a blue dot for unread completions', () => {
@@ -168,34 +126,18 @@ describe('docked panel controls', () => {
     expect(screen.queryByLabelText('回复已完成')).toBeNull();
   });
 
-  it('opens standalone tasks from the main action and project tasks only from the project action', () => {
-    const projects = [{ project_id: 'project-1', user_id: 'tester', name: '项目一', conversation_count: 1 }];
-    const projectSession = { session_id: 'session-1', project_id: 'project-1', title: '项目会话' };
-    const independentSession = { session_id: 'standalone', project_id: null, title: '独立会话' };
+  it('opens standalone tasks from both new-task actions even when a project task is active', () => {
+    const sessions = [{ session_id: 'session-1', project_id: 'project-1', title: '项目会话' }];
     const onNew = vi.fn();
-    const onNewInProject = vi.fn();
-    const { rerender } = render(<Sidebar {...sidebarProps} projects={projects} sessions={[]} onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
-
+    const { rerender } = render(<Sidebar {...sidebarProps} onNew={onNew} collapsed={false} onCollapse={noop} />);
     expect(screen.getByText('暂无任务')).toBeTruthy();
-    expect(screen.queryByText('点击上方按钮开始新分析')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '新建独立会话' }));
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
     expect(onNew).toHaveBeenCalledTimes(2);
-    expect(onNewInProject).not.toHaveBeenCalled();
-
-    rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[projectSession]} activeProjectId="project-1" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
+    rerender(<Sidebar {...sidebarProps} sessions={sessions} activeId="session-1" onNew={onNew} collapsed={false} onCollapse={noop} />);
     fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNewInProject).not.toHaveBeenCalled();
-
-    rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[projectSession]} activeId="session-1" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNewInProject).not.toHaveBeenCalled();
-
-    rerender(<Sidebar {...sidebarProps} projects={projects} sessions={[independentSession]} activeId="standalone" onNew={onNew} onNewInProject={onNewInProject} collapsed={false} onCollapse={noop} />);
-    fireEvent.click(screen.getByRole('button', { name: '新建任务' }));
-    expect(onNew).toHaveBeenCalledTimes(5);
-    fireEvent.click(screen.getByRole('button', { name: '在 项目一 中新建会话' }));
-    expect(onNewInProject).toHaveBeenCalledExactlyOnceWith('project-1');
+    expect(onNew).toHaveBeenCalledTimes(3);
+    expect(onNew.mock.calls.every(args => args.length === 0)).toBe(true);
   });
 
   it('uses one right panel toggle for both expanded and collapsed states', () => {
@@ -423,22 +365,4 @@ describe('docked panel controls', () => {
     fireEvent.click(screen.getByRole('button', { name: '使用' }));
     expect(onUseServer).toHaveBeenCalledOnce();
   });
-});
-
-it('keeps the animated project list mounted and makes collapsed sessions inert', () => {
-  const onProjectDatasets = vi.fn();
-  const { container } = render(<Sidebar {...sidebarProps} projects={[{ project_id: 'p', user_id: 'tester', name: '项目' }]} sessions={[{ session_id: 's', project_id: 'p', title: '会话' }]} onProjectDatasets={onProjectDatasets} collapsed={false} onCollapse={noop} />);
-  const list = container.querySelector('.project-session-collapse')!;
-  expect(list.hasAttribute('inert')).toBe(true);
-  expect(list.querySelector('.project-session-main')).not.toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: '项目 项目数据集' }));
-  expect(onProjectDatasets).toHaveBeenCalledWith('p');
-  expect(list.hasAttribute('inert')).toBe(true);
-  fireEvent.click(screen.getByRole('button', { name: '项目' }));
-  expect(list.hasAttribute('inert')).toBe(false);
-  expect(screen.getByRole('button', { name: '会话' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: '项目' }));
-  expect(list.hasAttribute('inert')).toBe(true);
-  expect(screen.queryByRole('button', { name: '会话' })).toBeNull();
-  expect(list.querySelector('.project-session-main')).not.toBeNull();
 });

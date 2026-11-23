@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -25,7 +26,8 @@ from typing import Callable
 
 import graph_engine.paths as paths
 from graph_engine.analysis_policy import numeric_weight
-from graph_data_service.construction_schema import source_schema_tables
+from graph_data_service.construction_schema import schema_foreign_key, source_schema_tables
+from graph_data_service.construction_questions import QUESTION_TIMEOUT_SECONDS
 
 FORMATS = ("sql", "csv", "txt")
 OPERATIONS = ("collapse_node", "node_property_to_edge", "extract_property_node",
@@ -251,14 +253,17 @@ def graph_schema(graph: dict) -> dict:
         item = {"id": edge_id, "type": type_name, "source_type": source_type,
                 "target_type": target_type, "relationship_count": len(rows),
                 "property_paths": property_paths}
+        fk = next((key for row in rows if (key := schema_foreign_key(row)) is not None), None) if type_name.startswith("fk_") else None
+        if fk:
+            item["foreign_key"] = fk
         edge_types.append(item)
         schema_edges.append({
             "id": edge_id,
             "source": source_type,
             "target": target_type,
             "type": type_name,
-            "label": type_name,
-            "properties": {"schema_kind": "edge_type", "type_name": type_name,
+            "label": (", ".join(fk["columns"]) + " → " + fk["ref_table"] + "." + ", ".join(fk["ref_columns"])) if fk else type_name,
+            "properties": {"schema_kind": "edge_type", "type_name": type_name, **({"foreign_key": fk} if fk else {}),
                            "source_type": source_type, "target_type": target_type,
                            "relationship_count": len(rows), "property_paths": property_paths},
         })
@@ -745,6 +750,8 @@ class ConstructionStore:
             "last_build_status": record.get("last_build_status"),
             "build_id": record.get("build_id"), "failure_code": record.get("failure_code"),
         }.items()}
+        if record.get("model_config_id"):
+            result["model_config_id"] = record["model_config_id"]
         if directory is not None:
             progress = _read_public_progress(Path(directory), record)
             if progress is not None:
@@ -879,6 +886,11 @@ class ConstructionStore:
             if _execution is not None:
                 record.update(build_id=_execution.build_id, executor_instance=_execution.instance_id,
                               request_fingerprint=_execution.fingerprint)
+                model = getattr(_execution, "model", None)
+                if model:
+                    record["model_config_id"] = model["config_id"]
+                else:
+                    record.pop("model_config_id", None)
             _atomic_json(directory / "record.json", record)
             try:
                 (directory / "construction-progress.json").unlink(missing_ok=True)
@@ -897,8 +909,14 @@ class ConstructionStore:
                     message = _TEXT_EXTRACTION_FAILURE_MESSAGES[code]
                 elif isinstance(code, str) and code.startswith("text_extraction_"):
                     message = "TXT 实体关系抽取未完整成功；未发布半成品图，源文件已保留，请检查文本或模型配置后重试。"
+                elif code == "MODEL_QUOTA_EXHAUSTED":
+                    message = "所选模型服务余额不足，源文件已保留，可更换模型后重试。"
+                elif isinstance(code, str) and code.startswith("MODEL_"):
+                    message = "所选模型当前不可用，源文件已保留，请检查模型服务后重试。"
                 elif code == "construction_time_budget_exhausted":
                     message = "构图超过时间预算；源文件已保留，可调整预算后重试。"
+                elif code == "csv_configuration_required":
+                    message = "请检查 CSV 主外键配置：节点表须设置主键；关系表须配置两组外键列，每端须唯一匹配一个节点。修正配置或引用值后重新上传。"
                 else:
                     message = "构图失败；源文件已保留，请检查构图算法后重试。"
                 record.update(status="failed", last_build_status="failed", failure_code=code,
@@ -919,6 +937,59 @@ class ConstructionStore:
             _fail("This dataset has no constructed graph.", "graph_not_ready", 409, status=record["status"])
         return {"dataset_id": dataset_id, "revision": record["revision"], "graph": copy.deepcopy(graph)}
 
+    @staticmethod
+    def _question_status(record):
+        task = record.get("question_generation", {})
+        status = task.get("status", "not_generated")
+        code = task.get("error_code")
+        if status == "generating" and time.time() > task["expires_at"]:
+            status, code = "failed", "QUESTION_TIMEOUT"
+        return {"dataset_id": record["dataset_id"], "revision": record["revision"],
+                "status": status, "questions": [],
+                **record.get("generated_questions", {}),
+                "model_config_id": task.get("model", {}).get("config_id"),
+                "error_code": code}
+
+    @staticmethod
+    def _queue_questions(record, model):
+        task = {"id": uuid.uuid4().hex, "model": model, "status": "generating",
+                "expires_at": time.time() + QUESTION_TIMEOUT_SECONDS + 20}
+        record["question_generation"] = task
+        return task
+
+    def questions(self, user_id, dataset_id):
+        record = self._read(self._directory(user_id, dataset_id), dataset_id)
+        if record["status"] != "ready" or record.get("graph") is None:
+            _fail("Save the constructed graph before using its questions.", "graph_not_ready", 409)
+        return self._question_status(record)
+
+    def start_questions(self, user_id, dataset_id, base_revision, model):
+        with self._write_lock(user_id, dataset_id) as directory:
+            record = self._read(directory, dataset_id)
+            if record["status"] != "ready" or record.get("graph") is None:
+                _fail("Save the constructed graph before generating questions.", "graph_not_ready", 409)
+            if record["revision"] != base_revision:
+                _fail("The dataset has changed. Refresh before generating questions.", "revision_conflict", 409)
+            current = self._question_status(record)
+            if current["status"] == "generating":
+                if record["question_generation"]["model"] != model:
+                    _fail("Example questions are already being generated.", "QUESTION_GENERATION_BUSY", 409)
+                return current, None, None
+            task = self._queue_questions(record, model)
+            _atomic_json(directory / "record.json", record)
+            return self._question_status(record), task, record["graph"]
+
+    def finish_questions(self, user_id, dataset_id, revision, task_id, result, error_code):
+        with self._write_lock(user_id, dataset_id) as directory:
+            record = self._read(directory, dataset_id)
+            task = record.get("question_generation", {})
+            if record["status"] != "ready" or record["revision"] != revision or task.get("id") != task_id:
+                return
+            task.update(status="ready" if result is not None else "failed", error_code=error_code)
+            if result is not None:
+                record["generated_questions"] = result
+            _atomic_json(directory / "record.json", record)
+
     def schema(self, user_id, dataset_id):
         """Return a freshly aggregated schema; the persisted instance graph is untouched."""
         directory = self._directory(user_id, dataset_id)
@@ -930,7 +1001,8 @@ class ConstructionStore:
                 "schema": {**graph_schema(graph),
                            "source_tables": source_schema_tables(directory, record.get("source_tables"))}}
 
-    def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None):
+    def optimize(self, user_id, dataset_id, base_revision, operations, *, commit=False, before_commit=None, receipt=None,
+                 question_model=None):
         if type(base_revision) is not int or base_revision < 1:
             _fail("base_revision must be a positive integer.")
         with self._write_lock(user_id, dataset_id) as directory:
@@ -951,7 +1023,11 @@ class ConstructionStore:
                       "base_revision": base_revision, "revision": base_revision + 1, "graph": graph, "summary": summary}
             if commit:
                 record.pop("draft_graph", None)
+                for key in ("example_questions", "example_questions_version", "generated_questions", "question_generation"):
+                    record.pop(key, None)
                 record.update(graph=graph, status="ready", last_build_status="ready", message="构图结果已保存，可用于分析。", revision=base_revision + 1, updated_at=datetime.now(timezone.utc).isoformat())
+                if question_model is not None:
+                    result["question_generation"] = self._queue_questions(record, question_model)
                 if receipt is not None:
                     record["commit_receipt"] = {**receipt, "result": result}
                 _atomic_json(directory / "record.json", record, before_replace=before_commit)

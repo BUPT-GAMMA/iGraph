@@ -1,7 +1,7 @@
 import { useExampleLabels } from '../userCases';
 import { useRef } from 'react';
 import type { Dataset, ServerDataset } from '../types';
-import { constructionLabel, supportsConstruction } from '../construction';
+import { canOpenConstruction, constructionLabel } from '../construction';
 import { serverDatasetActionLabel, serverDatasetPreparationLabel, serverDatasetReady } from '../serverDatasets';
 import { DrawerShell } from './DrawerShell';
 import { Icon } from './Icon';
@@ -42,6 +42,7 @@ function datasetSummary(dataset: Dataset, language: Language, t: Translate) {
 function displayConstructionLabel(dataset: Dataset, t: Translate) {
   const label = constructionLabel(dataset);
   const english: Record<string, string> = {
+    '查看构图结果': 'View construction result',
     '查看进度': 'View progress',
     '重新构图': 'Rebuild graph',
     '算法待接入': 'Algorithm unavailable',
@@ -83,7 +84,7 @@ export function DatasetPanel({ datasets, serverDatasets = [], projectName, activ
             <span className="dataset-copy"><span className="dataset-title-line"><strong>{labels.name(dataset.name)}</strong>{activeDatasetId === dataset.dataset_id && <span className="dataset-badges"><b>{t('Current', '当前')}</b></span>}</span><small>{datasetSummary(dataset, language, t)}</small></span>
           </button>
           <div className="dataset-row-actions">
-            {onConstruct && supportsConstruction(dataset) && <button className="dataset-construction-button" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${displayConstructionLabel(dataset, t)} ${labels.name(dataset.name)}`}><Icon name="graph" size={14} />{displayConstructionLabel(dataset, t)}</button>}
+            {onConstruct && canOpenConstruction(dataset) && <button className="dataset-construction-button" onClick={() => onConstruct(dataset)} disabled={busy} aria-label={`${displayConstructionLabel(dataset, t)} ${labels.name(dataset.name)}`}><Icon name="graph" size={14} />{displayConstructionLabel(dataset, t)}</button>}
             <button onClick={() => onRename(dataset)} disabled={busy} title={t('Rename', '重命名')} aria-label={t(`Rename ${labels.name(dataset.name)}`, `重命名 ${labels.name(dataset.name)}`)}><Icon name="edit" size={14} /></button>
             <button className="danger" onClick={() => onDelete(dataset)} disabled={busy} title={t('Delete', '删除')} aria-label={t(`Delete ${labels.name(dataset.name)}`, `删除 ${labels.name(dataset.name)}`)}><Icon name="trash" size={14} /></button>
           </div>

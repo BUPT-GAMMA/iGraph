@@ -33,6 +33,7 @@ export type Session = {
 };
 
 export type Project = {
+  analysis_model?: string | null;
   project_id: string;
   user_id: string;
   name: string;
@@ -239,6 +240,7 @@ export type CsvBundleSchema = {
 
 export type ConstructionState = {
   dataset_id: string;
+  model_config_id?: string;
   build_id?: string | null;
   failure_code?: string | null;
   status: 'not_built' | 'algorithm_unavailable' | 'building' | 'draft' | 'ready' | 'failed';

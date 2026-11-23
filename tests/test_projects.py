@@ -280,7 +280,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv(
         "BACKEND_SERVER_DATASETS_DIR", str(tmp_path / "server_datasets")
     )
-    config = BackendConfig(
+    config = BackendConfig(auth_enabled=False,
         host="127.0.0.1",
         port=0,
         agent_runtime_url="http://fake-runtime",

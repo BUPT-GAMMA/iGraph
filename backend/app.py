@@ -41,6 +41,7 @@ from backend.constructed_import import install_constructed_import_routes
 from backend.custom_models import CustomModelDirectory, CustomModelRecord, public_custom_model
 from backend.event_mapper import feedback_request_from_payload, graph_job_progress_payload, project_run, translate_sse
 from backend.identity import current_user, SingleUserMiddleware
+from backend.auth import AccountDirectory, AccountMiddleware, install_auth_routes
 from backend.project_datasets import ProjectDatasetDirectory, ProjectDatasetRecord
 from backend.projects import ProjectDirectory, ProjectRecord
 from backend.server_datasets import ServerDatasetDirectory, ServerDatasetRecord
@@ -1358,7 +1359,7 @@ def _sse(payload: dict[str, Any]) -> str:
 
 def create_app(config: BackendConfig | None = None) -> FastAPI:
     settings = config or BackendConfig.from_env()
-    users = SingleUserDirectory(
+    users = AccountDirectory(settings) if settings.auth_enabled else SingleUserDirectory(
         settings.users_file,
         settings.supported_ids_file,
         settings.admin_user_id,
@@ -1641,9 +1642,13 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         )
     app.state.users = users
     app.add_middleware(RequestLoggingMiddleware)
-    app.add_middleware(SingleUserMiddleware, user_id=settings.admin_user_id,
-                       trusted_proxies=settings.auth_trusted_proxies,
-                       allowed_origins=settings.auth_allowed_origins)
+    if settings.auth_enabled:
+        install_auth_routes(app, users, settings)
+        app.add_middleware(AccountMiddleware, accounts=users, settings=settings)
+    else:
+        app.add_middleware(SingleUserMiddleware, user_id=settings.admin_user_id,
+                           trusted_proxies=settings.auth_trusted_proxies,
+                           allowed_origins=settings.auth_allowed_origins)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.auth_allowed_origins),
@@ -1665,7 +1670,7 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         default = (await model_catalog_for(record))['default_model'] if controls_enabled() else (models[0] if models else '')
         return {
             "valid": True,
-            "single_user": True,
+            "single_user": not settings.auth_enabled,
             "user_id": record.user_id,
             "is_admin": False,
             "available_models": models,
@@ -3281,6 +3286,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
     async def list_server_datasets(request: Request):
         user = current_user(request, users)
         rows = server_datasets.list()
+        if settings.auth_enabled and user.user_id != settings.admin_user_id:
+            from backend.user_cases import USER_CASES
+            shared = {item["filename"] for item in USER_CASES}
+            rows = [row for row in rows if row.relative_path in shared]
 
         async def describe(source: ServerDatasetRecord) -> dict[str, Any]:
             row = source.public_dict()
@@ -3303,6 +3312,10 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         user = current_user(request, users)
         project = project_or_404(project_id, user.user_id)
         source = server_datasets.get(req.server_dataset_id)
+        if source is not None and settings.auth_enabled and user.user_id != settings.admin_user_id:
+            from backend.user_cases import USER_CASES
+            if source.relative_path not in {item["filename"] for item in USER_CASES}:
+                source = None
         if source is None:
             raise HTTPException(status_code=404, detail="服务器数据源不存在或已被移除")
         if source.metadata_error:
@@ -3946,7 +3959,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         project = project_or_404(req.project_id, user.user_id) if req.project_id else None
         available_models = await available_models_for(user)
         default_model = (await model_catalog_for(user))['default_model'] if controls_enabled() else (available_models[0] if available_models else '')
-        model = req.model or default_model
+        preferred = project.analysis_model if project else None
+        model = req.model or (preferred if preferred in available_models else default_model)
         if model not in available_models:
             raise HTTPException(status_code=403, detail=f"用户无权使用模型 {model}")
         project_id = project.project_id if project else None
@@ -5560,6 +5574,11 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         return {"success": True, "workspace_path": workspace_path, "filename": filename, "file_token": file_token, "graph_engine": payload,
                 "dataset": _project_dataset_row(dataset) if dataset else None,
                 "construction_required": dataset is not None}
+
+    from backend.playground import install_playground
+    install_playground(app, path=settings.projects_file.with_name("playground.sqlite3"), graph=graph, runtime=runtime,
+        directory=project_datasets, projects=projects, user_for=lambda request: current_user(request, users),
+        project_row=_project_row, launch=own_launch)
 
     install_constructed_import_routes(app, graph=graph, directory=project_datasets, projects=projects,
         user_for=lambda request: current_user(request, users), project_for=project_or_404,

@@ -94,8 +94,8 @@ def test_sql_values_preserve_case_and_parent_fk_affinity(tmp_path):
 def test_csv_exact_strings_inline_tables_and_stable_primary_key(tmp_path):
     path = tmp_path / "orders.csv"
     path.write_text("id,person_id,amount\n001,A,1.20\n002,a,2.40\n003,,0.00\n", encoding="utf-8")
-    source = load_source(path, {"foreign_keys": [{"columns": ["person_id"], "ref_table": "people", "ref_columns": ["id"]}],
-                                "tables": [{"name": "people", "rows": [{"id": "A"}, {"id": "a"}]}]})
+    source = load_source(path, {"primary_key": ["id"], "foreign_keys": [{"columns": ["person_id"], "ref_table": "people", "ref_columns": ["id"]}],
+                                "tables": [{"name": "people", "primary_key": ["id"], "rows": [{"id": "A"}, {"id": "a"}]}]})
     graph = initial_graph(source)
     assert len(graph["edges"]) == 2
     assert len({edge["target"] for edge in graph["edges"]}) == 2
@@ -135,7 +135,7 @@ def test_csv_header_starting_with_pk_is_not_treated_as_bundle(tmp_path):
     path = tmp_path / "plain.csv"
     path.write_text("PK_ID,value\n1,alpha\n2,beta\n", encoding="utf-8")
 
-    source = load_source(path)
+    source = load_source(path, {"primary_key": ["PK_ID"]})
     try:
         assert source.tables["plain"].columns == ["PK_ID", "value"]
         assert len(initial_graph(source)["nodes"]) == 2
@@ -308,10 +308,9 @@ def test_csv_keyless_duplicate_rows_and_non_identity_unique_columns(tmp_path):
     path = tmp_path / "source.csv"
     path.write_text("name\nSame\nSame\n", encoding="utf-8")
     source = load_source(path)
-    graph = initial_graph(source)
-    assert len({row["id"] for row in graph["nodes"]}) == 2
+    with pytest.raises(SourceError, match="Configure a primary key"):
+        initial_graph(source)
     assert source.tables["source"].primary_key == []
-    assert any("no reliable primary key" in warning for warning in source.warnings)
     path.write_text("name\nOne\nTwo\n", encoding="utf-8")
     assert load_source(path).tables["source"].primary_key == []
 
@@ -399,13 +398,14 @@ def test_sql_fk_pairing_uses_rowid_without_serializing_full_rows(tmp_path):
 def test_initial_graph_uses_source_node_and_edge_limits(tmp_path):
     path = tmp_path / "children.csv"
     path.write_text("id,parent_id\n1,P\n2,P\n", encoding="utf-8")
-    node_limited = load_source(path, {"max_graph_nodes": 1})
+    node_limited = load_source(path, {"primary_key": ["id"], "max_graph_nodes": 1})
     with pytest.raises(SourceError, match="node construction limit"):
         initial_graph(node_limited)
     edge_limited = load_source(path, {
+        "primary_key": ["id"],
         "max_graph_edges": 1,
         "foreign_keys": [{"columns": ["parent_id"], "ref_table": "parents", "ref_columns": ["id"]}],
-        "tables": [{"name": "parents", "rows": [{"id": "P"}]}],
+        "tables": [{"name": "parents", "primary_key": ["id"], "rows": [{"id": "P"}]}],
     })
     with pytest.raises(SourceError, match="edge construction limit"):
         initial_graph(edge_limited)

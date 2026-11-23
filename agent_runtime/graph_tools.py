@@ -189,11 +189,15 @@ def graph_identity_headers(
     }
 
 
-def create_graph_tools(config: AgentRuntimeConfig, *, response_language: str = "Auto") -> MCPTools:
+def create_graph_tools(config: AgentRuntimeConfig, *, response_language: str = "Auto", playground: bool = False) -> MCPTools:
     from agent_runtime.graph_jobs import GraphMCPTools
     return GraphMCPTools(
         response_language=response_language,
         url=config.mcp_url,
+        # A generated scenario is a local property graph. Omitting session management and native Nebula
+        # administration keeps the request within OpenAI-compatible gateways' 128-function limit.
+        exclude_tools=["register_session", "delete_graph_session", "set_session_config", "nebula_status",
+                       "nebula_get_node_info", "nebula_get_neighbors", "nebula_shortest_path", "nebula_sync_graph"] if playground else None,
         header_provider=graph_identity_headers,
         requires_confirmation_tools=sorted(GRAPH_TOOLS_REQUIRING_CONFIRMATION),
         job_poll_interval_seconds=getattr(config, "job_poll_interval_seconds", 2.0),

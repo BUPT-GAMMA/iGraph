@@ -5,7 +5,8 @@ Documentation is organized by purpose. Add new documents to the appropriate dire
 ## Start here
 
 - [Technical report](https://igraph-docs.graphagent.workers.dev): the Graph Data Agent, its workflow, system design, and graph capabilities. English and Chinese editions are available online.
-- [Deployment guide](guides/DEPLOYMENT.md): the complete English guide to installing and operating a single-user iGraph workspace.
+- [Deployment guide](guides/DEPLOYMENT.md): Linux server setup and Docker Compose deployment.
+- [Multi-user deployment](multi-user-deployment.md): account storage and initial access to the original workspace after upgrading.
 - [Built-in experiences](../README.md#-built-in-experiences): Financial Risk Control, AI for Science, and Relationship Insights, with prepared graphs and example questions.
 - [Current architecture](architecture/AGENTOS_FOUR_MODULE_REFACTOR.md): the four application modules and their responsibilities.
 

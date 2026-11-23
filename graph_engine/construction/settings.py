@@ -1,16 +1,33 @@
-"""Private single-workspace construction connection, separate from graph artifacts."""
+"""User-owned construction connections, separate from graph artifacts."""
 from __future__ import annotations
 
 import json
 import os
 import tempfile
 import threading
+import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 from graph_engine.paths import data_root
 
 _lock = threading.RLock()
+_user = ContextVar("construction_settings_user", default=None)
+
+
+@contextmanager
+def construction_identity(user_id):
+    token = _user.set(user_id)
+    try:
+        yield
+    finally:
+        _user.reset(token)
+
+
+def owns_server_settings():
+    return _user.get() in {None, os.getenv("IGRAPH_ADMIN_USER_ID", "admin")}
 
 
 class ConstructionSettingsWrite(BaseModel):
@@ -21,6 +38,9 @@ class ConstructionSettingsWrite(BaseModel):
 
 
 def settings_path():
+    if not owns_server_settings():
+        uid = hashlib.sha256(_user.get().encode()).hexdigest()
+        return data_root() / "configuration" / "users" / uid / "construction-model.json"
     return data_root() / "configuration" / "construction-model.json"
 
 
@@ -37,7 +57,7 @@ def public_settings():
         "model": saved.get("model") or os.getenv("GRAPH_CONSTRUCTION_MODEL") or "deepseek-v4-pro",
         "has_base_url": bool(saved.get("base_url")),
         "has_api_key": bool(saved.get("api_key")),
-        "has_server_config": any(os.getenv(p + "_BASE_URL") and os.getenv(p + "_API_KEY")
+        "has_server_config": owns_server_settings() and any(os.getenv(p + "_BASE_URL") and os.getenv(p + "_API_KEY")
             for p in ("GRAPH_CONSTRUCTION", "LLM", "OPENAI", "DEEPSEEK", "CLAUDE", "ANTHROPIC", "QWEN", "DASHSCOPE")),
     }
 

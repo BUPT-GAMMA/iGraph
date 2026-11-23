@@ -24,6 +24,19 @@ class AccessRequest(BaseModel):
     scope: str | None = Field(default=None, min_length=1, max_length=256)
     dataset_id: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_-]+$")
     cleanup: bool = False
+    saved_graph: bool = False
+
+
+class ConstructionQuestionModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    config_id: str = Field(min_length=1, max_length=256)
+    revision: int = Field(ge=0)
+
+
+class ConstructionQuestionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    base_revision: int = Field(ge=1)
+    model: ConstructionQuestionModel
 
 
 class SourceRecord(BaseModel):

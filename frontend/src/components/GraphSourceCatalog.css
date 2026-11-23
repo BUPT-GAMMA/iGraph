@@ -1,0 +1,77 @@
+.graph-source-upload { min-width: 0; display: grid; gap: 14px; }
+.source-catalog-heading { margin: 0; font-size: 17px; }
+.graph-source-formats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.graph-source-format {
+  display: grid;
+  grid-template-columns: 33px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-height: 62px;
+  padding: 8px 10px;
+  border: 1px solid var(--catalog-line);
+  border-radius: 9px;
+  color: var(--catalog-ink);
+  background: var(--catalog-surface);
+  text-align: left;
+}
+.graph-source-format:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.graph-source-format:disabled { opacity: .6; }
+.graph-source-format > svg { width: 33px; height: 33px; padding: 7px; color: var(--accent); background: var(--accent-soft); border-radius: 7px; }
+.graph-source-format span { display: grid; gap: 3px; }
+.graph-source-format b { font-size: 12px; overflow-wrap: anywhere; }
+.graph-source-format small { color: var(--catalog-muted); font-size: 10px; }
+.graph-source-drop {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 10px;
+  border: 1px dashed var(--accent-border);
+  background: var(--catalog-surface);
+  color: var(--catalog-ink);
+  text-align: left;
+}
+.graph-source-drop:is(:hover, [data-dragging="true"]):not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+.graph-source-drop > svg { flex: none; color: var(--accent); }
+.graph-source-drop span { display: grid; gap: 4px; }
+.graph-source-drop b { font-size: 13px; }
+.graph-source-drop small { color: var(--catalog-muted); font-size: 11px; }
+.graph-source-drop .graph-source-choose {
+  margin-inline-start: auto;
+  align-self: center;
+  color: var(--accent-strong);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.graph-source-upload .csv-bundle-error { margin: 0; }
+.graph-source-list { min-width: 0; }
+.source-catalog-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.source-catalog-count { color: var(--catalog-muted); font-size: 11px; }
+.source-catalog-filters { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 14px; }
+.source-catalog-tabs {
+  display: flex;
+  gap: 1px;
+  padding: 3px;
+  border: 1px solid var(--catalog-line);
+  border-radius: 8px;
+  background: var(--catalog-subtle);
+}
+.source-catalog-tabs button { padding: 6px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--catalog-muted); font-size: 11px; white-space: nowrap; }
+.source-catalog-tabs button[aria-pressed="true"] { color: var(--catalog-ink); background: var(--catalog-surface); box-shadow: 0 1px 3px rgb(10 30 60 / 9%); font-weight: 700; }
+.source-catalog-search { display: flex; align-items: center; gap: 7px; flex: 0 1 240px; max-width: 100%; padding: 6px 9px; border: 1px solid var(--catalog-line); border-radius: 7px; color: var(--catalog-muted); background: var(--catalog-surface); }
+.source-catalog-search:focus-within { border-color: var(--accent); }
+.source-catalog-search input { width: 100%; min-width: 0; border: 0; outline: none; background: transparent; color: var(--catalog-ink); font: inherit; font-size: 12px; }
+.graph-source-type { display: inline-flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; color: var(--catalog-muted); font-size: 10px; }
+.graph-source-type > span { background: var(--catalog-subtle); border-radius: 4px; padding: 1px 5px; }
+.graph-source-type > .is-example { background: var(--accent-soft); color: var(--accent-strong); }
+.graph-source-card .catalog-card-meta > span:first-child:not(.catalog-status) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-source-card .catalog-card-actions > .plain-icon { margin-inline-start: auto; width: 28px; height: 29px; }
+.graph-source-card .create-graph-delete { color: var(--catalog-muted); }
+.graph-source-card .create-graph-delete:hover:not(:disabled) { color: #c33b50; background: rgb(220 38 38 / 8%); }
+@media (max-width: 720px) { .graph-source-formats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 470px) {
+  .graph-source-drop .graph-source-choose { display: none; }
+  .source-catalog-search { flex: 1 0 100%; }
+}

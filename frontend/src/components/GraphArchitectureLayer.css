@@ -1,0 +1,114 @@
+.graph-layer-switch {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin: 10px 12px 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  align-self: flex-start;
+  background: var(--surface-subtle);
+}
+.graph-layer-switch > button {
+  min-height: 28px;
+  padding: 4px 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-size: 11px;
+}
+.graph-layer-switch > button[aria-pressed="true"] { border-color: var(--border); color: var(--accent-strong); background: var(--surface); box-shadow: 0 1px 4px rgb(17 37 70 / 7%); font-weight: 700; }
+.graph-architecture {
+  --arch-wall: #f3f7fe;
+  --arch-grid: #b8c9e065;
+  --arch-surface: #fff;
+  --arch-stroke: #b1c2dc;
+  --arch-edge: #7085a3;
+  --arch-ink: #1c2c46;
+  --arch-muted: #5d6d83;
+  --arch-active: #b26519;
+  --arch-active-bg: #fff6e4;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 9px 12px 12px;
+  gap: 8px;
+  color: var(--arch-ink);
+}
+[data-theme="dark"] .graph-architecture {
+  --arch-wall: #141e2d;
+  --arch-grid: #6280a553;
+  --arch-surface: #233147;
+  --arch-stroke: #506886;
+  --arch-edge: #9aafd0;
+  --arch-ink: #edf4ff;
+  --arch-muted: #aabbd2;
+  --arch-active: #ffbd73;
+  --arch-active-bg: #493526;
+}
+.architecture-toolbar { display: flex; align-items: center; gap: 6px; }
+.architecture-search { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; min-height: 31px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--arch-surface); color: var(--arch-muted); }
+.architecture-search:focus-within { border-color: var(--accent); }
+.architecture-search > svg { flex: none; }
+.architecture-search input { min-width: 0; width: 100%; color: var(--arch-ink); background: transparent; padding: 0; border: 0; outline: none; font-size: 11px; }
+.architecture-tool { min-height: 31px; padding: 4px 7px; color: var(--arch-ink); background: var(--arch-surface); border: 1px solid var(--border); border-radius: 7px; font-size: 11px; white-space: nowrap; }
+.architecture-tool:hover { border-color: var(--accent-border); color: var(--accent-strong); }
+.architecture-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 300px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: radial-gradient(circle, var(--arch-grid) 1px, transparent 1.2px) 0 0 / 17px 17px, var(--arch-wall);
+}
+.architecture-canvas > svg { display: block; width: 100%; height: 100%; position: absolute; inset: 0; touch-action: none; cursor: grab; }
+.architecture-canvas > svg:active { cursor: grabbing; }
+.architecture-node, .architecture-link { outline: none; }
+.architecture-node { cursor: grab; }
+.architecture-node:active { cursor: grabbing; }
+.architecture-node-card { fill: var(--arch-surface); stroke: var(--arch-stroke); stroke-width: 1.2; filter: drop-shadow(0 4px 8px rgb(21 53 98 / 12%)); }
+.architecture-node-title { fill: var(--arch-ink); font-size: 12px; font-weight: 700; }
+.architecture-node-count { fill: var(--arch-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.architecture-node:hover .architecture-node-card, .architecture-node:focus-visible .architecture-node-card { stroke: var(--accent); stroke-width: 2; }
+.architecture-link { cursor: pointer; }
+.architecture-link-hit { fill: none; stroke: transparent; stroke-width: 15; vector-effect: non-scaling-stroke; pointer-events: stroke; }
+.architecture-link-line { fill: none; stroke: var(--arch-edge); stroke-width: 1.4; vector-effect: non-scaling-stroke; pointer-events: none; }
+.architecture-link-label rect { fill: var(--arch-surface); stroke: var(--arch-stroke); stroke-width: .8; }
+.architecture-link-label text { fill: var(--arch-ink); font-size: 10px; font-weight: 570; pointer-events: none; }
+.architecture-link:hover .architecture-link-line, .architecture-link:focus-visible .architecture-link-line { stroke: var(--accent); stroke-width: 2.2; }
+.architecture-link:focus-visible .architecture-link-label rect { stroke: var(--accent); stroke-width: 1.7; }
+.architecture-link[data-highlighted="true"] .architecture-link-line { stroke: var(--arch-active); stroke-width: 2.4; }
+.architecture-link[data-highlighted="true"] .architecture-link-label rect,
+.architecture-node[data-highlighted="true"] .architecture-node-card { fill: var(--arch-active-bg); stroke: var(--arch-active); stroke-width: 1.8; }
+:is(.architecture-node, .architecture-link)[data-muted="true"] { opacity: .24; }
+:is(.architecture-node, .architecture-link)[data-muted="true"]:is(:hover, :focus-visible) { opacity: .8; }
+.architecture-zoom { position: absolute; bottom: 9px; right: 9px; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 7px; background: var(--arch-surface); box-shadow: 0 2px 8px rgb(16 40 76 / 12%); }
+.architecture-zoom :is(button, output) { display: grid; place-items: center; color: var(--arch-ink); }
+.architecture-zoom button { width: 27px; height: 26px; border: 0; border-radius: 5px; background: transparent; font-size: 15px; }
+.architecture-zoom button:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.architecture-zoom output { width: 40px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.architecture-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 15px; color: var(--arch-muted); text-align: center; pointer-events: none; font-size: 12px; }
+.architecture-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 9px; min-height: 22px; color: var(--arch-muted); font-size: 10px; }
+.architecture-summary > span:first-child { font-weight: 650; }
+.architecture-sample, .architecture-result { display: inline-flex; align-items: center; gap: 4px; border-radius: 4px; color: var(--arch-active); padding: 2px 5px; background: var(--arch-active-bg); }
+.architecture-result i { width: 6px; height: 6px; display: inline-block; background: currentColor; border-radius: 50%; }
+.architecture-inspector { flex-shrink: 0; max-height: 190px; overflow: auto; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--arch-surface); font-size: 11px; }
+.architecture-inspector header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.architecture-inspector header div { display: grid; gap: 3px; min-width: 0; }
+.architecture-inspector header small, .architecture-inspector p { color: var(--arch-muted); }
+.architecture-inspector header strong { font-size: 13px; overflow-wrap: anywhere; }
+.architecture-inspector p { margin: 5px 0 7px; overflow-wrap: anywhere; }
+.architecture-inspector details > summary { color: var(--arch-muted); cursor: pointer; }
+.architecture-neighbor-buttons, .architecture-field-list { display: flex; flex-wrap: wrap; gap: 4px; margin: 5px 0; }
+.architecture-neighbor-buttons button, .architecture-field-list code { max-width: 100%; padding: 3px 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--arch-ink); background: var(--arch-wall); font-size: 10px; overflow-wrap: anywhere; }
+.architecture-neighbor-buttons button:hover { border-color: var(--accent); color: var(--accent-strong); }

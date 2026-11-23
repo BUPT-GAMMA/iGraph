@@ -1,17 +1,28 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError } from '../api';
+import { ApiError, type ModelCatalog } from '../api';
 import type { ConstructionOperation, Dataset } from '../types';
 import { GraphConstructionPanel } from './GraphConstructionPanel';
 
-const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn(), rename: vi.fn(), settings: vi.fn(), saveSettings: vi.fn(), models: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: vi.fn(), graph: vi.fn(), schema: vi.fn(), source: vi.fn(), build: vi.fn(), preview: vi.fn(), commit: vi.fn(), rename: vi.fn(), questions: vi.fn(), generate: vi.fn() }));
 vi.mock('../api', async importOriginal => ({
   ...await importOriginal<typeof import('../api')>(),
-  getConstructionModelSettings: mocks.settings, saveConstructionModelSettings: mocks.saveSettings, getConstructionModels: mocks.models, renameProjectDataset: mocks.rename, getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
+  renameProjectDataset: mocks.rename, getConstructionState: mocks.state, getConstructionGraph: mocks.graph, getConstructionSchema: mocks.schema, buildDatasetGraph: mocks.build,
   getConstructionSourcePreview: mocks.source,
   previewConstruction: mocks.preview, commitConstruction: mocks.commit,
+  getConstructionQuestions: mocks.questions, startConstructionQuestions: mocks.generate,
 }));
 vi.mock('./GraphWorkspace', () => ({ GraphWorkspace: ({ data, onSelect }: any) => <div aria-label="测试图画布">{data.nodes.map((node: any) => <button key={node.id} data-node-id={node.id} onClick={() => onSelect(node)}>图节点 {node.label ?? node.id}</button>)}<span>{data.edges.map((edge: any) => `${edge.source} → ${edge.target}`).join(', ')}</span></div> }));
+
+const workspaceModels: ModelCatalog = { default_model: 'model-a', models: [
+  { config_id: 'model-a', model_id: 'model-a', upstream_model_id: 'first', display_name: 'First model',
+    provider: 'openai-compatible', provider_name: 'Test provider', base_url: 'https://example.test', source: 'custom', enabled: true,
+    tools: true, vision: false, has_api_key: true, context_window: 24000, max_output_tokens: 4096, revision: 1 },
+  { config_id: 'model-b', model_id: 'model-b', upstream_model_id: 'second', display_name: 'Second model',
+    provider: 'anthropic', provider_name: 'Test provider', base_url: 'https://example.test', source: 'custom', enabled: true,
+    tools: true, vision: false, has_api_key: true, context_window: 24000, max_output_tokens: 4096, revision: 5 },
+] };
+const defaultSelection = { config_id: 'model-a', revision: 1 };
 
 const dataset: Dataset = { dataset_id: 'd1', project_id: null, name: '客户关系', original_filename: 'customers.csv', file_type: 'csv', status: 'ready' };
 const graph = { directed: true, nodes: [{ id: 'a', type: 'Person', properties: { phone: '123', age: 29 } }, { id: 'b', type: 'Link', properties: { phone: '123' } }, { id: 'c', type: 'Person', properties: {} }], edges: [{ id: 'e1', source: 'a', target: 'b', type: 'Knows', properties: { weight: 1 } }, { id: 'e2', source: 'b', target: 'c', type: 'Knows', properties: {} }] };
@@ -33,18 +44,25 @@ async function openPanel(onSaved = vi.fn(), onClose = vi.fn()) {
 }
 
 beforeEach(() => {
-  mocks.settings.mockResolvedValue({ model: 'deepseek-v4-pro', has_base_url: false, has_api_key: false, has_server_config: true });
-  mocks.models.mockResolvedValue({ models: ['deepseek-v4-pro', 'claude-opus-5-5'], default_model: 'deepseek-v4-pro' });
   mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'ready', revision: 2, algorithm_available: false });
   mocks.graph.mockResolvedValue({ dataset_id: 'd1', revision: 2, graph });
   mocks.schema.mockResolvedValue(schema);
   mocks.source.mockResolvedValue({ dataset_id: 'd1', tables: [], warnings: [] });
   mocks.preview.mockResolvedValue(result);
   mocks.commit.mockResolvedValue({ ...result, status: 'ready' });
+  mocks.questions.mockResolvedValue({ dataset_id: 'd1', revision: 3, status: 'not_generated', questions: [] });
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 describe('graph construction workflow', () => {
+  it('starts analysis from the saved result inside the project workspace', async () => {
+    const use = vi.fn();
+    mocks.state.mockResolvedValue({ dataset_id: dataset.dataset_id, status: 'draft', revision: 2, algorithm_available: true });
+    render(<GraphConstructionPanel embedded dataset={dataset} onClose={vi.fn()} onSaved={vi.fn()} onUse={use} />);
+    fireEvent.click(await screen.findByRole('button', { name: '保存构图结果' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始分析' }));
+    expect(use).toHaveBeenCalledWith(expect.objectContaining({ dataset_id: dataset.dataset_id, status: 'ready' }));
+  });
   it('previews a manual relationship with named endpoints and saves only on request', async () => {
     await openPanel();
     fireEvent.click(screen.getByRole('button', { name: /添加关系/ }));
@@ -417,7 +435,7 @@ describe('long-running graph construction', () => {
 
   async function show(onSaved = vi.fn(), onClose = vi.fn(), onStateChange = vi.fn()) {
     let view!: ReturnType<typeof render>;
-    await act(async () => { view = render(<GraphConstructionPanel dataset={sourceDataset} onClose={onClose} onSaved={onSaved} onStateChange={onStateChange} />); });
+    await act(async () => { view = render(<GraphConstructionPanel dataset={sourceDataset} workspaceModels={workspaceModels} onClose={onClose} onSaved={onSaved} onStateChange={onStateChange} />); });
     return view;
   }
   async function tick(milliseconds = 3000) {
@@ -550,8 +568,8 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      mode: 'llm', construction_model: 'deepseek-v4-pro', query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
-    });
+      mode: 'llm', query_count: count, domain: '电商订单履约', domain_category: 'auto', experience_enabled: true,
+    }, defaultSelection);
     expect(saved).toHaveBeenCalledTimes(1);
     expect(saved).toHaveBeenCalledWith(sourceDataset, graph, 3);
     await tick(9000);
@@ -573,7 +591,7 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledExactlyOnceWith(sourceDataset, {
       mode: 'rules', domain: '', experience_enabled: false,
-    });
+    }, defaultSelection);
   });
 
   it('uses Agent optimization only when the user enables the switch', async () => {
@@ -585,7 +603,7 @@ describe('long-running graph construction', () => {
     expect(agentSwitch.checked).toBe(true);
     expect(screen.getByText('Agent 会优化并验证规则化方法构建的图。')).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
-    expect(mocks.build).toHaveBeenCalledWith(sourceDataset, expect.objectContaining({ mode: 'llm' }));
+    expect(mocks.build).toHaveBeenCalledWith(sourceDataset, expect.objectContaining({ mode: 'llm' }), defaultSelection);
   });
 
   it('offers TXT delimiter selection and forwards the exact character', async () => {
@@ -595,7 +613,7 @@ describe('long-running graph construction', () => {
     mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
     mocks.build.mockResolvedValue(ready);
     await act(async () => {
-      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+      render(<GraphConstructionPanel dataset={txtDataset} workspaceModels={workspaceModels} onClose={vi.fn()} onSaved={vi.fn()} />);
     });
     const select = screen.getByLabelText('TXT 处理方式') as HTMLSelectElement;
     expect(select.value).toBe('');
@@ -607,7 +625,7 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
       mode: 'rules', domain: '', experience_enabled: false, delimiter: '|',
-    });
+    }, defaultSelection);
   });
 
   it('can force TXT line mode without sending a delimiter', async () => {
@@ -617,13 +635,13 @@ describe('long-running graph construction', () => {
     mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
     mocks.build.mockResolvedValue(ready);
     await act(async () => {
-      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+      render(<GraphConstructionPanel dataset={txtDataset} workspaceModels={workspaceModels} onClose={vi.fn()} onSaved={vi.fn()} />);
     });
     fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__lines__' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
       mode: 'rules', domain: '', experience_enabled: false, txt_mode: 'lines',
-    });
+    }, defaultSelection);
   });
 
   it('explicitly discloses and enables LLM semantic extraction for TXT', async () => {
@@ -633,7 +651,7 @@ describe('long-running graph construction', () => {
     mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
     mocks.build.mockResolvedValue(ready);
     await act(async () => {
-      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+      render(<GraphConstructionPanel dataset={txtDataset} workspaceModels={workspaceModels} onClose={vi.fn()} onSaved={vi.fn()} />);
     });
 
     fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__entities__' } });
@@ -647,8 +665,8 @@ describe('long-running graph construction', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
 
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      domain: '', txt_mode: 'entities', mode: 'llm', construction_model: 'deepseek-v4-pro', entity_types: [], text_refine_enabled: false,
-    });
+      domain: '', txt_mode: 'entities', mode: 'llm', entity_types: [], text_refine_enabled: false,
+    }, defaultSelection);
   });
 
   it('offers a novel preset that submits people as nodes and their relationships as edges', async () => {
@@ -656,7 +674,7 @@ describe('long-running graph construction', () => {
     mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
     mocks.build.mockResolvedValue(ready);
     await act(async () => {
-      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+      render(<GraphConstructionPanel dataset={txtDataset} workspaceModels={workspaceModels} onClose={vi.fn()} onSaved={vi.fn()} />);
     });
     fireEvent.click(screen.getByRole('button', { name: '小说人物关系' }));
     expect((screen.getByLabelText('TXT 处理方式') as HTMLSelectElement).value).toBe('__entities__');
@@ -665,7 +683,7 @@ describe('long-running graph construction', () => {
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, expect.objectContaining({
       txt_mode: 'entities', mode: 'llm', entity_types: ['人物'],
       domain: expect.stringContaining('保留没有明确关系的人物'),
-    }));
+    }), defaultSelection);
   });
 
   it('sends selected TXT entity categories and enables query refinement only when requested', async () => {
@@ -673,7 +691,7 @@ describe('long-running graph construction', () => {
     mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
     mocks.build.mockResolvedValue(ready);
     await act(async () => {
-      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+      render(<GraphConstructionPanel dataset={txtDataset} workspaceModels={workspaceModels} onClose={vi.fn()} onSaved={vi.fn()} />);
     });
     fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__entities__' } });
     fireEvent.change(screen.getByLabelText('提取的实体类型（选填）'), { target: { value: '人物、事件、组织' } });
@@ -681,16 +699,16 @@ describe('long-running graph construction', () => {
     fireEvent.change(screen.getByLabelText('验证查询数量'), { target: { value: '4' } });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(txtDataset, {
-      domain: '', txt_mode: 'entities', mode: 'llm', construction_model: 'deepseek-v4-pro',
+      domain: '', txt_mode: 'entities', mode: 'llm',
       entity_types: ['人物', '事件', '组织'], text_refine_enabled: true, query_count: 4,
-    });
+    }, defaultSelection);
   });
 
   it.each(['人物|组织', '人物｜组织'])('rejects protocol delimiters in TXT entity categories: %s', async (value) => {
     const txtDataset: Dataset = { ...sourceDataset, original_filename: 'story.txt', file_type: 'txt' };
     mocks.state.mockResolvedValue({ ...notBuilt, source_type: 'txt' });
     await act(async () => {
-      render(<GraphConstructionPanel dataset={txtDataset} onClose={vi.fn()} onSaved={vi.fn()} />);
+      render(<GraphConstructionPanel dataset={txtDataset} workspaceModels={workspaceModels} onClose={vi.fn()} onSaved={vi.fn()} />);
     });
     fireEvent.change(screen.getByLabelText('TXT 处理方式'), { target: { value: '__entities__' } });
     fireEvent.change(screen.getByLabelText('提取的实体类型（选填）'), { target: { value } });
@@ -710,8 +728,8 @@ describe('long-running graph construction', () => {
     expect(screen.getByText(/关闭后，本次构图不读取或写入经验/).textContent).toContain('新图仍需验收');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始构图' })); });
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
-      mode: 'llm', construction_model: 'deepseek-v4-pro', query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
-    });
+      mode: 'llm', query_count: 15, domain: '贷款与担保关系', domain_category: 'finance', experience_enabled: false,
+    }, defaultSelection);
     expect(mocks.build).toHaveBeenCalledTimes(1);
   });
 
@@ -779,7 +797,7 @@ describe('long-running graph construction', () => {
     expect(mocks.build).toHaveBeenCalledTimes(1);
     expect(mocks.build).toHaveBeenCalledWith(sourceDataset, {
       mode: 'rules', domain: '', experience_enabled: false,
-    });
+    }, defaultSelection);
     expect(mocks.state).toHaveBeenCalledTimes(1);
     expect(mocks.graph).not.toHaveBeenCalled();
     expect(saved).not.toHaveBeenCalled();
@@ -877,15 +895,36 @@ describe('explicit construction publishing', () => {
     expect(mocks.commit).toHaveBeenCalledWith(expect.objectContaining({ dataset_id: 'd1' }), 2, []);
     expect(screen.getByRole('button', { name: '在当前会话使用' })).toBeTruthy();
   });
-  it('submits the chosen construction model for semantic TXT', async () => {
+  it('uses the single workspace model for TXT extraction, publishing and regeneration', async () => {
     const txt = { ...dataset, file_type: 'txt', original_filename: 'novel.txt', status: 'source_ready' };
     mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'not_built', revision: 0, algorithm_available: true });
-    mocks.build.mockResolvedValue({ dataset_id: 'd1', status: 'building', revision: 0 });
-    render(<GraphConstructionPanel dataset={txt} onClose={vi.fn()} onSaved={vi.fn()} />);
+    mocks.build.mockResolvedValue({ dataset_id: 'd1', status: 'draft', revision: 2, model_config_id: 'model-b' });
+    const onSaved = vi.fn();
+    render(<GraphConstructionPanel dataset={txt} workspaceModels={workspaceModels} onClose={vi.fn()} onSaved={onSaved} />);
     await waitFor(() => expect(screen.getByRole('button', { name: '开始构图' }).matches(':disabled')).toBe(false));
-    expect((screen.getByLabelText('构图大模型') as HTMLSelectElement).value).toBe('deepseek-v4-pro');
-    choose('TXT 处理方式', '__entities__'); choose('构图大模型', 'claude-opus-5-5');
+    choose('TXT 处理方式', '__entities__');
+    expect(screen.getAllByRole('button', { name: '选择构图与示例模型' })).toHaveLength(1);
+    expect(screen.queryByLabelText('构图大模型')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '选择构图与示例模型' }));
+    fireEvent.click(screen.getByRole('button', { name: /Second model/ }));
+    const selected = { config_id: 'model-b', revision: 5 };
     fireEvent.click(screen.getByRole('button', { name: '开始构图' }));
-    await waitFor(() => expect(mocks.build).toHaveBeenCalledWith(txt, expect.objectContaining({ construction_model: 'claude-opus-5-5' })));
+    await screen.findByText('草稿 · 待保存');
+    expect(mocks.build).toHaveBeenCalledWith(txt, expect.objectContaining({ mode: 'llm', txt_mode: 'entities' }), selected);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存构图结果' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(mocks.commit).toHaveBeenCalledWith(txt, 2, [], selected);
+    mocks.generate.mockResolvedValue({ status: 'generating', revision: 3, dataset_id: 'd1', questions: [] });
+    fireEvent.click(screen.getByRole('button', { name: '生成示例问题' }));
+    await waitFor(() => expect(mocks.generate).toHaveBeenCalledWith(txt, 3, selected));
+    expect(mocks.commit).toHaveBeenCalledOnce();
+  });
+
+  it('restores the build model when a draft is reopened', async () => {
+    mocks.state.mockResolvedValue({ dataset_id: 'd1', status: 'draft', revision: 2, model_config_id: 'model-b' });
+    render(<GraphConstructionPanel dataset={dataset} workspaceModels={workspaceModels} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await screen.findByText('草稿 · 待保存');
+    expect(screen.getByRole('button', { name: '选择构图与示例模型' }).textContent).toContain('Second model');
   });
 });

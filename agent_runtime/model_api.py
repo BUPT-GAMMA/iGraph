@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from execution_protocol import require_service
+from construction_access import ConstructionQuestionModel
 from agent_runtime.execution_store import ControlError, TERMINAL
 
 
@@ -85,6 +86,9 @@ def create_model_router(catalog, db, controller=None):
             raise ControlError('MISSING_USER_IDENTITY', 401)
         return uid
 
+    from agent_runtime.playground_connection import install_connection
+    install_connection(router, catalog, identity)
+
     async def session(uid, sid):
         from agno.os.middleware.user_scope import session_matches_component
         record = await asyncio.to_thread(db.get_session, session_id=sid, user_id=uid)
@@ -148,6 +152,11 @@ def create_model_router(catalog, db, controller=None):
     @router.put('/internal/model-catalog/default')
     async def default(req: ModelDefault, request: Request):
         return await asyncio.to_thread(catalog.set_default, identity(request), req.config_id)
+
+    @router.post('/internal/model-catalog/resolve')
+    async def resolve_completion(req: ConstructionQuestionModel, request: Request):
+        data = await asyncio.to_thread(catalog.resolve_for_completion, identity(request), req.config_id, req.revision)
+        return JSONResponse(data, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
 
     @router.post('/internal/model-catalog/test')
     async def test(req: ModelTest, request: Request):

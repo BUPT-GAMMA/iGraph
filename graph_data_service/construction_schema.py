@@ -1,8 +1,28 @@
 """Expose only structural source metadata from the private construction report."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
+
+
+def schema_foreign_key(edge: dict):
+    """Expose only the column definition that fingerprints to the generated type."""
+    kind = edge["type"]
+    fk = edge["properties"].get("foreign_key")
+    if not re.fullmatch(r"fk_[0-9a-f]{40}", kind) or not isinstance(fk, dict):
+        return None
+    table, columns = fk.get("table"), fk.get("columns")
+    target, keys = fk.get("ref_table"), fk.get("ref_columns")
+    if not (isinstance(table, str) and isinstance(target, str) and isinstance(columns, list)
+            and isinstance(keys, list) and columns and len(columns) == len(keys)
+            and all(isinstance(c, str) for c in columns + keys)):
+        return None
+    encoded = json.dumps([table, columns, target, keys], ensure_ascii=False, separators=(",", ":"))
+    if kind != "fk_" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:40]:
+        return None
+    return {"table": table, "columns": columns, "ref_table": target, "ref_columns": keys}
 
 
 def source_schema_tables(directory: Path, fallback: object = None) -> list[dict]:

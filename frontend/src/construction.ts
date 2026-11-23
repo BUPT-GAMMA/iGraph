@@ -15,6 +15,7 @@ export function constructionStatus(dataset: Dataset) {
 
 export function supportsConstruction(dataset: Dataset) {
   const extension = (dataset.file_type || dataset.original_filename.split('.').pop() || '').toLowerCase().replace(/^\./, '');
+  if (extension === 'pt' || extension === 'npz') return false;
   return ['sql', 'csv', 'txt'].includes(extension) || Boolean(dataset.metadata?.construction);
 }
 
@@ -27,6 +28,15 @@ export function isPrebuiltGraph(dataset: Dataset) {
   return !supportsConstruction(dataset) && ['pt', 'npz'].includes(extension);
 }
 
+export function canViewSavedGraph(dataset: Dataset) {
+  return isPrebuiltGraph(dataset) && dataset.status === 'ready' &&
+    !['graph_collection', 'partitioned_graph'].includes(String(dataset.metadata?.dataset_kind));
+}
+
+export function canOpenConstruction(dataset: Dataset) {
+  return supportsConstruction(dataset) || canViewSavedGraph(dataset);
+}
+
 export function isMolecularGraph(dataset: Dataset) {
   return isPrebuiltGraph(dataset) && dataset.source_kind === 'server'
     && dataset.metadata?.source_relative_path === 'borylation-story.npz';
@@ -34,6 +44,7 @@ export function isMolecularGraph(dataset: Dataset) {
 
 export function constructionLabel(dataset: Dataset) {
   if (isMolecularGraph(dataset)) return tr('View graph build', '查看构图');
+  if (canViewSavedGraph(dataset)) return tr('View construction result', '查看构图结果');
   const construction = constructionMetadata(dataset);
   const status = constructionStatus(dataset);
   if (status === 'building' || status === 'processing') return tr('View progress', '查看进度');

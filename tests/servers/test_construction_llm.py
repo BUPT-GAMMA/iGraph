@@ -138,6 +138,53 @@ class ConstructionLLMClientTest(unittest.TestCase):
         self.assertEqual(transport.call_args.kwargs["timeout"], 5)
         self.assertEqual(client.audit_metadata()["successful_calls"], 1)
 
+    def test_catalog_connection_uses_its_native_protocol_and_model_limits(self):
+        fixtures = {
+            "anthropic": (
+                {"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "call_1", "name": "inspect_schema", "input": {}}]},
+                "/v1/messages", "max_tokens", "x-api-key"),
+            "gemini": (
+                {"candidates": [{"content": {"parts": [{"functionCall": {"id": "call_1", "name": "inspect_schema", "args": {}},
+                    "thoughtSignature": "signature"}]}}]},
+                "/v1/models/selected-model:generateContent", "generationConfig", "x-goog-api-key"),
+            "openai-responses": (
+                {"status": "completed", "output": [{"type": "reasoning", "encrypted_content": "opaque", "id": "rs_1"},
+                    {"type": "function_call", "call_id": "call_1", "name": "inspect_schema", "arguments": "{}"}]},
+                "/v1/responses", "max_output_tokens", "authorization"),
+        }
+        for protocol, (response, path, limit, credential_header) in fixtures.items():
+            with self.subTest(protocol=protocol):
+                client = ToolCallingLLM(connection={"model_id": "selected-model", "base_url": "https://selected.test/v1",
+                    "api_key": "selected-test-key", "protocol": protocol, "max_output_tokens": 512})
+                result, transport = self.complete_with(response, client=client)
+                request = transport.call_args.args[0]
+                self.assertEqual(request.full_url, "https://selected.test" + path)
+                headers = {key.lower(): value for key, value in request.header_items()}
+                self.assertIn("selected-test-key", headers[credential_header])
+                parsed = json.loads(request.data)
+                self.assertEqual(parsed[limit] if protocol != "gemini" else parsed[limit]["maxOutputTokens"], 512)
+                self.assertEqual(result["tool_calls"][0]["function"]["name"], "inspect_schema")
+                history = [{"role": "user", "content": "Inspect the graph"}, result,
+                           {"role": "tool", "tool_call_id": "call_1", "content": '{"nodes": 2}'}]
+                with patch.object(client, "_urlopen", return_value=io.BytesIO(json.dumps(response).encode())) as tool_round:
+                    client.complete(history, tool_specs())
+                wire = tool_round.call_args.args[0].data
+                self.assertIn(b"call_1", wire)
+                if protocol == "gemini":
+                    self.assertIn(b"thoughtSignature", wire)
+                if protocol == "openai-responses":
+                    self.assertIn(b"encrypted_content", wire)
+
+    def test_catalog_model_quota_is_reported_without_exposing_provider_text(self):
+        from graph_engine.construction.llm import ConstructionModelError
+        client = ToolCallingLLM(connection={"model_id": "selected-model", "base_url": "https://selected.test/v1",
+            "api_key": "selected-test-key", "max_output_tokens": 512})
+        body = io.BytesIO(b'{"error":{"type":"quota_not_enough","message":"private detail"}}')
+        error = urllib.error.HTTPError("https://selected.test", 405, "private reason", {}, body)
+        with patch.object(client, "_urlopen", side_effect=error), self.assertRaises(ConstructionModelError) as caught:
+            client.complete_text([{"role": "user", "content": "Extract relations"}])
+        self.assertEqual(caught.exception.code, "MODEL_QUOTA_EXHAUSTED")
+
     def test_semantic_text_request_rejects_invalid_max_token_bounds_without_network(self):
         client = ToolCallingLLM()
         for value in (0, 14001, 1.5, True):
@@ -193,7 +240,7 @@ class AutoToolRecoveryTest(unittest.TestCase):
         planner = TextOnlyPlanner()
         with self.assertRaises(ConstructionFailed) as caught:
             TabularConstructionSubAgent(llm_factory=lambda _: planner).run(self.source, {
-                "query_count": 1, "workload_attempts": 2, "min_query_seconds": 0,
+                "primary_key": ["id"], "query_count": 1, "workload_attempts": 2, "min_query_seconds": 0,
             })
         self.assertEqual(caught.exception.code, "workload_generation_failed")
         self.assertEqual(caught.exception.report["llm_tool_choice"], "auto")
@@ -207,7 +254,7 @@ class AutoToolRecoveryTest(unittest.TestCase):
                  "aggregations": [{"function": "count", "column": "*", "as": "n"}]}
         with self.assertRaises(ConstructionFailed) as caught:
             TabularConstructionSubAgent(llm_factory=lambda _: planner).run(self.source, {
-                "queries": [query], "query_count": 1, "max_iterations": 2, "min_query_seconds": 0,
+                "primary_key": ["id"], "queries": [query], "query_count": 1, "max_iterations": 2, "min_query_seconds": 0,
             })
         self.assertEqual(caught.exception.code, "no_evolution_candidate_evaluated")
         self.assertEqual(len(planner.messages), 2)

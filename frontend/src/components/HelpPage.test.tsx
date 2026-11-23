@@ -94,7 +94,7 @@ describe('HelpPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /CSV 单表或多表/ }));
     expect(screen.getByText(/自动建议仅依据列名，需要人工核对/)).toBeTruthy();
     expect(screen.getByText(/点击“保存构图结果”，等待显示/)).toBeTruthy();
-    expect(screen.getByText(/在“个人数据集”中选择已保存的图/)).toBeTruthy();
+    expect(screen.getByText(/在“项目数据集”中选中刚保存的图/)).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: /图分析计算工具/ }));
     expect(screen.queryByRole('heading', { name: '构建你的图，再开始提问' })).toBeNull();
     fireEvent.click(screen.getByRole('tab', { name: '使用流程' }));
@@ -113,7 +113,9 @@ describe('HelpPage', () => {
     expect(within(panel).getByRole('button', { name: /CSV One or more tables/ }).getAttribute('aria-pressed')).toBe('true');
     expect(within(panel).getByRole('list', { name: 'CSV to graph analysis' }).children).toHaveLength(6);
     expect(within(panel).getByText(/Click “Save construction result” and wait/)).toBeTruthy();
-    expect(within(panel).getByText(/open that project’s datasets/)).toBeTruthy();
+    expect(within(panel).getByText(/on the same project card/)).toBeTruthy();
+    expect(within(panel).getByText(/On the project card, choose “Create your graph”/)).toBeTruthy();
+    expect(within(panel).getByText(/For Ownership Look-Through Analysis, click “View construction result”/)).toBeTruthy();
     expect(within(panel).getByText(/Check connected components and isolated records/)).toBeTruthy();
     expect(panel.textContent).not.toMatch(/[\u3400-\u9fff]/);
     fireEvent.click(screen.getByRole('button', { name: 'Switch language' }));

@@ -1,4 +1,5 @@
 """Fixed construction entry point; accepts only a service-created request file."""
+import asyncio
 import hashlib
 import json
 import os
@@ -44,6 +45,9 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     threading.Thread(target=control, daemon=True).start()
     from graph_engine.construction.agent import TabularConstructionSubAgent, ConstructionFailed
+    from graph_engine.construction.llm import ToolCallingLLM
+    from graph_engine.construction.settings import construction_identity
+    from graph_data_service.run_model import ModelResolutionError, resolve_catalog_model
     from graph_engine.construction.budget import deadline_scope, check_deadline
     from graph_data_service.construction import _atomic_json
     request_path = Path(payload["request_path"])
@@ -57,7 +61,18 @@ def main():
             check_deadline()
             if stopping.is_set():
                 raise InterruptedError("WORKER_CANCELLED")
-            graph = TabularConstructionSubAgent(data_root=request["data_root"])(Path(request["source"]), request["options"])
+            with construction_identity(payload.get("user_id")):
+                model = payload.get("model")
+                options = request["options"]
+                llm_factory = None
+                if model is not None and options.get("mode", "llm") == "llm":
+                    connection = asyncio.run(resolve_catalog_model(payload["user_id"], model))
+
+                    def llm_factory(config):
+                        return ToolCallingLLM(connection=connection, timeout=config.llm_timeout_seconds)
+
+                graph = TabularConstructionSubAgent(data_root=request["data_root"], llm_factory=llm_factory)(
+                    Path(request["source"]), options)
             check_deadline()
             if stopping.is_set():
                 raise InterruptedError("WORKER_CANCELLED")
@@ -67,7 +82,7 @@ def main():
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
             check_deadline()
             result.update(filename="graph.json", sha256=digest)
-    except ConstructionFailed as exc:
+    except (ConstructionFailed, ModelResolutionError) as exc:
         result["failure_code"] = exc.code
     except TimeoutError:
         result["failure_code"] = "construction_time_budget_exhausted"

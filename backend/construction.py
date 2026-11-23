@@ -11,12 +11,13 @@ from pydantic import BaseModel, Field
 
 from backend.service_client import forwarded_headers
 from execution_protocol import service_headers
-from construction_access import scope_headers
+from construction_access import ConstructionQuestionModel, ConstructionQuestionRequest, scope_headers
 from backend.dataset_api import legacy_dataset_api_notice
 
 
 class BuildRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
+    model: ConstructionQuestionModel | None = None
 
 
 class ConstructionSettingsRequest(BaseModel):
@@ -29,6 +30,7 @@ class ConstructionSettingsRequest(BaseModel):
 class SaveRequest(BaseModel):
     base_revision: int = Field(ge=1)
     operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    question_model: ConstructionQuestionModel | None = None
 
 
 class EditRequest(BaseModel):
@@ -70,7 +72,7 @@ def _sync_record_locked(directory, dataset, state):
         return latest
     construction = {key: state[key] for key in (
         "status", "revision", "node_count", "edge_count", "source_type",
-        "source_filename", "algorithm_available", "message", "directed", "build_id", "failure_code"
+        "source_filename", "algorithm_available", "message", "directed", "build_id", "failure_code", "model_config_id"
     ) if key in state}
     ready = state["status"] == "ready"
     metadata = {**latest.metadata, "construction": construction,
@@ -105,6 +107,18 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
             result = {**result, "algorithm_available": available}
         return {**result, "source_filename": dataset.original_filename, "source_type": dataset.file_type}
 
+    @app.get("/api/personal-datasets/{dataset_id}/construction/result")
+    @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction/result")
+    async def saved_result(dataset_id: str, request: Request, project_id: str | None = None):
+        user = user_for(request)
+        if project_id:
+            project_for(project_id, user.user_id)
+        dataset = dataset_for(dataset_id, project_id, user.user_id)
+        if dataset.file_type not in {"npz", "pt"} or dataset.status != "ready":
+            raise HTTPException(422, {"code": "SAVED_GRAPH_UNAVAILABLE"})
+        return await graph.request("GET", f"/construction/{dataset_id}/result",
+                                   headers=headers(request, user.user_id, project_id), timeout=60)
+
     @app.get("/api/construction-models")
     async def models(request: Request):
         user = user_for(request)
@@ -138,10 +152,11 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
     async def build(dataset_id: str, req: BuildRequest, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
         # Browser input never chooses a server-side path or another owner.
+        payload = {"source_path": dataset.storage_path, "source_filename": dataset.original_filename,
+                   **req.model_dump(exclude_none=True)}
         try:
             result = await graph.request("POST", f"/construction/{dataset_id}/build",
-                headers=headers(request, user.user_id, project_id), json_body={"source_path": dataset.storage_path,
-                    "source_filename": dataset.original_filename, "options": req.options},
+                headers=headers(request, user.user_id, project_id), json_body=payload,
                 timeout=construction_request_timeout(req.options))
         except httpx.TimeoutException:
             # Disconnecting this HTTP request does not cancel the engine-owned
@@ -158,6 +173,21 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
     async def read_graph(dataset_id: str, request: Request, project_id: str | None = None):
         user, _ = owned(dataset_id, request, project_id)
         return await graph.request("GET", f"/construction/{dataset_id}/graph", headers=headers(request, user.user_id, project_id))
+
+    @app.get("/api/personal-datasets/{dataset_id}/construction/questions")
+    @app.get("/api/projects/{project_id}/datasets/{dataset_id}/construction/questions")
+    async def read_questions(dataset_id: str, request: Request, project_id: str | None = None):
+        user, _ = owned(dataset_id, request, project_id)
+        return await graph.request("GET", f"/construction/{dataset_id}/questions",
+                                   headers=headers(request, user.user_id, project_id))
+
+    @app.post("/api/personal-datasets/{dataset_id}/construction/questions")
+    @app.post("/api/projects/{project_id}/datasets/{dataset_id}/construction/questions")
+    async def generate_questions(dataset_id: str, req: ConstructionQuestionRequest, request: Request,
+                                 project_id: str | None = None):
+        user, _ = owned(dataset_id, request, project_id)
+        return await graph.request("POST", f"/construction/{dataset_id}/questions",
+                                   headers=headers(request, user.user_id, project_id), json_body=req.model_dump())
 
     @app.get("/api/personal-datasets/{dataset_id}/construction/schema")
     @app.get("/api/datasets/{dataset_id}/construction/schema", deprecated=True, dependencies=[Depends(legacy_dataset_api_notice)])
@@ -190,7 +220,7 @@ def install_construction_routes(app, *, graph, directory, user_for, project_for,
     async def commit(dataset_id: str, req: SaveRequest, request: Request, project_id: str | None = None):
         user, dataset = owned(dataset_id, request, project_id)
         result = await graph.request("POST", f"/construction/{dataset_id}/commit",
-            headers=headers(request, user.user_id, project_id), json_body=req.model_dump())
+            headers=headers(request, user.user_id, project_id), json_body=req.model_dump(exclude_none=True))
         saved_graph = result.get("graph", {})
         sync_record(directory, dataset, {**dataset.metadata.get("construction", {}),
             "status": "ready", "revision": result["revision"],

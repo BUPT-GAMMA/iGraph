@@ -1,4 +1,4 @@
-import type { BorylationAnalysisStep, UserCase } from './userCases';
+import type { BorylationAnalysisStep, ExampleQuestions, UserCase } from './userCases';
 import { isGraphData } from './types';
 import { createParser } from 'eventsource-parser';
 import type { ActiveRun, AttachmentRef, ConstructionBuildOptions, ConstructionGraph, ConstructionOperation, ConstructionResult, ConstructionSchemaResponse, ConstructionSourcePreview, ConstructionState, CsvBundleSchema, Dataset, DatasetView, FeedbackRequest, GraphData, Message, Project, ProjectTrainingRun, ServerDataset, Session, StreamBatch, StreamEvent } from './types';
@@ -28,7 +28,7 @@ export type ModelConfiguration = CustomModel & {
   config_id: string;
   revision: number;
   upstream_model_id: string;
-  source: 'deployment' | 'custom';
+  source: 'deployment' | 'custom' | 'playground';
   enabled: boolean;
   tools: boolean;
   vision: boolean;
@@ -36,6 +36,24 @@ export type ModelConfiguration = CustomModel & {
   max_output_tokens: number;
   unavailable_reason?: string | null;
 };
+export type PlaygroundConnection = { configured: boolean; base_url: string; model: string; revision: number };
+export const getPlaygroundConnection = () => json<PlaygroundConnection>('/api/playground/connection');
+export const savePlaygroundConnection = (input: { base_url: string; api_key: string; model: string; revision: number }) =>
+  json<PlaygroundConnection>('/api/playground/connection', modelJson('PUT', input));
+export type PlaygroundQuestion = { en: string; zh: string; tool: string };
+export type PlaygroundState = {
+  id: string; revision: number; status: 'draft' | 'thinking' | 'building' | 'ready' | 'failed';
+  messages: { role: 'user' | 'assistant'; text: string; questions?: PlaygroundQuestion[] }[];
+  plan: { title: string; summary: string; questions: PlaygroundQuestion[] } | null;
+  confirmable: boolean; confirmed: boolean; live_reply: string; error: string | null;
+  turn_id?: string;
+  result: { project: Project; dataset_id: string; node_count: number; edge_count: number; available?: boolean } | null;
+};
+export const listPlaygrounds = () => json<{ scenarios: { id: string; title: string }[] }>('/api/playground');
+export const getPlayground = (id: string, signal?: AbortSignal) => json<PlaygroundState>(`/api/playground/${encodeURIComponent(id)}`, { signal });
+export const sendPlaygroundTurn = (id: string, input: { turn_id: string; revision: number; message: string; language: 'zh' | 'en';
+  confirm: boolean; connection_revision: number }) => json<PlaygroundState>(`/api/playground/${encodeURIComponent(id)}/turns`, modelJson('POST', input));
+
 export type ModelCatalog = { models: ModelConfiguration[]; default_model: string };
 export const listModels = () => json<ModelCatalog>('/api/models');
 
@@ -97,8 +115,10 @@ export function modelErrorMessage(code?: string | null) {
     MODEL_DUPLICATE: tr('This model is already added to the provider.', '该模型已添加到此提供商'),
     MODEL_DISCOVERY_UNSUPPORTED: tr('This provider cannot list models. Add a model ID manually.', '该接口不支持模型发现，请手动添加模型 ID'),
     MODEL_DISCOVERY_TOO_LARGE: tr('The model list is too large. Add a model ID manually.', '模型列表过大，请手动添加模型 ID'),
+    PLAYGROUND_MANAGE_CONNECTION: tr('Edit this model in Playground under Model connection.', '请在场景广场的「模型连接」中编辑此模型。'),
     MODEL_REMOVED: tr('Model configuration removed. Select another model.', '模型配置已删除，请选择其他模型'),
     MODEL_DISABLED: tr('Model disabled. Select another model.', '模型已停用，请选择其他模型'),
+    MODEL_UNAVAILABLE: tr('Could not load the selected model service. Try again.', '暂时无法读取所选模型服务，请稍后重试。'),
     MODEL_NOT_CONFIGURED: tr('Endpoint or API key not configured', '尚未配置接口地址或密钥'),
     MODEL_NOT_ALLOWED: tr('Model is not available for this account', '此账户不可使用该模型'),
     MODEL_TOOLS_REQUIRED: tr('Graph analysis requires tool calling', '图分析需要模型支持工具调用'),
@@ -106,6 +126,7 @@ export function modelErrorMessage(code?: string | null) {
     MODEL_SELECTION_CHANGED: tr('The model changed in another page. Refresh this conversation before sending.', '模型已在其他页面更改，请重新打开此会话后再发送'),
     MODEL_IN_USE: tr('An active task uses this model. Wait for it to finish or stop it before deleting.', '有活动任务正在使用此模型，请等待结束或停止任务后再删除'),
     MODEL_AUTH_FAILED: tr('Authentication failed. Check the API key.', '认证失败，请检查 API Key'),
+    MODEL_QUOTA_EXHAUSTED: tr('The model provider has insufficient balance. Choose another model or check the provider balance.', '模型服务余额不足，请更换模型或检查服务额度。'),
     MODEL_RATE_LIMITED: tr('Rate limit or quota reached', '调用频率或额度受限'),
     MODEL_TEST_FAILED: tr('The endpoint rejected this model or tool protocol. Check configuration.', '接口拒绝了该型号或工具协议，请检查配置'),
     MODEL_CONNECTION_FAILED: tr('Could not connect to the model endpoint', '无法连接模型接口'),
@@ -120,16 +141,27 @@ export function modelErrorMessage(code?: string | null) {
   return code ? messages[code] || code : '';
 }
 
-// A stable browser-storage namespace. The backend independently binds every
-// public request to the deployment owner; stale account selections are ignored.
-export function getUserId() { return WORKSPACE_USER_ID; }
-export function setUserId(_value: string) { /* Account selection is unavailable. */ }
+// Identity is supplied by the authenticated server session, never browser storage.
+let activeUserId = '';
+let csrfToken = '';
+export function getUserId() { return activeUserId; }
+export function setUserId(value: string) { activeUserId = value; }
+export type AuthSession = { user: { user_id: string; username: string }; csrf_token: string };
+export function setAuthSession(session: AuthSession | null) {
+  activeUserId = session?.user.user_id || '';
+  csrfToken = session?.csrf_token || '';
+}
+export const getAuthSession = () => json<AuthSession>('/api/auth/session', { cache: 'no-store' });
+export const signIn = (username: string, password: string) => json<AuthSession>('/api/auth/login', modelJson('POST', { username, password }));
+export const signUp = (username: string, password: string) => json<AuthSession>('/api/auth/register', modelJson('POST', { username, password }));
+export const signOut = () => json('/api/auth/logout', modelJson('POST', {}));
+export const changePassword = (current_password: string, new_password: string) => json<AuthSession>('/api/auth/password', modelJson('POST', { current_password, new_password }));
 
 let requestAccount: { userId: string } | undefined;
 
 /** Bind requests to the account rendered by the mounted workspace. */
 export function bindRequestAccount(userId: string) {
-  const account = { userId: WORKSPACE_USER_ID };
+  const account = { userId };
   requestAccount = account;
   return () => { if (requestAccount === account) requestAccount = undefined; };
 }
@@ -137,8 +169,17 @@ export function bindRequestAccount(userId: string) {
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers);
   if (!headers.has('Accept-Language')) headers.set('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
-  headers.set('X-User-ID', WORKSPACE_USER_ID);
-  return fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (!path.startsWith('/api/auth/')) {
+    const uid = requestAccount?.userId || activeUserId;
+    if (uid) headers.set('X-Workspace-User', uid);
+  }
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes((options.method || 'GET').toUpperCase())) headers.set('X-CSRF-Token', csrfToken);
+  const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'same-origin', headers });
+  if (!path.startsWith('/api/auth/') && (response.status === 401 || response.status === 409)) {
+    const body = await response.clone().json().catch(() => ({}));
+    if (response.status === 401 || body?.detail?.code === 'AUTH_ACCOUNT_CHANGED') window.dispatchEvent(new Event('igraph-auth-expired'));
+  }
+  return response;
 }
 
 async function json<T>(path: string, options?: RequestInit): Promise<T> {
@@ -375,7 +416,8 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
         if (error) reject(error); else resolve(data!);
       }
       xhr.open('POST', `${API_BASE}${path}`);
-      if (identity) xhr.setRequestHeader('X-User-ID', identity);
+      if (identity) xhr.setRequestHeader('X-Workspace-User', identity);
+      if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
       xhr.setRequestHeader('Accept-Language', currentLanguage() === 'zh' ? 'zh-CN,zh;q=0.9,en;q=0.7' : 'en-US,en;q=0.9');
       xhr.upload.onprogress = event => {
         if (accountChanged()) { finish(accountError()); xhr.abort(); return; }
@@ -386,7 +428,11 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
         let data: UploadResult;
         try { data = JSON.parse(xhr.responseText); }
         catch { finish(new ApiError(xhr.status, tr('The upload response was invalid. Try again.', '上传响应无效，请重试'))); return; }
-        if (xhr.status < 200 || xhr.status >= 300) { finish(ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'))); return; }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const error = ApiError.fromResponse(xhr.status, data, xhr.getResponseHeader('Retry-After'));
+          if (xhr.status === 401 || error.code === 'AUTH_ACCOUNT_CHANGED') window.dispatchEvent(new Event('igraph-auth-expired'));
+          finish(error); return;
+        }
         if (data?.success !== true || typeof data.file_token !== 'string' || !data.file_token) { finish(new ApiError(xhr.status, tr('The upload did not complete. Try again.', '上传未成功，请重试'))); return; }
         finish(undefined, data);
       };
@@ -405,26 +451,33 @@ export async function uploadFile(sessionId: string, file: File, signal?: AbortSi
 function constructionUrl(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>) {
   return `${datasetScopeUrl(dataset.project_id)}/${encodeURIComponent(dataset.dataset_id)}/construction`;
 }
-export function getConstructionModels(signal?: AbortSignal) {
-  return json<{ models: string[]; default_model: string }>('/api/construction-models', { signal });
-}
-export type ConstructionModelSettings = { model: string; has_base_url: boolean; has_api_key: boolean; has_server_config: boolean };
-export function getConstructionModelSettings(signal?: AbortSignal) {
-  return json<ConstructionModelSettings>('/api/construction-model-settings', { signal });
-}
-export function saveConstructionModelSettings(settings: { model: string; base_url: string; api_key: string; clear_api_key: boolean }) {
-  return json<ConstructionModelSettings>('/api/construction-model-settings', modelJson('POST', settings));
-}
 export function getConstructionState(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionState>(constructionUrl(dataset), { signal });
 }
-export function buildDatasetGraph(dataset: Dataset, options: ConstructionBuildOptions = {}) {
-  return json<ConstructionState>(`${constructionUrl(dataset)}/build`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ options }),
-  });
+export function buildDatasetGraph(dataset: Dataset, options: ConstructionBuildOptions = {}, model?: ConstructionModelSelection) {
+  return json<ConstructionState>(`${constructionUrl(dataset)}/build`, modelJson('POST', { options, model }));
+}
+export function getSavedGraphResult(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>, signal?: AbortSignal) {
+  return json<{ schema: ConstructionSchemaResponse['schema']; graph: GraphData }>(`${constructionUrl(dataset)}/result`, { signal });
 }
 export function getConstructionGraph(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionGraph>(`${constructionUrl(dataset)}/graph`, { signal });
+}
+export type ConstructionModelSelection = Pick<ModelConfiguration, 'config_id' | 'revision'>;
+export type ConstructionQuestions = ExampleQuestions & {
+  dataset_id: string;
+  revision: number;
+  status: 'not_generated' | 'generating' | 'ready' | 'failed';
+  model_config_id?: string | null;
+  model_name?: string;
+  error_code?: string | null;
+};
+
+export function getConstructionQuestions(dataset: Pick<Dataset, 'project_id' | 'dataset_id'>, signal?: AbortSignal) {
+  return json<ConstructionQuestions>(`${constructionUrl(dataset)}/questions`, { signal });
+}
+export function startConstructionQuestions(dataset: Dataset, baseRevision: number, model: ConstructionModelSelection) {
+  return json<ConstructionQuestions>(`${constructionUrl(dataset)}/questions`, modelJson('POST', { base_revision: baseRevision, model }));
 }
 export function getConstructionSchema(dataset: Dataset, signal?: AbortSignal) {
   return json<ConstructionSchemaResponse>(`${constructionUrl(dataset)}/schema`, { signal });
@@ -438,10 +491,10 @@ export function previewConstruction(dataset: Dataset, baseRevision: number, oper
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
   });
 }
-export function commitConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[]) {
-  return json<ConstructionResult>(`${constructionUrl(dataset)}/commit`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_revision: baseRevision, operations }),
-  });
+export function commitConstruction(dataset: Dataset, baseRevision: number, operations: ConstructionOperation[], model?: ConstructionModelSelection) {
+  return json<ConstructionResult>(`${constructionUrl(dataset)}/commit`, modelJson('POST', {
+    base_revision: baseRevision, operations, question_model: model,
+  }));
 }
 export async function visualizeGraph(sessionId: string, options: Record<string, unknown> = {}, signal?: AbortSignal): Promise<GraphData> {
   const value = await json<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/graph/visualize`, {

@@ -4,10 +4,13 @@ import type { ConstructionState, Dataset } from './types';
 
 const mocks = vi.hoisted(() => ({
   listDatasets: vi.fn(),
+  questions: vi.fn(),
+  listProjects: vi.fn(),
   getUserCases: vi.fn(),
   openUserCase: vi.fn(),
   uploadDataset: vi.fn(),
   deleteDataset: vi.fn(),
+  createProject: vi.fn(),
 }));
 
 vi.mock('react-dom/client', () => ({ createRoot: () => ({ render: () => undefined }) }));
@@ -20,19 +23,31 @@ vi.mock('./api', async () => ({
   ...await vi.importActual('./api'),
   getUserId: () => 'graph-user',
   validateUser: vi.fn().mockResolvedValue({ valid: true, default_model: 'model' }),
-  listProjects: vi.fn().mockResolvedValue({ projects: [] }),
+  listProjects: mocks.listProjects,
+  listServerDatasets: vi.fn().mockResolvedValue({ datasets: [] }),
+  createProject: mocks.createProject,
   listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
+  listProjectConversations: vi.fn().mockResolvedValue({ conversations: [] }),
   listCustomModels: vi.fn().mockResolvedValue({ models: [] }),
   getCapabilities: vi.fn().mockResolvedValue({ run_cancel_v1: true, job_cancel_v1: true }),
   getUserCases: mocks.getUserCases,
   openUserCase: mocks.openUserCase,
   listProjectDatasets: mocks.listDatasets,
+  getConstructionQuestions: mocks.questions,
   uploadProjectDataset: mocks.uploadDataset,
   deleteProjectDataset: mocks.deleteDataset,
 }));
 
 import App from './main';
 import { I18nProvider } from './i18n';
+
+async function openPersonalConstruction() {
+  act(() => {
+    window.history.pushState({}, '', '/?view=create-graph');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await screen.findByRole('heading', { name: /^(构图工作台|Graph Construction Workspace)$/ });
+}
 
 const source: Dataset = { dataset_id: 'source-1', project_id: null, name: '订单关系', original_filename: 'orders.csv', file_type: 'csv', status: 'source_ready' };
 
@@ -51,13 +66,13 @@ it('keeps example questions and default project names localized after entering a
   await screen.findByRole('heading', { name: 'Start graph analysis in Character graph example' });
   fireEvent.click(await screen.findByRole('button', { name: 'Social circles' }));
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Inspect character relationships');
-  expect(screen.getByRole('button', { name: 'Create a conversation in Character graph example' })).toBeTruthy();
+  expect(within(screen.getByRole('complementary')).getByRole('button', { name: 'My projects' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '中文' }));
   fireEvent.click(screen.getByRole('button', { name: '江湖圈子' }));
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('检查人物关系');
   expect(screen.getByRole('heading', { name: '开始在 天龙八部 中图分析' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'EN' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Create your graph' }));
+  await openPersonalConstruction();
   expect(await screen.findByRole('button', { name: 'View graph build Character graph example' })).toBeTruthy();
   expect(screen.getByText('A ready-made character graph')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: '中文' }));
@@ -70,6 +85,7 @@ beforeEach(() => {
     { id: 'finance', name: '金融股权示例', filename: 'finance-ownership.npz', description: '已构好的金融图', questions: ['检查股权数据质量'], available: true },
     { id: 'tianlongbabu', name: '天龙八部', filename: 'tianlongbabu-characters.npz', description: '已构好的人物图', questions: ['展示主要人物关系'], available: true },
   ] });
+  mocks.listProjects.mockReset().mockResolvedValue({ projects: [] });
   mocks.openUserCase.mockReset();
   mocks.listDatasets.mockReset().mockResolvedValue({ datasets: [source], default_dataset_id: null });
   mocks.uploadDataset.mockReset().mockResolvedValue({ dataset: source, default_dataset_id: null });
@@ -87,7 +103,7 @@ describe('actual App graph creation destination', () => {
     mocks.getUserCases.mockResolvedValue({ cases: [example] });
     mocks.listDatasets.mockResolvedValue({ datasets: [molecule] });
     render(<I18nProvider initialLanguage="zh"><App /></I18nProvider>);
-    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     fireEvent.click(await screen.findByRole('button', { name: '查看构图 科学智能' }));
     expect(screen.getByRole('region', { name: '构图编辑器' }).textContent).toContain(example.name);
     fireEvent.click(screen.getByRole('button', { name: '更换数据源' }));
@@ -106,15 +122,31 @@ describe('actual App graph creation destination', () => {
     fireEvent.click(screen.getByRole('button', { name: '中文' }));
   });
 
+  it.each(['?project=sales', '?project=sales&new=1'])('restores the only ready graph and its real questions from %s', async search => {
+    const graph: Dataset = { ...source, project_id: 'sales', dataset_id: 'orders-built', name: '订单图',
+      status: 'ready', metadata: { construction: { status: 'ready', revision: 2 } } };
+    mocks.listProjects.mockResolvedValue({ projects: [{ project_id: 'sales', user_id: 'graph-user',
+      name: '订单项目', dataset_count: 2, default_dataset_id: null }] });
+    mocks.listDatasets.mockResolvedValue({ datasets: [graph, { ...source, project_id: 'sales' }], default_dataset_id: null });
+    const question = '张三下过哪些订单？';
+    mocks.questions.mockResolvedValue({ dataset_id: graph.dataset_id, revision: 2, questions: [question], question_titles: ['客户购买记录'] });
+    window.history.replaceState({}, '', '/' + search);
+    render(<I18nProvider initialLanguage="zh"><App /></I18nProvider>);
+    const section = await screen.findByRole('region', { name: '基于这张图的问题' });
+    fireEvent.click(within(section).getByRole('button', { name: /张三下过哪些订单/ }));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(question);
+    expect(screen.getByRole('button', { name: '订单图' })).toBeTruthy();
+  });
+
   it('retains a PT upload in the source library and binds it to an analysis draft without construction', async () => {
     const pt: Dataset = { dataset_id: 'pt-graph', project_id: null, name: 'PT 验收图', original_filename: 'PT 验收图.pt', file_type: 'pt', status: 'ready' };
     mocks.listDatasets.mockResolvedValue({ datasets: [] });
     mocks.uploadDataset.mockResolvedValue({ dataset: pt, default_dataset_id: null });
     const { container } = render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     await screen.findByText('还没有可构图的数据源');
     const file = new File(['pt bytes'], pt.original_filename);
-    fireEvent.change(container.querySelector('.create-graph-workspace input[type="file"]')!, { target: { files: [file] } });
+    fireEvent.change(container.querySelector('.graph-source-catalog input[type="file"]')!, { target: { files: [file] } });
     const analyze = await screen.findByRole('button', { name: '开始分析 PT 验收图' });
     expect(mocks.uploadDataset).toHaveBeenCalledWith(null, file, undefined, undefined, undefined);
     expect(screen.queryByRole('region', { name: '构图编辑器' })).toBeNull();
@@ -124,7 +156,7 @@ describe('actual App graph creation destination', () => {
     await screen.findByRole('heading', { name: '开始图分析' });
     expect(window.location.search).toBe('?new=1');
     expect(screen.getByRole('button', { name: 'PT 验收图' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     expect(await screen.findByRole('button', { name: '开始分析 PT 验收图' })).toBeTruthy();
   });
 
@@ -142,9 +174,10 @@ describe('actual App graph creation destination', () => {
     expect(window.location.search).toBe('?new=1');
     expect(screen.getByRole('heading', { name: '金融股权示例' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: '天龙八部' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '在 天龙八部 中新建会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '我的项目' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始分析' }));
     await screen.findByRole('heading', { name: '开始在 天龙八部 中图分析' });
-    fireEvent.click(screen.getByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     await screen.findByRole('button', { name: '构图 订单关系' });
     expect(screen.queryByRole('button', { name: '查看构图 天龙八部' })).toBeNull();
   });
@@ -156,7 +189,7 @@ describe('actual App graph creation destination', () => {
     ];
     mocks.listDatasets.mockResolvedValue({ datasets: [source, ...examples] });
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     await screen.findByRole('button', { name: '查看构图 天龙八部' });
     expect(screen.getByRole('button', { name: '查看构图 金融股权示例' })).toBeTruthy();
     expect(screen.getByText('3 个可用')).toBeTruthy();
@@ -177,7 +210,7 @@ describe('actual App graph creation destination', () => {
     expect(screen.getByRole('heading', { name: '天龙八部' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '展示主要人物关系' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     await screen.findByRole('button', { name: '构图 订单关系' });
     expect(screen.getByText('1 个可用')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: '金融股权示例' })).toBeNull();
@@ -191,7 +224,7 @@ describe('actual App graph creation destination', () => {
     let finish!: (value: unknown) => void;
     mocks.deleteDataset.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     fireEvent.click(await screen.findByRole('button', { name: '删除数据集 订单关系' }));
     let dialog = screen.getByRole('alertdialog');
     expect(dialog.textContent).toContain('确认删除数据集「订单关系」吗？');
@@ -213,7 +246,7 @@ describe('actual App graph creation destination', () => {
   it('keeps the source and reports a failed delete so the user can retry', async () => {
     mocks.deleteDataset.mockRejectedValue(new Error('构图正在运行，请稍后重试'));
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     fireEvent.click(await screen.findByRole('button', { name: '删除数据集 订单关系' }));
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '删除' }));
     await screen.findByText('构图正在运行，请稍后重试');
@@ -221,13 +254,12 @@ describe('actual App graph creation destination', () => {
     expect(screen.getByRole('button', { name: '构图 订单关系' })).toBeTruthy();
   });
 
-  it('opens the independent workbench from the permanent sidebar entry', async () => {
+  it('retains existing personal-workbench links without a sidebar entry', async () => {
     render(<App />);
-    const entry = await screen.findByRole('button', { name: '创建你的图' });
-    fireEvent.click(entry);
+    await openPersonalConstruction();
 
     await waitFor(() => expect(mocks.listDatasets).toHaveBeenCalledWith(null));
-    expect(entry.getAttribute('aria-current')).toBe('page');
+    expect(within(screen.getByRole('complementary')).queryByRole('button', { name: '创建你的图' })).toBeNull();
     expect(window.location.search).toBe('?view=create-graph');
     expect(screen.getByRole('heading', { name: '构图工作台' })).toBeTruthy();
 
@@ -243,10 +275,10 @@ describe('actual App graph creation destination', () => {
   it('uploads into personal scope and opens the embedded editor immediately', async () => {
     mocks.listDatasets.mockResolvedValue({ datasets: [], default_dataset_id: null });
     const { container } = render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建你的图' }));
+    await openPersonalConstruction();
     await screen.findByText('还没有可构图的数据源');
-    const file = new File(['from,to\na,b'], 'orders.csv', { type: 'text/csv' });
-    fireEvent.change(container.querySelector('.create-graph-workspace input[type="file"]')!, { target: { files: [file] } });
+    const file = new File(['id,to\na,b'], 'orders.csv', { type: 'text/csv' });
+    fireEvent.change(container.querySelector('.graph-source-catalog input[type="file"]')!, { target: { files: [file] } });
     const submit = await screen.findByRole('button', { name: '上传 1 张表' });
     await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(submit);
@@ -254,4 +286,77 @@ describe('actual App graph creation destination', () => {
     await waitFor(() => expect(mocks.uploadDataset).toHaveBeenCalledWith(null, [file], undefined, expect.objectContaining({ version: 'csv_bundle.v1' }), 'orders'));
     expect(screen.getByRole('region', { name: '构图编辑器' })).toBeTruthy();
   });
+});
+
+it('creates a new project from My projects and keeps the project catalog accessible by URL', async () => {
+  mocks.createProject.mockResolvedValueOnce({ project: { project_id: 'new-project', user_id: 'graph-user', name: '研究项目', dataset_count: 0 } });
+  render(<App />);
+  await screen.findByRole('heading', { name: '金融股权示例' });
+  fireEvent.click(screen.getByRole('button', { name: '我的项目' }));
+  await screen.findByRole('heading', { name: '样例项目' });
+  expect(window.location.search).toBe('?view=projects');
+  fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
+  const form = screen.getByRole('dialog', { name: '创建项目' });
+  fireEvent.change(within(form).getByLabelText('项目名称'), { target: { value: '研究项目' } });
+  fireEvent.click(within(form).getByRole('button', { name: '创建' }));
+  const created = await screen.findByRole('article', { name: '研究项目' });
+  fireEvent.click(within(created).getByRole('button', { name: '选择数据源' }));
+  await waitFor(() => expect(mocks.listDatasets).toHaveBeenCalledWith('new-project'));
+  expect(mocks.createProject).toHaveBeenCalledWith('研究项目', '');
+  expect(mocks.listDatasets).toHaveBeenCalledWith('new-project');
+});
+
+
+it('opens construction from its project card, uploads there, and restores that project after refresh', async () => {
+  const projects = [
+    { project_id: 'supply', user_id: 'graph-user', name: '供应链', dataset_count: 0 },
+    { project_id: 'other', user_id: 'graph-user', name: '另一项目', dataset_count: 0 },
+  ];
+  const saved: Record<string, Dataset[]> = { supply: [], other: [] };
+  mocks.listProjects.mockResolvedValue({ projects });
+  mocks.listDatasets.mockImplementation(async (id: string) => ({ datasets: saved[id] || [] }));
+  mocks.uploadDataset.mockImplementation(async (id: string) => {
+    const dataset = { ...source, project_id: id };
+    saved[id] = [dataset];
+    return { dataset };
+  });
+  const first = render(<App />);
+  await screen.findByRole('heading', { name: '金融股权示例' });
+  fireEvent.click(screen.getByRole('button', { name: '我的项目' }));
+  const card = await screen.findByRole('article', { name: '供应链' });
+  expect(within(screen.getByRole('complementary')).queryByRole('button', { name: '创建你的图' })).toBeNull();
+  fireEvent.click(within(card).getByRole('button', { name: '创建你的图' }));
+  await screen.findByText('还没有可构图的数据源');
+  expect(window.location.search).toBe('?view=create-graph&project=supply');
+  expect(within(screen.getByRole('navigation', { name: '项目导航' })).getByText('供应链')).toBeTruthy();
+  const file = new File(['id,to\na,b'], 'orders.csv', { type: 'text/csv' });
+  fireEvent.change(first.container.querySelector('.graph-source-catalog input[type="file"]')!, { target: { files: [file] } });
+  const submit = await screen.findByRole('button', { name: '上传 1 张表' });
+  await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(submit);
+  await screen.findByRole('region', { name: '构图编辑器' });
+  expect(mocks.uploadDataset).toHaveBeenCalledWith('supply', [file], undefined, expect.objectContaining({ version: 'csv_bundle.v1' }), 'orders');
+  fireEvent.click(screen.getByRole('button', { name: '返回我的项目' }));
+  expect(within(screen.getByRole('article', { name: '供应链' })).getByText('1 个数据集')).toBeTruthy();
+  fireEvent.click(within(screen.getByRole('article', { name: '供应链' })).getByRole('button', { name: '创建你的图' }));
+  await screen.findByRole('button', { name: '构图 订单关系' });
+  first.unmount();
+  render(<App />);
+  await screen.findByRole('button', { name: '构图 订单关系' });
+  expect(mocks.listDatasets).toHaveBeenLastCalledWith('supply');
+  fireEvent.click(screen.getByRole('button', { name: '返回我的项目' }));
+  fireEvent.click(within(screen.getByRole('article', { name: '另一项目' })).getByRole('button', { name: '创建你的图' }));
+  await screen.findByText('还没有可构图的数据源');
+  expect(window.location.search).toBe('?view=create-graph&project=other');
+  expect(screen.queryByRole('button', { name: '构图 订单关系' })).toBeNull();
+  expect(mocks.listDatasets).toHaveBeenLastCalledWith('other');
+});
+
+it('does not fall back to personal sources when a construction project no longer exists', async () => {
+  window.history.replaceState({}, '', '/?view=create-graph&project=deleted');
+  render(<App />);
+  await screen.findByText('该项目不存在或已被删除');
+  expect(window.location.search).toBe('');
+  expect(mocks.listDatasets).not.toHaveBeenCalled();
+  expect(screen.queryByRole('heading', { name: '构图工作台' })).toBeNull();
 });

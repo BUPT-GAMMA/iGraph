@@ -71,6 +71,14 @@ class DeploymentProviderCatalogMixin:
         pref = self._preference(conn, uid)
         if not pref or pref.get('personal_providers_v1'):
             return
+        # Public signup creates opaque IDs. Only the deployment owner may
+        # migrate server credentials; other accounts configure their own models.
+        if uid != os.getenv('IGRAPH_ADMIN_USER_ID', 'admin'):
+            default = pref.get('default_model', '')
+            if not self._row(conn, uid, default):
+                default = ''
+            self._set_preference(conn, uid, {**pref, 'default_model': default, 'personal_providers_v1': True})
+            return
         self._deployment_lock(conn)
         for template in self._deployment_templates(conn):
             data = {key: value for key, value in template.items()

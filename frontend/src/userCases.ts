@@ -5,6 +5,8 @@ import { useI18n, type Translate } from './i18n';
 export type BorylationAnalysisStep = 'properties' | 'rings' | 'structure' | 'symmetry' | 'products' | 'conditions' | 'plan';
 export type BorylationStoryStep = { id: string; title: string; analysis_step: BorylationAnalysisStep; question: string };
 type CaseText = { name: string; description: string; questions: string[]; question_titles?: string[]; story_steps?: BorylationStoryStep[] };
+type QuestionText = Pick<CaseText, 'questions' | 'question_titles'>;
+export type ExampleQuestions = QuestionText & { translations?: { en?: QuestionText } };
 export type UserCase = CaseText & { id: string; filename: string; available: boolean; translations?: { en?: CaseText } };
 export const UserCaseContext = createContext<UserCase[]>([]);
 const INPUT_LABELS: Record<string, [string, string]> = {
@@ -30,11 +32,16 @@ export function useExampleLabels() {
     },
   };
 }
-export function localizeUserCase(item: UserCase, t: Translate): UserCase {
+export function localizeQuestions(item: ExampleQuestions, t: Translate): QuestionText {
   const en = item.translations?.en;
-  return en ? { ...item, name: t(en.name, item.name), description: t(en.description, item.description),
+  return en ? {
     questions: item.questions.map((question, index) => t(en.questions[index] || question, question)),
     question_titles: item.questions.map((question, index) => t(en.question_titles?.[index] || en.questions[index] || question, item.question_titles?.[index] || question)),
+  } : item;
+}
+export function localizeUserCase(item: UserCase, t: Translate): UserCase {
+  const en = item.translations?.en;
+  return en ? { ...item, ...localizeQuestions(item, t), name: t(en.name, item.name), description: t(en.description, item.description),
     story_steps: item.story_steps?.map(step => {
       const translated = en.story_steps?.find(value => value.id === step.id);
       return translated ? { ...step, title: t(translated.title, step.title), question: t(translated.question, step.question) } : step;
@@ -52,16 +59,21 @@ export function userCaseForDataset(dataset: Dataset | undefined, cases: UserCase
 
 export type ExampleQuestionSuggestion = { question: string; number: number; total: number };
 
-export function nextExampleQuestion(example: UserCase | undefined, messages: Message[], t: Translate): ExampleQuestionSuggestion | undefined {
-  if (!example) return undefined;
+export function nextExampleQuestion(example: ExampleQuestions | undefined, messages: Message[], t: Translate, generated = false): ExampleQuestionSuggestion | undefined {
+  if (!example?.questions.length) return undefined;
   const turn = editableLatestTurn(messages);
-  if (!turn || turn.assistant.run_status !== 'completed') return undefined;
-  // Match either language so a UI language change never resets the sequence.
+  const users = messages.filter(message => message.role === 'user');
+  if (users.length && (!turn || turn.assistant.run_status !== 'completed')) return undefined;
+
   const normalize = (text: string) => text.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-  const prompt = normalize(turn.user.content);
-  const index = example.questions.findIndex((question, number) =>
-    normalize(question) === prompt || (example.translations?.en?.questions[number]
-      && normalize(example.translations.en.questions[number]) === prompt));
-  if (index < 0 || index + 1 >= example.questions.length) return undefined;
-  return { question: localizeUserCase(example, t).questions[index + 1], number: index + 2, total: example.questions.length };
+  const pairs = example.questions.map((question, i) => [normalize(question), normalize(example.translations?.en?.questions[i] || question)]);
+  const last = turn ? pairs.findIndex(pair => pair.includes(normalize(turn.user.content))) : -1;
+  let index = last + 1;
+  if (generated) {
+    const asked = new Set(users.map(message => normalize(message.content)));
+    const remaining = pairs.flatMap((pair, i) => pair.some(text => asked.has(text)) ? [] : [i]);
+    index = remaining.find(i => i > last) ?? remaining[0] ?? -1;
+  } else if (last < 0) return undefined;
+  if (index < 0 || index >= pairs.length) return undefined;
+  return { question: localizeQuestions(example, t).questions[index], number: index + 1, total: pairs.length };
 }

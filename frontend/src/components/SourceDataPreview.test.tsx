@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConstructionSourcePreview, Dataset } from '../types';
-import { SourceDataPreview } from './SourceDataPreview';
+import { SourceDataDialog, SourceDataPreview } from './SourceDataPreview';
 
 const { source } = vi.hoisted(() => ({ source: vi.fn() }));
 vi.mock('../api', () => ({ getConstructionSourcePreview: source }));
@@ -21,7 +21,7 @@ describe('source data preview', () => {
   it('renders real row values including zero/false and distinguishes null, empty and missing', async () => {
     render(<SourceDataPreview dataset={dataset} />);
     const records = await screen.findByRole('region', { name: '示例记录：customers' });
-    expect(within(records).getByRole('columnheader', { name: 'customer_id' })).toBeTruthy();
+    expect(within(records).getByRole('columnheader', { name: /customer_id/ })).toBeTruthy();
     for (const value of ['0', 'false', 'NULL', '（空字符串）', '客户甲']) expect(within(records).getByText(value)).toBeTruthy();
     expect(within(records).getAllByText('（缺失）')).toHaveLength(2);
     expect(screen.getByText('客户姓名（注册时填写）')).toBeTruthy();
@@ -29,7 +29,7 @@ describe('source data preview', () => {
     expect(screen.getByText('结构定义')).toBeTruthy();
     expect(screen.getByText('推断 · 待核对')).toBeTruthy();
     expect(screen.getByText(/源表共 100 行/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('源数据表'), { target: { value: 'orders' } });
+    fireEvent.click(screen.getByRole('button', { name: 'orders' }));
     expect(screen.getByText('ORDER-001')).toBeTruthy();
     expect(screen.queryByText('客户甲')).toBeNull();
     expect(screen.getByText('FK → customers.customer_id')).toBeTruthy();
@@ -109,17 +109,14 @@ describe('source data preview', () => {
     expect(screen.queryByText(/源表还有未展示的记录/)).toBeNull();
   });
 
-  it('makes room for the completed graph and allows reopening its source samples', async () => {
-    const view = render(<SourceDataPreview dataset={dataset} />);
-    await screen.findByText('客户甲');
-    const details = view.container.querySelector('details')!;
-    expect(details.open).toBe(true);
-    view.rerender(<SourceDataPreview dataset={dataset} graphReady />);
-    expect(details.open).toBe(false);
-    fireEvent.click(details.querySelector('summary')!);
-    expect(details.open).toBe(true);
-    fireEvent.change(screen.getByLabelText('源数据表'), { target: { value: 'orders' } });
-    expect(details.open).toBe(true);
-    expect(screen.getByText('ORDER-001')).toBeTruthy();
+  it('switches tables inside the source dialog and leaves the source intact on close', async () => {
+    const close = vi.fn();
+    render(<SourceDataDialog dataset={dataset} onClose={close} />);
+    const dialog = await screen.findByRole('dialog', { name: '源数据示例' });
+    await within(dialog).findByText('客户甲');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'orders' }));
+    expect(within(dialog).getByText('ORDER-001')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭源数据示例' }));
+    expect(close).toHaveBeenCalledOnce();
   });
 });

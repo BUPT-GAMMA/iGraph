@@ -11,6 +11,7 @@ from agent_runtime.model_registry import SUPPORTED_MODELS
 
 @pytest.fixture
 def catalog(tmp_path, monkeypatch):
+    monkeypatch.setenv('IGRAPH_ADMIN_USER_ID', 'alice')
     monkeypatch.setenv('QWEN_API_KEY', 'test-secret')
     monkeypatch.setenv('QWEN_BASE_URL', 'https://test.example/v1')
     store = ExecutionStore(create_engine(f'sqlite:///{tmp_path}/models.db', connect_args={'check_same_thread': False}))

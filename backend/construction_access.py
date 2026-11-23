@@ -45,6 +45,9 @@ def install_construction_access(app, *, directory, projects, session_for, state_
         if body.cleanup and (body.session_id or body.scope is None or body.dataset_id is None):
             raise HTTPException(403, {"code": "DATASET_SCOPE_REQUIRED"})
 
+        if body.saved_graph and (not body.dataset_id or body.cleanup or body.session_id):
+            raise HTTPException(403, {"code": "DATASET_SCOPE_REQUIRED"})
+
         def resolve():
             if project_id:
                 project = projects.get(project_id, user_id)
@@ -56,7 +59,10 @@ def install_construction_access(app, *, directory, projects, session_for, state_
                 item = directory.get(body.dataset_id, user_id, project_id)
                 if item is None:
                     raise HTTPException(404, {"code": "DATASET_SCOPE_REQUIRED"})
-                if item.file_type not in {"sql", "csv", "txt"}:
+                if body.saved_graph:
+                    if item.file_type not in {"npz", "pt"} or item.status != "ready":
+                        raise HTTPException(422, {"code": "SAVED_GRAPH_UNAVAILABLE"})
+                elif item.file_type not in {"sql", "csv", "txt"}:
                     raise HTTPException(422, {"code": CONSTRUCTION_NOT_APPLICABLE,
                         "message": CONSTRUCTION_NOT_APPLICABLE_MESSAGE})
                 return AccessGrant(user_id=user_id, scope=scope, dataset_ids=[item.dataset_id],

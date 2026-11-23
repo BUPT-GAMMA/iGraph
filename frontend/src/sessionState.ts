@@ -2,7 +2,7 @@ import type { RemoteBinding } from './types';
 import { editableLatestTurn } from './latestTurn';
 import { isGraphData } from './types';
 import type { ActiveRun, AttachmentRef, DatasetView, DraftAttachment, FeedbackRequest, GraphData, GraphSnapshot, GraphViewState, Message, NewConversationDraft, Plan, ProcessItem, StreamBatch, StreamEvent, ToolCall } from './types';
-import type { RunSnapshot, RunControl } from './api';
+import type { ModelCatalog, RunSnapshot, RunControl } from './api';
 import { modelErrorMessage } from './api';
 import { tr } from './i18n';
 import { pendingActivity, type SavedSessionActivity } from './sessionActivity';
@@ -10,6 +10,19 @@ import { contextHighlights, mergeGraphContext } from './graphContext';
 
 export const PERSONAL_DRAFT_KEY = 'personal';
 export function draftScopeKey(projectId: string | null | undefined) { return projectId || PERSONAL_DRAFT_KEY; }
+
+/** Resolve automatic draft choices against the account's current model configurations. */
+export function availableDraftModel(catalog: ModelCatalog | null, candidate: string) {
+  if (!catalog) return candidate;
+  const available = catalog.models.filter(item => item.enabled !== false && !item.unavailable_reason);
+  const resolve = (id: string) => {
+    const exact = available.find(item => item.config_id === id);
+    if (exact) return exact.config_id;
+    const upstream = available.filter(item => item.upstream_model_id === id);
+    return upstream.length === 1 ? upstream[0].config_id : undefined;
+  };
+  return resolve(candidate) ?? resolve(catalog.default_model) ?? available[0]?.config_id ?? candidate;
+}
 
 export function refreshEmptyDraftModel(draft: NewConversationDraft, preferredModel?: string): NewConversationDraft {
   // Empty automatic drafts must not revive a stale provider when changing tasks.

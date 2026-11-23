@@ -1,6 +1,8 @@
 export type WorkspaceRoute =
   | { kind: 'home' }
-  | { kind: 'create-graph' }
+  | { kind: 'create-graph'; projectId?: string }
+  | { kind: 'projects' }
+  | { kind: 'playground' }
   | { kind: 'help' }
   | { kind: 'project'; id: string }
   | { kind: 'session'; id: string }
@@ -10,7 +12,9 @@ export function parseWorkspaceRoute(search: string): WorkspaceRoute {
   const query = new URLSearchParams(search);
   const projectId = query.get('project')?.trim();
   const sessionId = query.get('session')?.trim();
-  if (query.get('view') === 'create-graph') return { kind: 'create-graph' };
+  if (query.get('view') === 'create-graph') return projectId ? { kind: 'create-graph', projectId } : { kind: 'create-graph' };
+  if (query.get('view') === 'projects') return { kind: 'projects' };
+  if (query.get('view') === 'playground') return { kind: 'playground' };
   if (query.get('view') === 'help') return { kind: 'help' };
   if (query.get('new') === '1') return { kind: 'new-session', projectId: projectId || null };
   if (projectId) return { kind: 'project', id: projectId };
@@ -27,7 +31,10 @@ export function workspaceRouteUrl(href: string, route: WorkspaceRoute) {
   if (route.kind === 'new-session') {
     if (route.projectId) url.searchParams.set('project', route.projectId);
     url.searchParams.set('new', '1');
-  } else if (route.kind === 'create-graph' || route.kind === 'help') url.searchParams.set('view', route.kind);
+  } else if (route.kind === 'create-graph') {
+    url.searchParams.set('view', route.kind);
+    if (route.projectId) url.searchParams.set('project', route.projectId);
+  } else if (route.kind === 'projects' || route.kind === 'help' || route.kind === 'playground') url.searchParams.set('view', route.kind);
   else if (route.kind !== 'home') url.searchParams.set(route.kind, route.id);
   return `${url.pathname}${url.search}${url.hash}`;
 }

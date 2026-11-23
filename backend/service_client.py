@@ -134,6 +134,7 @@ class ServiceClient:
         *,
         headers: dict[str, str],
         data: Any = None,
+        json_body: Any = None,
     ) -> AsyncIterator[httpx.Response]:
         client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -141,7 +142,7 @@ class ServiceClient:
             trust_env=False,
         )
         try:
-            async with client.stream(method, path, headers=headers, data=data) as response:
+            async with client.stream(method, path, headers=headers, data=data, json=json_body) as response:
                 if response.status_code >= 400:
                     body = await response.aread()
                     try:

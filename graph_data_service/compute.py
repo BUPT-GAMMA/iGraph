@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import networkx as nx
 
 from graph_data_service.graph_data import GraphData
+from graph_engine.extended_tools import EXTENDED_TOOL_NAMES
 from graph_data_service.analysis_contract import analysis_contract
 from graph_data_service.smart_overview import SmartOverviewSelection, select_smart_overview
 from graph_data_service.highlight_connections import complete_ownership_connections, resolve_ownership_selectors
@@ -2611,7 +2612,7 @@ class GraphCompute:
 
 
 
-NX_TOOL_NAMES: frozenset = frozenset({
+NX_TOOL_NAMES: frozenset = EXTENDED_TOOL_NAMES | frozenset({
     "shortest_path", "all_shortest_paths", "maximum_flow", "minimum_cut",
     "global_minimum_cut", "minimum_spanning_tree", "community_detection", "node_centrality",
     "graph_connectivity", "find_cycles", "maximum_cycle", "topological_sort", "degree_analysis",
@@ -2629,6 +2630,9 @@ def run_nx_tool(tool_name: str, g: nx.DiGraph, arguments: dict) -> dict:
     separate CPU cores without GIL contention.  Only tools that require
     nothing beyond an nx.DiGraph belong here.
     """
+    if tool_name in EXTENDED_TOOL_NAMES:
+        from graph_data_service.extended_analysis import run_extended_tool
+        return run_extended_tool(tool_name, g, arguments)
     c = GraphCompute()
     a = arguments or {}
     raw_limit = a.get("limit")

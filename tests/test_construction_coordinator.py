@@ -274,7 +274,7 @@ def test_builtin_csv_uses_managed_process_and_preserves_source_name(tmp_path):
         owner = ConstructionCoordinator(store)
         try:
             result = await owner.build("alice", "csv", source_file(tmp_path), "people.csv",
-                                       {"mode": "rules", "query_count": 1, "benchmark_repeats": 1, "experience_enabled": False})
+                                       {"primary_key": ["id"], "mode": "rules", "query_count": 1, "benchmark_repeats": 1, "experience_enabled": False})
             assert result["status"] == "draft", result
             graph = store.graph("alice", "csv")["graph"]
             assert graph["nodes"][0]["type"] == "people"
@@ -338,7 +338,7 @@ def test_hard_deadline_reaps_uncooperative_worker_before_retry(tmp_path, monkeyp
             assert store.status("alice", "timeout")["revision"] == 0
             assert (tmp_path / "users/alice/datasets/timeout/construction/evolution-report.json").exists()
             monkeypatch.setattr(WorkerProcess, "run", original)
-            retry = await owner.build("alice", "timeout", options={"mode": "rules", "query_count": 1, "experience_enabled": False})
+            retry = await owner.build("alice", "timeout", options={"primary_key": ["id"], "mode": "rules", "query_count": 1, "experience_enabled": False})
             assert retry["status"] == "draft" and retry["build_id"] != result["build_id"]
         finally:
             await owner.close()

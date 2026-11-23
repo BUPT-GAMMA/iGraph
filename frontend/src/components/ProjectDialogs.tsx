@@ -1,9 +1,10 @@
 import { Popup, PopupBackdrop } from './PopupMotion';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { Project } from '../types';
 import { Icon } from './Icon';
 import { useI18n } from '../i18n';
+import './ProjectEditor.css';
 
 type EditorProps = {
   project?: Project | null;
@@ -13,6 +14,7 @@ type EditorProps = {
 
 export function ProjectDialog({ project, onClose, onSave }: EditorProps) {
   const { t } = useI18n();
+  const id = useId();
   const [name, setName] = useState(project?.name || '');
   const [description, setDescription] = useState(project?.description || '');
   const [error, setError] = useState('');
@@ -27,13 +29,38 @@ export function ProjectDialog({ project, onClose, onSave }: EditorProps) {
     setSaving(true); setError('');
     try { await onSave(normalizedName, normalizedDescription); } catch (cause: any) { setError(cause.message || t('Failed to save project', '保存项目失败')); setSaving(false); }
   }
-  return <PopupBackdrop className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <Popup.form className="project-dialog" role="dialog" aria-modal="true" aria-label={project ? t('Edit project', '编辑项目') : t('Create project', '创建项目')} onSubmit={submit}>
-      <div className="dialog-head"><div><span>{project ? t('Project settings', '项目设置') : t('New project', '新建项目')}</span><h2>{project ? t('Edit project', '编辑项目') : t('Create project', '创建项目')}</h2></div><button type="button" className="dialog-close" title={t('Close', '关闭')} aria-label={t('Close', '关闭')} onClick={onClose}><Icon name="close" size={17} /></button></div>
-      <label>{t('Project name', '项目名称')}<input type="text" autoFocus value={name} maxLength={80} onChange={event => setName(event.target.value)} placeholder={t('For example: Social network analysis', '例如：社交网络分析')} /></label>
-      <label>{t('Description', '描述')}<textarea value={description} maxLength={500} onChange={event => setDescription(event.target.value)} placeholder={t('What this project focuses on (optional)', '这个项目关注的工作内容（可选）')} /></label>
-      {error && <div className="dialog-error">{error}</div>}
-      <div className="dialog-actions"><button type="button" className="secondary-command" onClick={onClose}>{t('Cancel', '取消')}</button><button className="primary-command" disabled={saving || !name.trim()}>{saving ? t('Saving…', '保存中…') : project ? t('Save', '保存') : t('Create', '创建')}</button></div>
+  return <PopupBackdrop className="modal-backdrop" role="presentation" onMouseDown={event => { if (!saving && event.target === event.currentTarget) onClose(); }}>
+    <Popup.form className="project-dialog project-editor" role="dialog" aria-modal="true"
+      aria-label={project ? t('Edit project', '编辑项目') : t('Create project', '创建项目')} onSubmit={submit}
+      onKeyDown={event => { if (event.key === 'Escape' && !saving) onClose(); }}>
+      <div className="dialog-head">
+        <div><span className="project-editor-icon" aria-hidden="true"><Icon name="folder" size={17} /></span>
+          <h2>{project ? t('Edit project', '编辑项目') : t('New project', '新建项目')}</h2></div>
+        <button type="button" className="dialog-close" disabled={saving} aria-label={t('Close', '关闭')} onClick={onClose}><Icon name="close" size={17} /></button>
+      </div>
+      <div className="project-editor-fields">
+        <div className="project-editor-field">
+          <div><label htmlFor={id + '-name'}>{t('Project name', '项目名称')}</label><i aria-hidden="true">*</i></div>
+          <div className="project-editor-input">
+            <input id={id + '-name'} type="text" autoFocus aria-required="true" disabled={saving} value={name} maxLength={80}
+              onChange={event => setName(event.target.value)} placeholder={t('Enter a project name', '请输入项目名称')} />
+            <span className="project-editor-count" aria-hidden="true">{name.length} / 80</span>
+          </div>
+        </div>
+        <div className="project-editor-field">
+          <div><label htmlFor={id + '-description'}>{t('Description', '描述')}</label><small>{t('Optional', '选填')}</small></div>
+          <div className="project-editor-input">
+            <textarea id={id + '-description'} disabled={saving} value={description} maxLength={500}
+              onChange={event => setDescription(event.target.value)} placeholder={t('What are you working on?', '这个项目关注什么？')} />
+            <span className="project-editor-count" aria-hidden="true">{description.length} / 500</span>
+          </div>
+        </div>
+        {error && <div className="dialog-error" role="alert">{error}</div>}
+      </div>
+      <div className="dialog-actions">
+        <button type="button" className="secondary-command" disabled={saving} onClick={onClose}>{t('Cancel', '取消')}</button>
+        <button className="primary-command" disabled={saving || !name.trim()}><Icon name="check" size={15} />{saving ? t('Saving…', '保存中…') : project ? t('Save', '保存') : t('Create', '创建')}</button>
+      </div>
     </Popup.form>
   </PopupBackdrop>;
 }

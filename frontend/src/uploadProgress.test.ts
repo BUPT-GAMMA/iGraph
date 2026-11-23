@@ -27,18 +27,17 @@ it('keeps registration fields and waits for the server after upload reaches 100%
   await Promise.resolve();
   expect(progress.mock.calls).toEqual([[42], [100]]);
   expect(settled).not.toHaveBeenCalled();
-  expect(xhr.headers['X-User-ID']).toBe('admin');
+  expect(xhr.headers['X-Workspace-User']).toBe('account-a');
   const payload = { success: true, file_token: 'token', filename: 'data.csv', dataset: { dataset_id: 'dataset' }, construction_required: true };
   xhr.respond(payload);
   expect(await result).toEqual(payload);
 });
-it('ignores a legacy account selection for uploads', async () => {
+it('rejects uploads from a stale rendered account before sending a file', async () => {
   setUserId('account-b');
-  const result = uploadFile('session-a', file(), undefined, vi.fn());
-  expect(FakeXHR.instances[0].headers['X-User-ID']).toBe('admin');
-  FakeXHR.instances[0].respond({ success: true, file_token: 'token', filename: 'data.csv' });
-  await expect(result).resolves.toMatchObject({ file_token: 'token' });
-});it('rejects a late success after the rendered account changes', async () => {
+  await expect(uploadFile('session-a', file(), undefined, vi.fn())).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
+  expect(FakeXHR.instances).toHaveLength(0);
+});
+it('rejects a late success after the rendered account changes', async () => {
   const result = uploadFile('session', file(), undefined, vi.fn());
   const rejected = expect(result).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
   const next = bindRequestAccount('account-b'); setUserId('account-b');

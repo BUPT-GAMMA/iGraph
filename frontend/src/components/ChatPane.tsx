@@ -1,10 +1,11 @@
 import { RemoteGraphQueryResult } from './RemoteGraphQueryResult';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { MarkdownContent } from './MarkdownContent';
-import type { ArtifactRef, Message, Plan, ToolCall } from '../types';
+import type { ArtifactRef, Dataset, Message, Plan, ToolCall } from '../types';
 import { ConversationInputArea, type ConversationInputAreaProps } from './ConversationInputArea';
 import { editableLatestTurn } from '../latestTurn';
-import { localizeUserCase, nextExampleQuestion, type UserCase } from '../userCases';
+import { localizeQuestions, nextExampleQuestion, type UserCase } from '../userCases';
+import { useConstructionQuestions } from '../useConstructionQuestions';
 import { ExampleQuestionButton } from './ExampleQuestionButton';
 import { answerVersions } from '../answerVersions';
 import { FileTypeIcon } from './FileTypeIcon';
@@ -175,6 +176,7 @@ export type ChatPaneProps = ConversationInputAreaProps & {
   emptyProjectName?: string;
   emptyContent?: ReactNode;
   exampleCase?: UserCase;
+  questionDataset?: Dataset;
   onOpenGraph: () => void;
   runTools?: ToolCall[];
   plan?: Plan | null;
@@ -190,7 +192,7 @@ function isNearBottom(element: HTMLDivElement) {
   return element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_THRESHOLD;
 }
 
-export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, emptyContent, exampleCase, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
+export function ChatPane({ messages, conversationKey = 'default', emptyProjectName, emptyContent, exampleCase, questionDataset, onOpenGraph, runTools, plan, onEditLatest, artifactSessionId, ...inputProps }: ChatPaneProps) {
   const { t } = useI18n();
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const latestTurn = editableLatestTurn(messages);
@@ -199,9 +201,12 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
   useEffect(() => { setEditingKey(null); }, [editableKey]);
   const [versionSelection, setVersionSelection] = useState<Record<string, string>>({});
   const composerAvailable = inputProps.interaction.kind === 'composer';
-  const localizedExample = exampleCase ? localizeUserCase(exampleCase, t) : undefined;
+  const questions = useConstructionQuestions(questionDataset);
+  const generated = questions?.questions.length ? questions : undefined;
+  const examples = generated ?? exampleCase;
+  const localizedExample = examples ? localizeQuestions(examples, t) : undefined;
   const exampleQuestions = localizedExample?.questions;
-  const exampleSuggestion = !editingKey ? nextExampleQuestion(exampleCase, messages, t) : undefined;
+  const exampleSuggestion = !editingKey ? nextExampleQuestion(examples, messages, t, Boolean(generated)) : undefined;
   const scrollRef = useRef<HTMLDivElement>(null);
   const sticksToBottomRef = useRef(true);
   const initializedRef = useRef(false);
@@ -257,7 +262,15 @@ export function ChatPane({ messages, conversationKey = 'default', emptyProjectNa
 
   return <main className="chat-pane">
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
-      {messages.length === 0 ? <><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable && !emptyContent ? <div className={exampleQuestions?.length ? "example-suggestions" : "suggestions"}>{exampleQuestions?.length ? exampleQuestions.map((question, index) => <ExampleQuestionButton key={question} title={localizedExample?.question_titles?.[index] || question} question={question} disabled={Boolean(inputProps.disabled || inputProps.loading || inputProps.uploading || inputProps.sendBlocked)} onSelect={() => inputProps.onChange(question)} />) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
+      {messages.length === 0 ? <><div className="empty-state"><div className="empty-icon"><BrandLogo /></div><h1>{emptyProjectName ? <>{t('Start graph analysis in', '开始在')} <span className="empty-project-name">{emptyProjectName}</span>{t('', ' 中图分析')}</> : t('Start graph analysis', '开始图分析')}</h1>{composerAvailable && !emptyContent && generated && exampleQuestions?.length ? <section className="graph-starters" aria-label={t('Questions about this graph', '基于这张图的问题')}>
+          <h2>{t('Questions about this graph', '基于这张图的问题')}</h2>
+          <div className="graph-starter-list">{exampleQuestions.map((question, index) => <button type="button" key={question}
+            disabled={Boolean(inputProps.disabled || inputProps.loading || inputProps.uploading || inputProps.sendBlocked)} onClick={() => inputProps.onChange(question)}>
+            <strong>{localizedExample?.question_titles?.[index]}</strong><span>{question}</span>
+          </button>)}</div>
+        </section> : composerAvailable && !emptyContent && questions?.status === 'generating'
+          ? <p role="status">{t('Generating example questions for this graph…', '正在根据这张图生成示例问题…')}</p>
+          : composerAvailable && !emptyContent ? <div className={exampleQuestions?.length ? "example-suggestions" : "suggestions"}>{exampleQuestions?.length ? exampleQuestions.map((question, index) => <ExampleQuestionButton key={question} title={localizedExample?.question_titles?.[index] || question} question={question} disabled={Boolean(inputProps.disabled || inputProps.loading || inputProps.uploading || inputProps.sendBlocked)} onSelect={() => inputProps.onChange(question)} />) : <><button onClick={() => inputProps.onChange(t('Inspect the current graph structure and basic properties', '请检查当前图的结构和基本属性'))}>{t('Inspect graph structure', '检查图结构')}</button><button onClick={() => inputProps.onChange(t('Calculate node degrees and find the node with the highest degree', '请计算节点的度数并找出最大度节点'))}>{t('Calculate node degrees', '计算图节点度数')}</button><button onClick={() => inputProps.onChange(t('Run community detection on this graph', '请帮我进行社区检测'))}>{t('Detect communities', '进行社区检测')}</button></>}</div> : null}</div>{composerAvailable && emptyContent}</> : messages.map((message, index) => {
         const isAssistant = message.role === 'assistant';
         const isLiveAssistant = isAssistant && index === liveAssistantIndex;
         const versions = isAssistant ? answerVersions(message, messages) : [message];

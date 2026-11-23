@@ -8,6 +8,7 @@ import networkx as nx
 
 from graph_data_service.compute import NX_TOOL_NAMES, run_nx_tool
 from graph_engine.tool_execution import execution_policy
+from graph_engine.extended_tools import EXTENDED_TOOL_NAMES
 
 
 class ReadonlyGraphToolTests(unittest.TestCase):
@@ -51,7 +52,8 @@ class ReadonlyGraphToolTests(unittest.TestCase):
             "matching_coloring_analysis": {"method": "max_weight_matching"},
             "distance_measures": {"metric": "center"},
         }
-        self.assertEqual(set(arguments), NX_TOOL_NAMES)
+        # Additional tools use direction-specific fixtures in test_extended_graph_tools.
+        self.assertEqual(set(arguments), NX_TOOL_NAMES - EXTENDED_TOOL_NAMES)
         for tool, args in arguments.items():
             self.assertTrue(execution_policy(tool, args).read_only)
         with ThreadPoolExecutor(max_workers=8) as pool:

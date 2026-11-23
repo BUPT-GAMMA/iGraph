@@ -29,6 +29,10 @@ class SourceError(ValueError):
     """The uploaded source cannot be imported completely and safely."""
 
 
+class CsvConfigurationError(SourceError):
+    """CSV node/edge roles or endpoint references require user configuration."""
+
+
 @dataclass(frozen=True)
 class ResourceLimits:
     """Explicit resource envelope carried with a relational source."""
@@ -105,6 +109,7 @@ class RelationalSource:
     _database_path: Path | None = field(default=None, repr=False)
     _database_identity: tuple | None = field(default=None, repr=False)
     _txt_mode: str | None = field(default=None, repr=False)
+    _csv_mode: bool = field(default=False, repr=False)
 
     def schema(self) -> dict:
         return {"domain": self.domain, "tables": [
@@ -258,7 +263,7 @@ def _validate_source(source: RelationalSource, max_rows: int, *, csv_mode: bool 
                 raise SourceError(f"Unknown foreign key column in {table.name!r}.")
             if any(column not in parent.columns for column in fk.ref_columns):
                 raise SourceError(f"Unknown referenced column in {fk.ref_table!r}.")
-        if warn_missing_primary_key and not table.primary_key:
+        if warn_missing_primary_key and not table.primary_key and not source._csv_mode:
             source.warnings.append(f"Table {table.name!r} has no reliable primary key; row-position identities are used.")
 
 
@@ -315,13 +320,15 @@ def _string_table_source(path: Path, options: dict, limits: ResourceLimits,
                          columns: list[str], rows: list[dict], warning: str = "",
                          *, warn_missing_primary_key: bool = True) -> RelationalSource:
     max_rows = limits.max_source_rows
+    csv_mode = path.suffix.lower() == ".csv"
     name = _name(options.get("table_name", path.stem), "Table name")
     table = Table(name, columns, rows, column_types={column: "TEXT" for column in columns},
                   column_collations={column: "BINARY" for column in columns})
     table.primary_key = (_names(options["primary_key"], "primary_key", empty=True)
-                         if "primary_key" in options else _infer_primary_key(table))
+                         if "primary_key" in options else [] if csv_mode else _infer_primary_key(table))
     table.foreign_keys = _foreign_keys(options.get("foreign_keys", []))
-    source = RelationalSource({name: table}, options.get("domain", ""), resource_limits=limits)
+    source = RelationalSource({name: table}, options.get("domain", ""), resource_limits=limits,
+                              _csv_mode=csv_mode)
     if warning:
         source.warnings.append(warning)
     inline = options.get("tables", [])
@@ -346,7 +353,7 @@ def _string_table_source(path: Path, options: dict, limits: ResourceLimits,
         table = Table(name, columns, copy.deepcopy(rows), column_types=types.copy(),
                       column_collations={column: "BINARY" for column in columns})
         table.primary_key = (_names(definition["primary_key"], "primary_key", empty=True)
-                             if "primary_key" in definition else _infer_primary_key(table))
+                             if "primary_key" in definition else [] if csv_mode else _infer_primary_key(table))
         table.foreign_keys = _foreign_keys(definition.get("foreign_keys", []))
         source.tables[name] = table
     _validate_source(source, max_rows, csv_mode=True,
@@ -390,7 +397,7 @@ def _load_csv_bundle(path: Path, options: dict, limits: ResourceLimits) -> Relat
                     or not isinstance(definitions, list) or not 1 <= len(definitions) <= 128):
                 raise SourceError("CSV bundle manifest version or table list is invalid.")
             expected_entries = {"manifest.json"}
-            source = RelationalSource({}, options.get("domain", ""), resource_limits=limits)
+            source = RelationalSource({}, options.get("domain", ""), resource_limits=limits, _csv_mode=True)
             remaining = limits.max_source_rows
             for definition in definitions:
                 allowed = {"file_name", "entry", "name", "columns", "primary_key", "foreign_keys"}
@@ -429,8 +436,7 @@ def _load_csv_bundle(path: Path, options: dict, limits: ResourceLimits) -> Relat
                         raise SourceError(f"Invalid CSV table {name!r}: {exc}") from exc
                 table = Table(name, columns, rows, column_types={column: "TEXT" for column in columns},
                               column_collations={column: "BINARY" for column in columns})
-                configured_primary_key = _names(definition["primary_key"], "primary_key", empty=True)
-                table.primary_key = configured_primary_key or _infer_primary_key(table)
+                table.primary_key = _names(definition["primary_key"], "primary_key", empty=True)
                 table.foreign_keys = _foreign_keys(definition["foreign_keys"])
                 source.tables[name] = table
             if set(names) != expected_entries:
@@ -1022,15 +1028,39 @@ def source_integrity_errors(source: RelationalSource, graph: dict, limit: int = 
 
 
 def initial_graph(source: RelationalSource) -> dict:
-    """Keep every input row, linking declared foreign keys to primary/unique keys."""
+    """Keep every input row; keyless CSV tables carry rows on relationship edges."""
     graph = {"directed": True, "nodes": [], "edges": []}
     limits = source.resource_limits
-    row_count = sum(len(table.rows) for table in source.tables.values())
+    relationship_tables = {}
+    if source._csv_mode:
+        for table in source.tables.values():
+            if not table.primary_key:
+                # The same columns may reference alternative entity types (for
+                # example, a shareholder can be a company or a person).
+                groups = {}
+                for fk in table.foreign_keys:
+                    groups.setdefault(tuple(fk.columns), []).append(fk)
+                if len(groups) != 2:
+                    raise CsvConfigurationError(
+                        f"CSV table {table.name!r} has no primary key. Configure a primary key to create nodes, "
+                        "or two foreign-key column groups to create relationship edges. "
+                        "CSV 表未设置主键：请设置主键以生成节点，或配置两组外键列以确定关系边的两端。"
+                    )
+                relationship_tables[table.name] = list(groups.values())
+            for fk in table.foreign_keys:
+                if not source.tables[fk.ref_table].primary_key:
+                    raise CsvConfigurationError(
+                        f"CSV foreign key {table.name!r} -> {fk.ref_table!r} targets a table without a primary key. "
+                        "Configure a primary key on the target table. 外键目标表必须设置主键，才能作为边的端点。"
+                    )
+    row_count = sum(len(table.rows) for table in source.tables.values() if table.name not in relationship_tables)
     if row_count > limits.max_graph_nodes:
         raise SourceError(f"Rows exceed the {limits.max_graph_nodes}-node construction limit.")
     identities = {}
     for table in source.tables.values():
         identities[table.name] = [row_id(table, row, index) for index, row in enumerate(checked(table.rows))]
+        if table.name in relationship_tables:
+            continue
         for index, row in enumerate(checked(table.rows)):
             properties = {"table": table.name, "row_index": index, "data": copy.deepcopy(row)}
             if index == 0:
@@ -1040,6 +1070,35 @@ def initial_graph(source: RelationalSource) -> dict:
             graph["nodes"].append({"id": identities[table.name][index], "type": table.name,
                                    "properties": properties})
     for table in source.tables.values():
+        if table.name in relationship_tables:
+            endpoint_groups = [[(fk, dict(foreign_key_pairs(source, table, fk))) for fk in group]
+                               for group in relationship_tables[table.name]]
+            for index, row in enumerate(checked(table.rows)):
+                endpoints = []
+                for group in endpoint_groups:
+                    matches = [(fk, pairs[index]) for fk, pairs in group if index in pairs]
+                    if len(matches) != 1:
+                        raise CsvConfigurationError(
+                            f"CSV relationship table {table.name!r}, row {index + 2}: "
+                            f"foreign key {group[0][0].columns!r} has {len(matches)} matching endpoints; expected exactly one. "
+                            "Fill in the foreign key or correct its target configuration. "
+                            "关系表外键为空、未匹配到节点或匹配多个目标，请补充外键值或修正目标表配置。"
+                        )
+                    fk, parent_index = matches[0]
+                    endpoints.append({"foreign_key": {"table": table.name, **asdict(fk)},
+                                      "node_id": identities[fk.ref_table][parent_index]})
+                properties = {"table": table.name, "row_index": index, "data": copy.deepcopy(row),
+                              "row_endpoints": endpoints}
+                if index == 0:
+                    properties["relational_schema"] = {"column_types": table.column_types.copy(),
+                                                        "column_collations": table.column_collations.copy(),
+                                                        "sqlite_affinity": False}
+                graph["edges"].append({"id": _hash("row_edge_", identities[table.name][index]),
+                                       "type": table.name, "source": endpoints[0]["node_id"],
+                                       "target": endpoints[1]["node_id"], "properties": properties})
+                if len(graph["edges"]) > limits.max_graph_edges:
+                    raise SourceError(f"Relationships exceed the {limits.max_graph_edges}-edge construction limit.")
+            continue
         for fk in table.foreign_keys:
             parent = source.tables[fk.ref_table]
             relation = foreign_key_type(table, fk)
