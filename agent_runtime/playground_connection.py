@@ -12,6 +12,7 @@ from agent_runtime.remote_graph.secrets import SecretBox
 
 DEFAULT_URL = "https://tokensave.pro/v1"
 DEFAULT_MODEL = "gpt-5.4-mini"
+PROJECT_MODEL = "playground:personal"
 
 
 class ConnectionWrite(BaseModel):
@@ -47,7 +48,18 @@ def install_connection(router, catalog, identity):
                 saved = {"revision": current + 1}
             if update or clear:
                 catalog._set_preference(db, uid, {**preferences, "playground": saved})
-            public = {"revision": saved.get("revision", 0), "base_url": saved.get("base_url", DEFAULT_URL),
+            # The same personal connection is a selectable analysis model for projects created here.
+            # Catalog versions pin encrypted credentials for runs that outlive a configuration change.
+            row = catalog._row(db, uid, PROJECT_MODEL)
+            if saved.get("ciphertext") and (not row or row["data"].get("connection_revision") != saved["revision"]):
+                data = dict(source="playground", provider="openai-compatible", provider_name="Playground",
+                            model_id=saved["model"], display_name=saved["model"], base_url=saved["base_url"],
+                            ciphertext=saved["ciphertext"], connection_revision=saved["revision"], requires_api_key=True,
+                            tools=True, vision=False, enabled=True, context_window=32768, max_output_tokens=4096)
+                catalog._write(db, uid, PROJECT_MODEL, data, row)
+            elif clear and row and not row["data"].get("deleted"):
+                catalog._remove_models(db, uid, [row])
+            public = {"config_id": PROJECT_MODEL, "revision": saved.get("revision", 0), "base_url": saved.get("base_url", DEFAULT_URL),
                       "model": saved.get("model", DEFAULT_MODEL), "configured": bool(saved.get("ciphertext"))}
             if resolve:
                 if not public["configured"]:

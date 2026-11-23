@@ -33,6 +33,7 @@ export type Session = {
 };
 
 export type Project = {
+  analysis_model?: string | null;
   project_id: string;
   user_id: string;
   name: string;

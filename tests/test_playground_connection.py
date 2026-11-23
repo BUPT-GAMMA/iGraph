@@ -36,6 +36,12 @@ class PlaygroundConnectionTest(unittest.TestCase):
                 saved = client.put(url, json={**form, "api_key": key})
                 self.assertTrue(saved.json()["configured"])
                 self.assertNotIn(key, saved.text)
+                mid = saved.json()["config_id"]
+                selected = next(m for m in catalog.list("alice")["models"] if m["config_id"] == mid)
+                self.assertIsNone(selected["unavailable_reason"])
+                self.assertNotIn(key, str(selected))
+                self.assertEqual(catalog.resolve("alice", {"config_id": mid, "revision": selected["revision"]})["api_key"], key)
+                self.assertFalse(any(m["config_id"] == mid for m in catalog.list("bob")["models"]))
                 with store.transaction("alice", "__models__") as db:
                     self.assertNotIn(key, str(catalog._preference(db, "alice")))
                 self.assertEqual(client.get(url + "/resolve?revision=1").json()["api_key"], key)

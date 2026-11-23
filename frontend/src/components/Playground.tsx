@@ -9,6 +9,7 @@ import { Icon } from './Icon';
 import './Playground.css';
 
 type Props = {
+  onConnectionSaved?: () => void;
   onPending: (id: string) => void;
   onReady: (project: Project) => void;
   onOpen: (project: Project) => void;
@@ -19,7 +20,7 @@ function fresh(): PlaygroundState {
     confirmable: false, confirmed: false, result: null, error: null };
 }
 
-export function Playground({ onPending, onReady, onOpen }: Props) {
+export function Playground({ onConnectionSaved, onPending, onReady, onOpen }: Props) {
   const { t, language } = useI18n();
   const [scene, setScene] = useState(fresh);
   const [history, setHistory] = useState<{ id: string; title: string }[]>([]);
@@ -173,7 +174,7 @@ export function Playground({ onPending, onReady, onOpen }: Props) {
     <div ref={scroll} className="playground-scroll" role="log" aria-label={t('Scenario conversation', '场景对话')}>
       <div className="playground-thread">
         {connectionError && <div role="alert">{t('Could not load the model connection.', '模型连接配置加载失败。')} <button type="button" className="text-button" onClick={() => setConnectionLoad(n => n + 1)}>{t('Retry', '重试')}</button></div>}
-        {connection && (!connection.configured || connectionOpen) && <PlaygroundConnectionForm key={connection.revision} connection={connection} onSaved={next => { setConnection(next); setConnectionOpen(false); setError(''); }} onCancel={() => setConnectionOpen(false)} />}
+        {connection && (!connection.configured || connectionOpen) && <PlaygroundConnectionForm key={connection.revision} connection={connection} onSaved={next => { onConnectionSaved?.(); setConnection(next); setConnectionOpen(false); setError(''); }} onCancel={() => setConnectionOpen(false)} />}
         {!scene.messages.length && !loading && connection?.configured && !connectionOpen && <div className="playground-welcome">
           <span className="playground-mark"><Icon name="project" size={28} /></span>
           <h2>{t('What would you like to explore?', '你想探索什么场景？')}</h2>

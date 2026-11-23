@@ -90,6 +90,14 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
             self._migrate_providers(conn, uid)
         return self.list(uid)
 
+    def _private_config(self, data):
+        result = dict(data)
+        if result.get('source') == 'playground' and result.get('ciphertext'):
+            from agent_runtime.remote_graph.secrets import SecretBox
+            box = SecretBox(self.config.remote_graph_secret_key, self.config.remote_graph_secret_key_file)
+            result['api_key'] = box.decrypt(result.pop('ciphertext'))
+        return result
+
     def _reason(self, conn, uid, row):
         if not row or row['data'].get('deleted'):
             return 'MODEL_REMOVED'
@@ -98,7 +106,7 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
             return 'MODEL_PROVIDER_DISABLED'
         if not data.get('enabled', True):
             return 'MODEL_DISABLED'
-        if not data.get('base_url') or (data.get('requires_api_key') and not data.get('api_key')):
+        if not data.get('base_url') or (data.get('requires_api_key') and not (data.get('api_key') or data.get('ciphertext'))):
             return 'MODEL_NOT_CONFIGURED'
         if not data.get('tools', True):
             return 'MODEL_TOOLS_REQUIRED'
@@ -110,7 +118,7 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
             upstream_model_id=data['model_id'], display_name=data.get('display_name') or data['model_id'],
             provider=data.get('provider', 'openai-compatible'), provider_id=data.get('provider_id'),
             provider_name=data.get('provider_name'), base_url=data.get('base_url', ''),
-            has_api_key=bool(data.get('api_key')), source=data['source'], enabled=data.get('enabled', True),
+            has_api_key=bool(data.get('api_key') or data.get('ciphertext')), source=data['source'], enabled=data.get('enabled', True),
             tools=data.get('tools', True), vision=data.get('vision', False),
             context_window=data.get('context_window', 131072), max_output_tokens=data.get('max_output_tokens', 4096),
             unavailable_reason=self._reason(conn, uid, row))
@@ -126,6 +134,8 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
         with self.store.transaction(uid, '__models__') as conn:
             self._ensure_personal_providers(conn, uid)
             existing = self._row(conn, uid, cid) if cid else None
+            if existing and existing['data'].get('source') == 'playground':
+                raise ControlError('PLAYGROUND_MANAGE_CONNECTION')
             if cid and (not existing or existing['data'].get('deleted')):
                 raise ControlError('MODEL_REMOVED', 404)
             if existing and expected_revision != existing['revision']:
@@ -170,6 +180,8 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
             row = self._row(conn, uid, cid)
             if not row or row['data'].get('deleted'):
                 raise ControlError('MODEL_REMOVED', 404)
+            if row['data'].get('source') == 'playground':
+                raise ControlError('PLAYGROUND_MANAGE_CONNECTION')
             if row['revision'] != expected_revision:
                 raise ControlError('MODEL_CONFIG_CHANGED')
             row = self._write(conn, uid, cid, {**row['data'], 'enabled': enabled}, row)
@@ -190,6 +202,8 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
             row = self._row(conn, uid, cid)
             if not row or row['data'].get('deleted'):
                 raise ControlError('MODEL_REMOVED', 404)
+            if row['data'].get('source') == 'playground':
+                raise ControlError('PLAYGROUND_MANAGE_CONNECTION')
             if row['revision'] != expected_revision:
                 raise ControlError('MODEL_CONFIG_CHANGED')
             self._remove_models(conn, uid, [row])
@@ -209,6 +223,7 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
             cid = row['config_id']
             # Keep a non-secret tombstone for old selections and repeat migration.
             clean = {**row['data'], 'api_key': '', 'base_url': '', 'enabled': False, 'deleted': True}
+            clean.pop('ciphertext', None)
             self._write(conn, uid, cid, clean, row)
             conn.execute(versions.delete().where(versions.c.user_id == uid, versions.c.config_id == cid))
 
@@ -277,7 +292,7 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
                 versions.c.config_id == snapshot['config_id'], versions.c.revision == snapshot['revision'])).scalar_one_or_none()
             if not data:
                 raise ControlError('MODEL_REMOVED', 422)
-            return dict(data)
+            return self._private_config(data)
 
     def resolve_for_completion(self, uid, config_id, revision):
         """Resolve the current, selectable model for an independent completion."""
@@ -289,7 +304,7 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
                 raise ControlError(reason, 422)
             if row['revision'] != revision:
                 raise ControlError('MODEL_CONFIG_CHANGED')
-            return dict(row['data'])
+            return self._private_config(row['data'])
 
     def test_configuration(self, uid, cid, revision):
         with self.store.transaction(uid, '__models__') as conn:
@@ -301,4 +316,4 @@ class ModelCatalog(DeploymentProviderCatalogMixin, ProviderCatalogMixin):
                 raise ControlError('MODEL_CONFIG_CHANGED')
             if self._reason(conn, uid, row) == 'MODEL_NOT_ALLOWED':
                 raise ControlError('MODEL_NOT_ALLOWED', 403)
-            return dict(row['data'])
+            return self._private_config(row['data'])

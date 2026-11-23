@@ -28,7 +28,7 @@ export type ModelConfiguration = CustomModel & {
   config_id: string;
   revision: number;
   upstream_model_id: string;
-  source: 'deployment' | 'custom';
+  source: 'deployment' | 'custom' | 'playground';
   enabled: boolean;
   tools: boolean;
   vision: boolean;
@@ -115,6 +115,7 @@ export function modelErrorMessage(code?: string | null) {
     MODEL_DUPLICATE: tr('This model is already added to the provider.', '该模型已添加到此提供商'),
     MODEL_DISCOVERY_UNSUPPORTED: tr('This provider cannot list models. Add a model ID manually.', '该接口不支持模型发现，请手动添加模型 ID'),
     MODEL_DISCOVERY_TOO_LARGE: tr('The model list is too large. Add a model ID manually.', '模型列表过大，请手动添加模型 ID'),
+    PLAYGROUND_MANAGE_CONNECTION: tr('Edit this model in Playground under Model connection.', '请在场景广场的「模型连接」中编辑此模型。'),
     MODEL_REMOVED: tr('Model configuration removed. Select another model.', '模型配置已删除，请选择其他模型'),
     MODEL_DISABLED: tr('Model disabled. Select another model.', '模型已停用，请选择其他模型'),
     MODEL_UNAVAILABLE: tr('Could not load the selected model service. Try again.', '暂时无法读取所选模型服务，请稍后重试。'),

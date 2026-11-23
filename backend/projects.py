@@ -24,6 +24,7 @@ class ProjectRecord:
     updated_at: float = 0.0
     delete_status: str | None = None
     scenario_pending: bool = False
+    analysis_model: str | None = None
 
 
 class ProjectDirectory:
@@ -94,14 +95,14 @@ class ProjectDirectory:
             self._write(records)
             return project
 
-    def stage_scenario(self, user_id: str, project_id: str, name: str, description: str) -> ProjectRecord:
+    def stage_scenario(self, user_id: str, project_id: str, name: str, description: str, analysis_model: str | None = None) -> ProjectRecord:
         with self._lock:
             records = self._load()
             project = records.get(project_id)
             if project is None:
                 now = time.time()
                 project = ProjectRecord(project_id, user_id, name, description, created_at=now, updated_at=now,
-                                        scenario_pending=True)
+                                        scenario_pending=True, analysis_model=analysis_model)
                 records[project_id] = project
                 self._write(records)
             if project.user_id != user_id:

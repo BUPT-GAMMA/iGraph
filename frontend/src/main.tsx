@@ -1255,7 +1255,7 @@ function App() {
       return;
     }
     const existing = conversationRef.current.draftsByScope[draftScopeKey(projectId)] || readStoredDraft(userId, projectId);
-    const preferredModel = availableDraftModel(modelCatalog, activeSession?.model || defaultModel);
+    const preferredModel = availableDraftModel(modelCatalog, project?.analysis_model || activeSession?.model || defaultModel);
     const draft = refreshEmptyDraftModel(existing || {
       draftId: randomUUID(), projectId, phase: 'editing', text: '',
       model: preferredModel,
@@ -2292,7 +2292,7 @@ function App() {
       <div className="main-column">
         {playgroundOpen ? <>
           {workspaceError && <div className="workspace-error" role="alert">{workspaceError}</div>}
-          <Playground key={userId} onPending={id => pendingScenarios.current.add(id)}
+          <Playground key={userId} onConnectionSaved={() => void refreshModelCatalog()} onPending={id => pendingScenarios.current.add(id)}
             onReady={rememberPlaygroundProject} onOpen={project => void openProjectDraft(project.project_id, [project, ...projects.filter(p => p.project_id !== project.project_id)])} />
         </> : projectsOpen ? <>
           {workspaceError && <div className="workspace-error" role="alert">{workspaceError}</div>}

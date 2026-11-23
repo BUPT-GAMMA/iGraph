@@ -167,11 +167,11 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                 visible["result"]["project"] = {**project_row(project), "dataset_count": len(directory.list(pid, uid))}
         return visible
 
-    async def publish(uid, doc):
+    async def publish(uid, doc, analysis_model):
         plan = doc["plan"]
         pid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"igraph:playground:{uid}:{doc['id']}"))
         did = str(uuid.uuid5(uuid.UUID(pid), "example-graph"))
-        project = projects.stage_scenario(uid, pid, plan["title"], plan["summary"])
+        project = projects.stage_scenario(uid, pid, plan["title"], plan["summary"], analysis_model)
         if project.delete_status:
             fail("PROJECT_DELETING")
         source = {"format": "igraph.playground.v1", "data_origin": "synthetic", "scenario": plan, "model_name": doc["plan_model"]}
@@ -187,7 +187,7 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
         return {"project": {**project_row(project), "dataset_count": len(directory.list(pid, uid))}, "dataset_id": did,
                 "node_count": state["node_count"], "edge_count": state["edge_count"]}
 
-    async def run(uid, doc, req):
+    async def run(uid, doc, req, analysis_model):
         try:
             if not doc["confirmed"]:
                 payload = {"connection_revision": req.connection_revision, "language": req.language, "message": req.message.strip(),
@@ -227,7 +227,7 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                     fail("PLAYGROUND_NEEDS_PLAN")
                 store.update(uid, doc, confirmed=True, status="building", deadline=time.time() + LEASE_SECONDS, live_reply="",
                              messages=[*doc["messages"], response])
-            result = await publish(uid, doc)
+            result = await publish(uid, doc, analysis_model)
             store.update(uid, doc, result=result, status="ready", confirmable=False, live_reply="")
         except Exception as exc:
             code = "PLAYGROUND_BUILD_FAILED" if doc["confirmed"] else "PLAYGROUND_MODEL_FAILED"
@@ -271,5 +271,5 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
             fail("MODEL_CONFIG_CHANGED")
         doc, started = store.begin(uid, str(scenario_id), req)
         if started:
-            launch(run(uid, doc, req))
+            launch(run(uid, doc, req, settings['config_id']))
         return response(uid, doc)

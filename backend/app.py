@@ -3959,7 +3959,8 @@ def create_app(config: BackendConfig | None = None) -> FastAPI:
         project = project_or_404(req.project_id, user.user_id) if req.project_id else None
         available_models = await available_models_for(user)
         default_model = (await model_catalog_for(user))['default_model'] if controls_enabled() else (available_models[0] if available_models else '')
-        model = req.model or default_model
+        preferred = project.analysis_model if project else None
+        model = req.model or (preferred if preferred in available_models else default_model)
         if model not in available_models:
             raise HTTPException(status_code=403, detail=f"用户无权使用模型 {model}")
         project_id = project.project_id if project else None
