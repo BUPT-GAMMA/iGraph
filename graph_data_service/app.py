@@ -69,6 +69,7 @@ from graph_data_service.search import EdgeSearchRequest, EntitySearchIndex, Node
 from graph_data_service.session import GraphSession, UploadFileRecord
 from fastapi.responses import StreamingResponse
 from graph_data_service.playground import PlanRequest as PlaygroundPlanRequest
+from graph_data_service.playground_schema import PendingEdits, SchemaTurn
 from construction_access import ConstructionQuestionModel, ConstructionQuestionRequest, DATASET_TOOLS, SCOPE_HEADER
 from graph_data_service.construction_access import ConstructionAccessClient
 from graph_data_service.construction import ConstructionStore, ConstructionError, to_graph_data
@@ -4765,14 +4766,39 @@ def create_app(service: Optional[GraphDataService] = None) -> FastAPI:
         from graph_data_service.playground import plan_events
         return StreamingResponse(plan_events(uid, req), media_type="application/x-ndjson")
 
-    @app.post("/construction/{dataset_id}/playground")
-    async def playground_publish(dataset_id: str, request: Request):
+    async def playground_grant(dataset_id, request):
         require_service(request)
         uid, grant = await construction_grant(request, dataset_id)
         if not grant.scope.startswith("project:") or grant.source is None:
             raise HTTPException(403, {"code": "DATASET_SCOPE_REQUIRED"})
+        return uid, grant
+
+    @app.post("/construction/{dataset_id}/playground")
+    async def playground_publish(dataset_id: str, request: Request):
+        uid, grant = await playground_grant(dataset_id, request)
         from graph_data_service.playground import publish_graph
         return await run_sync(publish_graph, svc._construction, uid, dataset_id, grant.source)
+
+    @app.get("/construction/{dataset_id}/playground/schema")
+    async def playground_schema(dataset_id: str, request: Request):
+        from graph_data_service.playground_schema import saved_schema
+        uid, _ = await playground_grant(dataset_id, request)
+        return await run_sync(saved_schema, svc._construction, uid, dataset_id)
+
+    @app.post("/construction/{dataset_id}/playground/schema/plan")
+    async def playground_schema_plan(dataset_id: str, req: SchemaTurn, request: Request):
+        from graph_data_service.playground import plan_schema_turn
+        from graph_data_service.playground_schema import read_record
+        uid, _ = await playground_grant(dataset_id, request)
+        record = await run_sync(read_record, svc._construction, uid, dataset_id)
+        return await plan_schema_turn(uid, record, req)
+
+    @app.post("/construction/{dataset_id}/playground/schema/apply")
+    async def playground_schema_apply(dataset_id: str, req: PendingEdits, request: Request):
+        from graph_data_service.playground_schema import apply_edits
+        uid, _ = await playground_grant(dataset_id, request)
+        svc._construction_coordinator.ensure_writable(uid, dataset_id)
+        return await run_sync(apply_edits, svc._construction, uid, dataset_id, req)
 
     @app.get("/construction/models")
     async def construction_models_route(request: Request):

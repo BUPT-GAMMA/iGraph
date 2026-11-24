@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { ApiError, getPlayground, listPlaygrounds, getPlaygroundConnection, modelErrorMessage, sendPlaygroundTurn,
   type PlaygroundConnection, type PlaygroundState } from '../api';
 import { useI18n } from '../i18n';
 import { randomUUID } from '../randomId';
 import type { Project } from '../types';
 import { PlaygroundConnectionForm } from './PlaygroundConnection';
+import { PlaygroundResult, TypePreview } from './PlaygroundSchema';
 import { Icon } from './Icon';
 import './Playground.css';
 
@@ -113,7 +114,7 @@ export function Playground({ onConnectionSaved, onPending, onReady, onOpen }: Pr
 
   async function submit(message = text, confirm = false) {
     const value = message.trim();
-    if (!connection?.configured || busy || submitLock.current || scene.result || !value) return;
+    if (!connection?.configured || busy || submitLock.current || scene.result?.available === false || !value) return;
     submitLock.current = true;
     setSending(true); setError('');
     const key = epoch.current;
@@ -147,15 +148,22 @@ export function Playground({ onConnectionSaved, onPending, onReady, onOpen }: Pr
     epoch.current++; setScene(fresh()); setText(''); setError(''); setLoading(false); setSending(false);
     composer.current?.focus();
   }
-  const confirmText = t('Confirm and build', '确认好问题了，开始构图');
+  const result = scene.result;
+  const confirmText = result ? t('Apply changes', '确认修改') : t('Confirm and build', '确认好问题了，开始构图');
   const issue = scene.error && (modelErrorMessage(scene.error) || ({
     PLAYGROUND_NOT_CONFIGURED: t('The Playground model service is not configured.', '场景广场的模型服务尚未配置。'),
     PLAYGROUND_INVALID_REPLY: t('The model returned an incomplete plan. Try again.', '模型返回的方案不完整，可以重试。'),
     PLAYGROUND_INTERRUPTED: t('The turn was interrupted. You can resume here.', '本轮对话已中断，可以在这里重试。'),
     PLAYGROUND_TIMEOUT: t('This turn timed out. Try again.', '本轮处理超时，可以重试。'),
-  }[scene.error]) || (scene.confirmed ? t('Could not save the example graph. Retry to resume.', '示例图暂未保存，重试可继续构图。')
+    PLAYGROUND_SCHEMA_CHANGED: t('The project graph changed. Review its current types and describe your edit again.', '项目里的图已有更新，请查看当前类型后重新提出修改。'),
+    PLAYGROUND_GRAPH_BUSY: t('Finish the pending changes in graph construction, then retry.', '请先在构图页面处理尚未保存的更改，再重试。'),
+    PLAYGROUND_GRAPH_UNAVAILABLE: t('The project graph is no longer available.', '这个项目的图已不可用。'),
+  }[scene.error]) || (scene.confirmed && result ? t('Could not save the type changes. Retry to resume.', '类型修改暂未保存，可以重试。')
+    : scene.confirmed ? t('Could not save the example graph. Retry to resume.', '示例图暂未保存，重试可继续构图。')
     : t('The model could not complete this turn. Try again.', '模型未能完成这轮对话，可以重试。')));
-  const result = scene.result;
+  const resultPosition = Math.min(scene.messages.length, result?.after_message ?? scene.messages.length);
+  const resultCard = result && <PlaygroundResult result={result} onOpen={onOpen} />;
+  const composerDisabled = busy || (!result && scene.confirmed);
   return <section className="playground" aria-label={t('Playground', '场景广场')}>
     <header className="playground-head">
       <span className="playground-mark"><Icon name="compass" size={22} /></span>
@@ -184,21 +192,19 @@ export function Playground({ onConnectionSaved, onPending, onReady, onOpen }: Pr
           ].map(value => <button type="button" key={value} onClick={() => { setText(value); composer.current?.focus(); }}>{value}<Icon name="arrow-right" size={14} /></button>)}</div>
         </div>}
         {loading && <p role="status">{t('Loading conversation…', '正在加载对话…')}</p>}
-        {scene.messages.map((m, i) => <article className={'playground-turn ' + m.role} key={i}>
+        {resultPosition === 0 && resultCard}
+        {scene.messages.map((m, i) => <Fragment key={i}><article className={'playground-turn ' + m.role}>
           {m.role === 'assistant' && <strong className="playground-speaker">iGraph</strong>}
           <div className="playground-bubble">{m.text}</div>
           {m.questions && <ol className="playground-questions">{m.questions.map(q => <li key={q.zh}>{q[language]}</li>)}</ol>}
-        </article>)}
+          {m.changes && m.preview && <TypePreview changes={m.changes} schema={m.preview} before={m.before_counts} />}
+        </article>{resultPosition === i + 1 && resultCard}</Fragment>)}
         {pending && <div className="playground-turn assistant" role="status"><strong className="playground-speaker">iGraph</strong>
-          <div className="playground-bubble">{scene.live_reply || (scene.status === 'building'
+          <div className="playground-bubble">{scene.live_reply || (result
+            ? (scene.status === 'building' ? t('Saving graph type changes…', '正在保存图的类型修改…') : t('Reviewing the graph types…', '正在查看图的节点和边类型…'))
+            : scene.status === 'building'
             ? t('Building the sample graph and saving your project…', '正在构建示例图并保存项目…')
             : t('Thinking about your scenario…', '正在梳理你的场景…'))}</div></div>}
-        {result && <article className="playground-result">
-          <span className="playground-mark"><Icon name="folder-open" size={22} /></span><div>
-            <span>{result.available === false ? t('The project or graph was deleted', '项目或示例图已删除') : t('Saved to My projects', '已保存到「我的项目」')}</span><h2>{result.project.name}</h2>
-            <p>{t(`Synthetic graph · ${result.node_count} nodes · ${result.edge_count} edges`, `模拟示例图 · ${result.node_count} 个节点 · ${result.edge_count} 条边`)}</p></div>
-          <button className="primary-command" disabled={result.available === false} onClick={() => onOpen(result.project)}>{t('Open for analysis', '打开项目分析')}<Icon name="arrow-right" size={15} /></button>
-        </article>}
       </div>
     </div>
     <div className="playground-bottom">
@@ -208,15 +214,16 @@ export function Playground({ onConnectionSaved, onPending, onReady, onOpen }: Pr
       </div>}
       {scene.confirmable && connection?.configured && !busy && !scene.confirmed && <button type="button" className="playground-confirm" onClick={() => void submit(confirmText, true)}>
         <Icon name="check" size={15} />{confirmText}</button>}
-      {!result && connection?.configured && <form className="playground-compose composer" onSubmit={event => { event.preventDefault(); void submit(); }}>
-        <textarea ref={composer} rows={2} value={text} maxLength={4000} disabled={busy || scene.confirmed}
-          aria-label={t('Message the scenario agent', '与场景助手对话')} placeholder={scene.revision ? t('Refine the questions or confirm the build…', '继续调整问题，或告诉我可以构图了…') : t('Describe your scenario…', '描述你的场景…')}
+      {result?.available !== false && connection?.configured && <form className="playground-compose composer" onSubmit={event => { event.preventDefault(); void submit(); }}>
+        <textarea ref={composer} rows={2} value={text} maxLength={4000} disabled={composerDisabled}
+          aria-label={t('Message the scenario agent', '与场景助手对话')} placeholder={result ? t('Ask about a type or describe a change to nodes and edges…', '询问类型含义，或描述想怎样修改节点和边…')
+            : scene.revision ? t('Refine the questions or confirm the build…', '继续调整问题，或告诉我可以构图了…') : t('Describe your scenario…', '描述你的场景…')}
           onChange={event => setText(event.target.value)} onKeyDown={event => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); void submit(); }
           }} />
         <div className="playground-compose-actions">
           <span>{t('Shift + Enter for a new line', 'Shift + Enter 换行')}</span>
-          <button className="playground-send" type="submit" aria-label={t('Send message', '发送消息')} disabled={busy || scene.confirmed || !text.trim()}><Icon name="send" size={17} /></button></div>
+          <button className="playground-send" type="submit" aria-label={t('Send message', '发送消息')} disabled={composerDisabled || !text.trim()}><Icon name="send" size={17} /></button></div>
       </form>}
     </div>
   </section>;

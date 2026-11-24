@@ -50,6 +50,32 @@ class PlaygroundStoreTest(unittest.TestCase):
                      "只保留山茶馆，现在开始构图。", "把项目名改为供书保障演练，给我看最终方案。"]:
             self.assertFalse(approves_without_edits(text), text)
 
+    def test_preexisting_published_conversation_reopens_and_only_confirms_a_pending_schema_edit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ScenarioStore(Path(tmp) / "scenarios.sqlite")
+            tid = str(uuid.uuid4())
+            def turn(text, revision, confirm=False):
+                return Turn(turn_id=uuid.uuid4(), message=text, revision=revision, confirm=confirm, connection_revision=1)
+            existing, _ = store.begin("alice", tid, turn("建立配送网络", 0))
+            result = {"project": {"project_id": "p"}, "dataset_id": "d"}
+            store.update("alice", existing, status="ready", confirmed=True, confirmable=False, result=result)
+            edit = turn("把配送站改为中转站", 1)
+            doc, started = store.begin("alice", tid, edit)
+            self.assertTrue(started)
+            self.assertEqual((doc["status"], doc["confirmed"], doc["result"]["after_message"]), ("thinking", False, 1))
+            self.assertFalse(store.begin("alice", tid, edit)[1])
+            store.update("alice", doc, status="ready", confirmable=False)
+            with self.assertRaises(HTTPException):
+                store.begin("alice", tid, turn("确认修改", 2, True))
+            doc, _ = store.begin("alice", tid, turn("换掉这条边的类型", 2))
+            store.update("alice", doc, status="ready", confirmable=True, pending_schema={"base_revision": 1})
+            inspecting, _ = store.begin("alice", tid, turn("确认修改前让我看看", 3))
+            self.assertEqual(inspecting["status"], "thinking")
+            store.update("alice", inspecting, status="ready")
+            publishing, _ = store.begin("alice", tid, turn("确认修改", 4))
+            self.assertEqual(publishing["status"], "building")
+            self.assertEqual(publishing["result"]["dataset_id"], "d")
+
     def test_long_and_legacy_history_keep_original_request_and_displayed_question_numbers(self):
         messages = [{"role": "user", "text": "最初目标"}]
         for i in range(13):

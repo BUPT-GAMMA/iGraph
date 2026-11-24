@@ -41,13 +41,24 @@ export const getPlaygroundConnection = () => json<PlaygroundConnection>('/api/pl
 export const savePlaygroundConnection = (input: { base_url: string; api_key: string; model: string; revision: number }) =>
   json<PlaygroundConnection>('/api/playground/connection', modelJson('PUT', input));
 export type PlaygroundQuestion = { en: string; zh: string; tool: string };
+type TypeMeaning = { zh: string; en: string };
+export type PlaygroundSchema = {
+  revision: number; node_count: number; edge_count: number;
+  nodes: { type: string; count: number; examples: string[]; description: TypeMeaning }[];
+  edges: { type: string; count: number; source: string; target: string; description: TypeMeaning }[];
+};
+export type PlaygroundTypeChange = { kind: 'node' | 'edge'; action: 'add' | 'update' | 'remove' | 'reverse';
+  name: string; new_name?: string; source?: string; target?: string; new_source?: string; new_target?: string;
+  description?: TypeMeaning; examples?: string[] };
 export type PlaygroundState = {
   id: string; revision: number; status: 'draft' | 'thinking' | 'building' | 'ready' | 'failed';
-  messages: { role: 'user' | 'assistant'; text: string; questions?: PlaygroundQuestion[] }[];
+  messages: { role: 'user' | 'assistant'; text: string; questions?: PlaygroundQuestion[];
+    changes?: PlaygroundTypeChange[]; preview?: PlaygroundSchema; before_counts?: Pick<PlaygroundSchema, 'node_count' | 'edge_count'> }[];
   plan: { title: string; summary: string; questions: PlaygroundQuestion[] } | null;
   confirmable: boolean; confirmed: boolean; live_reply: string; error: string | null;
   turn_id?: string;
-  result: { project: Project; dataset_id: string; node_count: number; edge_count: number; available?: boolean } | null;
+  result: { project: Project; dataset_id: string; node_count: number; edge_count: number; available?: boolean;
+    schema?: PlaygroundSchema | null; schema_unavailable?: boolean; after_message?: number } | null;
 };
 export const listPlaygrounds = () => json<{ scenarios: { id: string; title: string }[] }>('/api/playground');
 export const getPlayground = (id: string, signal?: AbortSignal) => json<PlaygroundState>(`/api/playground/${encodeURIComponent(id)}`, { signal });

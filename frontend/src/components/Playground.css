@@ -23,10 +23,23 @@
 .playground-bubble { white-space: pre-wrap; }
 .playground-questions { margin: 8px 0 0; padding: 8px 12px 8px 32px; border-left: 2px solid var(--accent); }
 .playground-questions li + li { margin-top: 5px; }
-.playground-result { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 12px; }
+.playground-result { padding: 18px; border: 1px solid var(--border); border-radius: 12px; }
+.playground-result-head { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .playground-result h2 { font-size: 17px; margin: 3px 0; }
 .playground-result span, .playground-result p { color: var(--text-secondary); font-size: 12px; }
 .playground-result button { margin-left: auto; }
+.playground-types { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.playground-types h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; font-size: 14px; }
+.playground-types h3 svg { color: var(--accent); }
+.playground-types dl { margin: 0; }
+.playground-types dl > div { padding: 8px 0; }
+.playground-types dt { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 14px; }
+.playground-types small, .playground-types .type-examples { color: var(--text-secondary); font-size: 12px; }
+.playground-types dd { margin: 3px 0 0; font-size: 13px; line-height: 1.5; }
+.playground-types .type-direction { color: var(--accent); }
+.playground-type-preview { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--accent); }
+.playground-type-preview ul { margin: 0 0 6px; padding-left: 18px; }
+.playground-type-preview summary { cursor: pointer; color: var(--accent); }
 .playground-bottom { padding: 8px 0 clamp(14px, 3vh, 28px); }
 .playground-confirm { margin-bottom: 9px; font-weight: 600; background: var(--accent-soft); }
 .playground .playground-compose { display: block; width: 100%; margin: 0; box-sizing: border-box; padding: 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 5px 20px rgba(20, 40, 80, .06); }
@@ -45,6 +58,7 @@
 .playground-fields input { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; color: inherit; background: var(--surface); }
 .playground-connection-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 15px; }
 @media (max-width: 600px) {
+  .playground-types { grid-template-columns: 1fr; }
   .playground-fields { grid-template-columns: 1fr; }
   .playground-head { flex-wrap: wrap; padding: 10px 14px; gap: 8px; }
   .playground-history { max-width: 100%; }

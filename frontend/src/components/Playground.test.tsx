@@ -45,4 +45,28 @@ describe('Playground', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Open for analysis' }));
     expect(open).toHaveBeenCalledWith(project);
   });
+
+  it.each(['zh', 'en'] as const)('explains saved types and accepts another turn in %s', async lang => {
+    vi.mocked(getPlaygroundConnection).mockResolvedValue({ ...connection, revision: 3, configured: true });
+    vi.mocked(listPlaygrounds).mockResolvedValue({ scenarios: [{ id: 'one', title: 'Delivery' }] });
+    const schema = { revision: 1, node_count: 2, edge_count: 1, nodes: [
+      { type: 'Depot', count: 1, examples: ['Cedar'], description: { en: 'Dispatches books.', zh: '负责发出图书。' } },
+      { type: 'Library', count: 1, examples: ['Maple'], description: { en: 'Receives books.', zh: '接收图书。' } }],
+      edges: [{ type: 'supplies', source: 'Depot', target: 'Library', count: 1,
+        description: { en: 'Sends books to a library.', zh: '把图书送到图书馆。' } }] };
+    const ready = { ...state, status: 'ready' as const, confirmed: true, confirmable: false,
+      result: { project: { project_id: 'p', user_id: 'u', name: 'Delivery' }, dataset_id: 'd', node_count: 2, edge_count: 1, schema } };
+    vi.mocked(getPlayground).mockResolvedValue(ready);
+    vi.mocked(sendPlaygroundTurn).mockResolvedValue({ ...ready, confirmed: false, confirmable: true });
+    render(<I18nProvider initialLanguage={lang}><Playground onPending={vi.fn()} onReady={vi.fn()} onOpen={vi.fn()} /></I18nProvider>);
+    expect(await screen.findByText(schema.nodes[0].description[lang])).toBeTruthy();
+    expect(screen.getByText('Depot → Library')).toBeTruthy();
+    expect(screen.getByText(schema.edges[0].description[lang])).toBeTruthy();
+    const composer = screen.getByRole('textbox');
+    fireEvent.change(composer, { target: { value: 'Rename Depot to Hub' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(sendPlaygroundTurn).toHaveBeenCalledWith('one', expect.objectContaining({ message: 'Rename Depot to Hub', confirm: false })));
+    fireEvent.click(await screen.findByRole('button', { name: lang === 'zh' ? '确认修改' : 'Apply changes' }));
+    await waitFor(() => expect(sendPlaygroundTurn).toHaveBeenLastCalledWith('one', expect.objectContaining({ confirm: true })));
+  });
 });

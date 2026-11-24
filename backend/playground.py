@@ -25,6 +25,9 @@ log = logging.getLogger(__name__)
 IN_PROGRESS = {"thinking", "building"}
 CONFIRM = {"确认好问题了，开始构图", "确认问题，开始构图", "确认构图", "开始构图",
            "confirm and build", "build the example graph", "build the graph"}
+APPLY_SCHEMA = {"确认", "确认修改", "确认应用", "应用修改", "应用这些修改", "确认应用修改", "按这个方案修改",
+                "confirm", "apply", "apply changes", "apply the changes", "confirm changes", "yes, apply the changes"}
+CANCEL_SCHEMA = {"取消修改", "取消这次修改", "放弃修改", "cancel changes", "discard changes"}
 LEASE_SECONDS = 210
 # Unambiguous commands can commit the currently displayed proposal without another model round trip.
 # Defer questions, quoted commands, and combined revision/build instructions to the dialogue planner.
@@ -147,18 +150,25 @@ class ScenarioStore:
             doc = self._get(db, uid, tid) or empty(tid)
             if doc.get("turn_id") == str(req.turn_id):
                 return doc, False
-            if doc["revision"] != req.revision or doc["status"] in IN_PROGRESS or doc["result"]:
+            if doc["revision"] != req.revision or doc["status"] in IN_PROGRESS:
                 fail("PLAYGROUND_CHANGED")
             # Free-form messages may revise the scope and ask to build in the same sentence.
             # Let the planner resolve those against the conversation before authorizing publication.
-            explicit = (req.confirm or message.casefold().strip("。.!！ ") in CONFIRM
-                        or doc["confirmable"] and approves_without_edits(message))
-            if (explicit or doc["confirmed"]) and not doc["confirmable"]:
-                fail("PLAYGROUND_NEEDS_PLAN")
+            command = message.casefold().strip("。.!！ ")
+            if doc["result"]:
+                doc["result"].setdefault("after_message", len(doc["messages"]))
+                apply = req.confirm or command in APPLY_SCHEMA and bool(doc.get("pending_schema"))
+                if apply and not (doc.get("pending_schema") and doc["confirmable"]):
+                    fail("PLAYGROUND_NO_SCHEMA_EDITS")
+                doc["confirmed"] = apply
+            else:
+                explicit = req.confirm or command in CONFIRM or doc["confirmable"] and approves_without_edits(message)
+                if (explicit or doc["confirmed"]) and not doc["confirmable"]:
+                    fail("PLAYGROUND_NEEDS_PLAN")
+                if explicit:
+                    doc["confirmed"] = True
             if not (doc["status"] == "failed" and doc["messages"][-1]["text"] == message):
                 doc["messages"].append({"role": "user", "text": message})
-            if explicit:
-                doc["confirmed"] = True
             doc.update(turn_id=str(req.turn_id), revision=doc["revision"] + 1,
                        status="building" if doc["confirmed"] else "thinking", deadline=time.time() + LEASE_SECONDS,
                        live_reply="", error=None)
@@ -177,7 +187,7 @@ class ScenarioStore:
 def install_playground(app, *, path, graph, runtime, directory, projects, user_for, project_row, launch):
     store = ScenarioStore(path)
 
-    def response(uid, doc):
+    async def response(uid, doc, *, refresh_schema=False):
         visible = public(doc)
         if doc["result"]:
             original = doc["result"]
@@ -187,6 +197,18 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
             visible["result"] = {**original, "available": available}
             if available:
                 visible["result"]["project"] = {**project_row(project), "dataset_count": len(directory.list(pid, uid))}
+                if refresh_schema and doc["status"] not in IN_PROGRESS:
+                    try:
+                        schema = await graph.request("GET", f"/construction/{did}/playground/schema",
+                                                     headers={**service_headers(uid), **scope_headers(pid)})
+                        visible["result"].update(schema=schema, node_count=schema["node_count"], edge_count=schema["edge_count"])
+                    except HTTPException as exc:
+                        if exc.status_code in {403, 404}:
+                            visible["result"]["available"] = False
+                        else:
+                            visible["result"]["schema_unavailable"] = True
+                    except httpx.HTTPError:
+                        visible["result"]["schema_unavailable"] = True
         return visible
 
     async def publish(uid, doc, analysis_model):
@@ -207,10 +229,52 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
         sync_record(directory, dataset, state)
         project = projects.publish_scenario(pid, uid, did)
         return {"project": {**project_row(project), "dataset_count": len(directory.list(pid, uid))}, "dataset_id": did,
-                "node_count": state["node_count"], "edge_count": state["edge_count"]}
+                "node_count": state["node_count"], "edge_count": state["edge_count"], "schema": state.get("schema"),
+                "after_message": len(doc["messages"])}
+
+    async def edit_schema(uid, doc, req):
+        result = doc["result"]
+        pid, did = result["project"]["project_id"], result["dataset_id"]
+        project, dataset = projects.get(pid, uid), directory.get(did, uid, pid)
+        if not project or project.delete_status or not dataset:
+            fail("PLAYGROUND_GRAPH_UNAVAILABLE", 404)
+        path = f"/construction/{did}/playground/schema"
+        headers = {**service_headers(uid), **scope_headers(pid)}
+        pending = doc.get("pending_schema")
+        if doc["confirmed"]:
+            state = await graph.request("POST", path + "/apply", headers=headers, json_body=pending, timeout=40)
+            sync_record(directory, dataset, state)
+            schema = state["schema"]
+            pending = None
+            message = {"role": "assistant", "kind": "schema_applied", "text": (
+                "The changes are saved to this graph." if req.language == "en" else "类型修改已保存到这个项目的图中。")}
+        elif pending and req.message.strip().casefold().strip("。.!！ ") in CANCEL_SCHEMA:
+            schema = await graph.request("GET", path, headers=headers)
+            pending = None
+            message = {"role": "assistant", "text": "Changes discarded." if req.language == "en" else "已取消这次类型修改。"}
+        else:
+            payload = {"connection_revision": req.connection_revision, "language": req.language, "message": req.message.strip(),
+                       "scenario": (doc.get("plan") or {}).get("summary", ""), "notes": doc.get("notes", []), "pending": pending,
+                       "history": planning_history(doc["messages"], req.language, bootstrap=False)}
+            decision = await graph.request("POST", path + "/plan", headers=headers, json_body=payload, timeout=165)
+            schema = decision["schema"]
+            message = {"role": "assistant", "text": decision["reply"]}
+            if decision["action"] == "propose":
+                pending = {**decision["edits"], "base_revision": schema["revision"], "proposal_id": doc["turn_id"]}
+                message.update(preview=decision["preview"], changes=pending["changes"],
+                               before_counts={"node_count": schema["node_count"], "edge_count": schema["edge_count"]})
+            elif decision["action"] == "cancel":
+                pending = None
+        store.update(uid, doc, status="ready", confirmed=False, confirmable=bool(pending), pending_schema=pending, live_reply="",
+                     messages=[*doc["messages"], message],
+                     result={**result, "schema": schema, "node_count": schema["node_count"], "edge_count": schema["edge_count"],
+                             "after_message": len(doc["messages"]) + 1 if doc["confirmed"] else result["after_message"]})
 
     async def run(uid, doc, req, analysis_model):
         try:
+            if doc["result"]:
+                await edit_schema(uid, doc, req)
+                return
             if not doc["confirmed"]:
                 can_confirm = doc["confirmable"] and permits_build(req.message)
                 payload = {"connection_revision": req.connection_revision, "language": req.language, "message": req.message.strip(),
@@ -257,7 +321,7 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                 store.update(uid, doc, confirmed=True, status="building", deadline=time.time() + LEASE_SECONDS, live_reply="",
                              messages=[*doc["messages"], response])
             result = await publish(uid, doc, analysis_model)
-            store.update(uid, doc, result=result, status="ready", confirmable=False, live_reply="")
+            store.update(uid, doc, result=result, status="ready", confirmed=False, confirmable=False, live_reply="")
         except Exception as exc:
             code = "PLAYGROUND_BUILD_FAILED" if doc["confirmed"] else "PLAYGROUND_MODEL_FAILED"
             if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
@@ -265,7 +329,10 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
             if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
                 code = "PLAYGROUND_TIMEOUT"
             log.warning("Playground turn failed turn=%s code=%s error=%s", doc["turn_id"], code, type(exc).__name__)
-            store.update(uid, doc, status="failed", confirmable=doc["confirmed"], live_reply="", error=code)
+            if code in {"PLAYGROUND_SCHEMA_CHANGED", "PLAYGROUND_GRAPH_UNAVAILABLE"} and doc["result"]:
+                store.update(uid, doc, status="ready", pending_schema=None, confirmed=False, confirmable=False, live_reply="", error=code)
+            else:
+                store.update(uid, doc, status="failed", confirmable=doc["confirmed"], live_reply="", error=code)
 
     @app.get("/api/playground")
     def list_scenarios(request: Request):
@@ -286,9 +353,9 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
                                      headers=service_headers(user_for(request).user_id))
 
     @app.get("/api/playground/{scenario_id}")
-    def get_scenario(scenario_id: uuid.UUID, request: Request):
+    async def get_scenario(scenario_id: uuid.UUID, request: Request):
         uid = user_for(request).user_id
-        return response(uid, store.read(uid, str(scenario_id)))
+        return await response(uid, store.read(uid, str(scenario_id)), refresh_schema=True)
 
     @app.post("/api/playground/{scenario_id}/turns", status_code=202)
     async def submit(scenario_id: uuid.UUID, req: Turn, request: Request):
@@ -301,4 +368,4 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
         doc, started = store.begin(uid, str(scenario_id), req)
         if started:
             launch(run(uid, doc, req, settings['config_id']))
-        return response(uid, doc)
+        return await response(uid, doc)
