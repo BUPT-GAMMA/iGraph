@@ -120,7 +120,8 @@ class ScenarioStore:
             return None
         doc = json.loads(row[0])
         if doc["status"] in IN_PROGRESS and time.time() > doc.get("deadline", 0):
-            doc.update(status="failed", confirmable=doc["confirmed"], live_reply="", error="PLAYGROUND_INTERRUPTED")
+            doc.update(status="failed", confirmable=bool(doc.get("pending_schema") or doc["confirmed"]),
+                       live_reply="", error="PLAYGROUND_INTERRUPTED")
             self._save(db, uid, doc)
         return doc
 
@@ -332,7 +333,8 @@ def install_playground(app, *, path, graph, runtime, directory, projects, user_f
             if code in {"PLAYGROUND_SCHEMA_CHANGED", "PLAYGROUND_GRAPH_UNAVAILABLE"} and doc["result"]:
                 store.update(uid, doc, status="ready", pending_schema=None, confirmed=False, confirmable=False, live_reply="", error=code)
             else:
-                store.update(uid, doc, status="failed", confirmable=doc["confirmed"], live_reply="", error=code)
+                store.update(uid, doc, status="failed", confirmable=bool(doc.get("pending_schema") or doc["confirmed"]),
+                             live_reply="", error=code)
 
     @app.get("/api/playground")
     def list_scenarios(request: Request):

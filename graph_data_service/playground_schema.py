@@ -145,14 +145,16 @@ def _move_meaning(meanings, old, new, description):
         meanings[new] = current
 
 
-def _rename_in_meaning(meanings, entry, old, new):
-    if entry not in meanings:
-        return
+def _replace_names(text, names):
     # Match whole identifiers in Latin text while allowing labels within a Chinese sentence.
-    label = re.escape(old)
-    if old.isascii():
-        label = rf"(?<![A-Za-z0-9_]){label}(?![A-Za-z0-9_])"
-    meanings[entry] = {lang: re.sub(label, lambda _: new, text) for lang, text in meanings[entry].items()}
+    patterns = [rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])" if name.isascii() else re.escape(name)
+                for name in sorted(names, key=len, reverse=True)]
+    return re.sub("|".join(patterns), lambda match: names[match[0]], text) if patterns else text
+
+
+def _rename_in_meaning(meanings, entry, old, new):
+    if entry in meanings:
+        meanings[entry] = {lang: _replace_names(text, {old: new}) for lang, text in meanings[entry].items()}
 
 
 def _node_edit(graph, meanings, edit):
@@ -174,14 +176,21 @@ def _node_edit(graph, meanings, edit):
                 del meanings[entry]
         return graph
     elif edit.new_name and edit.new_name != name:
+        by_id = {n["id"]: n["type"] for n in graph["nodes"]}
+        neighbors = {name}
+        for edge in graph["edges"]:
+            endpoints = (by_id[edge["source"]], by_id[edge["target"]])
+            if name in endpoints:
+                neighbors.update(endpoints)
         graph, _ = optimize_graph(graph, [{"op": "rename_type", "target": "node", "old_type": name, "new_type": edit.new_name}])
         for entry in list(meanings):
             source, label, target = json.loads(entry)
+            if source is None and label in neighbors:
+                _rename_in_meaning(meanings, entry, name, edit.new_name)
             if name in (source, target):
                 _rename_in_meaning(meanings, entry, name, edit.new_name)
                 _move_meaning(meanings, entry, key(label, edit.new_name if source == name else source,
                                                     edit.new_name if target == name else target), None)
-        _rename_in_meaning(meanings, key(name), name, edit.new_name)
     _move_meaning(meanings, key(name), key(edit.new_name or name), edit.description)
     return graph
 
@@ -240,22 +249,80 @@ def _edge_edit(graph, meanings, edit):
     return graph
 
 
+def _resolve_change(graph, change, renamed_nodes, renamed_edges):
+    # Follow the same instances through a batch. A name that still exists takes precedence.
+    by_node = {n["id"]: n["type"] for n in graph["nodes"]}
+    names = set(by_node.values())
+
+    def node(name):
+        return name if name in names else by_node.get(renamed_nodes.get(name), name)
+
+    if change.kind == "node":
+        if change.action == "add":
+            return change
+        name = node(change.name)
+        if change.new_name and name in names:
+            renamed_nodes[name] = next(i for i, label in by_node.items() if label == name)
+        return change.model_copy(update={"name": name})
+    change = change.model_copy(update={field: node(getattr(change, field))
+                                       for field in ("source", "target", "new_source", "new_target")})
+    if change.action == "add":
+        return change
+
+    by_edge = {e["id"]: (by_node[e["source"]], e["type"], by_node[e["target"]]) for e in graph["edges"]}
+
+    def matches(signature):
+        source, name, target = signature
+        return name == change.name and change.source in (None, node(source)) and change.target in (None, node(target))
+
+    choices = {sig for sig in by_edge.values() if matches(sig)}
+    if not choices:
+        choices = {by_edge[i] for sig, i in renamed_edges.items() if i in by_edge and matches(sig)}
+    if len(choices) != 1:
+        actual = sorted({sig for sig in by_edge.values() if sig[1] == change.name})
+        raise ValueError(f"Choose one signature for {change.name}. Current matching types: {actual}")
+    signature = choices.pop()
+    if change.action in {"update", "reverse"}:
+        renamed_edges[signature] = next(i for i, sig in by_edge.items() if sig == signature)
+    source, name, target = signature
+    return change.model_copy(update={"name": name, "source": source, "target": target})
+
+
 def candidate(record, edits):
     if record.get("draft_graph") is not None or record["status"] != "ready":
         raise ConstructionError("PLAYGROUND_GRAPH_BUSY", "Finish the pending graph construction changes first.", 409)
     graph = copy.deepcopy(record["graph"])
     meanings = dict(record.get("type_meanings", {}))
-    for change in edits.changes:
+    renamed_nodes, renamed_edges, resolved = {}, {}, []
+    for requested in edits.changes:
+        change = _resolve_change(graph, requested, renamed_nodes, renamed_edges)
         graph = (_node_edit if change.kind == "node" else _edge_edit)(graph, meanings, change)
+        resolved.append(change)
     validate_graph(graph, copy_graph=False)
     if graph == record["graph"] and meanings == record.get("type_meanings", {}):
         raise ValueError("The proposed edits do not change the graph or its type definitions")
-    return graph, meanings
+    return graph, meanings, resolved
 
 
 def check_revision(record, revision):
     if record["revision"] != revision:
         raise ConstructionError("PLAYGROUND_SCHEMA_CHANGED", "The graph has changed. Review its current types and propose the edit again.", 409)
+
+
+def _refresh_question_names(questions, previous, graph):
+    # Rewrite a literal type only when its instances now share a single, unambiguous new label.
+    current = {r["type"] for side in ("nodes", "edges") for r in graph[side]}
+    moves = {}
+    for side in ("nodes", "edges"):
+        new_types = {r["id"]: r["type"] for r in graph[side]}
+        for row in previous[side]:
+            if row["type"] not in current and row["id"] in new_types:
+                moves.setdefault(row["type"], set()).add(new_types[row["id"]])
+    names = {old: next(iter(labels)) for old, labels in moves.items() if len(labels) == 1}
+    if names:
+        for localized in [questions, *questions.get("translations", {}).values()]:
+            if "questions" in localized:
+                localized["questions"] = [_replace_names(q, names) for q in localized["questions"]]
 
 
 def apply_edits(store, uid, did, proposal):
@@ -264,11 +331,13 @@ def apply_edits(store, uid, did, proposal):
         receipt = str(proposal.proposal_id)
         if record.get("schema_edit_receipt") != receipt:
             check_revision(record, proposal.base_revision)
-            graph, meanings = candidate(record, proposal)
+            graph, meanings, _ = candidate(record, proposal)
             if proposal.questions is not None:
                 previous = record.get("generated_questions", {})
                 record["generated_questions"] = {**previous, "questions": [q.zh for q in proposal.questions],
                     "translations": {"en": {"questions": [q.en for q in proposal.questions]}}}
+            elif record.get("generated_questions"):
+                _refresh_question_names(record["generated_questions"], record["graph"], graph)
             record.update(graph=graph, type_meanings=meanings, revision=record["revision"] + 1,
                           schema_edit_receipt=receipt, updated_at=datetime.now(timezone.utc).isoformat())
             if record.get("generated_questions"):

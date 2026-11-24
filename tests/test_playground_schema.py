@@ -29,7 +29,7 @@ class SchemaEditTest(unittest.TestCase):
             {"kind": "node", "action": "update", "name": "Depot", "new_name": "Hub"},
             {"kind": "edge", "action": "update", "name": "links", "source": "Hub", "target": "Store",
              "new_name": "delivers", "description": {"zh": "为门店送货。", "en": "Delivers goods to the store."}}])
-        edited, meanings = candidate(original, batch)
+        edited, meanings, _ = candidate(original, batch)
         self.assertEqual(original, fixture())
         self.assertEqual([n["id"] for n in edited["nodes"]], [n["id"] for n in original["graph"]["nodes"]])
         self.assertEqual(edited["edges"][0], {**original["graph"]["edges"][0], "type": "delivers"})
@@ -44,7 +44,7 @@ class SchemaEditTest(unittest.TestCase):
                  {"kind": "edge", "action": "update", "name": "supplies", "new_target": "Store"},
                  {"kind": "edge", "action": "reverse", "name": "supplies"},
                  {"kind": "node", "action": "remove", "name": "Depot"}]
-        graph, meanings = candidate(fixture(), EditBatch(changes=edits))
+        graph, meanings, _ = candidate(fixture(), EditBatch(changes=edits))
         actual = snapshot(graph, meanings, 2)
         self.assertEqual({n["type"] for n in actual["nodes"]}, {"Supplier", "Store"})
         self.assertEqual({(r["source"], r["type"], r["target"], r["count"]) for r in actual["edges"]},
@@ -53,14 +53,42 @@ class SchemaEditTest(unittest.TestCase):
     def test_rename_preserves_meaning_and_updates_type_references(self):
         saved = fixture()
         saved["type_meanings"] = {key("Depot"): {"zh": "Depot 接收货物。", "en": "A Depot receives DepotNet goods."},
+                                  key("Store"): {"zh": "从Depot接收货物。", "en": "Receives goods from the Depot."},
                                   key("links", "Depot", "Store"): {"zh": "从Depot送货到Store。", "en": "A Depot links to a Store."}}
-        graph, meanings = candidate(saved, EditBatch(changes=[
+        graph, meanings, _ = candidate(saved, EditBatch(changes=[
             {"kind": "node", "action": "update", "name": "Depot", "new_name": "Hub"},
             {"kind": "edge", "action": "update", "name": "links", "new_name": "delivers", "source": "Hub", "target": "Store"}]))
         self.assertEqual(meanings[key("Hub")]["en"], "A Hub receives DepotNet goods.")
+        self.assertEqual(meanings[key("Store")]["zh"], "从Hub接收货物。")
         self.assertEqual(meanings[key("delivers", "Hub", "Store")]["en"], "A Hub delivers to a Store.")
         self.assertEqual(meanings[key("delivers", "Hub", "Store")]["zh"], "从Hub送货到Store。")
         self.assertIn("Depot", saved["type_meanings"][key("Depot")]["en"])
+
+    def test_followup_can_use_original_names_without_changing_another_signature(self):
+        changes = [{"kind": "node", "action": "update", "name": "Depot", "new_name": "Hub"},
+                   {"kind": "edge", "action": "update", "name": "links", "new_name": "delivers", "source": "Depot", "target": "Store"},
+                   {"kind": "edge", "action": "update", "name": "links", "source": "Depot", "target": "Store",
+                    "description": {"zh": "配送货物。", "en": "Delivers goods."}}]
+        graph, meanings, resolved = candidate(fixture(), EditBatch(changes=changes))
+        self.assertEqual((resolved[1].source, resolved[2].name), ("Hub", "delivers"))
+        self.assertEqual(meanings[key("delivers", "Hub", "Store")]["en"], "Delivers goods.")
+        self.assertEqual(graph["edges"][1], fixture()["graph"]["edges"][1])
+        self.assertEqual(candidate(fixture(), EditBatch(changes=resolved))[:2], (graph, meanings))
+
+    def test_rename_updates_unambiguous_type_references_in_existing_questions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, uid, did = ConstructionStore(Path(tmp)), "alice", str(uuid.uuid4())
+            record = {**fixture(), "dataset_id": did, "generated_questions": {
+                "questions": ["Depot与Store之间有几条links边？"],
+                "translations": {"en": {"questions": ["How many links connect Depot to Store in DepotNet?"]}}}}
+            with store._write_lock(uid, did) as directory:
+                _atomic_json(directory / "record.json", record)
+            apply_edits(store, uid, did, PendingEdits(base_revision=1, proposal_id=uuid.uuid4(), changes=[
+                {"kind": "node", "action": "update", "name": "Depot", "new_name": "Hub"},
+                {"kind": "edge", "action": "update", "name": "links", "new_name": "supplies", "source": "Hub", "target": "Store"}]))
+            result = store.questions(uid, did)
+            self.assertEqual(result["questions"], ["Hub与Store之间有几条links边？"])
+            self.assertEqual(result["translations"]["en"]["questions"], ["How many links connect Hub to Store in DepotNet?"])
 
     def test_revision_retry_questions_and_owner_isolation(self):
         with tempfile.TemporaryDirectory() as tmp:

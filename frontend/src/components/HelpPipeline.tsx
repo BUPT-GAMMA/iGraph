@@ -51,7 +51,7 @@ export function HelpPipeline() {
     <ol className="help-pipeline-steps" aria-label={t(`${format.toUpperCase()} to graph analysis`, `${format.toUpperCase()} 到图分析的操作步骤`)}>
       <li>
         <h3>{t('Prepare and upload your source', '准备并上传源文件')}</h3>
-        <p>{t('To explore a scenario without uploading data, open Playground in the sidebar. Enter your API URL and key, refine the proposed questions in chat, then confirm the build. Open the resulting sample graph from My projects.', '手边没有数据时，可以从侧栏进入「场景广场」，先配置自己的接口 URL 和 API Key，再在对话中调整分析问题。确认构图后，到「我的项目」打开生成的示例图。')}</p>
+        <p>{t('Open Playground in the sidebar to explore a scenario without uploading data. Enter your API URL and key, refine your questions in chat, then confirm the build. The conversation shows what each node and edge type means. Describe a change and review the preview. Select Apply changes to save it to the same graph in My projects.', '手边没有数据时，可以从侧栏进入「场景广场」，配置自己的接口 URL 和 API Key，在对话中调整问题并确认构图。构图后，对话会说明每种节点和边的含义。你可以接着描述想怎么改，查看预览后点击「确认修改」，再到「我的项目」打开更新后的图。')}</p>
         <p>{t('Under “My projects”, open “Create your graph” on the destination project card. Choose “Upload source” or “Choose source file”. For a new project, choose “New project” first.', '从“我的项目”进入目标项目卡片的“创建你的图”，点击“上传数据源”或“选择源文件”。首次创建项目时，先点击“新建项目”。')}</p>
         {isPt ? <ul>
           <li>{t('Select one .pt file containing a single graph: a PyTorch Geometric Data object or a supported graph dictionary with edge_index and node data (such as num_nodes). Model checkpoint weights alone are not a graph.', '选择一个包含单图的 .pt 文件：PyTorch Geometric Data 对象，或包含 edge_index 和节点信息（如 num_nodes）的图字典。仅包含模型权重的 checkpoint 不是图数据。')}</li>

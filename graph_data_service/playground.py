@@ -540,8 +540,9 @@ async def plan_schema_turn(uid, record, req):
                     decision = SchemaDecision.model_validate_json(re.sub(r'^\s*```(?:json)?\s*|\s*```\s*$', '', (raw or "").strip(), flags=re.I))
                     result = {"action": decision.action, "reply": decision.reply, "schema": saved}
                     if decision.edits:
-                        graph, meanings = candidate(record, decision.edits)
-                        result.update(edits=decision.edits.model_dump(exclude_none=True),
+                        graph, meanings, changes = candidate(record, decision.edits)
+                        edits = decision.edits.model_copy(update={"changes": changes})
+                        result.update(edits=edits.model_dump(exclude_none=True),
                                       preview=snapshot(graph, meanings, record["revision"] + 1))
                     return result
                 except (ValidationError, ValueError) as exc:
@@ -551,6 +552,7 @@ async def plan_schema_turn(uid, record, req):
                         raise ConstructionError("PLAYGROUND_INVALID_REPLY", "The model returned an invalid schema edit.", 422) from exc
                     context["internal_validation"] = (exc.errors(include_input=False, include_context=False)[:5]
                         if isinstance(exc, ValidationError) else str(exc))
+                    context["previous_attempt"] = (raw or "")[:6000]
     except ConstructionError:
         raise
     except TimeoutError as exc:
